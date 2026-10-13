@@ -1,0 +1,2 @@
+{"id": "titanium", "extends": "steel", "name": "チタン", "color": [0.75, 0.75, 0.85],
+ "texture": "textures/titanium.png", "density": 4500, "break_distance": 0.2, "plasticity": 0.2}

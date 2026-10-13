@@ -1,0 +1,12 @@
+[
+  {"id": "fuel",  "name": "燃料",   "density": 800,  "fluid": true,  "color": [0.9, 0.6, 0.2]},
+  {"id": "air",   "name": "空気",   "density": 1.2,  "fluid": true,  "color": [0.8, 0.9, 1.0]},
+  {"id": "water", "name": "水",     "density": 1000, "fluid": true,  "color": [0.2, 0.4, 0.9]},
+  {"id": "ore",   "name": "鉱石",   "density": 2500, "fluid": false, "color": [0.5, 0.4, 0.3]},
+  {"id": "iron",  "name": "鉄",     "density": 7800, "fluid": false, "color": [0.6, 0.6, 0.62]},
+  {"id": "silica","name": "ケイ砂", "density": 1600, "fluid": false, "color": [0.9, 0.85, 0.7]},
+  {"id": "parts", "name": "機械部品","density": 5000, "fluid": false, "color": [0.4, 0.4, 0.5]},
+  {"id": "sulfur", "name": "硫黄鉱石", "density": 2000, "fluid": false, "color": [0.88, 0.8, 0.22]},
+  {"id": "rich_ore", "name": "星鉱石", "density": 3000, "fluid": false, "color": [0.55, 0.38, 0.8]},
+  {"id": "credits", "name": "クレジット", "density": 0, "fluid": false, "color": [1.0, 0.8, 0.2]}
+]

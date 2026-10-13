@@ -1,0 +1,2 @@
+[{"id": "default", "name": "宇宙飛行士", "color": [0.95, 0.95, 0.95], "height": 1.8, "radius": 0.35,
+  "walk_speed": 5.0, "jump_speed": 5.0, "jetpack_accel": 15.0, "jetpack_fuel_rate": 1.0, "reach": 8.0}]

@@ -1,0 +1,11 @@
+[
+  {"id": "terra", "name": "テラ", "radius": 600, "surface_gravity": 9.81, "color": [0.42, 0.55, 0.33], "texture": "textures/grass.png", "noise_amp": 10, "noise_freq": 2.5, "seed": 1, "dig_resource": "ore",
+   "deposits": [{"resource": "sulfur", "color": [0.86, 0.78, 0.2], "freq": 40, "threshold": 0.55, "min_height": 3}]},
+  {"id": "luna", "name": "ルナ", "radius": 160, "surface_gravity": 1.6, "color": [0.6, 0.6, 0.62], "texture": "textures/rock.png", "noise_amp": 4, "noise_freq": 4.0, "seed": 7, "dig_resource": "rich_ore", "atmosphere_pressure": 0.0,
+   "deposits": [{"resource": "rich_ore", "color": [0.55, 0.38, 0.8], "strength": 0.55, "freq": 30, "threshold": 0.62}]},
+  {"id": "asteroid", "name": "小惑星", "radius": 28, "surface_gravity": 2.5, "color": [0.4, 0.36, 0.34], "texture": "textures/rock.png", "noise_amp": 4, "noise_freq": 1.6, "seed": 21, "lipschitz": 0.6, "dig_resource": "rich_ore", "atmosphere_pressure": 0.0,
+   "deposits": [{"resource": "rich_ore", "color": [0.58, 0.4, 0.85], "strength": 0.7, "freq": 7, "threshold": 0.6}]},
+  {"id": "gaia", "name": "ガイア", "terrain": "earth", "radius": 600, "surface_gravity": 9.81, "color": [0.36, 0.55, 0.26], "texture": "textures/ground.png", "noise_amp": 70, "noise_freq": 3.0, "seed": 3, "dig_resource": "ore", "sea_level": 0.0, "mountain_height": 70.0, "hill_height": 4.0, "caves": 220, "ponds": 260,
+   "deposits": [{"resource": "sulfur", "color": [0.86, 0.78, 0.2], "freq": 40, "threshold": 0.58, "min_height": 24}],
+   "cave_resource": "rich_ore", "cave_resource_dist": 3.0, "cave_resource_color": [0.55, 0.38, 0.8]}
+]

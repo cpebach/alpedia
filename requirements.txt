@@ -1,0 +1,6 @@
+ursina>=7.0
+numpy>=1.24
+scipy>=1.10
+pillow>=9.0
+scikit-image>=0.21
+numba>=0.60
