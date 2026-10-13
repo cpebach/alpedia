@@ -12,7 +12,8 @@ import hashlib
 
 import numpy as np
 
-from . import log
+from ... import log
+from ...geom import box_sdf, ray_boxes  # noqa: F401
 
 L = log.get("cities")
 
@@ -56,8 +57,6 @@ def _rot(axis, ang):
     return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * (K @ K)
 
 
-# ---------------------------------------------------------------------------
-# 箱の符号付き距離（行が軸の向き付き箱）
 # ---------------------------------------------------------------------------
 def box_sdf(P, C, A, E):
     """P (N,3) と箱 (B) → 一番近い箱までの距離 d (N,)・外向きの向き n (N,3)・箱の番号 k (N,)"""

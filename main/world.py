@@ -74,7 +74,11 @@ def _write_json(path, data):
 
 
 class World:
-    def __init__(self, name, cfg):
+    # 拡張（hooks.Addon）を作る関数のリスト。addons を渡さずに作ったワールドはこれを使う
+    # （ゲームでは main/addons/__init__.py の install() が街パックなどを登録する）
+    default_addons = []
+
+    def __init__(self, name, cfg, addons=None):
         self.name = name
         self.cfg = cfg
         self.dir = paths.world_dir(name)
@@ -86,8 +90,7 @@ class World:
         self.runner = ScriptRunner(self)
         from .radio import RadioBus
         self.radio = RadioBus(self)
-        from .cities import NoCities
-        self.cities = NoCities()
+        self.addons = list(addons) if addons is not None else [make() for make in self.default_addons]
         self._timers = {"rebond": 0.0, "cleanup": 0.0}
         phys = cfg.get("physics", {})
         self.substeps = int(phys.get("substeps", 3))
@@ -136,16 +139,8 @@ class World:
         if pj:
             self.player.load_dict(pj)
         self._give_starter_kit()
-        from .cities import CityManager
-        self.cities = CityManager(self)
-        if self.cities.enabled:
-            self.cities.clear_overlaps(self.constructs.values())
-        from .citylife import Economy
-        self.economy = Economy(self)
-        if self.cities.enabled:
-            self.economy.give_starter()
-        from .politics import Politics
-        self.politics = Politics(self)
+        for a in self.addons:
+            a.on_load(self)
         L.info("ワールド '%s' を読み込み: 構築物 %d, 惑星 %d, MOD %s", self.name, len(self.constructs),
                len(self.planets), mods)
         self.message(f"ワールド「{self.name}」を読み込みました")
@@ -161,8 +156,8 @@ class World:
 
     def save(self):
         self.settings["time"] = self.time
-        if getattr(self, "cities", None) is not None and self.cities.enabled:
-            self.settings["city_state"] = self.cities.to_state()
+        for a in self.addons:
+            a.on_save(self)
         self.settings["planets"] = [
             {**pl.to_dict(), **({"override": pl.defn_override} if getattr(pl, "defn_override", None) else {})}
             for pl in self.planets]
@@ -272,25 +267,11 @@ class World:
             devices.update(c, dt, frozenset(self.input_keys), self.seated_in(c), ambient)
             self.runner.tick(c, dt)
         self.player.update(self, dt, move, jump, thrust_dir)
-        pol = getattr(self, "politics", None)
-        if pol is not None:
-            pol.update(dt)
         h = dt / self.substeps
-        # 軌道上の街：くっついた構築物の推進機の力を街に伝えて、街ごと軌道を進める
-        anchored = self._anchored()
-        if self.cities.enabled:
-            for cid, lst in anchored.items():
-                city = self.cities.by_id[cid]
-                for c in lst:
-                    self._snapshot_anchor(c, city)       # 街が動く前の位置関係で固定する
-                    if city.kind == "orbit" and np.any(c.force):
-                        city.force += c.force.sum(0)
-                        city.torque += np.cross(c.pos - city.x, c.force).sum(0)
-            self.cities.step(dt, anchored)
-            for cid, lst in anchored.items():
-                for c in lst:
-                    self._sync_anchor(c, self.cities.by_id[cid])
-        anchored_ids = {c.id for lst in anchored.values() for c in lst}
+        # 拡張（軌道上の街など）が位置を決める構築物は、物理計算しない
+        anchored_ids = set()
+        for a in self.addons:
+            anchored_ids |= a.before_physics(self, dt) or set()
         for c in self.constructs.values():
             if c.id in anchored_ids:
                 continue
@@ -306,7 +287,7 @@ class World:
         cons = [c for c in self.constructs.values() if c.n_vox and not c.asleep and c.mode != "rails"]
         sleeping = [c for c in self.constructs.values() if c.n_vox and (c.asleep or c.id in anchored_ids)]
         for c in cons:
-            self._prep_city(c, dt)
+            self._prep_ext(c, dt)
         broken = set()
         for _ in range(self.substeps):
             self._each(cons, lambda c: c.substep_begin(h, self.iters, self.gravity, self.planets))
@@ -320,12 +301,15 @@ class World:
                 for c in woke:
                     c.wake()
                     c._prev = c.pos.copy()
-                    self._prep_city(c, dt)
+                    self._prep_ext(c, dt)
                 cons = cons + woke
                 sleeping = [c for c in sleeping if c.asleep or c.id in anchored_ids]
         for c in cons:
             c.update_sleep(dt)
-        self._city_results(cons)
+        for a in self.addons:
+            a.after_physics(self, cons)
+        for c in cons:
+            c.ext_events = []
         for cid in broken:
             c = self.constructs.get(cid)
             if c is None:
@@ -349,87 +333,29 @@ class World:
             self._timers["cleanup"] = 0.0
 
     # ------------------------------------------------------------------
-    # 街（サイバーパンクの街）との関わり
+    # 拡張（hooks.Addon）
     # ------------------------------------------------------------------
-    def _prep_city(self, c, dt):
-        c._city_events = []
-        c._city_boxes = []
-        if not self.cities.enabled or not self.cities.cities:
+    def addon(self, name):
+        """名前で拡張を探す（無ければ None）。"""
+        return next((a for a in self.addons if a.name == name), None)
+
+    def _prep_ext(self, c, dt):
+        """このティックで当たりそうな、拡張の当たり判定の箱を集めておく。"""
+        c.ext_events = []
+        c.ext_colliders = []
+        if not self.addons:
             return
         sp = float(np.abs(c.vel).max()) * dt + c.size * 2
-        c._city_boxes = self.cities.boxes_for(c.pos.min(0), c.pos.max(0), sp)
+        lo, hi = c.pos.min(0), c.pos.max(0)
+        for a in self.addons:
+            c.ext_colliders += a.colliders(self, lo, hi, sp)
 
-    def _city_results(self, cons):
-        """建物の損傷と、動いている街への反動をまとめて反映する。"""
-        if not self.cities.enabled:
-            return
-        for c in cons:
-            for city, best, _, J, pts in getattr(c, "_city_events", ()):
-                if best:
-                    before = city.alive()
-                    for part, v in best.items():
-                        city.hit(part, v)
-                    if before and not city.alive():
-                        self.message(f"{city.name} は壊滅しました")
-                if J is not None and city.is_moving():
-                    city.impulse += J.sum(0)
-                    city.ang_impulse += np.cross(pts - city.x, J).sum(0)
-            c._city_events = []
-
-    def _anchored(self):
-        """軌道上の街に固定された構築物：{街ID: [構築物]}"""
-        out = {}
-        for c in self.constructs.values():
-            a = getattr(c, "anchor", None)
-            if not a:
-                continue
-            if not self.cities.enabled or a["city"] not in self.cities.by_id:
-                c.anchor = None
-                if c.mode == "rails":
-                    c.mode, c.rb = "soft", None
-                continue
-            out.setdefault(a["city"], []).append(c)
+    def push_sphere(self, center, r):
+        """拡張の物体（街の建物など）から球を押し出す：[(押し出し, 法線, owner)]"""
+        out = []
+        for a in self.addons:
+            out += a.push_sphere(self, center, r)
         return out
-
-    def _snapshot_anchor(self, c, city):
-        a = c.anchor
-        if a.get("ver") != c.version or c.rb is None or c.mode != "rails" or "local" not in a:
-            a["local"] = (c.pos - city.x) @ city.R          # 街の向きでの形（今の位置のまま固定）
-            a["ver"] = c.version
-            c.mode = "rails"
-            c.rb = {"local": a["local"], "R": city.R.copy(), "x": city.x.copy(), "v": city.v.copy(),
-                    "w": city.w.copy(), "Ib": np.eye(3), "ext": float(np.linalg.norm(a["local"], axis=1).max())}
-            c.rb_epoch += 1
-
-    def _sync_anchor(self, c, city):
-        self._snapshot_anchor(c, city)
-        rb = c.rb
-        rb["R"], rb["x"], rb["v"], rb["w"] = city.R.copy(), city.x.copy(), city.v.copy(), city.w.copy()
-        c._rails_sync()
-        c.asleep = False
-        c.sleep_epoch += 1
-
-    def anchor_toggle(self, c):
-        """E：軌道上の街に固定する／切り離す。"""
-        if getattr(c, "anchor", None):
-            city = self.cities.by_id.get(c.anchor["city"])
-            c.anchor = None
-            c.mode, c.rb = "soft", None
-            c.wake()
-            return f"{c.name} を {city.name if city else '街'} から切り離しました"
-        if not self.cities.enabled:
-            return None
-        K = c.contact_cores()
-        K = K[~np.isnan(K).any(1)]
-        from .cities import box_sdf
-        for city, C, A, E, idx in self.cities.boxes_for(c.pos.min(0), c.pos.max(0), 1.0):
-            if city.kind not in ("orbit", "wreck") or not len(K):
-                continue
-            d, _, _ = box_sdf(K, C, A, E)
-            if float(d.min()) < c.size * 0.5 + 0.35:
-                c.anchor = {"city": city.id}
-                return f"{c.name} を {city.name} に固定しました（推進機で街ごと動かせます。もう一度 E で切り離し）"
-        return None
 
     def _each(self, cons, fn):
         """構築物ごとの計算を、複数の CPU コアで同時に進める（numba の計算は GIL を離すので並列に動く）。
@@ -719,9 +645,8 @@ class World:
                 if w and (best is None or w[0] < best["t"]):
                     best = {"kind": "water", "t": w[0], "planet": pl, "point": w[1],
                             "normal": pl.up(w[1])}
-        cm = getattr(self, "cities", None)
-        if cm is not None and cm.enabled:
-            r = cm.raycast(o, dvec, best["t"] if best is not None else max_dist)
+        for a in self.addons:
+            r = a.raycast(self, o, dvec, best["t"] if best is not None else max_dist)
             if r and (best is None or r["t"] < best["t"]):
                 best = r
         return best
@@ -787,7 +712,7 @@ class World:
             return True
         # 何もない所・地面 → 新しい構築物
         size = float(self.settings.get("voxel_size", 0.5))
-        if hit and hit["kind"] in ("terrain", "water", "city"):
+        if hit and (hit["kind"] in ("terrain", "water") or hit.get("placeable")):
             up = hit["normal"]
             ctr = hit["point"] + up * size * 0.55
         else:
@@ -810,11 +735,9 @@ class World:
                                   name="構築物")
         self.add_construct(c)
         self._survival_init_device(c, 0)
-        if hit and hit["kind"] == "city":
-            city = hit["city"]
-            c.vel[:] = city.point_velocity(c.pos)
-            if city.kind in ("orbit", "wreck"):
-                c.anchor = {"city": city.id}      # ステーションに直接置いたものは街に固定
+        if hit and hit.get("placeable"):
+            for a in self.addons:
+                a.on_placed(self, hit, c)
         return True
 
     def _survival_init_device(self, c, i):
@@ -953,10 +876,11 @@ class World:
             if msg:
                 self.message(msg)
             return
-        msg = self.anchor_toggle(c)
-        if msg:
-            self.message(msg)
-            return
+        for a in self.addons:
+            msg = a.interact(self, c, i)
+            if msg:
+                self.message(msg)
+                return
         m = self.registry.material(c.mats[i])
         self.message(f"{c.name}: {m['name']} / ボクセル {c.n_vox} / 質量 {c.total_mass()/1000:.1f} t")
 

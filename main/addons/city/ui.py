@@ -1,7 +1,8 @@
 """街の画面：取引（商人）・部屋の売買と賃貸（不動産屋）・収納箱。閉じるボタン（または Esc）で閉じる。"""
 import numpy as np
 
-from .. import log, citylife
+from ... import log
+from . import citylife
 
 L = log.get("city_ui")
 
@@ -51,7 +52,7 @@ class _Panel:
         return T(parent=self.body, text=text, position=pos, origin=origin, scale=scale, color=col or color.white)
 
     def _clear(self):
-        from .ui_destroy import destroy
+        from ...client.ui_destroy import destroy
         for ch in list(self.body.children):
             destroy(ch)
 
@@ -68,7 +69,7 @@ class _Panel:
         pass
 
     def close(self):
-        from .ui_destroy import destroy
+        from ...client.ui_destroy import destroy
         destroy(self.root)
         self.game.editor_closed()
 
@@ -225,7 +226,7 @@ class MapPanel(_Panel):
         self.planet = pl
         self.sel = None
         self.target_mode = False
-        from .. import politics as P
+        from . import politics as P
         self.sub.text = (f"都市を選ぶと、通信で助言できます（通信費 {P.ADVICE_FEE:.0f} クレジット・"
                          f"同じ都市へは {P.ADVICE_WAIT / 60:.0f} 分あける）。閉じる：閉じるボタン / Esc")
         self._t = 0.0
@@ -263,7 +264,7 @@ class MapPanel(_Panel):
         return x, y
 
     def refresh(self):
-        from .ui_destroy import destroy
+        from ...client.ui_destroy import destroy
         for ch in list(self.map_root.children):
             destroy(ch)
         U, color = self.U, self.U["color"]
@@ -285,7 +286,7 @@ class MapPanel(_Panel):
         E(parent=self.map_root, model="quad", scale=(w_, 0.002), position=(cx, cy, 0.01), color=color.rgba(1, 1, 1, 0.12))
         if pl is None:
             return
-        from .. import politics as P
+        from . import politics as P
         for c in self.visited_cities():
             if c.host is not pl:
                 continue
@@ -331,8 +332,8 @@ class MapPanel(_Panel):
         self.refresh()
 
     def refresh_side(self):
-        from .ui_destroy import destroy
-        from .. import politics as P
+        from ...client.ui_destroy import destroy
+        from . import politics as P
         for ch in list(self.side_root.children):
             destroy(ch)
         U, color = self.U, self.U["color"]
@@ -350,7 +351,6 @@ class MapPanel(_Panel):
             self.status_text.text = self.status
             return
         s = self.pol.st(c)
-        from .. import citylife
         info = citylife.region_info(c)
         fallen = getattr(c, "fallen", False)
         t = self.world.time

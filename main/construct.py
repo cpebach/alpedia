@@ -97,6 +97,9 @@ class Construct:
         self.rb_epoch = 0
         self.sleep_epoch = 0
         self._in_pool = False        # 並列実行中（スレッドから呼ばれている）か
+        self.ext_colliders = []      # 拡張（街など）が出した当たり判定の箱（ワールドがティックごとに入れる）
+        self.ext_events = []         # それに当たった記録（拡張が after_physics で処理する）
+        self.anchor = None           # 動く物体に固定：{"to": 相手のID}（中身は拡張が決める）
 
     # ------------------------------------------------------------------
     # 構築
@@ -370,7 +373,7 @@ class Construct:
                 self._solve_rotors()
         for pl in near:
             self._collide_planet(pl)
-        for bs in getattr(self, "_city_boxes", ()):
+        for bs in self.ext_colliders:
             self._collide_boxes(bs, h)
 
     WATER_DENSITY = 1000.0
@@ -568,9 +571,10 @@ class Construct:
         self.pos[hi] -= tang * fr[:, None]
 
     def _collide_boxes(self, bs, h, collect=False):
-        """街の建物（向き付きの箱）との当たり判定。ぶつかった速さは建物の損傷に、押した分は動く街の反動に使う。"""
-        from .cities import box_sdf
-        city, C, A, E, idx = bs
+        """拡張が出した向き付きの箱（街の建物など）との当たり判定。
+        強くぶつかった速さと、動いている物体を押した力積は ext_events に記録する（拡張が after_physics で使う）。"""
+        from .geom import box_sdf
+        owner, C, A, E, idx = bs
         K = self.contact_cores()
         r = self.size * 0.5
         rb = np.linalg.norm(E, axis=1)
@@ -588,8 +592,8 @@ class Construct:
         hi_ = sel[hit]
         n = n[hit]
         parts = idx[k[hit]]
-        moving = city.is_moving()
-        vs = city.point_velocity(self.pos[hi_]) if moving else np.zeros((len(hi_), 3))
+        moving = owner.is_moving()
+        vs = owner.point_velocity(self.pos[hi_]) if moving else np.zeros((len(hi_), 3))
         vn = -np.einsum("ij,ij->i", self.vel[hi_] - vs, n)
         # 建物の損傷（いちばん強く当たった速さ）
         if (vn >= 7.0).any():
@@ -597,7 +601,7 @@ class Construct:
             for pa, v in zip(parts.tolist(), vn.tolist()):
                 if v > best.get(pa, 0.0):
                     best[pa] = v
-            self._city_events.append((city, best, 0.0, None, None))
+            self.ext_events.append((owner, best, None, None))
         if collect:
             return hi_, -d[hit], n, vs
         corr = -n * d[hit][:, None]
@@ -608,7 +612,7 @@ class Construct:
         self.pos[hi_] -= tang * fr[:, None]
         if moving:
             J = (corr - tang * fr[:, None]) * (self.mass[hi_] / h)[:, None]
-            self._city_events.append((city, None, 0.0, -J, self.pos[hi_]))
+            self.ext_events.append((owner, None, -J, self.pos[hi_]))
         return None
 
     def substep_end(self, h):
@@ -791,7 +795,7 @@ class Construct:
             return
         for pl in near:
             self._collide_planet(pl)
-        for bs in getattr(self, "_city_boxes", ()):
+        for bs in self.ext_colliders:
             self._collide_boxes(bs, h)
 
     def _rigid_ground_contacts(self, near, h=1 / 180):
@@ -803,7 +807,7 @@ class Construct:
             if res:
                 P.append(res[0]); D.append(res[1]); N.append(res[2])
                 VS.append(np.zeros((len(res[0]), 3))); CI.append(np.full(len(res[0]), -1))
-        boxes = list(getattr(self, "_city_boxes", ()))
+        boxes = list(self.ext_colliders)
         for bi, bs in enumerate(boxes):
             res = self._collide_boxes(bs, h, collect=True)
             if res:
@@ -840,7 +844,7 @@ class Construct:
             m_ = (CI == bi) & (lam_n > 0)
             if m_.any():
                 J = N[m_] * (lam_n[m_] / h)[:, None]
-                self._city_events.append((boxes[bi][0], None, 0.0, -J, self.pos[P[m_]]))
+                self.ext_events.append((boxes[bi][0], None, -J, self.pos[P[m_]]))
         # 摩擦（接点の横すべりを、押し戻した量に比例する上限まで止める）。動いている建物とは相対的に
         base = self.pos[P] - self._prev[P] - VS * h
         fr = np.clip(self.fric[P], 0, 1)
@@ -1137,7 +1141,7 @@ class Construct:
             if res:
                 P.append(res[0]); D.append(res[1]); N.append(res[2])
                 VS.append(np.zeros((len(res[0]), 3))); CI.append(np.full(len(res[0]), -1))
-        boxes = list(getattr(self, "_city_boxes", ()))
+        boxes = list(self.ext_colliders)
         for bi, bs in enumerate(boxes):
             res = self._collide_boxes(bs, h, collect=True)
             if res:
@@ -1190,7 +1194,7 @@ class Construct:
                 m_ = (CI == bi) & (lamN > 0)
                 if m_.any():
                     J = N[m_] * (lamN[m_] / h)[:, None]
-                    self._city_events.append((boxes[bi][0], None, 0.0, -J, self.pos[P[m_]]))
+                    self.ext_events.append((boxes[bi][0], None, -J, self.pos[P[m_]]))
 
     def _art_end(self, h):
         """ほかの構築物に押された分なども部分ごとの剛体の動きに直してから、速度を求める。"""
@@ -1274,6 +1278,36 @@ class Construct:
         r = rb["local"] @ rb["R"].T
         self.pos = rb["x"] + r
         self.vel = rb["v"] + fcross(rb["w"], r)
+
+    # ------------------------------------------------------------------
+    # 外から位置を決める（拡張が、動く物体に固定した構築物を一緒に動かす）
+    # ------------------------------------------------------------------
+    def hold_in_frame(self, R, x, v, w):
+        """座標系 (R, x) に今の形のまま固定する（形が変わったときだけ取り直す）。物理計算は止まる（mode="rails"）。"""
+        f = getattr(self, "_frame_hold", None)
+        if f is None or f["ver"] != self.version or self.rb is None or self.mode != "rails":
+            local = (self.pos - x) @ R
+            self._frame_hold = {"ver": self.version}
+            self.mode = "rails"
+            self.rb = {"local": local, "R": np.array(R, float), "x": np.array(x, float), "v": np.array(v, float),
+                       "w": np.array(w, float), "Ib": np.eye(3), "ext": float(np.linalg.norm(local, axis=1).max())}
+            self.rb_epoch += 1
+
+    def move_with_frame(self, R, x, v, w):
+        """固定した座標系が (R, x, 速度 v, 角速度 w) に動いた：一緒に動かす。"""
+        self.hold_in_frame(R, x, v, w)
+        rb = self.rb
+        rb["R"], rb["x"], rb["v"], rb["w"] = (np.array(R, float), np.array(x, float), np.array(v, float),
+                                              np.array(w, float))
+        self._rails_sync()
+        self.asleep = False
+        self.sleep_epoch += 1
+
+    def release_frame(self):
+        """固定をやめて、ふつうの物理計算に戻す。"""
+        self._frame_hold = None
+        if self.mode == "rails":
+            self.mode, self.rb = "soft", None
 
     def render_transform(self):
         """描画用：剛体・レール・静止中なら (R, x, 版)。ブロックごとに動いている間は None。"""
@@ -1557,7 +1591,7 @@ class Construct:
             # 現在の形（回転したアーム・伸びたアクチュエーター・変形）を保存
             "vertices": np.round((self.pos - self.rigid_fit()[1]) @ self.rigid_fit()[0], 4).tolist(),
             "rest": np.round(self.rest, 4).tolist(),
-            **({"anchor": self.anchor["city"]} if getattr(self, "anchor", None) else {}),
+            **({"anchor": self.anchor["to"]} if getattr(self, "anchor", None) else {}),
         }
 
     def spawn_dict(self):
@@ -1588,5 +1622,5 @@ class Construct:
             c.rest = np.asarray(rest, dtype=np.float64).reshape(-1, 8, 3)
         c.rebuild()
         if data.get("anchor"):
-            c.anchor = {"city": data["anchor"]}    # 軌道上の街に固定（位置は読み込み後に合わせる）
+            c.anchor = {"to": data["anchor"]}      # 動く物体（軌道上の街など）に固定。中身は拡張が決める
         return c

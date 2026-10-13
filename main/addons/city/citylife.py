@@ -7,7 +7,7 @@
 """
 import numpy as np
 
-from . import log
+from ... import log
 
 L = log.get("citylife")
 
@@ -243,8 +243,9 @@ def talk_line(city, npc):
 # 経済（取引・家）
 # ---------------------------------------------------------------------------
 class Economy:
-    def __init__(self, world):
+    def __init__(self, world, pack):
         self.world = world
+        self.pack = pack              # 街パック（CityAddon）
         st = world.settings.setdefault("economy", {})
         self.homes = st.setdefault("homes", {})        # {家ID: {"mode": "own"/"rent", "until": 時刻}}
         self.storage = st.setdefault("storage", {})    # {家ID: {資源: 量}}
@@ -341,7 +342,7 @@ class Economy:
         return self.creative or self.home_status(hid) in ("own", "rent")
 
     def _city_of_home(self, hid):
-        for c in getattr(self.world.cities, "cities", []):
+        for c in self.pack.cities.cities:
             if hid.startswith(c.id + "-h"):
                 return c
         return None

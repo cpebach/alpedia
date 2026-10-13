@@ -10,7 +10,7 @@
 """
 import numpy as np
 
-from . import log
+from ... import log
 
 L = log.get("politics")
 
@@ -37,9 +37,10 @@ ACTION = {"conquer": "征服", "attack": "攻撃"}
 
 
 class Politics:
-    def __init__(self, world):
+    def __init__(self, world, pack):
         self.world = world
-        self.cm = world.cities
+        self.pack = pack              # 街パック（CityAddon）
+        self.cm = pack.cities
         st = world.settings.setdefault("politics", {})
         self.cities = st.setdefault("cities", {})     # {都市ID: 状態}
         self.news = st.setdefault("news", [])         # [(時刻, 文)]
@@ -223,7 +224,7 @@ class Politics:
         for o in self.cities.values():
             if o.get("plan") and o["plan"]["target"] == city.id:
                 o["plan"] = None
-        self.world.economy.city_fallen(city)
+        self.pack.economy.city_fallen(city)
 
     # --- プレイヤーの助言 -----------------------------------------------------
     def _advice_check(self, city):
@@ -237,12 +238,12 @@ class Politics:
         wait = s["advice_at"] + ADVICE_WAIT - self.world.time
         if wait > 0:
             return f"{city.name} への助言は {wait / MIN:.0f} 分後にできます"
-        if self.world.economy.credits() < ADVICE_FEE:
+        if self.pack.economy.credits() < ADVICE_FEE:
             return f"通信費 {ADVICE_FEE:.0f} クレジットが足りません"
         return None
 
     def _pay(self, city):
-        self.world.economy._add_credits(-ADVICE_FEE)
+        self.pack.economy._add_credits(-ADVICE_FEE)
         self.st(city)["advice_at"] = self.world.time
 
     def persuade(self, city):

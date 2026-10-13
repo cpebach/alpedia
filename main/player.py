@@ -132,24 +132,23 @@ class Player:
                 if np.dot(n, self.up) > 0.5:
                     self.on_ground = True
                     self.vel *= max(0.0, 1 - dt * 2)
-        # 街の建物（動いているステーションの上では、足元の建物と一緒に動く）
-        cm = getattr(world, "cities", None)
-        if cm is not None and cm.enabled:
-            was_ground = getattr(self, "_city_ground", False)
+        # 拡張の物体（街の建物など。動いているステーションの上では、足元の建物と一緒に動く）
+        if getattr(world, "addons", None):
+            was_ground = getattr(self, "_ext_ground", False)
             blocked = False
-            self._city_ground = False
+            self._ext_ground = False
             for off in (0.0, self.height - 2 * r):
                 center = self.pos + self.up * off
-                for push, n, city in cm.push_sphere(center, r):
+                for push, n, body in world.push_sphere(center, r):
                     self.pos += push
-                    vb = city.point_velocity(self.pos) if city.is_moving() else np.zeros(3)
+                    vb = body.point_velocity(self.pos) if body.is_moving() else np.zeros(3)
                     vn = np.dot(self.vel - vb, n)
                     if vn < 0:
                         self.vel -= n * vn
                     # 段の角に乗ったとき（法線が斜め）も足場とみなす（角の上で止まって動けなくならないように）
                     if off == 0.0 and np.dot(n, self.up) > 0.3:
                         self.on_ground = True
-                        self._city_ground = True
+                        self._ext_ground = True
                         self.ground_vel = vb
                     if off == 0.0 and abs(np.dot(n, self.up)) < 0.6 and np.dot(n, move) < -0.3:
                         blocked = True
@@ -160,7 +159,7 @@ class Player:
                     probe = self.pos + self.up * h + mv * 0.12
                     clear = True
                     for off in (0.0, self.height - 2 * r):
-                        for push, n, city in cm.push_sphere(probe + self.up * off, r * 0.98):
+                        for push, n, body in world.push_sphere(probe + self.up * off, r * 0.98):
                             if np.dot(n, self.up) < 0.5 or off > 0:
                                 clear = False
                                 break

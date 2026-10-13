@@ -31,6 +31,8 @@ def prepare_world(name, new=False):
         else:
             create_empty_world(name)
     from .world import World
+    from . import addons
+    addons.install()          # 街パックなどの拡張を登録する
     return World
 
 
