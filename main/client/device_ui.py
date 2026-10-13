@@ -140,13 +140,13 @@ class DevicePanel:
                        color=col or color.rgb(0.22, 0.32, 0.45), text_size=ts)
             b.on_click = fn
             return b
-        btn("既定の名前", (-0.27, 0.07), lambda: self.set_text(self.default_name), w=0.17)
-        btn("1文字消す", (-0.09, 0.07), self.backspace, w=0.17)
-        btn("全部消す", (0.09, 0.07), lambda: self.set_text(""), w=0.17)
-        btn("同名に番号を振る", (0.29, 0.07), self.number_all, w=0.2, col=color.rgb(0.6, 0.45, 0.15))
-        self.info = Text(parent=self.root, text="", position=(-0.5, 0.0), origin=(-0.5, 0.5), scale=0.72,
+        btn("既定の名前", (-0.27, 0.16), lambda: self.set_text(self.default_name), w=0.17)
+        btn("1文字消す", (-0.09, 0.16), self.backspace, w=0.17)
+        btn("全部消す", (0.09, 0.16), lambda: self.set_text(""), w=0.17)
+        btn("同名に番号を振る", (0.29, 0.16), self.number_all, w=0.2, col=color.rgb(0.6, 0.45, 0.15))
+        self.info = Text(parent=self.root, text="", position=(-0.5, 0.08), origin=(-0.5, 0.5), scale=0.72,
                          color=color.light_gray)
-        Text(parent=self.root, position=(-0.5, -0.17), origin=(-0.5, 0.5), scale=0.62, color=color.light_gray,
+        Text(parent=self.root, position=(-0.5, -0.10), origin=(-0.5, 0.5), scale=0.62, color=color.light_gray,
              text="同じ名前の機器は、コンピューターからまとめて動きます。\n"
                   "名前を分けると、ブロックの機器選択や api.device(\"名前\") で個別に制御できます。\n"
                   "（名前はキーボードで入力します）")

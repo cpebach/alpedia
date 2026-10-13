@@ -82,7 +82,7 @@ class ScriptPanel:
         btn("scripts フォルダを開く", (x - 0.11, -0.01), lambda: self._open(self.scripts_dir()))
         btn("API 一覧（README）", (x + 0.11, -0.01), lambda: self._open(self.readme()))
         btn("閉じる", (x, -0.08), self.close, w=0.42, col=color.rgb(0.3, 0.3, 0.33))
-        self.status = Text(parent=self.root, text="", position=(x - 0.21, -0.14), origin=(-0.5, 0.5), scale=0.7,
+        self.status = Text(parent=self.root, text="", position=(-0.84, -0.40), origin=(-0.5, 0.5), scale=0.75,
                            color=color.orange)
 
         class Keys(Entity):
@@ -248,6 +248,6 @@ class ScriptPanel:
             info.append("  " + _wrap(st["error"], 56))
         self.info.text = "\n".join(info).replace("<", "＜").replace(">", "＞")
         logs = st.get("_log", [])
-        self.log_text.text = "\n".join(_wrap(t, 64) for t in logs[-16:]).replace("<", "＜").replace(">", "＞")
+        self.log_text.text = "\n".join(_wrap(t, 64) for t in logs[-12:]).replace("<", "＜").replace(">", "＞")
         if self.status.text and time.time() - getattr(self, "_status_time", 0) > 8:
             self.status.text = ""
