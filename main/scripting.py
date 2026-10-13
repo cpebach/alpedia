@@ -13,8 +13,7 @@ import statistics
 
 import numpy as np
 
-from . import log, devices
-from .construct import DIR_NAMES
+from . import log
 
 L = log.get("script")
 
@@ -57,13 +56,12 @@ def _color(v, default, n=3):
     return [min(max(x, 0.0), 1.0) for x in v]
 
 
-def set_display(dev, text, face=None, width=None, color=None, background=None):
-    """機器の表面に文字を表示する（状態に保存されるので停止後も残る＝看板）。"""
+def display_payload(direction, text, face=None, width=None, color=None, background=None):
+    """表面に出す文字の辞書（text が空なら None＝消す）。direction は機器の向きの番号（face 省略時に使う）。"""
     if text is None or text == "":
-        dev["state"].pop("display", None)
-        return
+        return None
     if face is None:
-        f = dev.get("dir", 2)
+        f = direction
     elif isinstance(face, str) and face.lower() == "all":
         f = "all"
     elif isinstance(face, str):
@@ -73,119 +71,102 @@ def set_display(dev, text, face=None, width=None, color=None, background=None):
     else:
         f = int(face) % 6
     w = None if width is None else float(min(max(width, 0.05), 50.0))
-    dev["state"]["display"] = {
-        "text": str(text)[:2000], "face": f, "width": w,
-        "color": _color(color, (1, 1, 1)), "background": _color(background, (0.04, 0.05, 0.08, 0.92), 4),
-    }
+    return {"text": str(text)[:2000], "face": f, "width": w,
+            "color": _color(color, (1, 1, 1)), "background": _color(background, (0.04, 0.05, 0.08, 0.92), 4)}
 
 
 class DeviceHandle:
-    """スクリプトから見た機器。"""
+    """スクリプトから見た機器。中身は Port（control.py）を通して読み書きする。"""
 
-    def __init__(self, c, i, world=None):
-        self._c, self._i, self._w = c, i, world
-        self._d = c.devs[i]
-        self._dd = c.reg.device(self._d["def"])
+    def __init__(self, port, info):
+        self._p = port
+        self._i, self._kind, self._type, self._name, self._dir = info
 
-    name = property(lambda s: s._d["name"])
-    type = property(lambda s: s._dd["type"] if s._dd else "?")
-    kind = property(lambda s: s._d["def"])
-    direction = property(lambda s: DIR_NAMES[s._d["dir"]])
+    name = property(lambda s: s._name)
+    type = property(lambda s: s._type)
+    kind = property(lambda s: s._kind)
+    direction = property(lambda s: s._dir)
 
     @property
     def state(self):
-        return dict(self._d["state"])
+        return self._p.device_state(self._i)
 
     def display(self, text, face=None, width=None, color=None, background=None):
         """このブロックの表面に文字を表示（コンピューターのみ）。"""
         if self.type != "computer":
             raise ValueError("display() はコンピューターでのみ使えます")
-        set_display(self._d, text, face, width, color, background)
+        self._p.set_display(self._i, display_payload(self._p.device_dir(self._i), text, face, width, color, background))
 
     def clear_display(self):
-        self._d["state"].pop("display", None)
+        self._p.set_display(self._i, None)
 
     @property
     def cell(self):
-        return tuple(self._c.cells[self._i])
+        return self._p.device_cell(self._i)
 
     @property
     def offset(self):
         """構築物の重心から見たローカル座標での位置 [x,y,z] (m)。"""
-        R, t = self._c.rigid_fit()
-        p = self._c.pos[8 * self._i:8 * self._i + 8].mean(0)
-        return (R.T @ (p - self._c.center_of_mass())).tolist()
+        return self._p.device_offset(self._i)
 
     # 推進機
     @property
     def throttle(self):
-        return self._d["state"].get("throttle", 0.0)
+        return self._p.device_get(self._i, "throttle", 0.0)
 
     @throttle.setter
     def throttle(self, v):
-        self._d["state"]["throttle"] = float(min(max(v, 0.0), 1.0))
+        self._p.device_set(self._i, "throttle", v)
 
     # バルブ
     @property
     def open(self):
-        return self._d["state"].get("open", True)
+        return self._p.device_get(self._i, "open", True)
 
     @open.setter
     def open(self, v):
-        if bool(v) != self._d["state"].get("open", True):
-            self._d["state"]["open"] = bool(v)
-            self._c.dirty = True
+        self._p.device_set(self._i, "open", v)
 
     # アクチュエーター -------------------------------------------------
-    def _act(self):
-        if self.type != "actuator":
-            raise ValueError(f"{self.name} はアクチュエーターではありません")
-        from . import actuator
-        actuator.init_state(self._d["state"], self._dd["params"])
-        return actuator
-
     def rotate(self, angle, speed=None):
         """出力側を angle 度だけ回す（相対）。speed: 度/秒"""
-        self._act().cmd_rotate(self._c, self._i, angle, speed)
+        self._p.act_rotate(self._i, angle, speed)
 
     def rotate_to(self, angle, speed=None):
         """角度 angle 度まで回す（絶対）。"""
-        self._act().cmd_rotate(self._c, self._i, angle, speed, absolute=True)
+        self._p.act_rotate(self._i, angle, speed, absolute=True)
 
     def extend(self, amount=1.0, speed=None):
         """amount ブロック分押し出す（相対・最大でブロック1つ分）。speed: ブロック/秒"""
-        self._act().cmd_extend(self._c, self._i, amount, speed)
+        self._p.act_extend(self._i, amount, speed)
 
     def retract(self, amount=1.0, speed=None):
         """amount ブロック分引き込む。"""
-        self._act().cmd_retract(self._c, self._i, amount, speed)
+        self._p.act_retract(self._i, amount, speed)
 
     def extend_to(self, position, speed=None):
         """伸び量を position ブロック（0〜1）にする（絶対）。"""
-        self._act().cmd_extend(self._c, self._i, position, speed, absolute=True)
+        self._p.act_extend(self._i, position, speed, absolute=True)
 
     def detach(self):
         """出力面の結合を切り離す。切り離したら True。"""
-        self._act()
-        return self._w.actuator_detach(self._c, self._i) if self._w else False
+        return self._p.act_detach(self._i)
 
     def attach(self):
         """出力面の先のブロックと結合する。結果のメッセージを返す。"""
-        a = self._act()
-        return a.cmd_attach(self._w, self._c, self._i) if self._w else "world がありません"
+        return self._p.act_attach(self._i)
 
     def execute(self):
         """P メニューで設定した動作を実行する。"""
-        a = self._act()
-        return a.execute_preset(self._w, self._c, self._i)
+        return self._p.act_execute(self._i)
 
     @property
     def angle(self):
-        return self._d["state"].get("angle", 0.0)
+        return self._p.device_get(self._i, "angle", 0.0)
 
     @property
     def extension(self):
-        return self._d["state"].get("ext", 0.0)
+        return self._p.device_get(self._i, "ext", 0.0)
 
     @extension.setter
     def extension(self, v):
@@ -193,108 +174,110 @@ class DeviceHandle:
 
     @property
     def attached(self):
-        return self._act().is_attached(self._c, self._i)
+        return self._p.act_attached(self._i)
 
     @property
     def output_angle(self):
         """出力側ブロックの向き（度）。横向きの軸なら真上から測った角度。
         台が傾いても「世界から見た」向きが分かる（姿勢制御に使う）。"""
-        return self._act().output_angle(self._c, self._i, self._w)
+        return self._p.act_output_angle(self._i)
 
     @property
     def busy(self):
-        return self._act().busy(self._d["state"])
+        return self._p.act_busy(self._i)
 
     # 汎用 ON/OFF
     @property
     def enabled(self):
-        return self._d["state"].get("enabled", True)
+        return self._p.device_get(self._i, "enabled", True)
 
     @enabled.setter
     def enabled(self, v):
-        self._d["state"]["enabled"] = bool(v)
+        self._p.device_set(self._i, "enabled", v)
 
     # 読み取り
     @property
     def contents(self):
-        return dict(self._d["state"].get("contents", {}))
+        return dict(self._p.device_get(self._i, "contents", {}) or {})
 
     @property
     def charge(self):
-        return self._d["state"].get("charge", 0.0)
+        return self._p.device_get(self._i, "charge", 0.0)
 
     def __repr__(self):
         return f"<{self.type} '{self.name}'>"
 
 
+def _v(a):
+    return [float(x) for x in a]
+
+
 class ScriptAPI:
-    def __init__(self, world, c, comp_idx):
-        self._w, self._c, self._ci = world, c, comp_idx
-        self.memory = c.devs[comp_idx]["state"].setdefault("memory", {})
+    """スクリプトの tick(api) に渡す api。構築物の中身は Port（control.py）を通してだけ読み書きする。"""
+
+    def __init__(self, world, c, comp_idx, port=None):
+        from .control import Port
+        self._p = port or Port(world, c)
+        self._ci = comp_idx
+        self.memory = self._p.comp_state(comp_idx).setdefault("memory", {})
         self.logs = []
 
     # 状態
-    time = property(lambda s: s._w.time)
-    position = property(lambda s: s._c.center_of_mass().tolist())
-    velocity = property(lambda s: s._c.velocity().tolist())
-    speed = property(lambda s: float(np.linalg.norm(s._c.velocity())))
-    mass = property(lambda s: s._c.total_mass())
+    time = property(lambda s: s._p.time)
+    position = property(lambda s: _v(s._p.pose()[0]))
+    velocity = property(lambda s: _v(s._p.pose()[2]))
+    speed = property(lambda s: float(np.linalg.norm(s._p.pose()[2])))
+    mass = property(lambda s: s._p.mass())
 
     @property
     def up(self):
-        pl = self._w.nearest_planet(self._c.center_of_mass())
-        return pl.up(self._c.center_of_mass()).tolist() if pl else [0, 1, 0]
+        return _v(self._p.up())
 
     @property
     def up_local(self):
         """惑星の上方向を構築物のローカル座標で表したもの（直立なら [0,1,0]）。"""
-        R, _ = self._c.rigid_fit()
-        return (R.T @ np.asarray(self.up)).tolist()
+        R = self._p.pose()[1]
+        return _v(R.T @ self._p.up())
 
     @property
     def velocity_local(self):
-        R, _ = self._c.rigid_fit()
-        return (R.T @ self._c.velocity()).tolist()
+        _, R, v, _ = self._p.pose()
+        return _v(R.T @ v)
 
     @property
     def angular_velocity_local(self):
-        R, _ = self._c.rigid_fit()
-        return (R.T @ self._c.angular_velocity()).tolist()
+        _, R, _, w = self._p.pose()
+        return _v(R.T @ w)
 
     @property
     def altitude(self):
-        com = self._c.center_of_mass()
-        pl = self._w.nearest_planet(com)
-        return float(pl.sdf(com[None])[0]) if pl else float("inf")
+        return self._p.altitude()
 
     @property
     def vertical_speed(self):
-        return float(np.dot(self._c.velocity(), self.up))
+        return float(np.dot(self._p.pose()[2], self._p.up()))
 
     @property
     def power(self):
-        return dict(self._c.status)
+        return self._p.power()
 
     @property
     def input(self):
         """操縦席に座っている間に押されているキーの集合。"""
-        return set(self._w.input_keys) if self._w.seated_in(self._c) else set()
+        return self._p.input_keys()
 
     @property
     def storage(self):
-        return dict(self._c.storage)
+        return self._p.storage()
 
     def orientation(self):
         """構築物の回転行列（行が ローカルX,Y,Z 軸のワールド方向）。"""
-        R, _ = self._c.rigid_fit()
-        return R.T.tolist()
+        return self._p.pose()[1].T.tolist()
 
     def devices(self, type=None, name=None):  # noqa: A002
         out = []
-        for i, d in enumerate(self._c.devs):
-            if not d:
-                continue
-            h = DeviceHandle(self._c, i, self._w)
+        for info in self._p.devices():
+            h = DeviceHandle(self._p, info)
             if type and h.type != type and h.kind != type:
                 continue
             if name and h.name != name:
@@ -312,70 +295,65 @@ class ScriptAPI:
         face: "+X" "-X" "+Y" "-Y" "+Z" "-Z" か "all"（省略時はブロックの向き）
         width: 表示板の幅 m（省略時はブロックの大きさ。大きくすると看板になる）
         color / background: 文字色・背景色 (r,g,b[,a]) 0〜1 または 0〜255"""
-        set_display(self._c.devs[self._ci], text, face, width, color, background)
+        self._p.set_display(self._ci, display_payload(self._p.device_dir(self._ci), text, face, width, color, background))
 
     def clear_display(self):
-        self._c.devs[self._ci]["state"].pop("display", None)
+        self._p.set_display(self._ci, None)
 
     def stop(self):
         """このコンピューターを停止する（表示は残る）。"""
-        self._c.devs[self._ci]["state"]["running"] = False
+        self._p.device_set(self._ci, "running", False)
 
     # --- 惑星・軌道 -----------------------------------------------------
     def planet(self):
         """最寄りの惑星: {"name", "center", "radius", "mu"(重力定数×質量), "surface_gravity"}"""
-        pl = self._w.nearest_planet(self._c.center_of_mass())
-        if pl is None:
-            return None
-        k = float(self._w.settings.get("gravity_scale", 1.0))
-        return {"name": pl.name, "center": pl.center.tolist(), "radius": pl.radius, "mu": pl.gm * k,
-                "surface_gravity": pl.gm * k / pl.radius ** 2}
+        return self._p.planet()
 
     def orbit(self):
         """現在の軌道: {"apoapsis", "periapsis"（地表からの高度 m）, "eccentricity", "period"(秒),
         "orbital_speed"（円軌道に必要な速さ）, "horizontal_speed", "time_to_apoapsis"}"""
-        return self._w.orbit_info(self._c.center_of_mass(), self._c.velocity())
+        return self._p.orbit()
 
     def cavities(self):
-        return [{"cells": n, "pressure_kpa": p} for _, n, p in devices.cavity_report(self._c)]
+        return self._p.cavities()
 
     # --- 無線通信（アンテナが必要） --------------------------------------
     @property
     def antenna(self):
         """この構築物に使えるアンテナ（電力が来ていて ON）があるか。"""
-        from .radio import antenna_info
-        return antenna_info(self._c) is not None
+        return self._p.antenna() is not None
 
     @property
     def antenna_range(self):
         """アンテナの届く距離 m（なければ 0）。"""
-        from .radio import antenna_info
-        a = antenna_info(self._c)
+        a = self._p.antenna()
         return a[0] if a else 0.0
 
     def send(self, channel, data):
         """チャンネル channel に data を送る（届く範囲のアンテナを持つ構築物のコンピューターが受け取れる）。
         data: 数値・文字・True/False/None と、それらのリスト・辞書。"""
-        return self._w.radio.send(self._c, channel, data)
+        return self._p.radio_send(channel, data)
 
     def receive(self, channel):
         """前回呼んだ後にチャンネル channel に届いた情報のリスト（古い順）。
         各要素は {"data": 情報, "from": 送った構築物の名前, "distance": 距離 m, "age": 送ってからの秒数}"""
-        return self._w.radio.receive(self._c, self._c.devs[self._ci]["state"], channel)
+        return self._p.radio_receive(self._ci, channel)
 
     def latest(self, channel, default=None, max_age=1.0):
         """チャンネル channel に届いている一番新しい情報（max_age 秒より古いものや、無いときは default）。
         何度呼んでも同じものが返る（受け取っても消えない）。"""
-        return self._w.radio.latest(self._c, channel, default, max_age)
+        return self._p.radio_latest(channel, default, max_age)
 
     def log(self, *msg):
         text = " ".join(str(m) for m in msg)
         self.logs.append(text)
-        buf = self._c.devs[self._ci]["state"].setdefault("_log", [])
-        buf.append(f"[{self._w.time:.1f}] {text}")
+        st = self._p.comp_state(self._ci)
+        buf = st.setdefault("_log", [])
+        buf.append(f"[{self._p.time:.1f}] {text}")
         del buf[:-50]
-        L.info("[%s] %s", self._c.devs[self._ci]["name"], text)
-        self._w.message(f"[{self._c.devs[self._ci]['name']}] {text}")
+        name = self._p.devices_name(self._ci)
+        L.info("[%s] %s", name, text)
+        self._p.message(f"[{name}] {text}")
 
 
 class ScriptRunner:

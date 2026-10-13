@@ -309,6 +309,10 @@ class Construct:
     def total_mass(self):
         return float(self.mass.sum())
 
+    def voxel_center(self, i):
+        """ブロック i の中心（ワールド座標）。"""
+        return self.pos[8 * i:8 * i + 8].mean(0)
+
     def voxel_centers(self):
         return self.pos.reshape(-1, 8, 3).mean(axis=1)
 
