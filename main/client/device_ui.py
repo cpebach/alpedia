@@ -12,8 +12,6 @@ TYPE_NAMES = {
     "generator": "発電機", "crank": "手回し発電機", "computer": "コンピューター", "actuator": "アクチュエーター",
     "processor": "精錬機・加工機", "seat": "操縦席", "air_vent": "通気口", "antenna": "アンテナ",
 }
-WORDS = ["左", "右", "前", "後", "上", "下", "中央", "メイン", "予備", "主", "副"]
-DIGITS = [str(k) for k in range(1, 10)]
 NAME_LIMIT = 24
 
 
@@ -76,6 +74,22 @@ def update_programs(world, c, old, new):
     return count
 
 
+CODE_FONT_CANDIDATES = [
+    "C:/Windows/Fonts/BIZ-UDGothicR.ttc", "C:/Windows/Fonts/msgothic.ttc",
+    "/System/Library/Fonts/Osaka.ttf",
+]
+
+
+def find_code_font(cfg):
+    """日本語が表示できる等幅フォント（入力欄用）。"""
+    from pathlib import Path
+    custom = cfg.get("graphics", {}).get("code_font")
+    for f in ([custom] if custom else []) + CODE_FONT_CANDIDATES:
+        if f and Path(f).exists():
+            return Path(f)
+    return None
+
+
 class DevicePanel:
     """機器の名前などを設定するメニュー。owner がいれば、その上に重ねて開く（エディタなどから）。"""
 
@@ -106,9 +120,8 @@ class DevicePanel:
         Text(parent=self.root, text="名前", position=(-0.5, 0.25), origin=(-0.5, 0), scale=0.9)
         # 日本語が表示できるフォントで入力欄を作る（等幅の日本語フォントがあればそれを使う）
         from ursina import application
-        from .editor import _find_code_font
         old_mono, old_folder = Text.default_monospace_font, application.fonts_folder
-        code_font = _find_code_font(game.cfg)
+        code_font = find_code_font(game.cfg)
         if code_font:
             application.fonts_folder = code_font.parent
             Text.default_monospace_font = code_font.name
@@ -127,12 +140,6 @@ class DevicePanel:
                        color=col or color.rgb(0.22, 0.32, 0.45), text_size=ts)
             b.on_click = fn
             return b
-        Text(parent=self.root, text="付け足す:", position=(-0.5, 0.18), origin=(-0.5, 0), scale=0.7,
-             color=color.light_gray)
-        for k, wd in enumerate(WORDS):
-            btn(wd, (-0.32 + k * 0.077, 0.18), (lambda s=wd: self.append(s)), w=0.072)
-        for k, dg in enumerate(DIGITS):
-            btn(dg, (-0.32 + k * 0.077, 0.13), (lambda s=dg: self.append(s)), w=0.072)
         btn("既定の名前", (-0.27, 0.07), lambda: self.set_text(self.default_name), w=0.17)
         btn("1文字消す", (-0.09, 0.07), self.backspace, w=0.17)
         btn("全部消す", (0.09, 0.07), lambda: self.set_text(""), w=0.17)
@@ -142,7 +149,7 @@ class DevicePanel:
         Text(parent=self.root, position=(-0.5, -0.17), origin=(-0.5, 0.5), scale=0.62, color=color.light_gray,
              text="同じ名前の機器は、コンピューターからまとめて動きます。\n"
                   "名前を分けると、ブロックの機器選択や api.device(\"名前\") で個別に制御できます。\n"
-                  "（日本語は上のボタンで付け足し、半角英数字はキーボードで入力できます）")
+                  "（名前はキーボードで入力します）")
         btn("OK", (0.2, -0.33), self.ok, w=0.16, col=color.rgb(0.2, 0.5, 0.3), ts=0.8)
         btn("キャンセル", (0.38, -0.33), self.close, w=0.16, col=color.rgb(0.3, 0.3, 0.33), ts=0.8)
 
@@ -169,9 +176,6 @@ class DevicePanel:
         self.field.text_field.cursor.y = 0
         self.field.text_field.render()
         self.field.active = True
-
-    def append(self, s):
-        self.set_text(self.field.text_field.text + s)
 
     def backspace(self):
         self.set_text(self.field.text_field.text[:-1])

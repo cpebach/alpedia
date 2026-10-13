@@ -95,8 +95,6 @@ class World:
         phys = cfg.get("physics", {})
         self.substeps = int(phys.get("substeps", 3))
         self.iters = int(phys.get("iterations", 2))
-        from . import fastphys
-        fastphys.set_enabled(phys.get("fast", True))
 
     # ------------------------------------------------------------------
     # 読み込み・保存
@@ -375,7 +373,7 @@ class World:
         大きな構築物はそれ自体をボクセルごとに並列化するので、先にメインスレッドで1つずつ進める。"""
         from . import fastphys
         workers = self._workers()
-        if not fastphys.AVAILABLE or workers <= 1 or len(cons) < 2:
+        if workers <= 1 or len(cons) < 2:
             return [fn(c) for c in cons]
         out = [None] * len(cons)
         small = []

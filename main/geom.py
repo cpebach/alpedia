@@ -21,7 +21,8 @@ def box_sdf(P, C, A, E):
     if inside.any():
         ax = np.argmax(aqk[inside], axis=1)
         gi = np.zeros((int(inside.sum()), 3))
-        gi[np.arange(len(ax)), ax] = np.sign(qk[inside][np.arange(len(ax)), ax])
+        sg = np.sign(qk[inside][np.arange(len(ax)), ax])
+        gi[np.arange(len(ax)), ax] = np.where(sg == 0, 1.0, sg)     # ちょうど真ん中なら + 側へ
         g[inside] = gi
     g /= np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-12)
     n = np.einsum("ni,nij->nj", g, A[k])

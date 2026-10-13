@@ -116,12 +116,9 @@ def _setup_window_icon():
 
 def create_world(name, template, settings_patch, mods, planet="terra"):
     from ..app import create_empty_world
-    from ..demo import create_demo
     if paths.world_dir(name).exists():
         raise FileExistsError(f"ワールド「{name}」は既にあります")
-    if template == "demo":
-        create_demo(name, planet)
-    elif template == "tutorial":
+    if template == "tutorial":
         from ..tutorial import create_tutorial
         create_tutorial(name)
     else:
@@ -381,8 +378,8 @@ class MainMenu:
                                 scale=(0.34, 0.05), character_limit=32, active=True)
         field.limit_content_to = NAME_CHARS
         y = 0.21
-        self._stepper("テンプレート", y, ["empty", "demo", "tutorial"], "empty",
-                      lambda v: {"empty": "空のワールド", "demo": "デモ（ロケット等あり）",
+        self._stepper("テンプレート", y, ["empty", "tutorial"], "empty",
+                      lambda v: {"empty": "空のワールド",
                                  "tutorial": "チュートリアル（操作〜姿勢制御〜軌道投入）"}[v],
                       lambda v: opts.__setitem__("template", v))
         self._stepper("惑星", y - 0.07, list(PLANETS), "terra",

@@ -38,9 +38,8 @@ def _script_files(devs):
 def export_construct(c, out_dir: Path, name: str, scripts_dir: Path = None):
     out_dir.mkdir(parents=True, exist_ok=True)
     R, t = c.rigid_fit()
-    local = (c.pos - t) @ R  # 構築物ローカル座標へ
     from . import shape
-    mesh = shape.build_mesh(c) if shape.marching_cubes is not None else None
+    mesh = shape.build_mesh(c)
     lines = [f"# Alpedia construct: {c.name}", f"mtllib {name}.mtl", f"o {name}"]
     if mesh is not None:
         # 見た目どおりの丸い形（球＋結合部を埋めた形）で出力
@@ -55,14 +54,7 @@ def export_construct(c, out_dir: Path, name: str, scripts_dir: Path = None):
                 if fm == m:
                     lines.append("f " + " ".join(str(int(k) + 1) for k in f))
     else:
-        used = sorted(set(c.mats[i] for i in c.face_vox)) if len(c.face_vox) else []
-        for v in local:
-            lines.append(f"v {v[0]:.5f} {v[1]:.5f} {v[2]:.5f}")
-        for m in used:
-            lines.append(f"usemtl {m}")
-            for f, vi in zip(c.face_idx, c.face_vox):
-                if c.mats[vi] == m:
-                    lines.append("f " + " ".join(str(int(k) + 1) for k in f))
+        used = []                                 # ブロックが無い
     obj_path = out_dir / f"{name}.obj"
     obj_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     mtl = []

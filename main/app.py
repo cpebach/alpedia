@@ -4,7 +4,7 @@ import time
 
 import numpy as np
 
-from . import paths, log, config, demo
+from . import paths, log, config, content
 
 
 def create_empty_world(name):
@@ -19,15 +19,16 @@ def create_empty_world(name):
     (wdir / "constructs.json").write_text("[]", encoding="utf-8")
     (wdir / "spawn.json").write_text("{}", encoding="utf-8")
     (wdir / "mods.json").write_text(json.dumps({"enabled": []}), encoding="utf-8")
-    (wdir / "scripts" / "README.txt").write_text(demo.SCRIPT_README, encoding="utf-8")
+    (wdir / "scripts" / "README.txt").write_text(content.SCRIPT_README, encoding="utf-8")
     return wdir
 
 
 def prepare_world(name, new=False):
     wdir = paths.world_dir(name)
     if not wdir.exists():
-        if name == "demo" and not new:
-            demo.create_demo(name)
+        if name == "tutorial" and not new:
+            from .tutorial import create_tutorial
+            create_tutorial(name)
         else:
             create_empty_world(name)
     from .world import World
@@ -40,9 +41,6 @@ def _start_warmup(L):
     """物理演算の高速化（numba）のコンパイルを裏で始めておく（初回だけ数十秒かかる。2回目からは保存済みを使う）。"""
     import threading
     from . import fastphys
-    if not fastphys.AVAILABLE:
-        L.info("numba が無いので物理演算の高速化は使いません（pip install numba で有効になります）")
-        return
 
     def run():
         t = time.time()
@@ -50,8 +48,7 @@ def _start_warmup(L):
             fastphys.warmup()
             L.info("物理演算の高速化を準備しました（%.1f 秒）", time.time() - t)
         except Exception:  # noqa: BLE001
-            L.exception("物理演算の高速化の準備に失敗しました（高速化なしで動きます）")
-            fastphys.set_enabled(False)
+            L.exception("物理演算の高速化の準備に失敗しました")
     threading.Thread(target=run, daemon=True, name="numba-warmup").start()
 
 
@@ -66,12 +63,11 @@ def main(args):
         if args.world:
             prepare_world(args.world, getattr(args, "new", False))
         elif not any((d / "world.json").exists() for d in paths.SAVES.iterdir() if d.is_dir()):
-            demo.create_demo("demo")  # 初回はサンプルワールドとチュートリアルを用意
-            from .tutorial import create_tutorial
+            from .tutorial import create_tutorial  # 初回はチュートリアルを用意
             create_tutorial("tutorial")
         run_client(cfg, args.world)
         return
-    name = args.world or cfg["game"].get("default_world", "demo")
+    name = args.world or cfg["game"].get("default_world", "tutorial")
     L.info("Alpedia 起動: ワールド '%s'（ヘッドレス）", name)
     try:
         World = prepare_world(name, getattr(args, "new", False))

@@ -13,7 +13,7 @@ from .construct import Construct
 from .planet import make_planet
 from .registry import Registry
 from .world import default_bodies
-from .demo import SCRIPT_README, HOVER_SCRIPT, _rot_for
+from .content import SCRIPT_README, HOVER_SCRIPT, rot_for
 
 L = log.get("tutorial")
 
@@ -132,7 +132,7 @@ def tick(api):
 CLOCK_SCRIPT = """\"\"\"時計（看板のサンプル）
 
 api.display() でブロックの表面に文字を出せます。
-下の文字を書き換えて Ctrl+R（保存して実行）してみましょう。
+P →「エディタで開く」で、下の文字を書き換えて保存してみましょう（自動で読み込み直します）。
 \"\"\"
 
 
@@ -232,14 +232,15 @@ P：機器の名前を付ける（同じ名前の機器はまとめて動きま�
     (45, """■ コンピューターと看板
 
 コンピューターは Python で構築物を制御できます。
-P：見ているコンピューターのプログラムを表示・編集
+P：見ているコンピューターの画面（実行・停止・エディタで開く）
 E：コンピューターの起動／停止
-Ctrl+S：保存　Ctrl+R：保存して実行
+スクリプトはメモ帳などのエディタで編集し、保存すると
+ゲームが自動で読み込み直します
 
 api.display("文字") でブロックの表面に文字を表示できます。
 この看板も右の時計も display() で表示しています。
-右の時計を P で開いて、文字を書き換えてみましょう。
-（エディタの「ブロックで編集」では、スクラッチのように
+右の時計を P →「エディタで開く」で書き換えてみましょう。
+（画面の「ブロックで編集」では、スクラッチのように
 　ブロックを並べてプログラムを作れます）"""),
 ]
 
@@ -577,7 +578,7 @@ def create_tutorial(name="tutorial"):
     stair = None
     for title, vox, x, z in items:
         base, up = _surface_point(terra, x, z)
-        R = _rot_for(up)
+        R = rot_for(up)
         c = Construct.from_voxels(reg, vox, base, R, size=size, name=title)
         if title.startswith("形の見本 階段"):
             stair = (base, R)

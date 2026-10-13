@@ -195,11 +195,11 @@ class BlockEditor:
             return
         game, c, i = self.game, self.c, self.index
         self.close(force=True)
-        from .editor import ScriptEditor
+        from .script_panel import ScriptPanel
         game.U["mouse"].locked = False
         game.ui_root.enabled = False
-        game.editor = ScriptEditor(game, c, i)
-        game.editor._set_status("ブロックから変換したコードです。ここで保存すると Python モードになります")
+        game.editor = ScriptPanel(game, c, i)
+        game.editor.set_status("ブロックから作ったコードです（「エディタで開く」で見られます。「Python モードにする」で Python として使えます）")
 
     def close(self, force=False):
         if self.dirty and not force and not self.discard_armed:

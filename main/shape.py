@@ -15,10 +15,7 @@ import numpy as np
 
 from .construct import DIR_TUPLES, CORNER_BITS, link_key
 
-try:
-    from skimage.measure import marching_cubes
-except Exception:  # noqa: BLE001
-    marching_cubes = None
+from skimage.measure import marching_cubes
 
 OFFS8 = [tuple(int(x) for x in o) for o in itertools.product((0, 1), repeat=3)]
 _pattern_cache = {}
@@ -192,8 +189,8 @@ def dist_triangles(p, a, b, c):
 # メッシュ（描画・OBJ 出力）
 # ---------------------------------------------------------------------------
 def build_mesh(c, k=None):
-    """形の表面メッシュを作る（格子座標＝セル単位）。skimage が無ければ None。"""
-    if marching_cubes is None or not c.n_vox:
+    """形の表面メッシュを作る（格子座標＝セル単位）。ブロックが無ければ None。"""
+    if not c.n_vox:
         return None
     topo = c.topo
     nprim = len(topo["points"]) + len(topo["segs"]) + len(topo["tris"])
@@ -274,22 +271,13 @@ def _owner(c, p, centers):
 def skin(c, mesh):
     """現在の頂点位置（変形後）。"""
     from . import fastphys
-    if fastphys.AVAILABLE:
-        return fastphys.skin(c.pos, mesh["vidx"], mesh["w"])
-    P = c.pos[mesh["vidx"]]                                    # (M,8,3)
-    return np.einsum("mk,mki->mi", mesh["w"], P)
+    return fastphys.skin(c.pos, mesh["vidx"], mesh["w"])
 
 
 def vertex_normals(v, faces):
     from . import fastphys
-    if fastphys.AVAILABLE and v.dtype == np.float64:
-        return fastphys.vertex_normals(np.ascontiguousarray(v), np.ascontiguousarray(faces, dtype=np.int64))
-    fn = np.cross(v[faces[:, 1]] - v[faces[:, 0]], v[faces[:, 2]] - v[faces[:, 0]])
-    vn = np.zeros_like(v)
-    for k in range(3):
-        for ax in range(3):
-            vn[:, ax] += np.bincount(faces[:, k], weights=fn[:, ax], minlength=len(v))
-    return vn / np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-12)
+    return fastphys.vertex_normals(np.ascontiguousarray(v, dtype=np.float64),
+                                   np.ascontiguousarray(faces, dtype=np.int64))
 
 
 # ---------------------------------------------------------------------------

@@ -1,15 +1,5 @@
-"""初回起動時にサンプルワールド「demo」を作る。"""
-import json
-
+"""ゲーム同梱の文章とサンプル（スクリプトの説明 README・ホバー制御のサンプル）。チュートリアルなどが使う。"""
 import numpy as np
-
-from . import paths, log
-from .construct import Construct
-from .planet import make_planet
-from .registry import Registry
-from .world import default_bodies
-
-L = log.get("demo")
 
 HOVER_SCRIPT = '''"""ホバー制御スクリプト（サンプル）
 
@@ -72,7 +62,8 @@ SCRIPT_README = '''ゲーム内 Python スクリプト
 
 ここ（saves/<ワールド>/scripts/）に .py を置き、コンピューター機器の state.script に
 ファイル名を設定すると、その構築物を制御できます（E キーで起動/停止）。
-ゲーム内ではコンピューターを見て P キーを押すと、このフォルダのスクリプトを表示・編集できます。
+ゲーム内ではコンピューターを見て P キーを押すと、ファイルの選択・実行・停止と「エディタで開く」ができます。
+編集はメモ帳や VS Code などのエディタで行い、保存するとゲームが自動で読み込み直します（実行中でも）。
 コンピューターは電力を使います。電力が無いと停止します。
 
 スクリプトには tick(api) 関数を書きます。一定間隔（既定 0.05 秒）で呼ばれます。
@@ -143,139 +134,10 @@ api.antenna_range           届く距離 m（送る側と受ける側の短い�
 '''
 
 
-def _surface(planet, xz, extra=0.0):
-    p = np.array([xz[0], planet.radius, xz[1]], dtype=np.float64)
-    up = p / np.linalg.norm(p)
-    r = float(planet.surface_radius(up[None])[0])
-    return up * (r + extra)
-
-
-def _rot_for(up):
+def rot_for(up):
+    """上方向 up に立てた回転行列（列が ローカル x, y, z のワールド方向）。"""
     up = up / np.linalg.norm(up)
     fwd = np.cross([1.0, 0, 0], up)
     fwd /= np.linalg.norm(fwd)
     right = np.cross(up, fwd)
     return np.stack([right, up, fwd], axis=1)
-
-
-def build_rocket():
-    V = []
-    S = "aluminum"
-    # 1段目: 四隅に推進機、それ以外は配管
-    for x in range(3):
-        for z in range(3):
-            if (x, z) in ((0, 0), (2, 0), (0, 2), (2, 2)):
-                V.append(((x, 0, z), "steel", {"def": "thruster", "dir": 2, "name": f"推進機{len(V)}"}))
-            else:
-                V.append(((x, 0, z), S, {"def": "pipe", "dir": 2}))
-    # 2〜3段目: 燃料タンク
-    for y in (1, 2):
-        for x in range(3):
-            for z in range(3):
-                V.append(((x, y, z), "steel", {"def": "tank", "dir": 2,
-                                               "state": {"contents": {"fuel": 120.0}}}))
-    # 4段目: 発電機・バッテリー・コンピューター・手回し発電機など
-    top = {(0, 0): {"def": "generator", "dir": 2, "state": {"enabled": False}},
-           (1, 0): {"def": "battery", "dir": 2},
-           (2, 0): {"def": "computer", "dir": 2, "name": "ホバー制御", "state": {"script": "hover.py"}},
-           (0, 1): {"def": "crank", "dir": 2},
-           (1, 1): {"def": "seat", "dir": 2, "name": "操縦席"},
-           (2, 1): {"def": "valve", "dir": 2, "name": "燃料バルブ"},
-           }
-    for x in range(3):
-        for z in range(3):
-            d = top.get((x, z))
-            V.append(((x, 3, z), S if d is None else "steel", d))
-    return V
-
-
-def build_cabin():
-    """4x4x4 の殻（中が 2x2x2 の空洞）＋ 通気口・空気タンク・バッテリー。"""
-    V = []
-    for x in range(4):
-        for y in range(4):
-            for z in range(4):
-                if 1 <= x <= 2 and 1 <= y <= 2 and 1 <= z <= 2:
-                    continue
-                mat = "glass" if (y in (1, 2) and z == 0 and x in (1, 2)) else "steel"
-                V.append(((x, y, z), mat, None))
-    # 壁の一部を機器に
-    def setdev(cell, dev):
-        for k, v in enumerate(V):
-            if v[0] == cell:
-                V[k] = (cell, "steel", dev)
-    setdev((3, 1, 1), {"def": "air_vent", "dir": 1, "name": "通気口"})
-    V.append(((4, 1, 1), "steel", {"def": "tank", "dir": 2, "name": "空気タンク", "state": {"contents": {"air": 50.0}}}))
-    V.append(((4, 0, 1), "steel", {"def": "battery", "dir": 2}))
-    return V
-
-
-def build_tower():
-    V = []
-    for y in range(8):
-        for x in range(2):
-            for z in range(2):
-                V.append(((x, y, z), "wood", None))
-    return V
-
-
-def build_blob(mat, n=3):
-    return [((x, y, z), mat, None) for x in range(n) for y in range(n) for z in range(n)]
-
-
-def pyramid_obj():
-    """インポート例：四角錐の OBJ（素材割当て表だけを付ける）。"""
-    v = [(-2, 0, -2), (2, 0, -2), (2, 0, 2), (-2, 0, 2), (0, 3, 0)]
-    f = [(1, 2, 3), (1, 3, 4), (1, 5, 2), (2, 5, 3), (3, 5, 4), (4, 5, 1)]
-    lines = ["# 四角錐", "o pyramid"] + [f"v {a} {b} {c}" for a, b, c in v]
-    lines += ["usemtl base"] + [f"f {a} {b} {c}" for a, b, c in f[:2]]
-    lines += ["usemtl stone"] + [f"f {a} {b} {c}" for a, b, c in f[2:]]
-    return "\n".join(lines) + "\n"
-
-
-def create_demo(name="demo", planet="terra"):
-    wdir = paths.world_dir(name)
-    if wdir.exists():
-        return wdir
-    L.info("サンプルワールド '%s' を作成します", name)
-    for sub in ("scripts", "exports", "imports"):
-        (wdir / sub).mkdir(parents=True, exist_ok=True)
-    reg = Registry().load()
-    terra = make_planet(reg.get("planets", planet), [0, 0, 0])
-    size = 0.5
-    settings = {
-        "name": name, "creative": True, "voxel_size": size, "gravity_scale": 1.0, "time": 0.0,
-        "cleanup": {"enabled": True, "distance": 1500.0, "seconds": 60.0, "max_vertices": 400, "check_interval": 5.0},
-        "player": "default",
-        "planets": [{"def": planet, "position": [0, 0, 0], "craters": []},
-                    {"def": "luna", "position": [0, 0, 3200], "craters": []}] + default_bodies(planet, False)[1:],
-    }
-    builds = [
-        ("ロケット", build_rocket(), (6, 4)),
-        ("気密キャビン", build_cabin(), (-6, 6)),
-        ("木の塔", build_tower(), (0, 12)),
-        ("水の塊", build_blob("water", 3), (8, 12)),
-        ("粘土の塊", build_blob("clay", 3), (-8, 12)),
-    ]
-    constructs, spawns = [], {}
-    for title, vox, xz in builds:
-        base = _surface(terra, xz, 0.05)
-        R = _rot_for(base)
-        c = Construct.from_voxels(reg, vox, base, R, size=size, name=title)
-        if title == "水の塊":
-            c = Construct.from_voxels(reg, vox, base + R[:, 1] * 4.0, R, size=size, name=title)
-        constructs.append(c.to_dict())
-        spawns[c.id] = c.spawn_dict()
-    (wdir / "world.json").write_text(json.dumps(settings, ensure_ascii=False, indent=1), encoding="utf-8")
-    (wdir / "constructs.json").write_text(json.dumps(constructs, ensure_ascii=False, indent=1), encoding="utf-8")
-    (wdir / "spawn.json").write_text(json.dumps(spawns, ensure_ascii=False, indent=1), encoding="utf-8")
-    (wdir / "mods.json").write_text(json.dumps({"enabled": ["example_mod"]}, ensure_ascii=False, indent=1),
-                                    encoding="utf-8")
-    (wdir / "scripts" / "hover.py").write_text(HOVER_SCRIPT, encoding="utf-8")
-    (wdir / "scripts" / "README.txt").write_text(SCRIPT_README, encoding="utf-8")
-    (wdir / "imports" / "pyramid.obj").write_text(pyramid_obj(), encoding="utf-8")
-    (wdir / "imports" / "pyramid.alp.json").write_text(json.dumps({
-        "format": "alpedia-construct", "version": 1, "name": "ピラミッド", "obj": "pyramid.obj",
-        "voxel_size": 0.5, "scale": 1.0, "materials": {"stone": "rock", "base": "steel"},
-        "default_material": "rock"}, ensure_ascii=False, indent=1), encoding="utf-8")
-    return wdir

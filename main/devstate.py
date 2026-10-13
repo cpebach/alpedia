@@ -99,16 +99,9 @@ def _coerce(kind, v):
     return v
 
 
-def _migrate(dtype, st):
-    """古い保存形式からの読み替え（形が決まる前のセーブ用）。"""
-    if dtype == "actuator" and "target" in st and "ext_target" not in st:
-        st["ext_target"] = st.pop("target")
-
-
 def normalize(dtype, params, state, where=""):
     """状態をこの種類の決まった形にした新しい辞書を返す（元の辞書は変えない）。"""
     st = dict(state or {})
-    _migrate(dtype, st)
     fs = fields(dtype)
     out = {}
     for k, v in st.items():

@@ -191,8 +191,8 @@ class Game:
             from .block_editor import BlockEditor
             self.editor = BlockEditor(self, c, i)
         else:
-            from .editor import ScriptEditor
-            self.editor = ScriptEditor(self, c, i)
+            from .script_panel import ScriptPanel
+            self.editor = ScriptPanel(self, c, i)
 
     def current_item(self):
         it = self.world.player.hotbar[self.sel]
@@ -301,7 +301,6 @@ class Game:
         if self.editor is not None:
             try:
                 destroy(self.editor.root)
-                destroy(self.editor.field)
             except Exception:  # noqa: BLE001
                 pass
             self.editor = None
@@ -460,30 +459,9 @@ class Game:
             self.world.message(f"⚠ 読み込みメニューを開けませんでした: {e}")
 
     # ------------------------------------------------------------------
-    def _test_hook(self):
-        """テスト用：環境変数 ALPEDIA_SHOT=path:frames で画面を保存して終了。"""
-        import os
-        spec = os.environ.get("ALPEDIA_SHOT")
-        if not spec:
-            return
-        path, frames = spec.rsplit(":", 1)
-        self._frames = getattr(self, "_frames", 0) + 1
-        if self._frames == 1 and os.environ.get("ALPEDIA_PITCH"):
-            self.pitch = float(os.environ["ALPEDIA_PITCH"])
-        if self._frames == 1 and os.environ.get("ALPEDIA_TP"):
-            self.third_person = True
-        if self._frames == int(frames):
-            from panda3d.core import Filename
-            self.U["application"].base.win.saveScreenshot(Filename.fromOsSpecific(path))
-            L.info("screenshot %s player %s look %s", path, self.world.player.pos.round(1), self.look_vectors()[3].round(2))
-            for c in self.world.constructs.values():
-                L.info("  %s com %s", c.name, c.center_of_mass().round(1))
-            self.U["application"].quit()
-
     def update(self):
         U = self.U
         w = self.world
-        self._test_hook()
         dt = min(U["utime"].dt, 0.1)
         held = U["held_keys"]
         c = self.cfg["controls"]

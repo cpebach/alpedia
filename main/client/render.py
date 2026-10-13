@@ -110,33 +110,12 @@ class ConstructView:
         self.groups = []   # [(mesh, face_rows, colors(F,3), tex)]
 
     def _rebuild(self):
+        """形のメッシュが作れない（ブロックが無い）とき：何も描かない。"""
         for g in self.groups:
             g["mesh"].remove()
         self.groups = []
-        c = self.c
-        reg = c.reg
-        keys = {}
-        for f, vi in enumerate(c.face_vox):
-            d = c.devs[vi]
-            if d:
-                dd = reg.device(d["def"])
-                col = dd["color"] if dd else [1, 0, 1]
-                tex = dd.get("texture") if dd else None
-            else:
-                m = reg.material(c.mats[vi])
-                col, tex = m["color"], m.get("texture")
-            keys.setdefault(tex, []).append((f, col))
-        for tex, items in keys.items():
-            rows = np.array([f for f, _ in items], dtype=np.int64)
-            cols = np.array([col for _, col in items], dtype=np.float32)
-            mesh = DynamicMesh(self.parent, f"c{c.id}")
-            t = load_texture(self.loader, tex)
-            if t:
-                mesh.np.setTexture(t, 1)
-            self.groups.append({"mesh": mesh, "rows": rows, "cols": cols, "new": True})
-        self.version = c.version
+        self.version = self.c.version
 
-    # --- 球＋結合部を埋めた形（shape.build_mesh）---------------------------
     def _rebuild_blob(self):
         from .. import shape
         for g in self.groups:
@@ -279,10 +258,7 @@ class ConstructView:
     def update(self, origin, highlight_flames=True):
         c = self.c
         if self.version != c.version:
-            from .. import shape
-            if shape.marching_cubes is not None and self._rebuild_blob():
-                pass
-            else:
+            if not self._rebuild_blob():
                 self.blob = None
                 self._rebuild()
             self._baked = None
@@ -296,33 +272,6 @@ class ConstructView:
                     self._set_mats(None)
                 self._update_blob(origin, highlight_flames)
             return
-        if not len(c.face_idx):
-            return
-        P = c.pos[c.face_idx] - origin  # (F,4,3)
-        n = np.cross(P[:, 2] - P[:, 0], P[:, 3] - P[:, 1])
-        n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
-        firing = None
-        if highlight_flames:
-            firing = np.array([(c.devs[v]["state"].get("firing", 0.0) if c.devs[v] else 0.0) for v in c.face_vox])
-        uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
-        for g in self.groups:
-            rows = g["rows"]
-            nf = len(rows)
-            col = shade(n[rows], g["cols"])
-            if firing is not None:
-                fl = firing[rows][:, None]
-                col = col * (1 - fl * 0.6) + np.array([1.0, 0.75, 0.25]) * fl
-            v = np.empty((nf, 4, 12), dtype=np.float32)
-            v[:, :, 0:3] = P[rows]
-            v[:, :, 3:6] = n[rows][:, None, :]
-            v[:, :, 6:9] = col[:, None, :]
-            v[:, :, 9] = 1.0
-            v[:, :, 10:12] = uv[None]
-            if g["new"]:
-                g["mesh"].set(v.reshape(-1, 12), quad_tris(nf))
-                g["new"] = False
-            else:
-                g["mesh"].set(v.reshape(-1, 12))
 
     def remove(self):
         for g in self.groups:
@@ -657,8 +606,7 @@ class CarveView:
     RES = 0.5
 
     def __init__(self, parent, loader, view_range=56.0):
-        from .. import shape
-        self.enabled = shape.marching_cubes is not None
+        self.enabled = True
         self.root = parent.attachNewNode("carve")
         self.mesh = DynamicMesh(self.root, "carve")
         self.loader = loader

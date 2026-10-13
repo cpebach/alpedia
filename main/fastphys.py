@@ -1,6 +1,6 @@
-"""物理演算の重い部分を numba で機械語に変換して高速化する（numba が無ければ使わない）。
+"""物理演算の重い部分を numba で機械語に変換して高速化する（numba は必須）。
 
-- 形合わせ（ボクセル・チャンクごとの最適な回転）、結合、当たり判定の芯の計算、構築物どうしの押し出しを
+- 形合わせ（ボクセルごとの最適な回転）、結合、当たり判定の芯の計算、構築物どうしの押し出しを
   ループのまま書き、numba でコンパイルする。
 - nogil=True なので、別スレッドから呼ぶと GIL を離して複数の CPU コアで同時に動く（world 側で構築物ごとに並列化）。
 - 大きな構築物は parallel=True 版でボクセルごとに複数コアへ分ける。
@@ -8,23 +8,8 @@
 """
 import numpy as np
 
-import os
+from numba import njit, prange
 
-try:
-    if os.environ.get("ALPEDIA_NO_NUMBA"):
-        raise ImportError("disabled")
-    from numba import njit, prange
-    AVAILABLE = True
-except Exception:  # noqa: BLE001
-    AVAILABLE = False
-
-    def njit(*a, **k):
-        def deco(f):
-            return f
-        return deco
-    prange = range
-
-_HAS_NUMBA = AVAILABLE
 PARALLEL_MIN_VOXELS = 256     # これ以上のボクセル数ならボクセルごとに複数コアで計算
 
 
@@ -578,18 +563,8 @@ def art_write(pos, X, R, gv, vg, vl):
             pos[v, i] = X[g, i] + R[g, i, 0] * vl[k, 0] + R[g, i, 1] * vl[k, 1] + R[g, i, 2] * vl[k, 2]
 
 
-def set_enabled(on):
-    """設定で高速化を切り替える（numba が無ければ常に OFF）。"""
-    global AVAILABLE
-    from . import construct
-    AVAILABLE = bool(on) and _HAS_NUMBA
-    construct.FAST = AVAILABLE
-
-
 def warmup():
     """起動時に一度だけ小さなデータで呼んでコンパイルしておく。"""
-    if not AVAILABLE:
-        return
     pos = np.random.rand(16, 3)
     rest = np.random.rand(2, 8, 3)
     sc = np.ones((2, 3))

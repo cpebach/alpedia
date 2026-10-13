@@ -67,7 +67,6 @@ CONTACT_SOFT = 1.0
 
 from . import devstate, fastphys  # noqa: E402
 from .planet import fcross  # noqa: E402
-FAST = fastphys.AVAILABLE    # numba があれば重い部分を機械語で実行する
 
 
 class Construct:
@@ -490,20 +489,7 @@ class Construct:
 
     def contact_cores(self):
         """各頂点に対応する芯の最近点（この点から半径 r が見た目の表面）。"""
-        if FAST:
-            return fastphys.contact_cores(self.pos, self.ctype, self.cidx)
-        from . import shape
-        cen = self.voxel_centers()
-        A, B, C = cen[self.cidx[:, 0]], cen[self.cidx[:, 1]], cen[self.cidx[:, 2]]
-        K = A.copy()
-        K[self.ctype < 0] = np.nan  # 内部の頂点は判定しない
-        m1 = self.ctype == 1
-        if m1.any():
-            _, K[m1] = shape.dist_segments(self.pos[m1], A[m1], B[m1])
-        m2 = self.ctype == 2
-        if m2.any():
-            _, K[m2] = shape.dist_triangles(self.pos[m2], A[m2], B[m2], C[m2])
-        return K
+        return fastphys.contact_cores(self.pos, self.ctype, self.cidx)
 
     def _collide_planet(self, pl, collect=False):
         """地面との当たり判定：頂点ごとに対応する芯の点を、半径 r の球として地面と判定する。
@@ -624,45 +610,15 @@ class Construct:
             self._quat[:, 0] = 1.0
 
     def _shape_match(self):
-        if FAST:
-            self._ensure_lastR()
-            fn = fastphys.shape_match_par if self.n_vox >= fastphys.PARALLEL_MIN_VOXELS and not self._in_pool \
-                else fastphys.shape_match
-            fn(self.pos, self.rest, self.act_scale, self.v_stiff, self._allvox, self._last_R, self._quat)
-            return
-        P = self.pos.reshape(-1, 8, 3)
-        c = P.mean(axis=1, keepdims=True)
-        X = P - c
-        Q = self.rest * self.act_scale[:, None, :]
-        Q = Q - Q.mean(axis=1, keepdims=True)
-        A = np.einsum("nki,nkj->nij", X, Q)
-        U, _, Vt = np.linalg.svd(A)
-        det = np.linalg.det(U @ Vt)
-        U[det < 0, :, 2] *= -1
-        R = U @ Vt
-        goal = c + np.einsum("nij,nkj->nki", R, Q)
-        P += self.v_stiff[:, None, None] * (goal - P)
-        self._last_R = R
+        self._ensure_lastR()
+        fn = fastphys.shape_match_par if self.n_vox >= fastphys.PARALLEL_MIN_VOXELS and not self._in_pool \
+            else fastphys.shape_match
+        fn(self.pos, self.rest, self.act_scale, self.v_stiff, self._allvox, self._last_R, self._quat)
 
     def _solve_joints(self):
         if not len(self.ja):
             return
-        if FAST:
-            fastphys.solve_joints(self.pos, self.ja, self.jb, self.jr, self.jk, self.inv_mass, self.jcount)
-            return
-        pa, pb = self.pos[self.ja], self.pos[self.jb]
-        d = pb - pa
-        L = np.linalg.norm(d, axis=1)
-        C = L - self.jr
-        n = d / np.maximum(L, 1e-9)[:, None]
-        wa, wb = self.inv_mass[self.ja], self.inv_mass[self.jb]
-        s = (C * self.jk / (wa + wb))[:, None] * n
-        nv = len(self.pos)
-        delta = np.zeros((nv, 3))
-        for ax in range(3):
-            delta[:, ax] += np.bincount(self.ja, weights=s[:, ax] * wa, minlength=nv)
-            delta[:, ax] -= np.bincount(self.jb, weights=s[:, ax] * wb, minlength=nv)
-        self.pos += delta / self.jcount[:, None]
+        fastphys.solve_joints(self.pos, self.ja, self.jb, self.jr, self.jk, self.inv_mass, self.jcount)
 
     def _rotor_targets(self, r):
         """回転ジョイント: アクチュエーター出力面の4頂点を軸まわりに回した位置。"""
@@ -1055,10 +1011,7 @@ class Construct:
 
     def _art_write(self):
         a = self.art
-        if FAST:
-            fastphys.art_write(self.pos, a["X"], a["R"], a["gv"], a["vg"], a["vl"])
-        else:
-            self.pos = a["X"][a["vg"]] + np.einsum("nij,nj->ni", a["R"][a["vg"]], a["vl"])
+        fastphys.art_write(self.pos, a["X"], a["R"], a["gv"], a["vg"], a["vl"])
 
     def _art_begin(self, h, gravity_fn, planets):
         a = getattr(self, "art", None)
