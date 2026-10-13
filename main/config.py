@@ -18,9 +18,8 @@ DEFAULTS = {
         "save": "f5", "export": "f9", "import": "f8", "toggle_help": "f1", "inventory": "i", "city_marker": "m", "city_map": "k",
     },
     "physics": {"tick_rate": 60, "substeps": 3, "iterations": 2,
-                # 軽量化：剛体化・遠方のレール・大型構築物のチャンク化
+                # 軽量化：剛体化・遠方のレール
                 "rigid_enabled": True, "rails_enabled": True, "rails_distance": 400.0,
-                "chunk_enabled": True, "chunk_min_voxels": 300,
                 # 高速化：numba で重い計算を機械語にする／構築物ごとの計算に使うスレッド数（0 = 自動）
                 "fast": True, "threads": 0},
     "game": {"default_world": "demo", "language": "ja"},

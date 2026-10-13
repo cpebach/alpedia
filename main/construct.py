@@ -97,8 +97,6 @@ class Construct:
         self.rb_epoch = 0
         self.sleep_epoch = 0
         self._in_pool = False        # 並列実行中（スレッドから呼ばれている）か
-        self.chunk_size = 0          # >0 のときチャンク剛体化（大型構築物）
-        self.chunk_of = np.zeros(0, np.int64)
 
     # ------------------------------------------------------------------
     # 構築
@@ -273,7 +271,6 @@ class Construct:
             self._build_contacts()
         self.version += 1
         self.dirty = True  # 配管・電力・気密の再計算が必要
-        self._setup_chunks(fresh=True)
         self.wake(soft=True)
 
     def wake(self, soft=False):
@@ -367,10 +364,7 @@ class Construct:
         # 地面との接触を反復の中で解くと、接触による局所的なずれを結合が直せる
         near = [pl for pl in planets if self._near_planet(pl)]
         for _ in range(iters):
-            if self.chunk_size:
-                self._shape_match_chunks()
-            else:
-                self._shape_match()
+            self._shape_match()
             self._solve_joints()
             if self.rotors:
                 self._solve_rotors()
@@ -554,19 +548,11 @@ class Construct:
         idx = np.nonzero(near)[0]
         d, g = pl.sdf_grad(K[idx])
         d = d - r
-        if self.mode == "rigid" or self.chunk_size:
+        if self.mode == "rigid":
             # 剛体のまま速くぶつかりそうなら、ぶつかる前にブロックごとの計算に戻す（壊れ方を残すため）
             vn = -np.einsum("ij,ij->i", self.vel[idx], g)
-            lim = self.IMPACT_SPEED if self.mode == "rigid" else self.CHUNK_IMPACT_SPEED
-            coming = (vn > lim) & (d < vn * 0.12 + 0.05)
-            if np.any(coming):
-                if self.mode == "rigid":
-                    self._want_soft = True
-                else:
-                    # チャンク化した大型構築物：ぶつかる所のチャンクだけブロックごとに戻す
-                    vox = np.unique(idx[coming] // 8)
-                    ch = self.chunk_of[vox]
-                    self._pending_dissolve = getattr(self, "_pending_dissolve", set()) | set(ch[ch >= 0].tolist())
+            if np.any((vn > self.IMPACT_SPEED) & (d < vn * 0.12 + 0.05)):
+                self._want_soft = True
         hit = d < 0
         if not hit.any():
             return
@@ -637,33 +623,7 @@ class Construct:
             return False
         self.vel = (self.pos - self._prev) / h
         self._plasticity(h)
-        broke = self._check_breaks()
-        if self.chunk_size and not broke:
-            pend = getattr(self, "_pending_dissolve", None)
-            if pend:
-                self._pending_dissolve = set()
-                self._dissolve_chunks(pend)
-            self._check_chunk_strain()
-        return broke
-
-    def _dissolve_chunks(self, chunks):
-        """指定したチャンクをブロックごとの計算に戻す。"""
-        chunks = {int(k) for k in chunks if k >= 0}
-        if not chunks or not self.chunk_size:
-            return
-        self._dissolved = getattr(self, "_dissolved", set())
-        for k in chunks:
-            v = np.nonzero(self.chunk_of == k)[0]
-            if len(v):
-                self._dissolved.add(tuple(int(x) for x in self._chunk_key[v[0]]))
-        # 戻したブロックの基準形を今の形に合わせる（急に元の形へ戻ろうとしないように）
-        P8 = self.pos.reshape(-1, 8, 3)
-        F = self.voxel_frames()
-        for k in chunks:
-            for i in np.nonzero(self.chunk_of == k)[0]:
-                P = P8[i] - P8[i].mean(0)
-                self.rest[i] = (P @ F[i].T) / self.act_scale[i]
-        self._setup_chunks(keep_broken=True)
+        return self._check_breaks()
 
     def _ensure_lastR(self):
         if not hasattr(self, "_last_R") or len(self._last_R) != self.n_vox:
@@ -791,8 +751,6 @@ class Construct:
                 and float(w @ w) * ext < self.RIGID_ACC_IN and self.body_acceleration() < self.RIGID_ACC_IN)
 
     def enter_rigid(self):
-        if self.chunk_size or getattr(self, "_dissolved", None):
-            self._setup_chunks()      # 落ち着いたので、戻していたチャンクを作り直す
         x, v, w, I, r = self._rigid_motion()
         self.rb = {"local": r.copy(), "R": np.eye(3), "x": x, "v": v, "w": w, "Ib": I,
                    "ext": float(np.sqrt(np.einsum("ij,ij->i", r, r).max()))}
@@ -1327,152 +1285,6 @@ class Construct:
             return np.eye(3), self._sleep_anchor[1], ("sleep", self.sleep_epoch, self.version)
         return None
 
-    # ------------------------------------------------------------------
-    # 軽量化 3：大型構築物はチャンク（4×4×4 ブロック）ごとの剛体を結合でつなぐ
-    # ------------------------------------------------------------------
-    CHUNK_EDGE = 4
-    CHUNK_IMPACT_SPEED = 4.0  # チャンクのままこの速さで地面に近づいたら、ぶつかる所のチャンクを戻す (m/s)
-    CHUNK_STRAIN = 0.7       # 境目の結合がちぎれる距離のこの割合まで伸びたら、そのチャンクはブロックごとに戻す
-    chunk_min_voxels = 300   # これ以上のブロック数でチャンク化（world が設定で上書き）
-
-    def _restore_joints(self):
-        """チャンク内で省いていた結合を元に戻す。"""
-        if self.chunk_size and getattr(self, "_ja_all", None) is not None:
-            self.ja, self.jb = self._ja_all, self._jb_all
-            self.jr, self.jk, self.jbrk = self._jr_all, self._jk_all, self._jbrk_all
-            self.jkey = self._jkey_all
-            nv = 8 * self.n_vox
-            cnt = np.bincount(self.ja, minlength=nv) + np.bincount(self.jb, minlength=nv)
-            self.jcount = np.maximum(cnt, 1).astype(np.float64)
-        self.chunk_size = 0
-
-    def _setup_chunks(self, keep_broken=False, fresh=False):
-        if not fresh:
-            self._restore_joints()     # 結合はいったん全部に戻してから分け直す
-        n = self.n_vox
-        self.chunk_size = 0
-        self.chunk_of = np.full(n, -1, np.int64)
-        self._chunk_rest = None
-        self._jactive = None
-        if not keep_broken:
-            self._dissolved = set()
-        if n < max(int(self.chunk_min_voxels), 8) or not hasattr(self, "v_stiff"):
-            return
-        cells = np.asarray(self.cells, dtype=np.int64)
-        key = np.floor_divide(cells, self.CHUNK_EDGE)
-        excl = (self.v_stiff < 0.5) | self.v_rebond
-        for r in self.rotors:
-            excl[r["a"]] = True
-            excl[r["b"]] = True
-        for i, d in enumerate(self.devs):
-            if d and (self.reg.device(d["def"]) or {}).get("type") == "actuator":
-                excl[i] = True
-        dissolved = getattr(self, "_dissolved", set()) if keep_broken else set()
-        _, inv = np.unique(key, axis=0, return_inverse=True)
-        inv = inv.ravel()
-        for k in dissolved:
-            excl |= (key == np.asarray(k)).all(1)
-        cid = np.where(excl, -1, inv)
-        # 1ブロックだけのチャンクは普通のブロック扱い
-        ids, cnt = np.unique(cid[cid >= 0], return_counts=True)
-        small = set(ids[cnt < 2].tolist())
-        if small:
-            cid = np.where(np.isin(cid, list(small)), -1, cid)
-        uniq = np.unique(cid[cid >= 0])
-        if not len(uniq):
-            return
-        remap = -np.ones(int(cid.max()) + 1, np.int64)
-        remap[uniq] = np.arange(len(uniq))
-        self.chunk_of = np.where(cid >= 0, remap[np.maximum(cid, 0)], -1)
-        self._chunk_key = key
-        self.chunk_size = self.CHUNK_EDGE
-        self.n_chunks = len(uniq)
-        vox_in = np.nonzero(self.chunk_of >= 0)[0]
-        self._cv = (8 * vox_in[:, None] + np.arange(8)[None]).ravel()          # チャンクに入っている頂点
-        self._cv_chunk = np.repeat(self.chunk_of[vox_in], 8)
-        self._single = np.nonzero(self.chunk_of < 0)[0]
-        # チャンク内の結合は解かない（剛体なので）
-        ca = self.chunk_of[self.ja // 8]
-        cb = self.chunk_of[self.jb // 8]
-        self._jactive = ~((ca >= 0) & (ca == cb))
-        self._ja_all, self._jb_all = self.ja, self.jb
-        self._jr_all, self._jk_all, self._jbrk_all = self.jr, self.jk, self.jbrk
-        self._jkey_all = self.jkey
-        act = self._jactive
-        self.ja, self.jb = self.ja[act], self.jb[act]
-        self.jr, self.jk, self.jbrk = self.jr[act], self.jk[act], self.jbrk[act]
-        self.jkey = [k for k, a in zip(self.jkey, act) if a]
-        nv = 8 * n
-        cnt = np.bincount(self.ja, minlength=nv) + np.bincount(self.jb, minlength=nv)
-        self.jcount = np.maximum(cnt, 1).astype(np.float64)
-
-    def _chunk_rest_shape(self):
-        """チャンクの基準形（作った時点の形をそのまま使う：それまでの変形も残る）。"""
-        P = self.pos[self._cv]
-        cc = self._cv_chunk
-        C = self.n_chunks
-        cnt = np.bincount(cc, minlength=C).astype(float)
-        cen = np.stack([np.bincount(cc, weights=P[:, k], minlength=C) for k in range(3)], 1) / cnt[:, None]
-        self._chunk_rest = P - cen[cc]
-
-    def _shape_match_chunks(self):
-        if self._chunk_rest is None:
-            self._chunk_rest_shape()
-        self._ensure_lastR()
-        if FAST:
-            if len(self._single):
-                fastphys.shape_match(self.pos, self.rest, self.act_scale, self.v_stiff, self._single, self._last_R,
-                                     self._quat)
-            fastphys.shape_match_chunks(self.pos, self._cv, self._cv_chunk, self._chunk_rest, self.n_chunks)
-            return
-        # チャンクに入っていないブロックは今までどおり
-        if len(self._single):
-            sub = self._single
-            P = self.pos.reshape(-1, 8, 3)[sub]
-            c = P.mean(axis=1, keepdims=True)
-            X = P - c
-            Q = self.rest[sub] * self.act_scale[sub][:, None, :]
-            Q = Q - Q.mean(axis=1, keepdims=True)
-            A = np.einsum("nki,nkj->nij", X, Q)
-            U, _, Vt = np.linalg.svd(A)
-            det = np.linalg.det(U @ Vt)
-            U[det < 0, :, 2] *= -1
-            R = U @ Vt
-            goal = c + np.einsum("nij,nkj->nki", R, Q)
-            P += self.v_stiff[sub][:, None, None] * (goal - P)
-            self.pos.reshape(-1, 8, 3)[sub] = P
-            self._last_R[sub] = R
-        # チャンク：まとめて最適な回転を求め、基準形に合わせる
-        cv, cc, Q = self._cv, self._cv_chunk, self._chunk_rest
-        C = self.n_chunks
-        P = self.pos[cv]
-        cnt = np.bincount(cc, minlength=C).astype(float)
-        cen = np.stack([np.bincount(cc, weights=P[:, k], minlength=C) for k in range(3)], 1) / cnt[:, None]
-        X = P - cen[cc]
-        A = np.zeros((C, 3, 3))
-        for i in range(3):
-            for j in range(3):
-                A[:, i, j] = np.bincount(cc, weights=X[:, i] * Q[:, j], minlength=C)
-        U, _, Vt = np.linalg.svd(A)
-        det = np.linalg.det(U @ Vt)
-        U[det < 0, :, 2] *= -1
-        R = U @ Vt
-        self.pos[cv] = cen[cc] + np.einsum("nij,nj->ni", R[cc], Q)
-
-    def _check_chunk_strain(self):
-        """境目の結合が大きく伸びたチャンクは、ブロックごとの計算に戻す（そこで曲がったり折れたりできる）。"""
-        if not len(self.ja) or not self.chunk_size:
-            return
-        L = np.linalg.norm(self.pos[self.jb] - self.pos[self.ja], axis=1) - self.jr
-        hot = L > self.jbrk * self.CHUNK_STRAIN
-        if not hot.any():
-            return
-        vox = np.unique(np.concatenate([self.ja[hot] // 8, self.jb[hot] // 8]))
-        chunks = set(self.chunk_of[vox][self.chunk_of[vox] >= 0].tolist())
-        if chunks:
-            self._dissolve_chunks(chunks)
-
-
     def _plasticity(self, h):
         if not hasattr(self, "_last_R") or not np.any(self.v_plast > 0) or len(self._last_R) != self.n_vox:
             return
@@ -1483,8 +1295,6 @@ class Construct:
         diff = local - self.rest
         strain = np.linalg.norm(diff, axis=2).max(axis=1) / self.size
         over = (strain > self.v_yield) & (self.v_plast > 0)
-        if self.chunk_size:
-            over &= self.chunk_of < 0      # チャンク内は変形しない
         if over.any():
             rate = np.clip(self.v_plast[over] * 20.0 * h, 0, 1)[:, None, None]
             self.rest[over] += diff[over] * rate

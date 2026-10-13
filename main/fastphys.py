@@ -132,37 +132,6 @@ def shape_match_par(pos, rest, act_scale, stiff, vox, lastR, quat):
 # チャンク（かたまり）ごとの形合わせ
 # ---------------------------------------------------------------------------
 @njit(cache=True, nogil=True, fastmath=True)
-def shape_match_chunks(pos, cv, cc, Q, n_chunks):
-    cen = np.zeros((n_chunks, 3))
-    cnt = np.zeros(n_chunks)
-    for t in range(cv.shape[0]):
-        k = cc[t]
-        cnt[k] += 1
-        for a in range(3):
-            cen[k, a] += pos[cv[t], a]
-    for k in range(n_chunks):
-        for a in range(3):
-            cen[k, a] /= max(cnt[k], 1.0)
-    A = np.zeros((n_chunks, 3, 3))
-    for t in range(cv.shape[0]):
-        k = cc[t]
-        for a in range(3):
-            x = pos[cv[t], a] - cen[k, a]
-            for b in range(3):
-                A[k, a, b] += x * Q[t, b]
-    R = np.empty((n_chunks, 3, 3))
-    for k in range(n_chunks):
-        R[k] = _polar(A[k])
-    for t in range(cv.shape[0]):
-        k = cc[t]
-        for a in range(3):
-            pos[cv[t], a] = cen[k, a] + R[k, a, 0] * Q[t, 0] + R[k, a, 1] * Q[t, 1] + R[k, a, 2] * Q[t, 2]
-
-
-# ---------------------------------------------------------------------------
-# 結合（頂点どうしの距離）
-# ---------------------------------------------------------------------------
-@njit(cache=True, nogil=True, fastmath=True)
 def solve_joints(pos, ja, jb, jr, jk, inv_mass, jcount):
     nv = pos.shape[0]
     delta = np.zeros((nv, 3))
@@ -631,7 +600,6 @@ def warmup():
     qq[:, 0] = 1
     shape_match(pos, rest, sc, st, vox, lr, qq)
     shape_match_par(pos, rest, sc, st, vox, lr, qq)
-    shape_match_chunks(pos, np.arange(16, dtype=np.int64), np.zeros(16, np.int64), np.random.rand(16, 3), 1)
     ja = np.array([0, 1], np.int64)
     jb = np.array([8, 9], np.int64)
     solve_joints(pos, ja, jb, np.zeros(2), np.ones(2), np.ones(16), np.ones(16))

@@ -94,8 +94,6 @@ class World:
         self.iters = int(phys.get("iterations", 2))
         from . import fastphys
         fastphys.set_enabled(phys.get("fast", True))
-        Construct.chunk_min_voxels = int(phys.get("chunk_min_voxels", 300)) if phys.get("chunk_enabled", True) \
-            else 10 ** 9
 
     # ------------------------------------------------------------------
     # 読み込み・保存
