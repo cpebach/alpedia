@@ -17,7 +17,7 @@ from collections import deque
 import numpy as np
 from scipy.spatial import cKDTree
 
-from . import paths, log, devices, objio
+from . import paths, log, devices, objio, savefmt
 from .construct import Construct, DIRS, REST_UNIT, link_key
 from .planet import make_planet
 from .player import Player
@@ -107,6 +107,9 @@ class World:
         for sub in ("scripts", "exports", "imports"):
             (self.dir / sub).mkdir(exist_ok=True)
         s = _read_json(self.dir / "world.json", {})
+        extra = [k for a in self.addons for k in a.settings_keys]
+        for msg in savefmt.check_world(s, extra):
+            L.warning("保存形式: %s", msg)
         self.settings = {**DEFAULT_SETTINGS, **s}
         self.settings["cleanup"] = {**DEFAULT_SETTINGS["cleanup"], **s.get("cleanup", {})}
         self.time = float(self.settings.get("time", 0.0))
@@ -126,6 +129,8 @@ class World:
             self.planets.append(p)
         cons = _read_json(self.dir / "constructs.json", [])
         spawn = _read_json(self.dir / "spawn.json", {})
+        for msg in [m for cd in cons for m in savefmt.check_construct(cd)] + savefmt.check_spawn(spawn):
+            L.warning("保存形式: %s", msg)
         for cd in cons:
             try:
                 c = Construct.from_dict(self.registry, cd, spawn.get(cd["id"], {}))
@@ -137,6 +142,8 @@ class World:
         self.player = Player(pdef, self._default_spawn())
         pj = _read_json(self.dir / "player.json", None)
         if pj:
+            for msg in savefmt.check_player(pj):
+                L.warning("保存形式: %s", msg)
             self.player.load_dict(pj)
         self._give_starter_kit()
         for a in self.addons:
@@ -156,6 +163,7 @@ class World:
 
     def save(self):
         self.settings["time"] = self.time
+        self.settings["format"] = savefmt.FORMAT
         for a in self.addons:
             a.on_save(self)
         self.settings["planets"] = [

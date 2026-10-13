@@ -74,7 +74,7 @@ def export_construct(c, out_dir: Path, name: str, scripts_dir: Path = None):
         "format": "alpedia-construct", "version": 1, "name": c.name, "obj": f"{name}.obj",
         "voxel_size": c.size, "scale": 1.0,
         "materials": {m: m for m in used}, "default_material": used[0] if used else "steel",
-        "voxels": [[cl[0], cl[1], cl[2], m, _clean_dev(d)] for cl, m, d in zip(c.cells, c.mats, c.devs)],
+        "voxels": [[cl[0], cl[1], cl[2], m, _clean_dev(d, c.reg)] for cl, m, d in zip(c.cells, c.mats, c.devs)],
         "links": [[list(a), list(b)] for a, b in sorted(c.links)],
         "storage": c.storage,
     }

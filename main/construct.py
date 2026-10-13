@@ -48,11 +48,14 @@ def dir_index(delta):
         return -1
 
 
-def _clean_dev(d):
+def _clean_dev(d, reg=None):
+    """保存する形の機器の情報（計算中だけの項目を除く）。"""
     if not d:
         return None
-    return {"def": d["def"], "dir": d["dir"], "name": d["name"],
-            "state": {k: v for k, v in d["state"].items() if not k.startswith("_")}}
+    dd = reg.device(d["def"]) if reg is not None else None
+    st = devstate.to_saved(dd["type"], d["state"]) if dd else \
+        {k: v for k, v in d["state"].items() if not k.startswith("_")}
+    return {"def": d["def"], "dir": d["dir"], "name": d["name"], "state": st}
 
 
 def link_key(a, b):
@@ -62,7 +65,7 @@ def link_key(a, b):
 
 CONTACT_SOFT = 1.0
 
-from . import fastphys  # noqa: E402
+from . import devstate, fastphys  # noqa: E402
 from .planet import fcross  # noqa: E402
 FAST = fastphys.AVAILABLE    # numba があれば重い部分を機械語で実行する
 
@@ -138,36 +141,14 @@ class Construct:
         return c
 
     def _init_device(self, dev):
+        """機器の情報を決まった形にする（状態は devstate の表のとおりにそろえる）。"""
         dd = self.reg.device(dev["def"])
-        out = {"def": dev["def"], "dir": int(dev.get("dir", 2)), "name": dev.get("name") or (dd["name"] if dd else dev["def"]),
-               "state": dict(dev.get("state", {}))}
+        out = {"def": dev["def"], "dir": int(dev.get("dir", 2)), "name": dev.get("name") or (dd["name"] if dd else dev["def"])}
         if dd:
-            p = dd["params"]
-            st = out["state"]
-            t = dd["type"]
-            if t == "tank":
-                st.setdefault("contents", dict(p.get("contents", {})))
-            elif t == "battery":
-                st.setdefault("charge", float(p.get("charge", 0)))
-            elif t == "valve":
-                st.setdefault("open", bool(p.get("open", True)))
-            elif t in ("thruster",):
-                st.setdefault("throttle", 0.0)
-            elif t == "actuator":
-                from .actuator import init_state
-                init_state(st, p)
-            elif t == "computer":
-                st.setdefault("script", p.get("script", ""))
-                st.setdefault("running", False)
-                st.setdefault("memory", {})
-            elif t == "processor":
-                st.setdefault("progress", 0.0)
-                st.setdefault("enabled", True)
-            elif t == "air_vent":
-                st.setdefault("mode", p.get("mode", "fill"))
-                st.setdefault("enabled", True)
-            elif t in ("generator", "antenna"):
-                st.setdefault("enabled", True)
+            out["state"] = devstate.normalize(dd["type"], dd.get("params", {}), dev.get("state"),
+                                              where=f"（{self.name}/{out['name']}）")
+        else:
+            out["state"] = dict(dev.get("state") or {})      # 定義が無い（MOD を外した）：そのまま残す
         return out
 
     def rebuild(self):
@@ -1583,7 +1564,7 @@ class Construct:
     def to_dict(self):
         return {
             "id": self.id, "name": self.name, "voxel_size": self.size,
-            "voxels": [[c[0], c[1], c[2], m, _clean_dev(d)] for c, m, d in zip(self.cells, self.mats, self.devs)],
+            "voxels": [[c[0], c[1], c[2], m, _clean_dev(d, self.reg)] for c, m, d in zip(self.cells, self.mats, self.devs)],
             "links": [[list(a), list(b)] for a, b in sorted(self.links)],
             "extras": [[list(k[0]), list(k[1]), v] for k, v in self.extras.items()],
             "storage": self.storage,

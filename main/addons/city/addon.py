@@ -11,6 +11,7 @@ from ...hooks import Addon
 
 class CityAddon(Addon):
     name = "city"
+    settings_keys = ("cities", "city_state", "economy", "politics")
 
     def __init__(self):
         from .cities import NoCities

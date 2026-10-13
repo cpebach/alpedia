@@ -26,17 +26,9 @@ def is_actuator(c, i):
 
 
 def init_state(st, params):
-    # 旧形式（target）からの移行
-    if "target" in st and "ext_target" not in st:
-        st["ext_target"] = float(st.pop("target"))
-    st.setdefault("ext", 0.0)
-    st.setdefault("ext_target", st["ext"])
-    st.setdefault("ext_speed", float(params.get("speed", 0.5)))
-    st.setdefault("angle", 0.0)
-    st.setdefault("angle_target", st["angle"])
-    st.setdefault("rot_speed", float(params.get("rot_speed", 90.0)))
-    st.setdefault("preset", dict(DEFAULT_PRESET))
-    return st
+    """足りない項目を既定値で埋める（形は devstate の表）。"""
+    from . import devstate
+    return devstate.fill("actuator", params, st)
 
 
 def stroke(c, i):
