@@ -296,7 +296,7 @@ class ImportPanel:
                     if len(vox) > WARN_VOXELS:
                         lines.append(f"※ ボクセルが多いので動きが重くなります（{WARN_VOXELS} 個までがおすすめ）")
                     self.can_place = True
-                    if not self.world.settings.get("creative", True):
+                    if not self.world.creative:
                         cost = self.world.voxels_cost(vox)
                         inv = self.world.player.inventory
                         cost_lines.append("必要な資源（サバイバル）")

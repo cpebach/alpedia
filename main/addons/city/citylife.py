@@ -253,7 +253,7 @@ class Economy:
 
     @property
     def creative(self):
-        return self.world.settings.get("creative", True)
+        return self.world.creative
 
     def credits(self):
         return float(self.world.player.inventory.get(CURRENCY, 0.0))

@@ -335,6 +335,11 @@ class World:
     # ------------------------------------------------------------------
     # 拡張（hooks.Addon）
     # ------------------------------------------------------------------
+    @property
+    def creative(self):
+        """クリエイティブ（資源を使わない）か。False ならサバイバル。"""
+        return bool(self.settings.get("creative", True))
+
     def addon(self, name):
         """名前で拡張を探す（無ければ None）。"""
         return next((a for a in self.addons if a.name == name), None)
@@ -655,7 +660,7 @@ class World:
     # 編集
     # ------------------------------------------------------------------
     def _pay(self, cost):
-        if self.settings.get("creative", True):
+        if self.creative:
             return True
         inv = self.player.inventory
         if any(inv.get(k, 0.0) < v for k, v in cost.items()):
@@ -667,7 +672,7 @@ class World:
         return True
 
     def _refund(self, mat, dev):
-        if self.settings.get("creative", True):
+        if self.creative:
             return
         cost = dict(self.registry.material(mat).get("cost", {}))
         if dev:
@@ -742,7 +747,7 @@ class World:
 
     def _survival_init_device(self, c, i):
         """サバイバルでは置いたばかりのバッテリーは空（置き直しで電気が増えないように）。"""
-        if self.settings.get("creative", True) or i is None or not c.devs[i]:
+        if self.creative or i is None or not c.devs[i]:
             return
         dd = self.registry.device(c.devs[i]["def"])
         if dd and dd["type"] == "battery":
@@ -784,13 +789,13 @@ class World:
         pl = hit["planet"]
         res = pl.resource_at(hit["point"])      # 掘る前の場所で判定（山の硫黄・洞窟のまわりの星鉱石など）
         pl.dig(hit["point"], radius)
-        if not self.settings.get("creative", True):
+        if not self.creative:
             self._gain(res, self.DIG_AMOUNT)
         return True
 
     def collect_water(self, hit):
         """水面をクリックして水をくむ。海や池の水はいくらくんでも減らない。"""
-        if self.settings.get("creative", True):
+        if self.creative:
             return False
         self._gain("water", self.WATER_AMOUNT)
         return True
@@ -805,7 +810,7 @@ class World:
 
     def _give_starter_kit(self):
         p = self.player
-        if self.settings.get("creative", True) or getattr(p, "starter_given", False):
+        if self.creative or getattr(p, "starter_given", False):
             return
         for k, v in self.STARTER_KIT.items():
             p.inventory[k] = max(p.inventory.get(k, 0.0), float(v))
@@ -829,10 +834,10 @@ class World:
                 p.seated = (c.id, c.cells[i])
                 self.message(f"{c.name} の操縦席に座りました（E で降りる）")
                 return
-            if dd and dd["type"] == "tank" and not self.settings.get("creative", True):
+            if dd and dd["type"] == "tank" and not self.creative:
                 self.message(self._fill_tank(d, dd))
                 return
-            if dd and dd["type"] == "tank" and self.settings.get("creative", True):
+            if dd and dd["type"] == "tank" and self.creative:
                 # クリエイティブ: E でタンクの中身を 燃料満タン → 空気満タン → 空 と切り替え
                 cap = float(dd["params"].get("capacity", 0))
                 cont = d["state"].setdefault("contents", {})
@@ -848,7 +853,7 @@ class World:
                     cont["fuel"] = cap
                     self.message(f"{d['name']}: 燃料を満タンにしました（E で空気に）")
                 return
-            if dd and dd["type"] == "processor" and not self.settings.get("creative", True):
+            if dd and dd["type"] == "processor" and not self.creative:
                 # 所持品の原料を入れ、製品を受け取る
                 moved = []
                 for r in dd["params"].get("recipes", []):

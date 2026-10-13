@@ -15,7 +15,8 @@ class _Panel:
         self.game = game
         self.world = game.world
         self.reg = game.world.registry
-        self.eco = game.world.economy
+        self.pack = game.world.addon("city")
+        self.eco = self.pack.economy
         self.city = city
         self.U = dict(Entity=Entity, Text=Text, Button=Button, color=color)
         mouse.locked = False
@@ -216,9 +217,9 @@ class MapPanel(_Panel):
     MX0, MX1, MY0, MY1 = -0.74, 0.02, -0.14, 0.26
 
     def __init__(self, game):
-        cm = game.world.cities
         super().__init__(game, None)
-        self.pol = self.world.politics
+        cm = self.pack.cities
+        self.pol = self.pack.politics
         self.cm = cm
         pl = self.world.nearest_planet(self.world.player.pos)
         self.map_root = self.U["Entity"](parent=self.root)

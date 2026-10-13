@@ -366,11 +366,11 @@ class InventoryPanel:
         if it is None and self.held:
             it = self.held[0]
         lines = item_details(self.reg, it) if it else ["アイテムにマウスを合わせると説明が出ます"]
-        if it and not self.world.settings.get("creative", True):
+        if it and not self.world.creative:
             cost = self.world.item_cost(it)
             if cost:
                 lines.append("費用: " + self.reg.res_text(cost))
-        if not self.world.settings.get("creative", True):
+        if not self.world.creative:
             inv = self.player.inventory
             lines.append("所持資源: " + (self.reg.res_text(inv) or "なし"))
         self.info.text = "\n".join(lines).replace("<", "＜").replace(">", "＞")

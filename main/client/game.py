@@ -21,7 +21,7 @@ HELP = """[操作]  （F1 で表示切替）
 WASD 移動 / Space ジャンプ・上昇 / Ctrl 下降 / F ジェットパック
 マウス 視点 / 左クリック 削除・掘る / 右クリック 設置
 I インベントリ / ホイール・数字キー アイテムバーの選択 / R 向き変更 / N 空中に新しい構築物
-E 機器の操作・操縦席に座る/降りる・街に固定・NPC と話す/取引 / V 三人称 / M 目印（街・自宅） / K マップ
+E 機器の操作・操縦席に座る/降りる・街に固定・NPC と話す/取引 / V 三人称
 P 機器の設定（名前）／プログラム編集／アクチュエーターの動作設定
 F5 保存 / F9 見ている構築物を OBJ 出力 / F8 読み込みメニュー
 Esc 一時停止メニュー（保存・メニューへ戻る・終了）
@@ -84,18 +84,12 @@ class Game:
         self.aim_text = Text(parent=ui, position=(0.02, -0.03), origin=(-0.5, 0.5), scale=0.7, text="")
         self.help_text = Text(parent=ui, position=window.top_right + (-0.01, -0.01), origin=(0.5, 0.5),
                               scale=0.65, text=HELP)
-        # 最寄りの街の目印（画面の外なら端に矢印）
-        self.city_views = {}
-        self.marker_on = True
-        self.marker_mode = "city"
-        self.npc_views = {}
-        self.marker = Entity(parent=ui, enabled=False)
-        Entity(parent=self.marker, model="quad", scale=0.022, rotation_z=45, color=color.rgb(1.0, 0.25, 0.85))
-        Entity(parent=self.marker, model="quad", scale=0.012, rotation_z=45, color=color.rgb(0.1, 0.95, 1.0), z=-0.01)
-        self.marker_text = Text(parent=self.marker, position=(0, -0.02), origin=(0, 0.5), scale=0.7, text="",
-                                color=color.rgb(0.6, 1.0, 1.0))
-        self._marker_t = 0.0
-        self._marker_city = None
+        # 拡張（街パックなど）の画面側
+        from ..addons import client_addons
+        self.addons = client_addons(self)
+        extra = " / ".join(a.help_text for a in self.addons if a.help_text)
+        if extra:
+            self.help_text.text = HELP + extra + "\n"
         # 一時停止メニュー
         self.pause_root = Entity(parent=ui, enabled=False)
         Entity(parent=self.pause_root, model="quad", scale=(3, 2), color=color.rgba(0, 0, 0, 0.55), z=0.1)
@@ -314,12 +308,9 @@ class Game:
         for v in self.views.values():
             v.remove()
         self.views = {}
-        for v in getattr(self, "city_views", {}).values():
-            v.remove()
-        self.city_views = {}
-        for v in getattr(self, "npc_views", {}).values():
-            v.remove()
-        self.npc_views = {}
+        for a in getattr(self, "addons", []):
+            a.destroy()
+        self.addons = []
         for e in (self.driver, self.scene_root, self.ui_root, self.underwater):
             destroy(e)
         self.set_mouse_capture(False)
@@ -414,7 +405,7 @@ class Game:
         elif key == c["rotate"]:
             self.dir_index = (self.dir_index + 1) % 6
         elif key == c["interact"]:
-            if not self._city_interact(self.hit):
+            if not any(a.interact(self.hit) for a in self.addons):
                 w.interact(self.hit)
         elif key == c["jetpack"]:
             w.player.jetpack = not w.player.jetpack
@@ -429,20 +420,10 @@ class Game:
             self.help_text.enabled = not self.help_text.enabled
         elif key == "v":
             self.third_person = not self.third_person
-        elif key == c.get("city_map", "k"):
-            if not w.cities.enabled:
-                w.message("このワールドには街がありません（ワールド設定で ON にできます）")
-            else:
-                from . import city_ui
-                self._open_panel(lambda: city_ui.MapPanel(self))
-        elif key == c.get("city_marker", "m"):
-            # 目印：最寄りの街 → 自宅（あれば）→ なし
-            modes = ["city"] + (["home"] if w.economy.home_id() else []) + ["off"]
-            cur = self.marker_mode if self.marker_mode in modes else "off"
-            self.marker_mode = modes[(modes.index(cur) + 1) % len(modes)]
-            self.marker_on = self.marker_mode != "off"
-            self._marker_city = None
-            w.message("目印: " + {"city": "最寄りの街", "home": "自宅", "off": "なし"}[self.marker_mode])
+        else:
+            for a in self.addons:
+                if a.on_key(key):
+                    break
 
     def _export(self):
         w = self.world
@@ -580,7 +561,8 @@ class Game:
             v.update(origin)
             v.update_decals(origin, origin, decal_dist)
         self._render_displays(origin, far)
-        self._render_cities(origin, far)
+        for a in self.addons:
+            a.update(origin, far)
         for pv in self.planet_views:
             pv.update(origin, w.player.pos)
         npl = w.nearest_planet(w.player.pos)
@@ -600,55 +582,6 @@ class Game:
             self.body.hide()
         self.origin = origin
 
-    def _city_interact(self, h):
-        """街の NPC・家具（カウンター・ベッド・収納箱）を E で使う。使ったら True。"""
-        w = self.world
-        if not h or h["kind"] not in ("npc", "city"):
-            return False
-        from .. import citylife
-        from . import city_ui
-        city = h["city"]
-        survival = not w.settings.get("creative", True)
-        npc = h.get("npc")
-        if h["kind"] == "city":
-            tag = city.parts[h["part"]].get("tag")
-            if not tag:
-                return False
-            if tag[0] == "counter":
-                npc = next((n for n in city.npcs if n["id"] == tag[1]), None)
-                if npc is None or not citylife.npc_alive(city, npc):
-                    return True
-            else:
-                home = next((x for x in city.homes if x["id"] == tag[1]), None)
-                if home is None:
-                    return True
-                if city.state[home["bld"]] >= 2:
-                    w.message("建物が壊れていて使えません")
-                    return True
-                if not w.economy.can_use(home["id"]):
-                    w.message(f"{home['name']} は使えません（不動産屋で買うか借りると使えます）")
-                    return True
-                if tag[0] == "bed":
-                    w.economy.set_home(home["id"])
-                    w.save()
-                    self.marker_mode = "home" if self.marker_mode == "home" else self.marker_mode
-                    w.message(f"{home['name']} で休みました（保存しました）。ここが自宅です（M で自宅の目印）")
-                    return True
-                self._open_panel(lambda: city_ui.StoragePanel(self, city, home))
-                return True
-        if npc is None:
-            return False
-        if getattr(city, "fallen", False):
-            w.message(f"{city.name} は滅びてしまいました")
-            return True
-        if npc["role"] == "trader" and survival:
-            self._open_panel(lambda: city_ui.TradePanel(self, city, npc))
-        elif npc["role"] == "estate" and survival:
-            self._open_panel(lambda: city_ui.EstatePanel(self, city, npc))
-        else:
-            w.message(f"{npc['name']}「{citylife.talk_line(city, npc)}」")
-        return True
-
     def _open_panel(self, make):
         self.set_mouse_capture(False)
         self.ui_root.enabled = False
@@ -663,86 +596,6 @@ class Game:
                 destroy(root)
             self.editor_closed()
             self.world.message(f"⚠ 画面を開けませんでした: {e}")
-
-    def _render_cities(self, origin, far):
-        cm = self.world.cities
-        if not cm.enabled:
-            return
-        g = self.cfg["graphics"]
-        detail = float(g.get("city_detail_distance", 100.0))
-        far_c = min(far, float(g.get("city_view_distance", 2500.0)))
-        for c in cm.cities:
-            v = self.city_views.get(c.id)
-            if v is None:
-                v = self.city_views[c.id] = render.CityView(self.scene_root, c)
-            v.update(origin, origin, far_c, detail)
-            if c.npcs:
-                nv = self.npc_views.get(c.id)
-                if nv is None:
-                    nv = self.npc_views[c.id] = render.NpcView(self.scene_root, c)
-                nv.update(origin, self.world.time)
-        self._update_marker(origin)
-
-    def _update_marker(self, origin):
-        """最寄りの街の方向に目印。画面の外にあるときは画面の端に寄せ、矢印で向きを示す。"""
-        cm = self.world.cities
-        if not self.marker_on or not cm.cities:
-            self.marker.enabled = False
-            return
-        now = _time.time()
-        if now - self._marker_t > 0.5 or self._marker_city is None:
-            self._marker_t = now
-            self._marker_city, _, self._marker_surface = cm.marker_target(origin)
-        c = self._marker_city
-        home = None
-        if self.marker_mode == "home":
-            hid = self.world.economy.home_id()
-            for cc in cm.cities:
-                for h in cc.homes:
-                    if h["id"] == hid:
-                        c, home = cc, h
-        if c is None:
-            self.marker.enabled = False
-            return
-        U = self.U
-        # 街の中心より少し上（地表の街ならビルの高さの辺り）を指す
-        up = c.R[:, 1] if c.kind != "surface" else (c.x - c.host.center) / np.linalg.norm(c.x - c.host.center)
-        target = c.x + up * 15.0
-        if home is not None:
-            target = c.x + c.R @ home["door"] + up * 1.5
-        rel = target - origin
-        dist = float(np.linalg.norm(rel))
-        # カメラの向き（cam.lookAt(look, up) と同じ）で、画面のどこに映るかを計算する
-        # ursina は左手系（y-up-left）なので、画面の右は up × look（look_vectors の right と同じ向き）
-        _, _, cup, look = self.look_vectors()
-        right = np.cross(cup, look)
-        right /= max(np.linalg.norm(right), 1e-9)
-        upo = np.cross(look, right)
-        xc, yc, zc = float(rel @ right), float(rel @ upo), float(rel @ look)
-        fov = U["application"].base.cam.node().getLens().getFov()
-        tx, ty = np.tan(np.radians(fov[0]) / 2), np.tan(np.radians(fov[1]) / 2)
-        aspect = U["window"].aspect_ratio
-        inside = False
-        if zc > 0.1:
-            fx, fy = xc / zc / tx, yc / zc / ty
-            inside = abs(fx) <= 0.95 and abs(fy) <= 0.9
-        dtxt = f"{dist / 1000:.1f} km" if dist >= 1000 else f"{dist:.0f} m"
-        if inside:
-            x, y = fx * aspect / 2, fy * 0.5
-            arrow = ""
-        else:
-            dx, dy = xc, yc
-            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-                dx = 1.0
-            L_ = max((dx * dx + dy * dy) ** 0.5, 1e-9)
-            dx, dy = dx / L_, dy / L_
-            hx, hy = aspect / 2 - 0.12, 0.5 - 0.1
-            k = min(hx / max(abs(dx), 1e-9), hy / max(abs(dy), 1e-9))
-            x, y = dx * k, max(dy * k, -0.33)     # 下はアイテムバーに重ならないように
-            arrow = ("◀ " if dx < 0 else "▶ ") if abs(dx) >= abs(dy) else ("▲ " if dy > 0 else "▼ ")
-        self.marker.position = (x, y, -0.05)
-        self.marker_text.text = f"{arrow}{home['name'] + '（自宅）' if home else c.name}  {dtxt}"
-        self.marker.enabled = True
 
     def _render_displays(self, origin, far):
         """コンピューターの表示（看板）を描画。"""
@@ -803,8 +656,8 @@ class Game:
             d = c.devs[i]
             m = c.reg.material(c.mats[i])
             info = f"{c.name}  [{m['name']}]"
-            if getattr(c, "anchor", None):
-                info += "  ［街に固定中：機器以外のブロックで E を押すと切り離し］"
+            if c.anchor:
+                info += "  ［固定中：機器以外のブロックで E を押すと切り離し］"
             if d:
                 info += f"\n{d['name']} ({d['def']}) 向き {DIR_NAMES[d['dir']]}"
                 same = sum(1 for x in c.devs if x and x["name"] == d["name"])
@@ -815,7 +668,7 @@ class Game:
                 elif (c.reg.device(d["def"]) or {}).get("type") != "actuator":
                     info += "  ［P 名前の設定］"
                 t_ = (c.reg.device(d["def"]) or {}).get("type")
-                surv = not w.settings.get("creative", True)
+                surv = not w.creative
                 if t_ == "tank":
                     info += "  ［E 手持ちの燃料を入れる］" if surv else "  ［E 中身の切り替え］"
                 elif t_ == "processor" and surv:
@@ -848,51 +701,13 @@ class Game:
             fwd, right, up, _ = self.look_vectors()
             self._set_box(self.ghost, g - self.origin, np.stack([right, h["normal"], fwd]), np.full(3, size))
             self.ghost.show()
-            if w.settings.get("creative", True):
+            if w.creative:
                 self.aim_text.text = f"{h['planet'].name} の地面（左クリックで掘る）"
             else:
                 res = w.registry.res_name(h["planet"].resource_at(h["point"]))
                 self.aim_text.text = f"{h['planet'].name} の地面：{res}（左クリックで掘る）"
-        elif h and h["kind"] == "npc":
-            self.highlight.hide()
-            self.ghost.hide()
-            n = h["npc"]
-            from .. import citylife
-            act = {"trader": "取引する", "estate": "部屋を見る", "citizen": "話す"}[n["role"]]
-            if w.settings.get("creative", True) and n["role"] != "citizen":
-                act = "話す（取引はサバイバルだけ）"
-            self.aim_text.text = f"{n['name']}（{citylife.ROLE_NAMES[n['role']]}）［E {act}］"
-        elif h and h["kind"] == "city" and h["city"].parts[h["part"]].get("tag"):
-            self.highlight.hide()
-            self.ghost.hide()
-            tag = h["city"].parts[h["part"]]["tag"]
-            eco = w.economy
-            if tag[0] == "counter":
-                self.aim_text.text = "カウンター［E 取引する］"
-            else:
-                home = next((x for x in h["city"].homes if x["id"] == tag[1]), None)
-                name = home["name"] if home else "部屋"
-                if not eco.can_use(tag[1]):
-                    self.aim_text.text = f"{name} の{'ベッド' if tag[0] == 'bed' else '収納箱'}（不動産屋で買うか借りると使えます）"
-                elif tag[0] == "bed":
-                    self.aim_text.text = f"{name} のベッド［E 休む：保存して、ここを自宅に］"
-                else:
-                    self.aim_text.text = f"{name} の収納箱［E 開く］"
-        elif h and h["kind"] == "city":
-            self.highlight.hide()
-            size = float(w.settings.get("voxel_size", 0.5))
-            g = h["point"] + h["normal"] * size * 0.55
-            fwd, right, up, _ = self.look_vectors()
-            self._set_box(self.ghost, g - self.origin, np.stack([right, h["normal"], fwd]), np.full(3, size))
-            self.ghost.show()
-            city = h["city"]
-            st = int(city.state[city.bld[h["part"]]]) if city.bld[h["part"]] >= 0 else 0
-            kind_ = city.parts[h["part"]]["kind"]
-            what = {"ground": "地面", "stair": "階段"}.get(kind_, "建物")
-            txt = f"{city.name} の{what}" + ("（壊れている）" if st == 1 else "")
-            if city.kind == "orbit":
-                txt += "\n右クリックで置いたブロックは街に固定（推進機で街ごと動かせる）"
-            self.aim_text.text = txt
+        elif h and any(a.aim(h) for a in self.addons):
+            self._addon_aim(h)
         elif h and h["kind"] == "water":
             self.highlight.hide()
             size = float(w.settings.get("voxel_size", 0.5))
@@ -900,11 +715,26 @@ class Game:
             fwd, right, up, _ = self.look_vectors()
             self._set_box(self.ghost, g - self.origin, np.stack([right, h["normal"], fwd]), np.full(3, size))
             self.ghost.show()
-            self.aim_text.text = "水面" + ("" if w.settings.get("creative", True) else "（左クリックで水をくむ：いくらくんでも減りません）")
+            self.aim_text.text = "水面" + ("" if w.creative else "（左クリックで水をくむ：いくらくんでも減りません）")
         else:
             self.highlight.hide()
             self.ghost.hide()
             self.aim_text.text = ""
+
+    def _addon_aim(self, h):
+        """拡張のもの（街の建物・NPC など）を見ている：説明と、置ける面ならブロックの置き場所。"""
+        w = self.world
+        txt, placeable = next(r for r in (a.aim(h) for a in self.addons) if r)
+        self.highlight.hide()
+        if placeable:
+            size = float(w.settings.get("voxel_size", 0.5))
+            g = h["point"] + h["normal"] * size * 0.55
+            fwd, right, up, _ = self.look_vectors()
+            self._set_box(self.ghost, g - self.origin, np.stack([right, h["normal"], fwd]), np.full(3, size))
+            self.ghost.show()
+        else:
+            self.ghost.hide()
+        self.aim_text.text = txt
 
     def _update_hud(self, dt):
         w = self.world
@@ -915,7 +745,7 @@ class Game:
         lines = [f"Alpedia  ワールド: {w.name}  時刻 {w.time:.0f}s",
                  f"{pl.name if pl else '宇宙'}  高度 {alt:.1f} m  速度 {spd:.1f} m/s",
                  f"構築物 {len(w.constructs)}  頂点 {sum(c.n_vert for c in w.constructs.values())}",
-                 f"ジェットパック {'ON' if p.jetpack else 'OFF'}{'' if w.settings.get('creative', True) or not p.jetpack else ('（燃料 %.0f）' % p.inventory.get('fuel', 0.0))}  {'クリエイティブ' if w.settings.get('creative', True) else 'サバイバル'}{'  完全剛体' if w.settings.get('full_rigid') else ''}"]
+                 f"ジェットパック {'ON' if p.jetpack else 'OFF'}{'' if w.creative or not p.jetpack else ('（燃料 %.0f）' % p.inventory.get('fuel', 0.0))}  {'クリエイティブ' if w.creative else 'サバイバル'}{'  完全剛体' if w.settings.get('full_rigid') else ''}"]
         if p.seated:
             c = w.constructs.get(p.seated[0])
             if c:
@@ -926,7 +756,7 @@ class Game:
                     ap = "∞" if o["apoapsis"] == float("inf") else f"{o['apoapsis']:.0f}"
                     pe = f"{o['periapsis']:.0f}" if o["periapsis"] > -o["radius"] * 0.99 else "—"
                     lines.append(f"軌道: 遠点 {ap} m / 近点 {pe} m  水平速度 {o['horizontal_speed']:.1f} / 円軌道 {o['orbital_speed']:.1f} m/s")
-        if not w.settings.get("creative", True) and p.inventory:
+        if not w.creative and p.inventory:
             lines.append("所持: " + w.registry.res_text(p.inventory, ", "))
         self.hud.text = "\n".join(lines)
         self.hotbar_view.refresh()
@@ -943,7 +773,7 @@ class Game:
                 name = dd["name"]
                 extra = f"  向き {DIR_NAMES[self.dir_index]}" if dd.get("directional") else ""
             cost = w.item_cost((kind, id_))
-            cs = "" if w.settings.get("creative", True) or not cost else "  費用 " + w.registry.res_text(cost, ", ")
+            cs = "" if w.creative or not cost else "  費用 " + w.registry.res_text(cost, ", ")
             self.sel_text.text = f"{'素材' if kind == 'material' else '機器'}: {name}{extra}{cs}"
         now = _time.time()
         self.msg_text.text = "\n".join(m for t, m in w.msgs if now - t < 8)

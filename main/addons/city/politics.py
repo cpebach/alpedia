@@ -57,7 +57,7 @@ class Politics:
     # --- 基本 ---------------------------------------------------------------
     @property
     def active(self):
-        return self.cm.enabled and not self.world.settings.get("creative", True)
+        return self.cm.enabled and not self.world.creative
 
     def st(self, city):
         s = self.cities.get(city.id)

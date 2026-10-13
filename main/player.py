@@ -70,7 +70,7 @@ class Player:
                 return
         # サバイバルではジェットパックに手持ちの燃料が要る（噴かしている間だけ減る）
         flying = self.jetpack
-        if flying and not world.settings.get("creative", True):
+        if flying and not world.creative:
             use = float(self.defn.get("jetpack_fuel_rate", 1.0)) * dt
             if self.on_ground and float(np.dot(thrust_dir, self.up)) <= 0:
                 flying = self.inventory.get("fuel", 0.0) > 0   # 地上を歩いているだけなら減らない
