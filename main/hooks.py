@@ -1,8 +1,8 @@
-"""コアに機能を足す口（拡張＝アドオン）。
+"""コアに機能を足す口（MOD のプログラム）。
 
-コア（ワールド・構築物・物理）は、街・経済などの具体的な中身を知らない。
-拡張は Addon を継承し、必要な口だけを上書きして World に登録する（World(name, cfg, addons=[...])、
-または World.default_addons に足す。ゲームでは main/addons/__init__.py の install() が登録する）。
+コア（ワールド・構築物・物理）は、街・経済・資源のルールなどの具体的な中身を知らない。
+MOD のプログラム（mods/<MOD名>/code/、modcode.py を参照）は Addon を継承し、必要な口だけを上書きする。
+ワールドを読み込むと、そのワールドで選ばれた MOD の Addon が作られる（テストでは World(name, cfg, addons=[...])）。
 
 当たり判定に使う「動くかもしれない物体」（owner）は、次の2つを持つ:
     owner.is_moving() -> bool
@@ -51,3 +51,31 @@ class Addon:
 
     def on_placed(self, world, hit, c):
         """hit（この拡張の raycast の結果）の上に新しい構築物 c を置いた。"""
+
+    def interact_device(self, world, c, i, d, dd):
+        """E で機器を触った（コアの操作より先に呼ばれる）。メッセージを返したら、そこで処理済み。"""
+        return None
+
+    # --- 資源のルール（サバイバルなど） ------------------------------------
+    resource_rules = False      # True の MOD が入っていると「クリエイティブ」ではなくなる（world.creative が False）
+
+    def pay(self, world, cost):
+        """ブロックを置く・読み込む費用 {資源: 量}。払えなければ False（置かない）。"""
+        return True
+
+    def refund(self, world, cost):
+        """ブロックを外したときの返却。"""
+
+    def on_device_placed(self, world, c, i):
+        """プレイヤーが機器 i を置いた。"""
+
+    def on_dig(self, world, hit, resource):
+        """地面を掘った（resource はその場所の資源）。"""
+
+    def on_water(self, world, hit):
+        """水面をクリックした。使ったら True。"""
+        return False
+
+    def jetpack(self, world, player, dt, thrust_dir):
+        """ジェットパックを使えるか：(使えるか, 噴射の向き) を返す。"""
+        return player.jetpack, thrust_dir

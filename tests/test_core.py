@@ -1,8 +1,8 @@
-"""コアだけの自動テスト（画面・街パックなどの拡張を読み込まずに動くことも確かめる）。
+"""コアだけの自動テスト（画面と MOD のプログラムを読み込まずに動くことも確かめる）。
 
     python -m unittest discover -s tests -v      （alpedia フォルダで）
 
-最初に「画面（ursina / panda3d / main.client）と拡張（main.addons）を import したら失敗する」仕掛けを入れてから
+最初に「画面（ursina / panda3d / main.client）と MOD のプログラム（alpedia_mods）を import したら失敗する」仕掛けを入れてから
 コアを読み込むので、コアがそれらに頼っていればここで分かる。セーブは一時フォルダに作る（saves/ には触らない）。
 """
 import importlib.abc
@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-BLOCKED = ("ursina", "panda3d", "direct", "main.client", "main.addons")
+BLOCKED = ("ursina", "panda3d", "direct", "main.client", "alpedia_mods")
 
 
 class _Block(importlib.abc.MetaPathFinder):
@@ -53,7 +53,7 @@ class CoreCase(unittest.TestCase):
     def world(self, addons=(), **settings):
         d = paths.world_dir("t")
         (d / "scripts").mkdir(parents=True, exist_ok=True)
-        s = dict(DEFAULT_SETTINGS, name="t", planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
+        s = dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
         s.update(settings)
         (d / "world.json").write_text(json.dumps(s), encoding="utf-8")
         return World("t", CFG, addons=list(addons)).load()
@@ -217,6 +217,20 @@ class TestFormats(CoreCase):
         self.assertEqual(devstate.check("actuator", st), [])
         st["attached"] = True
         self.assertNotIn("attached", devstate.to_saved("actuator", st))
+
+    def test_old_world_settings_become_mods(self):
+        s, mods, up = savefmt.upgrade_world({"creative": False, "voxel_size": 0.5}, [])
+        self.assertEqual((mods, up, "creative" in s, s["format"]), (["survival", "city"], True, False, 2))
+        s, mods, _ = savefmt.upgrade_world({"creative": True, "cities": False}, ["example_mod"])
+        self.assertEqual(mods, ["example_mod"])
+        self.assertEqual(savefmt.upgrade_world({"format": 2}, ["city"])[1:], (["city"], False))
+
+    def test_creative_without_rule_mods(self):
+        w = self.world()
+        self.assertTrue(w.creative)
+        c = self.put(w, [((0, 0, 0), "steel", {"def": "tank", "dir": 2})])
+        w.interact({"kind": "voxel", "construct": c, "index": 0, "face": 2})
+        self.assertGreater(c.devs[0]["state"]["contents"].get("fuel", 0), 0)   # E で燃料満タン
 
     def test_save_roundtrip(self):
         w = self.world()

@@ -7,11 +7,11 @@ saves/<ワールド名>/ の各ファイルに入れてよい項目と型をこ�
 形式を変えたら FORMAT を上げ、古い形式の読み替えを書く。
 """
 
-FORMAT = 1
+FORMAT = 2     # 2: クリエイティブ／サバイバル・街の ON/OFF を world.json ではなく MOD（mods.json）で決める
 
 # world.json（コアの項目）。拡張（街パックなど）の項目は、拡張の settings_keys で足す
 WORLD_KEYS = {
-    "format": int, "name": str, "creative": bool, "voxel_size": (int, float), "gravity_scale": (int, float),
+    "format": int, "name": str, "voxel_size": (int, float), "gravity_scale": (int, float),
     "cleanup": dict, "player": str, "planets": list, "time": (int, float), "full_rigid": bool, "tutorial": bool,
 }
 CLEANUP_KEYS = {"enabled": bool, "distance": (int, float), "seconds": (int, float), "max_vertices": int,
@@ -30,6 +30,27 @@ SPAWN_KEYS = {"position": list, "rotation": list, "velocity": list, "angular_vel
 # player.json
 PLAYER_KEYS = {"position": list, "velocity": list, "inventory": dict, "seated": (list, type(None)), "jetpack": bool,
                "def": str, "starter_given": bool, "credits_given": bool, "hotbar": (list, type(None))}
+
+
+LEGACY_WORLD_KEYS = ("creative", "cities")      # 形式 1 までの項目（読み込み時に MOD に読み替える）
+
+
+def upgrade_world(settings, mods):
+    """形式 1 までのワールド：world.json の creative / cities を MOD に読み替える。
+    settings（world.json の中身そのまま）から古い項目を取り除き、(settings, mods, 読み替えたか) を返す。"""
+    s = dict(settings)
+    mods = list(mods)
+    if int(s.get("format", 0) or 0) >= 2:
+        return s, mods, False
+    add = []
+    if s.get("creative", True) is False:
+        add.append("survival")
+    if s.get("cities", True):                    # 形式 1 までは、項目が無ければ街あり
+        add.append("city")
+    for k in LEGACY_WORLD_KEYS:
+        s.pop(k, None)
+    s["format"] = FORMAT
+    return s, mods + [m for m in add if m not in mods], True
 
 
 def _keys(d, spec, where, required=(), extra=()):

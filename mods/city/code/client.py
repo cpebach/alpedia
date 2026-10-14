@@ -3,7 +3,7 @@ import time as _time
 
 import numpy as np
 
-from ...client.addon_hooks import ClientAddon
+from main.client.addon_hooks import ClientAddon
 from . import citylife
 
 
@@ -45,7 +45,7 @@ class CityClient(ClientAddon):
         w = self.world
         if key == c.get("city_map", "k"):
             if not self.pack.enabled:
-                w.message("このワールドには街がありません（ワールド設定で ON にできます）")
+                w.message("このワールドには街がありません")
             else:
                 from . import ui
                 self.game._open_panel(lambda: ui.MapPanel(self.game))

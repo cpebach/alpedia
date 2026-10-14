@@ -27,7 +27,6 @@ from .scripting import ScriptRunner
 L = log.get("world")
 
 DEFAULT_SETTINGS = {
-    "creative": True,
     "voxel_size": 0.5,
     "gravity_scale": 1.0,
     "cleanup": {"enabled": True, "distance": 1500.0, "seconds": 60.0, "max_vertices": 400,
@@ -74,10 +73,6 @@ def _write_json(path, data):
 
 
 class World:
-    # 拡張（hooks.Addon）を作る関数のリスト。addons を渡さずに作ったワールドはこれを使う
-    # （ゲームでは main/addons/__init__.py の install() が街パックなどを登録する）
-    default_addons = []
-
     def __init__(self, name, cfg, addons=None):
         self.name = name
         self.cfg = cfg
@@ -90,7 +85,10 @@ class World:
         self.runner = ScriptRunner(self)
         from .radio import RadioBus
         self.radio = RadioBus(self)
-        self.addons = list(addons) if addons is not None else [make() for make in self.default_addons]
+        # 拡張（MOD のプログラム）。渡さなければ、読み込み時にこのワールドの MOD から作る
+        self._given_addons = None if addons is None else list(addons)
+        self.addons = list(addons or [])
+        self.mods = []
         self._timers = {"rebond": 0.0, "cleanup": 0.0}
         phys = cfg.get("physics", {})
         self.substeps = int(phys.get("substeps", 3))
@@ -105,16 +103,23 @@ class World:
         for sub in ("scripts", "exports", "imports"):
             (self.dir / sub).mkdir(exist_ok=True)
         s = _read_json(self.dir / "world.json", {})
+        mods = _read_json(self.dir / "mods.json", {"enabled": []}).get("enabled", [])
+        s, mods, upgraded = savefmt.upgrade_world(s, mods)
+        if upgraded:
+            L.info("古い形式のワールド：クリエイティブ／街の設定を MOD に読み替えました: %s", mods)
+        self.mods = list(mods)
+        self.registry = Registry().load(mods)
+        if self._given_addons is None:
+            from . import modcode
+            self.addons = modcode.world_addons(self.registry.loaded_mods, self.registry.errors)
+        for err in self.registry.errors:
+            self.message("⚠ " + err)
         extra = [k for a in self.addons for k in a.settings_keys]
         for msg in savefmt.check_world(s, extra):
             L.warning("保存形式: %s", msg)
         self.settings = {**DEFAULT_SETTINGS, **s}
         self.settings["cleanup"] = {**DEFAULT_SETTINGS["cleanup"], **s.get("cleanup", {})}
         self.time = float(self.settings.get("time", 0.0))
-        mods = _read_json(self.dir / "mods.json", {"enabled": []}).get("enabled", [])
-        self.registry = Registry().load(mods)
-        for err in self.registry.errors:
-            self.message("⚠ " + err)
         self.planets = []
         for pd in self.settings["planets"]:
             base = self.registry.get("planets", pd["def"])
@@ -143,7 +148,6 @@ class World:
             for msg in savefmt.check_player(pj):
                 L.warning("保存形式: %s", msg)
             self.player.load_dict(pj)
-        self._give_starter_kit()
         for a in self.addons:
             a.on_load(self)
         L.info("ワールド '%s' を読み込み: 構築物 %d, 惑星 %d, MOD %s", self.name, len(self.constructs),
@@ -171,8 +175,7 @@ class World:
         _write_json(self.dir / "constructs.json", [c.to_dict() for c in self.constructs.values()])
         _write_json(self.dir / "spawn.json", {c.id: c.spawn_dict() for c in self.constructs.values()})
         _write_json(self.dir / "player.json", self.player.to_dict())
-        if not (self.dir / "mods.json").exists():
-            _write_json(self.dir / "mods.json", {"enabled": []})
+        _write_json(self.dir / "mods.json", {"enabled": list(self.mods)})
         L.info("保存しました: %s", self.dir)
         self.message("保存しました")
 
@@ -343,8 +346,8 @@ class World:
     # ------------------------------------------------------------------
     @property
     def creative(self):
-        """クリエイティブ（資源を使わない）か。False ならサバイバル。"""
-        return bool(self.settings.get("creative", True))
+        """クリエイティブ（資源を使わない）か。資源のルールを持つ MOD（サバイバルなど）が入っていれば False。"""
+        return not any(a.resource_rules for a in self.addons)
 
     def addon(self, name):
         """名前で拡張を探す（無ければ None）。"""
@@ -665,28 +668,19 @@ class World:
     # ------------------------------------------------------------------
     # 編集
     # ------------------------------------------------------------------
-    def _pay(self, cost):
-        if self.creative:
-            return True
-        inv = self.player.inventory
-        if any(inv.get(k, 0.0) < v for k, v in cost.items()):
-            short = {k: v - inv.get(k, 0.0) for k, v in cost.items() if inv.get(k, 0.0) < v}
-            self.message("資源が足りません（不足: " + self.registry.res_text(short, ", ") + "）")
-            return False
-        for k, v in cost.items():
-            inv[k] -= v
-        return True
+    def pay(self, cost):
+        """置く・読み込む費用を払う（資源のルールを持つ MOD が決める。払えなければ False）。"""
+        return all(a.pay(self, dict(cost)) for a in self.addons)
 
-    def _refund(self, mat, dev):
-        if self.creative:
+    def refund(self, cost):
+        for a in self.addons:
+            a.refund(self, dict(cost))
+
+    def _device_placed(self, c, i):
+        if i is None or not c.devs[i]:
             return
-        cost = dict(self.registry.material(mat).get("cost", {}))
-        if dev:
-            dd = self.registry.device(dev["def"])
-            if dd:
-                cost = dict(dd.get("cost", {}))
-        for k, v in cost.items():
-            self.player.inventory[k] = self.player.inventory.get(k, 0.0) + v
+        for a in self.addons:
+            a.on_device_placed(self, c, i)
 
     def item_cost(self, item):
         kind, id_ = item
@@ -716,10 +710,10 @@ class World:
             verts = ctr + (REST_UNIT * c.size) @ F
             if self._blocked(ctr, c.size):
                 return False
-            if not self._pay(self.item_cost(item)):
+            if not self.pay(self.item_cost(item)):
                 return False
             c.add_voxel(tuple(cell), mat, dev, verts)
-            self._survival_init_device(c, c.index.get(tuple(cell)))
+            self._device_placed(c, c.index.get(tuple(cell)))
             return True
         # 何もない所・地面 → 新しい構築物
         size = float(self.settings.get("voxel_size", 0.5))
@@ -739,25 +733,17 @@ class World:
         fwd /= np.linalg.norm(fwd)
         right = np.cross(up, fwd)
         R = np.stack([right, up, fwd], axis=1)  # ローカルx,y,z → ワールド
-        if not self._pay(self.item_cost(item)):
+        if not self.pay(self.item_cost(item)):
             return False
         origin = ctr - R @ (np.array([0.5, 0.5, 0.5]) * size)
         c = Construct.from_voxels(self.registry, [((0, 0, 0), mat, dev)], origin, R, size=size,
                                   name="構築物")
         self.add_construct(c)
-        self._survival_init_device(c, 0)
+        self._device_placed(c, 0)
         if hit and hit.get("placeable"):
             for a in self.addons:
                 a.on_placed(self, hit, c)
         return True
-
-    def _survival_init_device(self, c, i):
-        """サバイバルでは置いたばかりのバッテリーは空（置き直しで電気が増えないように）。"""
-        if self.creative or i is None or not c.devs[i]:
-            return
-        dd = self.registry.device(c.devs[i]["def"])
-        if dd and dd["type"] == "battery":
-            c.devs[i]["state"]["charge"] = 0.0
 
     def _blocked(self, ctr, size):
         p = self.player
@@ -776,7 +762,7 @@ class World:
         if self.player.seated and self.player.seated[0] == c.id and self.player.seated[1] == c.cells[i]:
             self.player.seated = None
         c.remove_voxels([i])
-        self._refund(mat, dev)
+        self.refund(self.item_cost(("device", dev["def"]) if dev else ("material", mat)))
         if not c.n_vox:
             del self.constructs[c.id]
         else:
@@ -784,44 +770,26 @@ class World:
                 self.add_construct(part)
         return True
 
-    DIG_AMOUNT = 20.0
-    WATER_AMOUNT = 20.0
-
     def dig(self, hit, radius=0.8):
+        """左クリック：地面を掘る（資源は MOD が受け取る）。水面は MOD が使えば使う（サバイバルの水くみ）。"""
         if hit and hit["kind"] == "water":
-            return self.collect_water(hit)
+            return any(a.on_water(self, hit) for a in self.addons)
         if not hit or hit["kind"] != "terrain":
             return False
         pl = hit["planet"]
         res = pl.resource_at(hit["point"])      # 掘る前の場所で判定（山の硫黄・洞窟のまわりの星鉱石など）
         pl.dig(hit["point"], radius)
-        if not self.creative:
-            self._gain(res, self.DIG_AMOUNT)
+        for a in self.addons:
+            a.on_dig(self, hit, res)
         return True
 
-    def collect_water(self, hit):
-        """水面をクリックして水をくむ。海や池の水はいくらくんでも減らない。"""
-        if self.creative:
-            return False
-        self._gain("water", self.WATER_AMOUNT)
-        return True
-
-    def _gain(self, res, amount):
-        inv = self.player.inventory
-        inv[res] = inv.get(res, 0.0) + amount
-        self.message(f"{self.registry.res_name(res)} +{amount:.0f}（所持 {inv[res]:.0f}）")
-
-    # サバイバルの最初の所持品（詰まないように：精錬機・手回し発電機・太陽光パネル・タンクが作れて、少し飛べる）
-    STARTER_KIT = {"iron": 250, "silica": 40, "parts": 12, "fuel": 60}
-
-    def _give_starter_kit(self):
-        p = self.player
-        if self.creative or getattr(p, "starter_given", False):
-            return
-        for k, v in self.STARTER_KIT.items():
-            p.inventory[k] = max(p.inventory.get(k, 0.0), float(v))
-        p.starter_given = True
-        self.message("サバイバル開始: 最初の資材を受け取りました（I でインベントリ）")
+    def jetpack(self, player, dt, thrust_dir):
+        """ジェットパックを使えるか（燃料などは MOD が決める）：(使えるか, 噴射の向き)"""
+        flying = player.jetpack
+        for a in self.addons:
+            if flying:
+                flying, thrust_dir = a.jetpack(self, player, dt, thrust_dir)
+        return flying, thrust_dir
 
     def interact(self, hit):
         p = self.player
@@ -840,11 +808,13 @@ class World:
                 p.seated = (c.id, c.cells[i])
                 self.message(f"{c.name} の操縦席に座りました（E で降りる）")
                 return
-            if dd and dd["type"] == "tank" and not self.creative:
-                self.message(self._fill_tank(d, dd))
-                return
-            if dd and dd["type"] == "tank" and self.creative:
-                # クリエイティブ: E でタンクの中身を 燃料満タン → 空気満タン → 空 と切り替え
+            for a in self.addons:
+                msg = a.interact_device(self, c, i, d, dd)
+                if msg:
+                    self.message(msg)
+                    return
+            if dd and dd["type"] == "tank":
+                # E でタンクの中身を 燃料満タン → 空気満タン → 空 と切り替え（資源のルールのある MOD では MOD が決める）
                 cap = float(dd["params"].get("capacity", 0))
                 cont = d["state"].setdefault("contents", {})
                 if cont.get("fuel", 0) >= cap * 0.99:
@@ -859,26 +829,6 @@ class World:
                     cont["fuel"] = cap
                     self.message(f"{d['name']}: 燃料を満タンにしました（E で空気に）")
                 return
-            if dd and dd["type"] == "processor" and not self.creative:
-                # 所持品の原料を入れ、製品を受け取る
-                moved = []
-                for r in dd["params"].get("recipes", []):
-                    for k in r.get("in", {}):
-                        amt = p.inventory.pop(k, 0.0)
-                        if amt:
-                            c.storage[k] = c.storage.get(k, 0.0) + amt
-                            moved.append(f"{self.registry.res_name(k)} {amt:.0f} 投入")
-                    for k in r.get("out", {}):
-                        amt = c.storage.pop(k, 0.0)
-                        if amt:
-                            p.inventory[k] = p.inventory.get(k, 0.0) + amt
-                            moved.append(f"{self.registry.res_name(k)} {amt:.0f} 回収")
-                if moved:
-                    st = c.status or {}
-                    hint = "" if (st.get("stored", 0) > 1 or st.get("production", 0) > 0) else \
-                        "（電気がありません：手回し発電機・太陽光パネル・発電機をつなげて）"
-                    self.message(f"{d['name']}: " + ", ".join(moved) + hint)
-                    return
             if dd and dd["type"] == "actuator":
                 from . import actuator
                 self.message(actuator.execute_preset(self, c, i))
@@ -894,23 +844,6 @@ class World:
                 return
         m = self.registry.material(c.mats[i])
         self.message(f"{c.name}: {m['name']} / ボクセル {c.n_vox} / 質量 {c.total_mass()/1000:.1f} t")
-
-    def _fill_tank(self, d, dd):
-        """サバイバル: 手持ちの燃料をタンクに入れる（入りきらない分は手元に残る）。"""
-        p = self.player
-        cap = float(dd["params"].get("capacity", 0))
-        cont = d["state"].setdefault("contents", {})
-        have = p.inventory.get("fuel", 0.0)
-        room = max(0.0, cap - sum(cont.values()))
-        if have <= 0:
-            now = ", ".join(f"{self.registry.res_name(k)} {v:.0f}" for k, v in cont.items() if v) or "空"
-            return f"{d['name']}: {now} / {cap:.0f}（燃料を持っていません。硫黄鉱石や水を精錬機で燃料に）"
-        if room <= 0:
-            return f"{d['name']}: 満タンです"
-        mv = min(have, room)
-        cont["fuel"] = cont.get("fuel", 0.0) + mv
-        p.inventory["fuel"] = have - mv
-        return f"{d['name']}: 燃料 {mv:.0f} を入れました（タンク {sum(cont.values()):.0f}/{cap:.0f}、手持ち {have - mv:.0f}）"
 
     def key_pressed(self, key):
         """操縦席で押されたキー：キー割り当てのあるアクチュエータを切り替える。"""
@@ -954,7 +887,7 @@ class World:
         if not data["voxels"]:
             self.message("ボクセルが0個でした")
             return None
-        if not self._pay(self.voxels_cost(data["voxels"])):
+        if not self.pay(self.voxels_cost(data["voxels"])):
             return None
         size = data["size"]
         cells = np.array([v[0] for v in data["voxels"]], dtype=np.float64)

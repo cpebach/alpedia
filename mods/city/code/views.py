@@ -2,7 +2,7 @@
 import numpy as np
 from panda3d.core import SamplerState, Texture
 
-from ...client.render import DynamicMesh, quad_tris, shade
+from main.client.render import DynamicMesh, quad_tris, shade
 from . import citylife
 
 

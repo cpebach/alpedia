@@ -7,7 +7,7 @@
 """
 import numpy as np
 
-from ... import log
+from main import log
 
 L = log.get("citylife")
 

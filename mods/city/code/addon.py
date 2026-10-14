@@ -5,13 +5,13 @@ client.py の CityClient を通して使う。
 """
 import numpy as np
 
-from ...geom import box_sdf
-from ...hooks import Addon
+from main.geom import box_sdf
+from main.hooks import Addon
 
 
 class CityAddon(Addon):
     name = "city"
-    settings_keys = ("cities", "city_state", "economy", "politics")
+    settings_keys = ("city_state", "economy", "politics")
 
     def __init__(self):
         from .cities import NoCities

@@ -12,8 +12,10 @@ def create_empty_world(name):
     for sub in ("scripts", "exports", "imports"):
         (wdir / sub).mkdir(parents=True, exist_ok=True)
     from .world import DEFAULT_SETTINGS, default_bodies
+    from .savefmt import FORMAT
     s = dict(DEFAULT_SETTINGS)
     s["name"] = name
+    s["format"] = FORMAT
     s["planets"] = default_bodies()
     (wdir / "world.json").write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
     (wdir / "constructs.json").write_text("[]", encoding="utf-8")
@@ -32,8 +34,6 @@ def prepare_world(name, new=False):
         else:
             create_empty_world(name)
     from .world import World
-    from . import addons
-    addons.install()          # 街パックなどの拡張を登録する
     return World
 
 

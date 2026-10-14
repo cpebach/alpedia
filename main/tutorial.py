@@ -527,8 +527,8 @@ def create_tutorial(name="tutorial"):
     terra = make_planet(reg.get("planets", "terra"), [0, 0, 0], override)
     size = 0.5
     settings = {
-        "name": name, "creative": True, "voxel_size": size, "gravity_scale": 1.0, "time": 0.0,
-        "tutorial": True, "cities": False,
+        "name": name, "format": 2, "voxel_size": size, "gravity_scale": 1.0, "time": 0.0,
+        "tutorial": True,
         "cleanup": {"enabled": False, "distance": 5000.0, "seconds": 120.0, "max_vertices": 400, "check_interval": 5.0},
         "player": "default",
         "planets": [{"def": "terra", "position": [0, 0, 0], "craters": [], "override": override},

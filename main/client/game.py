@@ -85,7 +85,7 @@ class Game:
         self.help_text = Text(parent=ui, position=window.top_right + (-0.01, -0.01), origin=(0.5, 0.5),
                               scale=0.65, text=HELP)
         # 拡張（街パックなど）の画面側
-        from ..addons import client_addons
+        from ..modcode import client_addons
         self.addons = client_addons(self)
         extra = " / ".join(a.help_text for a in self.addons if a.help_text)
         if extra:

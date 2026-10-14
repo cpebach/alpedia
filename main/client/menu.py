@@ -23,10 +23,10 @@ def list_worlds():
         wj = d / "world.json"
         if not d.is_dir() or not wj.exists() or d.name.startswith("."):
             continue
-        info = {"name": d.name, "creative": True, "constructs": 0, "mods": [], "mtime": 0.0}
+        info = {"name": d.name, "constructs": 0, "mods": [], "mtime": 0.0}
+        s = {}
         try:
             s = json.loads(wj.read_text(encoding="utf-8"))
-            info["creative"] = s.get("creative", True)
             info["time"] = s.get("time", 0.0)
         except Exception:  # noqa: BLE001
             info["broken"] = True
@@ -38,6 +38,8 @@ def list_worlds():
             info["mods"] = json.loads((d / "mods.json").read_text(encoding="utf-8")).get("enabled", [])
         except Exception:  # noqa: BLE001
             pass
+        from ..savefmt import upgrade_world
+        info["mods"] = upgrade_world(s, info["mods"])[1]      # 古い形式のワールドも MOD で表示
         info["mtime"] = max((f.stat().st_mtime for f in d.glob("*.json")), default=wj.stat().st_mtime)
         out.append(info)
     out.sort(key=lambda x: x["mtime"], reverse=True)
@@ -45,35 +47,42 @@ def list_worlds():
 
 
 def list_mods():
+    """[(MOD名, 表示名)]。本体に入っている MOD（サバイバル・街）を先に並べる。"""
     out = []
     if not paths.MODS.exists():
         return out
     for d in sorted(paths.MODS.iterdir()):
         if d.is_dir() and not d.name.startswith("."):
-            name = d.name
+            name, builtin = d.name, False
             mj = d / "mod.json"
             if mj.exists():
                 try:
-                    name = json.loads(mj.read_text(encoding="utf-8")).get("name", d.name)
+                    meta = json.loads(mj.read_text(encoding="utf-8"))
+                    name, builtin = meta.get("name", d.name), bool(meta.get("builtin"))
                 except Exception:  # noqa: BLE001
                     pass
-            out.append((d.name, name))
-    return out
+            out.append((d.name, name, builtin))
+    out.sort(key=lambda x: (not x[2], x[0] != "survival", x[0]))
+    return [(m, n) for m, n, _ in out]
 
 
 def read_world_settings(name):
     d = paths.world_dir(name)
     from ..world import DEFAULT_SETTINGS
+    from ..savefmt import upgrade_world
     s = json.loads(json.dumps(DEFAULT_SETTINGS))
+    raw = {}
     try:
-        s.update(json.loads((d / "world.json").read_text(encoding="utf-8")))
+        raw = json.loads((d / "world.json").read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         pass
-    s["cleanup"] = {**DEFAULT_SETTINGS["cleanup"], **s.get("cleanup", {})}
     try:
         mods = json.loads((d / "mods.json").read_text(encoding="utf-8")).get("enabled", [])
     except Exception:  # noqa: BLE001
         mods = []
+    raw, mods, _ = upgrade_world(raw, mods)      # 古い形式（creative / cities）は MOD に読み替える
+    s.update(raw)
+    s["cleanup"] = {**DEFAULT_SETTINGS["cleanup"], **s.get("cleanup", {})}
     return s, mods
 
 
@@ -317,7 +326,7 @@ class MainMenu:
             sel = w["name"] == self.selected
             col = U["color"].rgb(0.25, 0.45, 0.65) if sel else U["color"].rgb(0.15, 0.17, 0.22)
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(w["mtime"]))
-            mode = "クリエイティブ" if w["creative"] else "サバイバル"
+            mode = "サバイバル" if "survival" in w["mods"] else "クリエイティブ"
             label = f"{w['name']}    {when}  /  {mode}  /  構築物 {w['constructs']}  /  MOD {len(w['mods'])}"
             if w.get("broken"):
                 label = f"{w['name']}    （world.json が壊れています）"
@@ -370,7 +379,7 @@ class MainMenu:
         k = 1
         while f"world{k}" in names:
             k += 1
-        opts = {"template": "empty", "planet": "terra", "creative": True, "voxel_size": 0.5, "gravity_scale": 1.0,
+        opts = {"template": "empty", "planet": "terra", "voxel_size": 0.5, "gravity_scale": 1.0,
                 "cleanup": True, "mods": set()}
         self._text("新しいワールド", (0, 0.42), 1.8)
         self._text("名前（半角英数字・- _）", (-0.38, 0.3), 0.85, origin=(-0.5, 0))
@@ -387,7 +396,6 @@ class MainMenu:
         self._text("地球型：山・洞窟・海・池がある（チュートリアルは常に球体）", (0.2, y - 0.105), 0.6,
                    col=U["color"].light_gray)
         y -= 0.07
-        self._toggle("クリエイティブ", y - 0.07, True, lambda v: opts.__setitem__("creative", v))
         self._stepper("ボクセルサイズ", y - 0.14, [0.25, 0.5, 1.0, 2.0], 0.5, lambda v: f"{v} m",
                       lambda v: opts.__setitem__("voxel_size", v))
         self._stepper("重力倍率", y - 0.21, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], 1.0, lambda v: f"×{v}",
@@ -403,7 +411,7 @@ class MainMenu:
                 return
             try:
                 create_world(name, opts["template"],
-                             {"creative": opts["creative"], "voxel_size": opts["voxel_size"],
+                             {"voxel_size": opts["voxel_size"],
                               "gravity_scale": opts["gravity_scale"], "cleanup": {"enabled": opts["cleanup"]}},
                              sorted(opts["mods"]) if (opts["template"] == "empty" or opts["mods"]) else None,
                              opts["planet"])
@@ -430,6 +438,8 @@ class MainMenu:
         on_col = U["color"].rgb(0.25, 0.5, 0.35)
         off_col = U["color"].rgb(0.2, 0.2, 0.24)
         self._text("MOD（押して切替）", (-0.38, y), 0.85, origin=(-0.5, 0))
+        self._text("サバイバル無し＝クリエイティブ", (-0.38, y - 0.04), 0.58, origin=(-0.5, 0),
+                   col=U["color"].light_gray)
         if not mods:
             self._text("（mods フォルダに MOD がありません）", (0.12, y), 0.75, col=U["color"].light_gray)
             return
@@ -484,14 +494,9 @@ class MainMenu:
         cl = s["cleanup"]
         self._text(f"ワールド設定: {name}", (0, 0.42), 1.6)
         y = 0.31
-        self._toggle("クリエイティブ", y, s.get("creative", True), lambda v: s.__setitem__("creative", v))
-        self._toggle("完全剛体モード", y - 0.07, s.get("full_rigid", False), lambda v: s.__setitem__("full_rigid", v))
-        self._text("構築物は丸ごと1つの剛体（曲がらない・壊れない）", (0.43, y - 0.07), 0.62,
+        self._toggle("完全剛体モード", y, s.get("full_rigid", False), lambda v: s.__setitem__("full_rigid", v))
+        self._text("構築物は丸ごと1つの剛体（曲がらない・壊れない）", (0.43, y), 0.62,
                    col=U["color"].light_gray, origin=(-0.5, 0))
-        self._toggle("サイバーパンクの街", y - 0.14, s.get("cities", True), lambda v: s.__setitem__("cities", v))
-        self._text("地表と軌道上に街を作る（目印は M で切替）", (0.43, y - 0.14), 0.62,
-                   col=U["color"].light_gray, origin=(-0.5, 0))
-        y -= 0.14
         self._stepper("ボクセルサイズ（新規設置）", y - 0.07, [0.25, 0.5, 1.0, 2.0], s.get("voxel_size", 0.5),
                       lambda v: f"{v} m", lambda v: s.__setitem__("voxel_size", v))
         self._stepper("重力倍率", y - 0.14, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], s.get("gravity_scale", 1.0),

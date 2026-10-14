@@ -68,25 +68,8 @@ class Player:
                 self.vel = c.vel[8 * i:8 * i + 8].mean(0)
                 self.up = fr[1]
                 return
-        # サバイバルではジェットパックに手持ちの燃料が要る（噴かしている間だけ減る）
-        flying = self.jetpack
-        if flying and not world.creative:
-            use = float(self.defn.get("jetpack_fuel_rate", 1.0)) * dt
-            if self.on_ground and float(np.dot(thrust_dir, self.up)) <= 0:
-                flying = self.inventory.get("fuel", 0.0) > 0   # 地上を歩いているだけなら減らない
-                thrust_dir = np.zeros(3)
-            elif np.linalg.norm(thrust_dir) > 0:
-                have = self.inventory.get("fuel", 0.0)
-                if have <= 0:
-                    flying = False
-                    if not self.out_of_fuel:
-                        world.message("燃料がないのでジェットパックが使えません（硫黄鉱石や水を精錬して燃料に）")
-                    self.out_of_fuel = True
-                else:
-                    self.inventory["fuel"] = max(0.0, have - use)
-                    self.out_of_fuel = False
-            elif self.inventory.get("fuel", 0.0) <= 0:
-                flying = False
+        # ジェットパック（燃料などの決まりは MOD が決める。サバイバルでは手持ちの燃料が要る）
+        flying, thrust_dir = world.jetpack(self, dt, thrust_dir)
         g = world.gravity(self.pos[None])[0]
         self.vel += g * dt
         # 水中：浮力と抵抗、泳ぐ（Space で上、Ctrl で下、WASD で前後左右）

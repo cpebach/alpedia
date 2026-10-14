@@ -1,7 +1,7 @@
 """街の画面：取引（商人）・部屋の売買と賃貸（不動産屋）・収納箱。閉じるボタン（または Esc）で閉じる。"""
 import numpy as np
 
-from ... import log
+from main import log
 from . import citylife
 
 L = log.get("city_ui")
@@ -53,7 +53,7 @@ class _Panel:
         return T(parent=self.body, text=text, position=pos, origin=origin, scale=scale, color=col or color.white)
 
     def _clear(self):
-        from ...client.ui_destroy import destroy
+        from main.client.ui_destroy import destroy
         for ch in list(self.body.children):
             destroy(ch)
 
@@ -70,7 +70,7 @@ class _Panel:
         pass
 
     def close(self):
-        from ...client.ui_destroy import destroy
+        from main.client.ui_destroy import destroy
         destroy(self.root)
         self.game.editor_closed()
 
@@ -265,7 +265,7 @@ class MapPanel(_Panel):
         return x, y
 
     def refresh(self):
-        from ...client.ui_destroy import destroy
+        from main.client.ui_destroy import destroy
         for ch in list(self.map_root.children):
             destroy(ch)
         U, color = self.U, self.U["color"]
@@ -333,7 +333,7 @@ class MapPanel(_Panel):
         self.refresh()
 
     def refresh_side(self):
-        from ...client.ui_destroy import destroy
+        from main.client.ui_destroy import destroy
         from . import politics as P
         for ch in list(self.side_root.children):
             destroy(ch)

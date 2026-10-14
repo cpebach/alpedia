@@ -12,8 +12,8 @@ import hashlib
 
 import numpy as np
 
-from ... import log
-from ...geom import box_sdf, ray_boxes
+from main import log
+from main.geom import box_sdf, ray_boxes
 
 L = log.get("cities")
 
@@ -560,9 +560,7 @@ class CityManager:
         self.world = world
         self.cities = []
         self.by_id = {}
-        self.enabled = bool(world.settings.get("cities", True))
-        if not self.enabled:
-            return
+        self.enabled = True          # この MOD が入っているワールドでは街を作る
         try:
             self._generate()
         except Exception:  # noqa: BLE001
