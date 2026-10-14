@@ -1,0 +1,143 @@
+"""MOD の読み込みの決まりのテスト。
+
+- MOD はワールドを始めるときに一括で読み込む（code/ の中の .py は全部 import する）
+- エラーがあればそのときにまとめて出し（ModLoadError）、ワールドは始めない
+- 使っている MOD を外したワールドは始められない（足りない定義を一覧にする）
+"""
+import json
+import shutil
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from main import config, log, modcode, paths  # noqa: E402
+from main.world import World, DEFAULT_SETTINGS  # noqa: E402
+
+log.setup("CRITICAL")
+CFG = json.loads(json.dumps(config.DEFAULTS))
+
+
+class ModCase(unittest.TestCase):
+    def setUp(self):
+        # tests/test_core.py の「コアが MOD を読み込まない」ための仕掛けは、このテストの間だけ外す
+        self._blockers = [f for f in sys.meta_path if type(f).__name__ == "_Block"]
+        for f in self._blockers:
+            sys.meta_path.remove(f)
+        self.tmp = Path(tempfile.mkdtemp(prefix="alpedia_mods_"))
+        self._saves, self._mods = paths.SAVES, paths.MODS
+        paths.SAVES = self.tmp / "saves"
+        paths.MODS = self.tmp / "mods"
+        paths.MODS.mkdir(parents=True)
+
+    def tearDown(self):
+        paths.SAVES, paths.MODS = self._saves, self._mods
+        modcode.reset()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        for f in self._blockers:
+            sys.meta_path.insert(0, f)
+
+    def mod(self, mid, files):
+        d = paths.MODS / mid
+        (d / "code").mkdir(parents=True, exist_ok=True)
+        (d / "mod.json").write_text(json.dumps({"id": mid, "name": mid}), "utf-8")
+        for rel, text in files.items():
+            p = d / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, "utf-8")
+
+    def world(self, mods, constructs=None):
+        d = paths.world_dir("w")
+        (d / "scripts").mkdir(parents=True, exist_ok=True)
+        s = dict(DEFAULT_SETTINGS, name="w", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
+        (d / "world.json").write_text(json.dumps(s), "utf-8")
+        (d / "mods.json").write_text(json.dumps({"enabled": mods}), "utf-8")
+        if constructs is not None:
+            (d / "constructs.json").write_text(json.dumps(constructs), "utf-8")
+        return World("w", CFG)
+
+
+GOOD_INIT = """
+def world_addon():
+    from main.hooks import Addon
+    from .rules import Rules
+    return Rules()
+"""
+GOOD_RULES = """
+from main.hooks import Addon
+class Rules(Addon):
+    name = "rules"
+"""
+
+
+class TestModLoading(ModCase):
+    def test_all_modules_are_loaded_at_start(self):
+        self.mod("m1", {"code/__init__.py": GOOD_INIT, "code/rules.py": GOOD_RULES,
+                        "code/later.py": "VALUE = 3\n", "code/sub/__init__.py": "", "code/sub/deep.py": "X = 1\n"})
+        w = self.world(["m1"]).load()
+        self.assertEqual([a.name for a in w.addons], ["rules"])
+        for name in ("alpedia_mods.m1", "alpedia_mods.m1.rules", "alpedia_mods.m1.later", "alpedia_mods.m1.sub.deep"):
+            self.assertIn(name, sys.modules)        # 使われていないモジュールも始めるときに読み込み済み
+
+    def test_error_in_any_module_stops_the_world(self):
+        self.mod("m1", {"code/__init__.py": GOOD_INIT, "code/rules.py": GOOD_RULES,
+                        "code/later.py": "def f(:\n    pass\n"})
+        with self.assertRaises(modcode.ModLoadError) as cm:
+            self.world(["m1"]).load()
+        msg = "\n".join(cm.exception.errors)
+        self.assertIn("later.py", msg)
+        self.assertIn("line 1", msg)                                 # 場所（ファイルと行）つき
+
+    def test_runtime_error_in_module_is_reported_with_line(self):
+        self.mod("m1", {"code/__init__.py": GOOD_INIT, "code/rules.py": GOOD_RULES,
+                        "code/bad.py": "A = 1\nB = 1 / 0\n"})
+        with self.assertRaises(modcode.ModLoadError) as cm:
+            self.world(["m1"]).load()
+        self.assertTrue(any("bad.py" in e and "ZeroDivisionError" in e and "2 行目" in e for e in cm.exception.errors))
+
+    def test_missing_mod_stops_the_world(self):
+        with self.assertRaises(modcode.ModLoadError) as cm:
+            self.world(["gone"]).load()
+        self.assertTrue(any("gone" in e for e in cm.exception.errors))
+
+    def test_removed_mod_contents_are_listed(self):
+        """MOD の素材・機器を使った構築物があるのに MOD を外した"""
+        cons = [{"id": "c1", "name": "船", "voxel_size": 0.5,
+                 "voxels": [[0, 0, 0, "unobtainium", None], [1, 0, 0, "steel", {"def": "warp_drive", "dir": 2, "state": {}}]]}]
+        with self.assertRaises(modcode.ModLoadError) as cm:
+            self.world([], cons).load()
+        msg = "\n".join(cm.exception.errors)
+        self.assertIn("unobtainium", msg)
+        self.assertIn("warp_drive", msg)
+        self.assertIn("船", msg)
+
+    def test_bad_definition_and_missing_texture(self):
+        self.mod("m2", {"materials/a.json": "{not json", "materials/b.json": json.dumps(
+            {"id": "shiny", "extends": "steel", "texture": "textures/none.png"})})
+        with self.assertRaises(modcode.ModLoadError) as cm:
+            self.world(["m2"]).load()
+        msg = "\n".join(cm.exception.errors)
+        self.assertIn("a.json", msg)
+        self.assertIn("none.png", msg)
+
+    def test_client_modules_are_left_for_the_screen(self):
+        """画面用のモジュール（ursina などを使う）は、画面の無い所では後回し（エラーにしない）"""
+        self.mod("m1", {"code/__init__.py": GOOD_INIT, "code/rules.py": GOOD_RULES,
+                        "code/ui.py": "import ursina_not_here_but_named_ursina\n"})
+        if "ursina" in sys.modules:
+            self.skipTest("画面のライブラリが読み込まれている")
+        w = self.world(["m1"]).load()
+        self.assertEqual(len(w.addons), 1)
+        self.assertEqual([x[1] for x in modcode._deferred], ["alpedia_mods.m1.ui"])
+
+    def test_builtin_mods_load_cleanly(self):
+        """本体に入っている MOD（サバイバル・街）がエラーなく読み込める"""
+        paths.MODS = self._mods
+        w = self.world(["survival", "city"]).load()
+        self.assertEqual(sorted(a.name for a in w.addons), ["city", "survival"])
+
+
+if __name__ == "__main__":
+    unittest.main()

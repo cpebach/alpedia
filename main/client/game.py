@@ -60,6 +60,7 @@ class Game:
         self.ui_root = Entity(parent=camera.ui)
         loader = application.base.loader
         self.loader = loader
+        self.load_errors = []
         self.views = {}
         self.planet_views = [render.PlanetView(self.scene_root, loader, p) for p in self.world.planets]
         g = self.cfg["graphics"]
@@ -68,6 +69,8 @@ class Game:
         tex_dir = _paths.ROOT / "sauce" / "textures"
         render.EDGE_TEXTURE = str(tex_dir / "px_edge.png")
         render.DEVICE_TEXTURE = str(tex_dir / "px_device.png")
+        # MOD を含むテクスチャをここで全部読み込む（プレイ中にファイルを読みに行かない）
+        self.load_errors += render.preload(loader, self.world.registry)
         self.patch = render.TerrainPatch(self.scene_root, loader, int(g.get("terrain_patch_cells", 48)),
                                          float(g.get("terrain_patch_step", 1.0)))
         self.carve = render.CarveView(self.scene_root, loader)
@@ -89,8 +92,9 @@ class Game:
         self.help_text = Text(parent=ui, position=window.top_right + (-0.01, -0.01), origin=(0.5, 0.5),
                               scale=0.65, text=HELP)
         # 拡張（街パックなど）の画面側
-        from ..modcode import client_addons
-        self.addons = client_addons(self)
+        from ..modcode import client_addons, load_client
+        load_client(self.load_errors)
+        self.addons = client_addons(self, self.load_errors)
         extra = " / ".join(a.help_text for a in self.addons if a.help_text)
         if extra:
             self.help_text.text = HELP + extra + "\n"
@@ -148,6 +152,9 @@ class Game:
                         L.exception("キー入力 %r の処理でエラー", key)
                         game.world.message(f"⚠ エラー（{key}）: {e}（logs/latest.log を見てください）")
         self.driver = Driver()
+        if self.load_errors:
+            from ..modcode import ModLoadError
+            raise ModLoadError(self.load_errors)
         L.info("ゲーム開始: %s", self.world.name)
 
     # --- スクリプトエディタ ---------------------------------------------
@@ -330,8 +337,11 @@ class Game:
         if d.get("model"):
             try:
                 model = load_model(str(d["model"]))
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 model = None
+                self.load_errors.append(f"プレイヤーのモデル '{d['model']}' を読み込めません: {e}")
+            if model is None and not any("モデル" in x for x in self.load_errors):
+                self.load_errors.append(f"プレイヤーのモデル '{d['model']}' を読み込めません")
         e = Entity(model=model or "cube", color=color.rgb(*col) if max(col) <= 1 else color.rgb32(*col),
                    parent=self.scene_root)
         e.hide()

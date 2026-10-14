@@ -360,6 +360,114 @@ class TestStep(unittest.TestCase):
         self._run(lambda: self._make(self.SLAB, 0.03, mode="full"))
         self.assertLess(self.touch, 0.01)
 
+    def _art_setup(self, angle=30.0, ext=0.0):
+        def setup(c):
+            for d in c.devs:
+                if d and d["def"] == "actuator":
+                    d["state"]["angle"] = angle
+                    d["state"]["ext"] = ext
+        return setup
+
+    def test_art(self):
+        """完全剛体モードの関節つき剛体（回転・押し出し・地面）：Rust と Python で同じ"""
+        vox = [((x, 0, z), "steel", None) for x in range(3) for z in range(2)]
+        vox += [((1, 1, 0), "steel", {"def": "battery", "dir": 2}), ((1, 2, 0), "steel", {"def": "actuator", "dir": 2}),
+                ((1, 3, 0), "aluminum", None), ((2, 3, 0), "aluminum", None), ((0, 1, 1), "steel", {"def": "actuator", "dir": 4}),
+                ((0, 1, 2), "wood", None)]
+
+        def make():
+            c = self._make(vox, 0.03, setup=self._art_setup(25.0, 0.3))
+            c._full_rigid = True
+            c.enter_art()
+            for d in c.devs:                       # 押し出しは art を作ったあとで動かす
+                if d and d["def"] == "actuator":
+                    d["state"]["ext"] = 0.6
+            return c
+        a, b = self._run(make, n=10)
+        self.assertEqual(a.mode, "art")
+        self.assertEqual(len(a.art["ra"]), 2)
+        self.assertLess(np.abs(a.art["X"] - b.art["X"]).max(), 1e-6)
+        self.assertLess(np.abs(a.art["applied"] - b.art["applied"]).max(), 1e-9)
+        self.assertLess(np.abs(a.art["vl"] - b.art["vl"]).max(), 1e-9)
+        self.assertGreater(np.abs(a.art["vl"] - a.art["vl0"]).max(), 0.01)      # 押し出しで形が変わった
+        self.assertLess(self.touch, 0.01)
+
+    def _with_box(self, mode, vox):
+        """construct の下に MOD の箱（動いている板）を置く"""
+        class Owner:
+            def is_moving(self):
+                return True
+
+            def point_velocity(self, p):
+                return np.tile([0.0, 0.0, 0.3], (len(np.atleast_2d(p)), 1))
+
+        def make():
+            c = self._make(vox, 0.6, setup=self._art_setup(20.0, 0.0))
+            g, up = self._ground(False)
+            k = c.contact_cores()
+            k = k[~np.isnan(k[:, 0])]
+            low = k[np.argmin(k @ up)]
+            side = np.cross(up, [0, 0, 1.0]); side /= np.linalg.norm(side)
+            A = np.array([np.stack([side, up, np.cross(side, up)])])
+            C = np.array([low - up * (c.size * 0.5 + 0.5 - 0.03)])
+            c.ext_colliders = [(Owner(), C, A, np.array([[3.0, 0.5, 3.0]]), np.array([7]))]
+            c.ext_events = []
+            if mode == "full":
+                c.enter_rigid()
+                c._full_rigid = True
+            else:
+                c._full_rigid = True
+                c.enter_art()
+            return c
+        a, b = self._run(make, n=10)
+        self.assertTrue(a.ext_events)
+        self.assertEqual(len(a.ext_events), len(b.ext_events))
+        for ea, eb in zip(a.ext_events, b.ext_events):
+            self.assertEqual(ea[1], eb[1])
+            if ea[2] is not None:
+                self.assertLess(np.abs(ea[2] - eb[2]).max(), 1e-3)
+
+    def test_full_rigid_on_mod_box(self):
+        """完全剛体：地面と MOD の箱（動いている）の接触を一緒に解く：Rust と Python で同じ"""
+        self._with_box("full", self.SLAB)
+
+    def test_art_on_mod_box(self):
+        """関節つき剛体：MOD の箱の上で：Rust と Python で同じ"""
+        vox = [((x, 0, z), "steel", None) for x in range(3) for z in range(2)]
+        vox += [((1, 1, 0), "steel", {"def": "battery", "dir": 2}), ((1, 2, 0), "steel", {"def": "actuator", "dir": 2}),
+                ((1, 3, 0), "aluminum", None)]
+        self._with_box("art", vox)
+
+    def test_contacts(self):
+        """構築物どうし・結合していないボクセルどうしの押し出し：Rust と Python で同じ"""
+        from main import construct as C
+        out = {}
+        for native_ in (False, True):
+            c1 = self._make(self.SLAB, 0.0, seed=1)
+            c2 = self._make([((x, 0, z), "wood", None) for x in range(2) for z in range(2)], 0.0, seed=2)
+            c2.pos += (c1.voxel_centers().mean(0) - c2.voxel_centers().mean(0)) + c1.size * 0.2
+            from main.construct import Construct
+            g, up = self._ground(False)
+            c3 = Construct.from_voxels(self.w.registry, [((0, 0, 0), "steel", None), ((1, 0, 0), "steel", None),
+                                                         ((1, 0, 1), "steel", None)], c1.voxel_centers()[0] + up * 0.3,
+                                       np.eye(3), size=0.5, links=set())
+            c3.pos += c1.voxel_centers()[0] + up * 0.3 - c3.voxel_centers()[0]
+            c3.asleep = True
+            saved = C.NATIVE_STEP_OFF
+            C.NATIVE_STEP_OFF = not native_
+            try:
+                woke = self.w._voxel_collisions([c1, c2], [c3])
+            finally:
+                C.NATIVE_STEP_OFF = saved
+            out[native_] = (c1, c2, c3, [c.name for c in woke], [getattr(c, "_touch_moving", False) for c in (c1, c2, c3)])
+        a, b = out[False], out[True]
+        for k in range(3):
+            self.assertLess(np.abs(a[k].pos - b[k].pos).max(), 1e-12)
+        self.assertEqual(a[3], b[3])
+        self.assertTrue(a[3])                                                    # 眠っていた構築物が起きた
+        self.assertEqual(a[4], b[4])
+        self.assertGreater(np.abs(a[0].pos - self._make(self.SLAB, 0.0, seed=1).pos).max(), 1e-4)   # 本当に押し出した
+
     def test_nnls(self):
         from scipy.optimize import nnls
         rng = np.random.default_rng(4)

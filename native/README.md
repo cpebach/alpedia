@@ -10,6 +10,8 @@
 |---|---|---|
 | 構築物1つの1サブステップまるごと（重力・浮力・減衰・積分・形合わせ・結合・回転ジョイント・地面との接触・塑性変形・ちぎれの判定、剛体・完全剛体モードの接触も） | `body.rs`, `lib.rs`（`Body`） | `main/construct.py` の `substep_begin` / `substep_end` |
 | 描画用の頂点（ブロックごとに動いている構築物の形・法線・陰影・噴射の色をまとめて） | `mesh.rs`, `lib.rs`（`mesh_pack`） | `main/client/render.py` の `_update_blob` |
+| 構築物どうし（と、結合していないボクセルどうし）の押し出し | `contacts.rs`, `pairs.rs`, `lib.rs`（`Proxy`・`contacts`） | `main/world.py` の `_voxel_collisions` |
+| 完全剛体モードの関節つき剛体の1サブステップ（押し出し・関節・地面と MOD の箱の接触） | `artstep.rs`, `lib.rs`（`ArtTopo`） | `main/construct.py` の `_art_begin` / `_art_end` |
 | ボクセルごとの形合わせ・結合 | `kernels.rs` | `main/fastphys.py` |
 | 当たり判定の芯・描画用の頂点と法線 | `kernels.rs` | `main/fastphys.py` |
 | 向き付きの箱との距離 | `kernels.rs` | `main/geom.py` |
@@ -26,14 +28,15 @@ Python 側の入り口は `main/fastphys.py`（関数ごとに Rust と numba �
 
 環境変数 `ALPEDIA_BACKEND=python` でも切り替えられます。
 
-構築物の1サブステップまるごとの計算（`Body`）は、次のときだけ Python の順の計算に戻ります。
+物理の1サブステップは、構築物ごとの計算（ブロックごと・剛体・完全剛体・関節つき剛体）も、構築物どうしの押し出しも Rust で行います。
+Python に残っているのは、次のものだけです。
 
-- 関節つき剛体（完全剛体モードで関節を持つもの）：もともと `art.rs` の部品を Python から順に呼ぶ
-- 完全剛体モードで、街などの MOD が出す当たり判定の箱に触れているとき（MOD のプログラムを呼ぶため）
-- 環境変数 `ALPEDIA_NATIVE_STEP=0`（比べるとき用）
+- 街などの MOD が出す当たり判定の箱との接触（MOD のプログラムを呼ぶため）。完全剛体・関節つき剛体では、
+  Python が箱との接触点を集めて Rust に渡し、地面の接触と一緒に解きます
+- ブロックごと ⇔ 剛体 ⇔ レールの切り替えの判断、ちぎれたあとの作り直し、機器・スクリプト（ゲームの決まりごと）
+- 環境変数 `ALPEDIA_NATIVE_STEP=0` のとき（比べるとき用。Rust 化の前の計算に戻す）
 
-MOD の箱との当たり判定は、それ以外のときも Rust の計算の後に Python で行います。
-構築物の形が変わったとき（ブロックの追加・削除・ちぎれ）は、`Body` を作り直します。
+構築物の形が変わったとき（ブロックの追加・削除・ちぎれ）は、`Body`・`Proxy`・`ArtTopo` を作り直します。
 
 ## Windows でビルドする
 

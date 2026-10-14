@@ -371,6 +371,24 @@ class MainMenu:
         self.status = msg
         self.show_main()
 
+    def show_load_errors(self, name, errors):
+        """MOD のエラーでワールドを始められなかったとき：エラーの一覧と、どうすればよいか。"""
+        self._clear()
+        U = self.U
+        self._text(f"「{name}」を始められません（MOD のエラー）", (0, 0.42), 1.4, col=U["color"].rgb(1, 0.55, 0.45))
+        shown = errors[:12]
+        lines = [("・" + e if len(e) <= 96 else "・" + e[:94] + "…") for e in shown]
+        if len(errors) > len(shown):
+            lines.append(f"…ほか {len(errors) - len(shown)} 件（logs/latest.log に全部あります）")
+        self._text("\n".join(lines), (-0.8, 0.32), 0.75, origin=(-0.5, 0.5))
+        self._text("MOD はワールドを始めるときに一括で読み込みます。エラーがあるとワールドを始めません（セーブは変わっていません）。\n"
+                   "・MOD を作っている：エラーの場所を直して、もう一度「遊ぶ」を押してください。\n"
+                   "・MOD を外した／入れ替えた：ワールド設定で元の MOD を入れ直すか、変える前のバックアップに戻してください。\n"
+                   "新しい MOD を作るとき・ワールドの MOD を変えるときは、先にワールド（saves/ のフォルダ）をコピーしておくことをすすめます。",
+                   (-0.8, -0.16), 0.7, origin=(-0.5, 0.5), col=U["color"].light_gray)
+        self.status = ""
+        self._button("戻る", (0, -0.42), self.show_main, size=(0.25, 0.055), col=U["color"].rgb(0.3, 0.3, 0.33))
+
     # --- 新規作成 -------------------------------------------------------
     def show_new(self):
         self._clear()
@@ -511,6 +529,9 @@ class MainMenu:
         self._mod_toggles(y - 0.50, sel)
         planets = ", ".join(p.get("def", "?") for p in s.get("planets", []))
         self._text(f"惑星: {planets}（world.json で編集）", (0, y - 0.64), 0.7, col=U["color"].light_gray)
+        self._text("MOD を入れる・外す前に、ワールド（saves/ のフォルダ）をコピーしておくことをすすめます。"
+                   "使っている MOD を外すと、そのワールドは始められなくなります。", (0, y - 0.70), 0.58,
+                   col=U["color"].rgb(1, 0.8, 0.45))
 
         def save():
             try:
@@ -623,11 +644,21 @@ def run_client(cfg, world_name=None, on_ready=None):
         if status:
             state["menu"].error(status)
 
+    def load_failed(name, errors):
+        if state["menu"] is None:
+            open_menu()
+        state["menu"].show_load_errors(name, errors)
+
     def play(name):
         from ..app import prepare_world
+        from ..modcode import ModLoadError
         try:
             World = prepare_world(name)
             world = World(name, cfg).load()
+        except ModLoadError as e:
+            L.error("ワールド「%s」を始められません（MOD のエラー）:\n%s", name, "\n".join(e.errors))
+            load_failed(name, e.errors)
+            return
         except Exception as e:  # noqa: BLE001
             L.exception("ワールドの読み込みに失敗: %s", name)
             if state["menu"] is None:
@@ -639,7 +670,16 @@ def run_client(cfg, world_name=None, on_ready=None):
             state["menu"] = None
         game = Game(world, cfg, on_exit=leave)
         state["game"] = game
-        game.start()
+        try:
+            game.start()
+        except ModLoadError as e:
+            L.error("ワールド「%s」を始められません（MOD のエラー）:\n%s", name, "\n".join(e.errors))
+            try:
+                game.destroy()
+            except Exception:  # noqa: BLE001
+                L.exception("画面の後片付けに失敗")
+            state["game"] = None
+            load_failed(name, e.errors)
 
     def leave(action):
         def later():

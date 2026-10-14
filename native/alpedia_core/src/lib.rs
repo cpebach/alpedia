@@ -8,9 +8,12 @@
 //! Python 側のスレッドから同時に呼べる（構築物ごとの並列計算）。
 
 mod art;
+mod artstep;
 mod body;
 mod kernels;
 mod mesh;
+mod pairs;
+mod contacts;
 mod planet;
 
 use std::collections::HashMap;
@@ -593,10 +596,11 @@ impl Body {
 
     /// 剛体の1サブステップの前半。full：完全剛体モード（接触をまとめて解く）。戻り値：速くぶつかりそうか
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (pos, vel, prev, force, rot, ib, planets, scale, h, cav, full, impact_speed, soft))]
+    #[pyo3(signature = (pos, vel, prev, force, rot, ib, planets, scale, h, cav, full, impact_speed, soft, defer=false))]
     fn rigid_begin(
         &self, py: Python<'_>, mut pos: RwF, mut vel: RwF, mut prev: RwF, force: RoF, rot: RoF, ib: RoF,
         planets: &Bound<'_, pyo3::types::PyList>, scale: f64, h: f64, cav: Option<RoI>, full: bool, impact_speed: f64, soft: f64,
+        defer: bool,
     ) -> PyResult<bool> {
         let t = &self.t;
         let pls = planet_ctx(planets)?;
@@ -609,7 +613,47 @@ impl Body {
                 && cv.iter().flatten().all(|&j| j < t.nvox as i64),
             "rigid_begin",
         )?;
-        Ok(py.allow_threads(|| body::rigid_begin(p, v, pv, f, rr, ii, t, &pls, scale, h, &cv, full, impact_speed, soft)))
+        Ok(py.allow_threads(|| body::rigid_begin(p, v, pv, f, rr, ii, t, &pls, scale, h, &cv, full, impact_speed, soft, defer)))
+    }
+
+    /// 完全剛体モードの接触（地面＋MOD の箱）をまとめて解く（rigid_begin を defer=True で呼んだあと）。
+    /// boxes：(P, D, N, VS, CI)。戻り値 (速くぶつかりそうか, 使った頂点, 法線, 押し返し, 箱の番号, 解く前の位置)
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn rigid_contacts<'py>(
+        &self, py: Python<'py>, mut pos: RwF<'py>, prev: RoF<'py>, vel: RoF<'py>, planets: &Bound<'py, pyo3::types::PyList>,
+        h: f64, impact_speed: f64, soft: f64, bp: RoI<'py>, bd: RoF<'py>, bn: RoF<'py>, bvs: RoF<'py>, bci: RoI<'py>,
+    ) -> PyResult<(
+        bool, Bound<'py, PyArray1<i64>>, Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<i64>>,
+        Bound<'py, PyArray2<f64>>,
+    )> {
+        let t = &self.t;
+        let pls = planet_ctx(planets)?;
+        let nv = 8 * t.nvox;
+        let p = rw(&mut pos, "pos")?;
+        let (pv, vl) = (ro(&prev, "prev")?, ro(&vel, "vel")?);
+        let (bpv, bdv, bnv, bvv, bcv) = (ro(&bp, "bp")?, ro(&bd, "bd")?, ro(&bn, "bn")?, ro(&bvs, "bvs")?, ro(&bci, "bci")?);
+        let nb = bpv.len();
+        need(
+            p.len() == 3 * nv && pv.len() == 3 * nv && vl.len() == 3 * nv && bdv.len() == nb && bnv.len() == 3 * nb
+                && bvv.len() == 3 * nb && bcv.len() == nb && bpv.iter().all(|&i| i >= 0 && (i as usize) < nv),
+            "rigid_contacts",
+        )?;
+        let boxes: Vec<body::RContact> = (0..nb)
+            .map(|k| {
+                (bpv[k] as usize, bdv[k], [bnv[3 * k], bnv[3 * k + 1], bnv[3 * k + 2]],
+                 [bvv[3 * k], bvv[3 * k + 1], bvv[3 * k + 2]], bcv[k])
+            })
+            .collect();
+        let (want, used) = py.allow_threads(|| body::full_contacts(p, pv, vl, t, &pls, h, impact_speed, soft, boxes));
+        let m = used.len();
+        Ok((
+            want,
+            PyArray1::from_vec_bound(py, used.iter().map(|u| u.0 .0 as i64).collect()),
+            PyArray1::from_vec_bound(py, used.iter().flat_map(|u| u.0 .2).collect()).reshape([m, 3])?,
+            PyArray1::from_vec_bound(py, used.iter().map(|u| u.1).collect()),
+            PyArray1::from_vec_bound(py, used.iter().map(|u| u.0 .4).collect()),
+            PyArray1::from_vec_bound(py, used.iter().flat_map(|u| u.2).collect()).reshape([m, 3])?,
+        ))
     }
 }
 
@@ -637,6 +681,243 @@ fn nnls<'py>(py: Python<'py>, a: PyReadonlyArray2<'py, f64>, b: RoF<'py>) -> PyR
     Ok(PyArray1::from_vec_bound(py, x.as_slice().to_vec()))
 }
 
+
+
+
+// ---------------------------------------------------------------------------
+// 完全剛体モードの関節つき剛体の1サブステップ
+// ---------------------------------------------------------------------------
+/// 部分の分け方など（construct._art_build で作り直す）
+#[pyclass(frozen)]
+struct ArtTopo {
+    at: artstep::ArtTopo,
+}
+
+fn idx_rows(a: &RoI, name: &str, w: usize, lim: usize) -> PyResult<Vec<usize>> {
+    let v = ro(a, name)?;
+    need(v.len() % w.max(1) == 0 && v.iter().all(|&i| i >= 0 && (i as usize) < lim), name)?;
+    Ok(v.iter().map(|&i| i as usize).collect())
+}
+
+#[pymethods]
+impl ArtTopo {
+    /// vg：頂点ごとの部分の番号。inv_m・iinv_b：部分ごとの逆質量と物体座標の逆慣性 (G,3,3)。
+    /// ra/rb：回転関節の土台側・出力側の部分、a/b (R,4)：出力面の4頂点、c (R,8)：アクチュエーターの8頂点。
+    /// ext_rows (E,4)・ext_nb (E,3)・ext_e0 (E,)：押し出し
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        vg: RoI, inv_m: RoF, iinv_b: RoF, ra: RoI, rb: RoI, a: RoI, b: RoI, c: RoI, ext_rows: RoI, ext_nb: RoF, ext_e0: RoF,
+        iters: i64, max_contacts: usize, motor_step_x: f64, motor_hold_deg: f64,
+    ) -> PyResult<Self> {
+        let vgv = ro(&vg, "vg")?.to_vec();
+        let im = ro(&inv_m, "inv_m")?.to_vec();
+        let g = im.len();
+        let nv = vgv.len();
+        need(vgv.iter().all(|&k| k >= 0 && (k as usize) < g), "ArtTopo vg")?;
+        let ib = ro(&iinv_b, "iinv_b")?.to_vec();
+        need(ib.len() == 9 * g, "ArtTopo iinv_b")?;
+        let (rav, rbv) = (ro(&ra, "ra")?.to_vec(), ro(&rb, "rb")?.to_vec());
+        need(rav.len() == rbv.len() && rav.iter().chain(rbv.iter()).all(|&k| k >= 0 && (k as usize) < g), "ArtTopo ra/rb")?;
+        let nr = rav.len();
+        let (av, bv, cv) = (idx_rows(&a, "a", 4, nv)?, idx_rows(&b, "b", 4, nv)?, idx_rows(&c, "c", 8, nv)?);
+        need(av.len() == 4 * nr && bv.len() == 4 * nr && cv.len() == 8 * nr, "ArtTopo a/b/c")?;
+        let er = idx_rows(&ext_rows, "ext_rows", 4, nv)?;
+        let (en, e0) = (ro(&ext_nb, "ext_nb")?, ro(&ext_e0, "ext_e0")?);
+        let ne = e0.len();
+        need(er.len() == 4 * ne && en.len() == 3 * ne, "ArtTopo ext")?;
+        let exts = (0..ne)
+            .map(|k| artstep::Ext {
+                rows: [er[4 * k], er[4 * k + 1], er[4 * k + 2], er[4 * k + 3]],
+                nb: [en[3 * k], en[3 * k + 1], en[3 * k + 2]],
+                e0: e0[k],
+            })
+            .collect();
+        Ok(ArtTopo {
+            at: artstep::ArtTopo {
+                g, vg: vgv, inv_m: im, iinv_b: ib, ra: rav, rb: rbv, a: av, b: bv, c: cv, exts, iters, max_contacts,
+                motor_step_x, motor_hold_deg,
+            },
+        })
+    }
+
+    /// 前半の1（力・押し出し・部分ごとに位置を進める）。戻り値 (形が変わった頂点, その変化 (k,3))
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[pyo3(signature = (body, pos, vel, prev, force, x, r, vl, vl0, ext_applied, ext_want, ext_speed, planets, scale, h, cav))]
+    fn predict<'py>(
+        &self, py: Python<'py>, body: &Bound<'py, Body>, mut pos: RwF<'py>, mut vel: RwF<'py>, mut prev: RwF<'py>,
+        force: RoF<'py>, mut x: RwF<'py>, mut r: RwF<'py>, mut vl: RwF<'py>, vl0: RoF<'py>, mut ext_applied: RwF<'py>,
+        ext_want: Vec<f64>, ext_speed: Vec<f64>, planets: &Bound<'py, pyo3::types::PyList>, scale: f64, h: f64,
+        cav: Option<RoI<'py>>,
+    ) -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray2<f64>>)> {
+        let (t, at) = (&body.get().t, &self.at);
+        let pls = planet_ctx(planets)?;
+        let cv = cav_rows(&cav)?;
+        let nv = 8 * t.nvox;
+        let (p, v, pv) = (rw(&mut pos, "pos")?, rw(&mut vel, "vel")?, rw(&mut prev, "prev")?);
+        let (xx, rr, vv) = (rw(&mut x, "X")?, rw(&mut r, "R")?, rw(&mut vl, "vl")?);
+        let (f, v0) = (ro(&force, "force")?, ro(&vl0, "vl0")?);
+        let ea = rw(&mut ext_applied, "ext_applied")?;
+        let ne = at.exts.len();
+        need(
+            at.vg.len() == nv && p.len() == 3 * nv && v.len() == 3 * nv && pv.len() == 3 * nv && f.len() == 3 * nv
+                && vv.len() == 3 * nv && v0.len() == 3 * nv && xx.len() == 3 * at.g && rr.len() == 9 * at.g
+                && ea.len() == ne && ext_want.len() == ne && ext_speed.len() == ne
+                && cv.iter().flatten().all(|&j| j < t.nvox as i64),
+            "art predict",
+        )?;
+        let (rows, d) = py.allow_threads(|| {
+            artstep::predict(p, v, pv, f, t, at, xx, rr, vv, v0, ea, &ext_want, &ext_speed, &pls, scale, h, &cv)
+        });
+        let k = rows.len();
+        Ok((
+            PyArray1::from_vec_bound(py, rows.into_iter().map(|i| i as i64).collect()),
+            PyArray1::from_vec_bound(py, d.into_iter().flatten().collect()).reshape([k, 3])?,
+        ))
+    }
+
+    /// 前半の2（接触を集めて関節と接触を解く）。boxes：MOD の箱との接触 (P, D, N, VS, CI)。
+    /// 戻り値 (部分の番号 cg, 部分の座標での接触点 cl, 法線 N, 押し返し lam, 頂点 P, 箱の番号 CI)
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[pyo3(signature = (body, pos, prev, x, r, vl, applied, want, rot_speed, planets, h, bp, bd, bn, bvs, bci))]
+    fn solve<'py>(
+        &self, py: Python<'py>, body: &Bound<'py, Body>, mut pos: RwF<'py>, prev: RoF<'py>, mut x: RwF<'py>,
+        mut r: RwF<'py>, vl: RoF<'py>, mut applied: RwF<'py>, want: Vec<f64>, rot_speed: Vec<f64>,
+        planets: &Bound<'py, pyo3::types::PyList>, h: f64, bp: RoI<'py>, bd: RoF<'py>, bn: RoF<'py>, bvs: RoF<'py>,
+        bci: RoI<'py>,
+    ) -> PyResult<(
+        Bound<'py, PyArray1<i64>>, Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>,
+    )> {
+        let (t, at) = (&body.get().t, &self.at);
+        let pls = planet_ctx(planets)?;
+        let nv = 8 * t.nvox;
+        let p = rw(&mut pos, "pos")?;
+        let (xx, rr, ap) = (rw(&mut x, "X")?, rw(&mut r, "R")?, rw(&mut applied, "applied")?);
+        let (pv, vv) = (ro(&prev, "prev")?, ro(&vl, "vl")?);
+        let (bpv, bdv, bnv, bvv, bcv) = (ro(&bp, "bp")?, ro(&bd, "bd")?, ro(&bn, "bn")?, ro(&bvs, "bvs")?, ro(&bci, "bci")?);
+        let nb = bpv.len();
+        let nr = at.ra.len();
+        need(
+            at.vg.len() == nv && p.len() == 3 * nv && pv.len() == 3 * nv && vv.len() == 3 * nv && xx.len() == 3 * at.g
+                && rr.len() == 9 * at.g && ap.len() == nr && want.len() == nr && rot_speed.len() == nr
+                && bdv.len() == nb && bnv.len() == 3 * nb && bvv.len() == 3 * nb && bcv.len() == nb
+                && bpv.iter().all(|&i| i >= 0 && (i as usize) < nv),
+            "art solve",
+        )?;
+        let boxes: Vec<artstep::Contact> = (0..nb)
+            .map(|k| artstep::Contact {
+                p: bpv[k] as usize,
+                d: bdv[k],
+                n: [bnv[3 * k], bnv[3 * k + 1], bnv[3 * k + 2]],
+                vs: [bvv[3 * k], bvv[3 * k + 1], bvv[3 * k + 2]],
+                ci: bcv[k],
+            })
+            .collect();
+        let (kept, cl, lam) =
+            py.allow_threads(|| artstep::solve(p, pv, t, at, xx, rr, vv, ap, &want, &rot_speed, &pls, h, &boxes));
+        let nc = kept.len();
+        let cg: Vec<i64> = kept.iter().map(|c| at.vg[c.p]).collect();
+        let cn: Vec<f64> = kept.iter().flat_map(|c| c.n).collect();
+        let cp: Vec<i64> = kept.iter().map(|c| c.p as i64).collect();
+        let ci: Vec<i64> = kept.iter().map(|c| c.ci).collect();
+        Ok((
+            PyArray1::from_vec_bound(py, cg),
+            PyArray1::from_vec_bound(py, cl).reshape([nc, 3])?,
+            PyArray1::from_vec_bound(py, cn).reshape([nc, 3])?,
+            PyArray1::from_vec_bound(py, lam),
+            PyArray1::from_vec_bound(py, cp),
+            PyArray1::from_vec_bound(py, ci),
+        ))
+    }
+
+    /// 後半（部分ごとの剛体の動きに直して速度を求める）
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (body, pos, vel, prev, x, r, vl, defo_rows, defo_d, cg, cl, cn, lam, h))]
+    fn end<'py>(
+        &self, py: Python<'py>, body: &Bound<'py, Body>, mut pos: RwF<'py>, mut vel: RwF<'py>, prev: RoF<'py>,
+        mut x: RwF<'py>, mut r: RwF<'py>, vl: RoF<'py>, defo_rows: RoI<'py>, defo_d: RoF<'py>, cg: RoI<'py>,
+        cl: RoF<'py>, cn: RoF<'py>, lam: RoF<'py>, h: f64,
+    ) -> PyResult<()> {
+        let (t, at) = (&body.get().t, &self.at);
+        let nv = 8 * t.nvox;
+        let (p, v) = (rw(&mut pos, "pos")?, rw(&mut vel, "vel")?);
+        let (xx, rr) = (rw(&mut x, "X")?, rw(&mut r, "R")?);
+        let (pv, vv) = (ro(&prev, "prev")?, ro(&vl, "vl")?);
+        let (dr, dd) = (ro(&defo_rows, "defo_rows")?, ro(&defo_d, "defo_d")?);
+        let (cgv, clv, cnv, lv) = (ro(&cg, "cg")?, ro(&cl, "cl")?, ro(&cn, "cn")?, ro(&lam, "lam")?);
+        let nc = cgv.len();
+        need(
+            at.vg.len() == nv && p.len() == 3 * nv && v.len() == 3 * nv && pv.len() == 3 * nv && vv.len() == 3 * nv
+                && xx.len() == 3 * at.g && rr.len() == 9 * at.g && dd.len() == 3 * dr.len()
+                && dr.iter().all(|&i| i >= 0 && (i as usize) < nv) && clv.len() == 3 * nc && cnv.len() == 3 * nc
+                && lv.len() == nc && cgv.iter().all(|&g| g >= 0 && (g as usize) < at.g),
+            "art end",
+        )?;
+        let defo: Vec<(usize, [f64; 3])> =
+            (0..dr.len()).map(|k| (dr[k] as usize, [dd[3 * k], dd[3 * k + 1], dd[3 * k + 2]])).collect();
+        py.allow_threads(|| artstep::end(p, v, pv, t, at, xx, rr, vv, &defo, cgv, clv, cnv, lv, h));
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 構築物どうしの押し出し
+// ---------------------------------------------------------------------------
+/// 構築物1つの当たり判定の点の作り方など（形が変わったら作り直す）
+#[pyclass(frozen)]
+struct Proxy {
+    p: contacts::Proxy,
+}
+
+#[pymethods]
+impl Proxy {
+    /// indptr/indices/data：重み行列 W（点 × ボクセル、CSR）。inv：点ごとの質量の逆数。links：結合しているボクセルの組 (L,2)。
+    /// mass：頂点ごとの質量
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(n: usize, size: f64, indptr: RoI, indices: RoI, data: RoF, inv: RoF, links: RoI, mass: RoF) -> PyResult<Self> {
+        let ip: Vec<usize> = ro(&indptr, "indptr")?.iter().map(|&x| x.max(0) as usize).collect();
+        let ix: Vec<usize> = ro(&indices, "indices")?.iter().map(|&x| x.max(0) as usize).collect();
+        let dt = ro(&data, "data")?.to_vec();
+        let iv = ro(&inv, "inv")?.to_vec();
+        let lk = ro(&links, "links")?;
+        let ms = ro(&mass, "mass")?.to_vec();
+        let np_ = ip.len().saturating_sub(1);
+        need(
+            !ip.is_empty() && np_ >= n && ip.windows(2).all(|w| w[0] <= w[1]) && *ip.last().unwrap() == ix.len()
+                && dt.len() == ix.len() && ix.iter().all(|&j| j < n) && iv.len() == np_ && lk.len() % 2 == 0
+                && ms.len() == 8 * n,
+            "Proxy",
+        )?;
+        let links = lk.chunks_exact(2).map(|c| {
+            let (a, b) = (c[0].max(0) as usize, c[1].max(0) as usize);
+            if a < b { (a, b) } else { (b, a) }
+        }).collect();
+        Ok(Proxy { p: contacts::Proxy { n, size, indptr: ip, indices: ix, data: dt, inv: iv, links, mass: ms } })
+    }
+}
+
+/// 構築物どうしの押し出し。items：[(Proxy, pos（書き換える）, vel, 剛体か), ...]（最初の n_active 個が動いている構築物）。
+/// 戻り値 (起きた眠っていた構築物の番号, 動いている物と触れているか, 速くぶつかった剛体か)
+#[pyfunction]
+#[pyo3(name = "contacts")]
+fn push_apart<'py>(
+    py: Python<'py>, items: Vec<(Bound<'py, Proxy>, RwF<'py>, RoF<'py>, bool)>, n_active: usize,
+) -> PyResult<(Vec<usize>, Vec<bool>, Vec<bool>)> {
+    let mut items = items;
+    let mut list = Vec::with_capacity(items.len());
+    for (k, (px, pos, vel, rigid)) in items.iter_mut().enumerate() {
+        let p = &px.get().p;
+        let pv = rw(pos, "pos")?;
+        let vl = ro(vel, "vel")?;
+        need(pv.len() == 24 * p.n && vl.len() == 24 * p.n, "contacts")?;
+        list.push(contacts::Item { p, pos: pv, vel: vl, active: k < n_active, rigid: *rigid });
+    }
+    let na = n_active.min(list.len());
+    let o = py.allow_threads(|| contacts::solve(&mut list, na));
+    Ok((o.woke, o.touch, o.want_soft))
+}
 
 // ---------------------------------------------------------------------------
 // 描画用のメッシュ
@@ -689,56 +970,11 @@ fn mesh_pack<'py>(
 // ---------------------------------------------------------------------------
 // 近い点の組（構築物どうしの押し出し用。scipy の cKDTree の代わり）
 // ---------------------------------------------------------------------------
-fn grid_key(p: &[f64], cell: f64) -> (i64, i64, i64) {
-    ((p[0] / cell).floor() as i64, (p[1] / cell).floor() as i64, (p[2] / cell).floor() as i64)
-}
-
-fn build_grid(pts: &[f64], cell: f64) -> HashMap<(i64, i64, i64), Vec<usize>> {
-    let mut g: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
-    for (i, p) in pts.chunks_exact(3).enumerate() {
-        if p.iter().all(|x| x.is_finite()) {
-            g.entry(grid_key(p, cell)).or_default().push(i);
-        }
-    }
-    g
-}
-
-fn within(a: &[f64], b: &[f64], r2: f64) -> bool {
-    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= r2
-}
-
 /// 点の集合の中で、距離 r 以内の組 (i < j)。i, j の順に並べて返す。
 #[pyfunction]
 fn pairs_within<'py>(py: Python<'py>, pts: RoF<'py>, r: f64) -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>)> {
     let p = ro(&pts, "pts")?;
-    let mut out: Vec<(usize, usize)> = py.allow_threads(|| {
-        let cell = r.max(1e-9);
-        let g = build_grid(p, cell);
-        let mut out = Vec::new();
-        let r2 = r * r;
-        for (i, pi) in p.chunks_exact(3).enumerate() {
-            if !pi.iter().all(|x| x.is_finite()) {
-                continue;
-            }
-            let k = grid_key(pi, cell);
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    for dz in -1..=1 {
-                        if let Some(list) = g.get(&(k.0 + dx, k.1 + dy, k.2 + dz)) {
-                            for &j in list {
-                                if j > i && within(pi, &p[3 * j..3 * j + 3], r2) {
-                                    out.push((i, j));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        out
-    });
-    out.sort_unstable();
+    let out = py.allow_threads(|| pairs::within_set(p, r));
     let (a, b): (Vec<i64>, Vec<i64>) = out.into_iter().map(|(i, j)| (i as i64, j as i64)).unzip();
     Ok((PyArray1::from_vec_bound(py, a), PyArray1::from_vec_bound(py, b)))
 }
@@ -747,33 +983,7 @@ fn pairs_within<'py>(py: Python<'py>, pts: RoF<'py>, r: f64) -> PyResult<(Bound<
 #[pyfunction]
 fn pairs_between<'py>(py: Python<'py>, a: RoF<'py>, b: RoF<'py>, r: f64) -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>)> {
     let (pa, pb) = (ro(&a, "a")?, ro(&b, "b")?);
-    let mut out: Vec<(usize, usize)> = py.allow_threads(|| {
-        let cell = r.max(1e-9);
-        let g = build_grid(pb, cell);
-        let r2 = r * r;
-        let mut out = Vec::new();
-        for (i, pi) in pa.chunks_exact(3).enumerate() {
-            if !pi.iter().all(|x| x.is_finite()) {
-                continue;
-            }
-            let k = grid_key(pi, cell);
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    for dz in -1..=1 {
-                        if let Some(list) = g.get(&(k.0 + dx, k.1 + dy, k.2 + dz)) {
-                            for &j in list {
-                                if within(pi, &pb[3 * j..3 * j + 3], r2) {
-                                    out.push((i, j));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        out
-    });
-    out.sort_unstable();
+    let out = py.allow_threads(|| pairs::between_sets(pa, pb, r));
     let (x, y): (Vec<i64>, Vec<i64>) = out.into_iter().map(|(i, j)| (i as i64, j as i64)).unzip();
     Ok((PyArray1::from_vec_bound(py, x), PyArray1::from_vec_bound(py, y)))
 }
@@ -804,5 +1014,8 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rigid_end, m)?)?;
     m.add_function(wrap_pyfunction!(nnls, m)?)?;
     m.add_function(wrap_pyfunction!(mesh_pack, m)?)?;
+    m.add_class::<Proxy>()?;
+    m.add_class::<ArtTopo>()?;
+    m.add_function(wrap_pyfunction!(push_apart, m)?)?;
     Ok(())
 }

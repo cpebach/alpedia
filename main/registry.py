@@ -156,7 +156,7 @@ class Registry:
                     if p2.exists():
                         p = p2
                     else:
-                        L.warning("[%s] %s/%s: %s '%s' が見つかりません", source, cat, id_, key, v)
+                        self._err(f"[{source}] {cat}/{id_}: {key} '{v}' が見つかりません")
                         p = None
                 merged[key] = str(p) if p else None
         merged["name"] = merged.get("name") or id_

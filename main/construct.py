@@ -73,6 +73,17 @@ from .planet import fcross  # noqa: E402
 NATIVE_STEP_OFF = os.environ.get("ALPEDIA_NATIVE_STEP") == "0"   # 比べるとき用：1サブステップまとめての Rust を使わない
 
 
+def _native_planets(planets):
+    """Rust に渡す惑星のリスト（Rust の地形が使えない惑星があれば None）。"""
+    pls = []
+    for pl in planets:
+        nat = pl._nat()
+        if nat is None:
+            return None
+        pls.append((nat, float(pl.bound), float(pl.lipschitz), float(pl.gm), float(pl.radius), bool(pl.has_water)))
+    return pls
+
+
 def native_core():
     from . import native
     return native.core
@@ -343,6 +354,8 @@ class Construct:
         if not self.n_vox:
             return
         if self.mode == "art":
+            if gscale is not None and self._native_art_begin(h, planets, gscale):
+                return
             return self._art_begin(h, gravity_fn, planets)
         if gscale is not None and self._native_begin(h, iters, planets, gscale):
             return
@@ -642,7 +655,11 @@ class Construct:
             self.vel = (self.pos - self._prev) / h
             return False
         if self.mode == "art":
-            self._art_end(h)
+            if getattr(self, "_nb_art", False):
+                self._nb_art = False
+                self._native_art_end(h)
+            else:
+                self._art_end(h)
             return False
         self.vel = (self.pos - self._prev) / h
         self._plasticity(h)
@@ -681,6 +698,29 @@ class Construct:
         self._nb_cache = (key, body)
         return body
 
+    def native_proxy(self):
+        """構築物どうしの押し出しに使う Rust の Proxy（形が変わったら作り直す）。"""
+        key = (self.version, self.n_vox, id(native_core()))
+        px = getattr(self, "_nproxy", None)
+        if px is not None and px[0] == key:
+            return px[1]
+        W = self.proxW.tocsr()
+        W.sort_indices()
+        n = self.n_vox
+        pairs = []
+        for key_ in list(self.links) + list(self.extras):
+            ia, ib = self.index.get(key_[0]), self.index.get(key_[1])
+            if ia is not None and ib is not None:
+                pairs.append((ia, ib))
+        links = np.asarray(pairs, np.int64).reshape(-1, 2)
+        inv = np.ascontiguousarray(W @ self.inv_mass[::8], dtype=np.float64)
+        obj = native_core().Proxy(n, float(self.size), np.ascontiguousarray(W.indptr, dtype=np.int64),
+                                  np.ascontiguousarray(W.indices, dtype=np.int64),
+                                  np.ascontiguousarray(W.data, dtype=np.float64), inv, links,
+                                  np.ascontiguousarray(self.mass, dtype=np.float64))
+        self._nproxy = (key, obj)
+        return obj
+
     def _rotor_angles(self):
         return [float(np.radians(float(r["dev"]["state"].get("angle", 0.0)))) for r in self.rotors]
 
@@ -697,16 +737,13 @@ class Construct:
         body = self._native_body()
         if body is None:
             return False
-        pls = []
-        for pl in planets:
-            nat = pl._nat()
-            if nat is None:
-                return False
-            pls.append((nat, float(pl.bound), float(pl.lipschitz), float(pl.gm), float(pl.radius), bool(pl.has_water)))
+        pls = _native_planets(planets)
+        if pls is None:
+            return False
         rigid = self.mode == "rigid"
         full = rigid and getattr(self, "_full_rigid", False)
-        if full and self.ext_colliders:
-            return False
+        if full and self.ext_colliders and not hasattr(native_core(), "ArtTopo"):
+            return False             # 古い版の Rust（MOD の箱を一緒に解けない）：Python で計算する
         if getattr(self, "_prev", None) is None or self._prev.shape != self.pos.shape:
             self._prev = self.pos.copy()
         self._contig("pos", "vel", "_prev", "force")
@@ -714,12 +751,18 @@ class Construct:
         cav = None if cav is None else np.ascontiguousarray(cav[0], dtype=np.int64)
         if rigid:
             rb = self.rb
-            want = body.rigid_begin(self.pos, self.vel, self._prev, self.force,
-                                    np.ascontiguousarray(rb["R"], dtype=np.float64),
-                                    np.ascontiguousarray(rb["Ib"], dtype=np.float64), pls, gscale, h, cav, bool(full),
-                                    float(self.IMPACT_SPEED), float(CONTACT_SOFT))
+            defer = bool(full and self.ext_colliders)
+            args = (self.pos, self.vel, self._prev, self.force, np.ascontiguousarray(rb["R"], dtype=np.float64),
+                    np.ascontiguousarray(rb["Ib"], dtype=np.float64), pls, gscale, h, cav, bool(full),
+                    float(self.IMPACT_SPEED), float(CONTACT_SOFT))
+            want = body.rigid_begin(*args, True) if defer else body.rigid_begin(*args)
             if want:
                 self._want_soft = True
+            if defer:
+                # 完全剛体で MOD の箱（街の建物など）に触れうるとき：箱との接触は MOD のプログラムで集め、地面と一緒に解く
+                self._native_full_contacts(body, pls, h)
+                self._nb_used = True
+                return True
         else:
             self._ensure_lastR()
             self._contig("rest", "act_scale", "_last_R", "_quat")
@@ -731,6 +774,116 @@ class Construct:
             self._collide_boxes(bs, h)
         self._nb_used = True
         return True
+
+    # ---- 関節つき剛体（完全剛体モードでアクチュエーターが動く間）の Rust 版 ----
+    def _native_art_topo(self):
+        core = native_core()
+        if core is None or not hasattr(core, "ArtTopo") or NATIVE_STEP_OFF:
+            return None
+        a = self.art
+        i64 = lambda x: np.ascontiguousarray(x, dtype=np.int64)  # noqa: E731
+        f64 = lambda x: np.ascontiguousarray(x, dtype=np.float64)  # noqa: E731
+        ex = a["exts"]
+        return core.ArtTopo(i64(a["vg"]), f64(a["invM"]), f64(a["IinvB"]), i64(a["ra"]), i64(a["rb"]),
+                            i64(a["A"]).reshape(-1, 4), i64(a["B"]).reshape(-1, 4), i64(a["C"]).reshape(-1, 8),
+                            i64([e[1] for e in ex]).reshape(-1, 4), f64([e[2] for e in ex]).reshape(-1, 3),
+                            f64([e[3] for e in ex]), int(self.ART_ITERS), int(self.ART_CONTACTS),
+                            float(self.MOTOR_STEP_X), float(self.MOTOR_HOLD_DEG))
+
+    def _art_contig(self):
+        a = self.art
+        for k in ("X", "R", "vl", "vl0", "applied", "ext_applied"):
+            v = a[k]
+            if not (isinstance(v, np.ndarray) and v.dtype == np.float64 and v.flags.c_contiguous and v.flags.writeable):
+                a[k] = np.array(v, dtype=np.float64, order="C")
+
+    def _native_art_begin(self, h, planets, gscale):
+        """_art_begin の Rust 版。MOD の箱との接触だけ Python で集めて渡す。使えないときは False。"""
+        a = getattr(self, "art", None)
+        if a is None or a["version"] != self.version or a["n"] != self.n_vox:
+            self._art_build()
+            a = self.art
+        nat, body = a.get("nat"), self._native_body()
+        pls = _native_planets(planets)
+        if nat is None or body is None or pls is None:
+            return False
+        if getattr(self, "_prev", None) is None or self._prev.shape != self.pos.shape:
+            self._prev = self.pos.copy()
+        self._contig("pos", "vel", "_prev", "force")
+        self._art_contig()
+        cav = self._cavity_neighbors() if any(p[5] for p in pls) else None
+        cav = None if cav is None else np.ascontiguousarray(cav[0], dtype=np.int64)
+        ex = a["exts"]
+        st = [self.devs[e[0]]["state"] if self.devs[e[0]] else {} for e in ex]
+        ext_want = [float(s_.get("ext", e[3])) for s_, e in zip(st, ex)]
+        ext_speed = [float(s_.get("ext_speed", 0.5)) for s_ in st]
+        rows, d = nat.predict(body, self.pos, self.vel, self._prev, self.force, a["X"], a["R"], a["vl"], a["vl0"],
+                              a["ext_applied"], ext_want, ext_speed, pls, gscale, h, cav)
+        a["defo"] = [(rows, d)] if len(rows) else []
+        # MOD の箱（街の建物など）との接触は、MOD のプログラムを呼ぶので Python で集める
+        boxes = list(self.ext_colliders)
+        P, D, N, VS, CI = [], [], [], [], []
+        for bi, bs in enumerate(boxes):
+            res = self._collide_boxes(bs, h, collect=True)
+            if res:
+                P.append(res[0]); D.append(res[1]); N.append(res[2]); VS.append(res[3])
+                CI.append(np.full(len(res[0]), bi))
+        cat = lambda L, sh, dt: (np.ascontiguousarray(np.concatenate(L), dtype=dt) if L  # noqa: E731
+                                 else np.zeros(sh, dt))
+        want = [float(dv["state"].get("angle", 0.0)) for dv in a["devs"]]
+        spd = [float(dv["state"].get("rot_speed", 90.0)) for dv in a["devs"]]
+        cg, cl, cn, lam, cp, ci = nat.solve(body, self.pos, self._prev, a["X"], a["R"], a["vl"], a["applied"], want,
+                                            spd, pls, h, cat(P, 0, np.int64), cat(D, 0, np.float64),
+                                            cat(N, (0, 3), np.float64), cat(VS, (0, 3), np.float64),
+                                            cat(CI, 0, np.int64))
+        a["contacts"] = (cg, cl, cn, lam)
+        # 動いている街（ステーション）を押した分の反動
+        if len(ci) and (ci >= 0).any():
+            for bi in np.unique(ci[ci >= 0]):
+                m_ = (ci == bi) & (lam > 0)
+                if m_.any():
+                    J = cn[m_] * (lam[m_] / h)[:, None]
+                    self.ext_events.append((boxes[bi][0], None, -J, self.pos[cp[m_]]))
+        self._nb_art = True
+        return True
+
+    def _native_art_end(self, h):
+        a = self.art
+        self._contig("pos", "vel", "_prev")
+        self._art_contig()
+        defo = a.get("defo") or []
+        rows = defo[0][0] if defo else np.zeros(0, np.int64)
+        d = defo[0][1] if defo else np.zeros((0, 3))
+        ct = a.get("contacts")
+        if ct is None:
+            ct = (np.zeros(0, np.int64), np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0))
+        a["nat"].end(self._native_body(), self.pos, self.vel, self._prev, a["X"], a["R"], a["vl"], rows, d, *ct, h)
+        a["defo"] = []
+        a["contacts"] = None
+
+    def _native_full_contacts(self, body, pls, h):
+        boxes = list(self.ext_colliders)
+        P, D, N, VS, CI = [], [], [], [], []
+        for bi, bs in enumerate(boxes):
+            res = self._collide_boxes(bs, h, collect=True)
+            if res:
+                P.append(res[0]); D.append(res[1]); N.append(res[2]); VS.append(res[3])
+                CI.append(np.full(len(res[0]), bi))
+        cat = lambda L, sh, dt: (np.ascontiguousarray(np.concatenate(L), dtype=dt) if L  # noqa: E731
+                                 else np.zeros(sh, dt))
+        want, cp, cn, lam, ci, pts = body.rigid_contacts(
+            self.pos, self._prev, self.vel, pls, h, float(self.IMPACT_SPEED), float(CONTACT_SOFT),
+            cat(P, 0, np.int64), cat(D, 0, np.float64), cat(N, (0, 3), np.float64), cat(VS, (0, 3), np.float64),
+            cat(CI, 0, np.int64))
+        if want:
+            self._want_soft = True
+        # 動いている街（ステーション）を押した分の反動
+        if len(ci) and (ci >= 0).any():
+            for bi in np.unique(ci[ci >= 0]):
+                m_ = (ci == bi) & (lam > 0)
+                if m_.any():
+                    J = cn[m_] * (lam[m_] / h)[:, None]
+                    self.ext_events.append((boxes[bi][0], None, -J, pts[m_]))
 
     def _native_end(self, h):
         if self.mode == "rigid":
@@ -1138,8 +1291,9 @@ class Construct:
                     "A": np.array(A, np.int64).reshape(-1, 4), "B": np.array(B, np.int64).reshape(-1, 4),
                     "C": np.array(C, np.int64).reshape(-1, 8), "devs": devs,
                     "applied": np.array([float(d["state"].get("angle", 0.0)) for d in devs]),
-                    "ext_applied": [e[3] for e in exts],
+                    "ext_applied": np.array([e[3] for e in exts], dtype=np.float64),
                     "gv": np.arange(len(vg), dtype=np.int64)}
+        self.art["nat"] = self._native_art_topo()
 
     def enter_art(self):
         self._art_build()

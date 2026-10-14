@@ -80,12 +80,12 @@ pub fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 #[inline]
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
 
 #[inline]
-fn v3(s: &[f64], i: usize) -> [f64; 3] {
+pub(crate) fn v3(s: &[f64], i: usize) -> [f64; 3] {
     [s[3 * i], s[3 * i + 1], s[3 * i + 2]]
 }
 
@@ -104,7 +104,7 @@ pub fn gravity(planets: &[PlanetCtx], p: [f64; 3], scale: f64) -> [f64; 3] {
 }
 
 /// 構築物が惑星の近くにあるか（construct._near_planet）
-fn near_planet(pos: &[f64], nvox: usize, size: f64, pl: &PlanetCtx) -> bool {
+pub(crate) fn near_planet(pos: &[f64], nvox: usize, size: f64, pl: &PlanetCtx) -> bool {
     let lim = (pl.bound + size * 2.0).powi(2);
     let mut m = f64::INFINITY;
     for i in 0..nvox {
@@ -176,7 +176,7 @@ pub fn collide_planet(
 }
 
 /// 重心から見て「上」と、その方向の地表半径（地面から高い頂点を省くため）
-fn ground_ref(pos: &[f64], pl: &PlanetCtx) -> (Option<[f64; 3]>, f64) {
+pub(crate) fn ground_ref(pos: &[f64], pl: &PlanetCtx) -> (Option<[f64; 3]>, f64) {
     let nv = pos.len() / 3;
     let mut m = [0.0; 3];
     for i in 0..nv {
@@ -193,7 +193,7 @@ fn ground_ref(pos: &[f64], pl: &PlanetCtx) -> (Option<[f64; 3]>, f64) {
     (Some(up), pl.shape.sample(up)[0])
 }
 
-fn cores(pos: &[f64], t: &Topo) -> Vec<f64> {
+pub(crate) fn cores(pos: &[f64], t: &Topo) -> Vec<f64> {
     let mut k = vec![0.0; pos.len()];
     kernels::contact_cores(pos, &t.ctype, &t.cidx, &mut k);
     k
@@ -277,7 +277,7 @@ fn buoyancy(pos: &[f64], vel: &mut [f64], t: &Topo, pl: &PlanetCtx, planets: &[P
 
 /// 重力・外力・浮力で速度を進める（ブロックごと・剛体の両方の最初の部分）
 #[allow(clippy::too_many_arguments)]
-fn integrate_forces(
+pub(crate) fn integrate_forces(
     pos: &[f64], vel: &mut [f64], force: &[f64], t: &Topo, planets: &[PlanetCtx], scale: f64, h: f64, cav: &[[i64; 6]],
 ) {
     let nv = pos.len() / 3;
@@ -503,7 +503,7 @@ fn plasticity(pos: &[f64], rest: &mut [f64], act_scale: &[f64], last_r: &[f64], 
 // ---------------------------------------------------------------------------
 // 剛体として動いている構築物
 // ---------------------------------------------------------------------------
-fn mass_center(pos: &[f64], mass: &[f64]) -> ([f64; 3], f64) {
+pub(crate) fn mass_center(pos: &[f64], mass: &[f64]) -> ([f64; 3], f64) {
     let mut x = [0.0; 3];
     let mut msum = 0.0;
     for i in 0..mass.len() {
@@ -515,7 +515,7 @@ fn mass_center(pos: &[f64], mass: &[f64]) -> ([f64; 3], f64) {
     ([x[0] / msum, x[1] / msum, x[2] / msum], msum)
 }
 
-fn m3(r: &[f64]) -> Matrix3<f64> {
+pub(crate) fn m3(r: &[f64]) -> Matrix3<f64> {
     Matrix3::new(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8])
 }
 
@@ -524,7 +524,7 @@ fn m3(r: &[f64]) -> Matrix3<f64> {
 #[allow(clippy::too_many_arguments)]
 pub fn rigid_begin(
     pos: &mut [f64], vel: &mut [f64], prev: &mut [f64], force: &[f64], rb_r: &[f64], rb_ib: &[f64], t: &Topo,
-    planets: &[PlanetCtx], scale: f64, h: f64, cav: &[[i64; 6]], full: bool, impact_speed: f64, soft: f64,
+    planets: &[PlanetCtx], scale: f64, h: f64, cav: &[[i64; 6]], full: bool, impact_speed: f64, soft: f64, defer: bool,
 ) -> bool {
     integrate_forces(pos, vel, force, t, planets, scale, h, cav);
     let nv = pos.len() / 3;
@@ -560,18 +560,11 @@ pub fn rigid_begin(
     let r = t.size * 0.5;
     let mut want = false;
     if full {
-        let mut pts: Vec<(usize, f64, [f64; 3])> = Vec::new();
-        for pl in &near {
-            let k = cores(pos, t);
-            let (up, rs) = ground_ref(pos, pl);
-            let (ws, hit) = collide_planet(pos, prev, vel, &k, &t.fric, r, pl, up, rs, true, impact_speed, soft, false);
-            want |= ws;
-            pts.extend(hit.into_iter().map(|(i, d, n)| (i, -d, n)));
+        if defer {
+            return false; // 接触は MOD の箱と一緒に rigid_contacts で解く
         }
-        if !pts.is_empty() {
-            rigid_contacts(pos, prev, t, pts, h);
-        }
-        return want;
+        let (ws, _) = full_contacts(pos, prev, vel, t, planets, h, impact_speed, soft, Vec::new());
+        return ws;
     }
     for pl in near {
         let k = cores(pos, t);
@@ -582,9 +575,38 @@ pub fn rigid_begin(
     want
 }
 
-/// 完全剛体モードの地面との接触（construct._rigid_ground_contacts の惑星の部分）
-fn rigid_contacts(pos: &mut [f64], prev: &[f64], t: &Topo, mut pts: Vec<(usize, f64, [f64; 3])>, h: f64) {
-    let _ = h;
+/// 完全剛体モードの接触点：(頂点, めり込み, 法線, 相手の速度, MOD の箱の番号（地面は -1）)
+pub type RContact = (usize, f64, [f64; 3], [f64; 3], i64);
+
+/// 使った接触点と押し返しの大きさ・解く前のその点の位置
+pub type RUsed = (RContact, f64, [f64; 3]);
+
+/// 完全剛体モードの接触（construct._rigid_ground_contacts）。地面の接触を集め、boxes（MOD の箱）と合わせて解く。
+/// 戻り値 (速くぶつかりそうか, [(使った接触点, 押し返しの大きさ)])
+#[allow(clippy::too_many_arguments)]
+pub fn full_contacts(
+    pos: &mut [f64], prev: &[f64], vel: &[f64], t: &Topo, planets: &[PlanetCtx], h: f64, impact_speed: f64, soft: f64,
+    boxes: Vec<RContact>,
+) -> (bool, Vec<RUsed>) {
+    let r = t.size * 0.5;
+    let mut want = false;
+    let mut pts: Vec<RContact> = Vec::new();
+    let near: Vec<&PlanetCtx> = planets.iter().filter(|pl| near_planet(pos, t.nvox, t.size, pl)).collect();
+    for pl in near {
+        let k = cores(pos, t);
+        let (up, rs) = ground_ref(pos, pl);
+        let (ws, hit) = collide_planet(pos, prev, vel, &k, &t.fric, r, pl, up, rs, true, impact_speed, soft, false);
+        want |= ws;
+        pts.extend(hit.into_iter().map(|(i, d, n)| (i, -d, n, [0.0; 3], -1)));
+    }
+    pts.extend(boxes);
+    if pts.is_empty() {
+        return (want, Vec::new());
+    }
+    (want, rigid_contacts(pos, prev, t, pts, h))
+}
+
+fn rigid_contacts(pos: &mut [f64], prev: &[f64], t: &Topo, mut pts: Vec<RContact>, h: f64) -> Vec<RUsed> {
     // 深い所から 32 点まで
     let mut order: Vec<usize> = (0..pts.len()).collect();
     order.sort_by(|&a, &b| pts[b].1.partial_cmp(&pts[a].1).unwrap_or(std::cmp::Ordering::Equal));
@@ -611,7 +633,7 @@ fn rigid_contacts(pos: &mut [f64], prev: &[f64], t: &Topo, mut pts: Vec<(usize, 
     let n = pts.len();
     let rk: Vec<Vector3<f64>> = pts
         .iter()
-        .map(|&(i, _, _)| Vector3::new(pos[3 * i] - x[0], pos[3 * i + 1] - x[1], pos[3 * i + 2] - x[2]))
+        .map(|&(i, ..)| Vector3::new(pos[3 * i] - x[0], pos[3 * i + 1] - x[1], pos[3 * i + 2] - x[2]))
         .collect();
     let nn: Vec<Vector3<f64>> = pts.iter().map(|p| Vector3::new(p.2[0], p.2[1], p.2[2])).collect();
     let rn: Vec<Vector3<f64>> = (0..n).map(|k| rk[k].cross(&nn[k])).collect();
@@ -639,9 +661,15 @@ fn rigid_contacts(pos: &mut [f64], prev: &[f64], t: &Topo, mut pts: Vec<(usize, 
     // 摩擦
     let base: Vec<Vector3<f64>> = pts
         .iter()
-        .map(|&(i, _, _)| Vector3::new(pos[3 * i] - prev[3 * i], pos[3 * i + 1] - prev[3 * i + 1], pos[3 * i + 2] - prev[3 * i + 2]))
+        .map(|&(i, _, _, vs, _)| {
+            Vector3::new(
+                pos[3 * i] - prev[3 * i] - vs[0] * h,
+                pos[3 * i + 1] - prev[3 * i + 1] - vs[1] * h,
+                pos[3 * i + 2] - prev[3 * i + 2] - vs[2] * h,
+            )
+        })
         .collect();
-    let fr: Vec<f64> = pts.iter().map(|&(i, _, _)| t.fric[i].clamp(0.0, 1.0)).collect();
+    let fr: Vec<f64> = pts.iter().map(|&(i, ..)| t.fric[i].clamp(0.0, 1.0)).collect();
     for _ in 0..2 {
         for k in 0..n {
             if lam[k] <= 0.0 {
@@ -669,6 +697,7 @@ fn rigid_contacts(pos: &mut [f64], prev: &[f64], t: &Topo, mut pts: Vec<(usize, 
     } else {
         Matrix3::identity()
     };
+    let used: Vec<RUsed> = pts.iter().enumerate().map(|(k, &p)| (p, lam[k], v3(pos, p.0))).collect();
     for i in 0..nv {
         let r = Vector3::new(pos[3 * i] - x[0], pos[3 * i + 1] - x[1], pos[3 * i + 2] - x[2]);
         let r2 = rw * r;
@@ -676,6 +705,7 @@ fn rigid_contacts(pos: &mut [f64], prev: &[f64], t: &Topo, mut pts: Vec<(usize, 
             pos[3 * i + a] = x[a] + dx[a] + r2[a];
         }
     }
+    used
 }
 
 /// 非負の最小二乗（Lawson–Hanson）：min |A x - b|, x >= 0

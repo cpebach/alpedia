@@ -72,6 +72,32 @@ def _write_json(path, data):
     tmp.replace(path)
 
 
+def missing_references(reg, settings, cons, mods):
+    """ワールドが使っているのに定義が無いもの（MOD を外した・MOD の ID が変わった など）。"""
+    out = []
+    hint = "（その MOD を入れ直すか、MOD を外す前のバックアップに戻してください）"
+    for pd in settings.get("planets", []):
+        if reg.get("planets", pd.get("def")) is None:
+            out.append(f"惑星 '{pd.get('def')}' の定義がありません{hint}")
+    pl = settings.get("player", "default")
+    if pl != "default" and reg.get("players", pl) is None:
+        out.append(f"プレイヤーの見た目 '{pl}' の定義がありません{hint}")
+    for cd in cons:
+        mats, devs = set(), set()
+        for v in cd.get("voxels", []):
+            if len(v) > 3 and v[3] not in reg.defs["materials"]:
+                mats.add(v[3])
+            d = v[4] if len(v) > 4 else None
+            if d and d.get("def") not in reg.defs["devices"]:
+                devs.add(d.get("def"))
+        name = cd.get("name", cd.get("id"))
+        if mats:
+            out.append(f"構築物「{name}」の素材 {', '.join(sorted(map(str, mats)))} の定義がありません{hint}")
+        if devs:
+            out.append(f"構築物「{name}」の機器 {', '.join(sorted(map(str, devs)))} の定義がありません{hint}")
+    return out
+
+
 class World:
     def __init__(self, name, cfg, addons=None):
         self.name = name
@@ -110,29 +136,30 @@ class World:
         if upgraded:
             L.info("古い形式のワールド：クリエイティブ／街の設定を MOD に読み替えました: %s", mods)
         self.mods = list(mods)
+        # MOD はここで一括で読み込む（定義・プログラムの全ファイル）。エラーがあればワールドを始めない
+        from . import modcode
         self.registry = Registry().load(mods)
+        errors = self.registry.errors
         if self._given_addons is None:
-            from . import modcode
-            self.addons = modcode.world_addons(self.registry.loaded_mods, self.registry.errors)
-        for err in self.registry.errors:
-            self.message("⚠ " + err)
+            modcode.load(self.registry.loaded_mods, errors)
+            self.addons = modcode.world_addons(self.registry.loaded_mods, errors)
         extra = [k for a in self.addons for k in a.settings_keys]
         for msg in savefmt.check_world(s, extra):
             L.warning("保存形式: %s", msg)
         self.settings = {**DEFAULT_SETTINGS, **s}
         self.settings["cleanup"] = {**DEFAULT_SETTINGS["cleanup"], **s.get("cleanup", {})}
         self.time = float(self.settings.get("time", 0.0))
+        cons = _read_json(self.dir / "constructs.json", [])
+        errors += missing_references(self.registry, self.settings, cons, self.mods)
+        if errors:
+            raise modcode.ModLoadError(errors)
         self.planets = []
         for pd in self.settings["planets"]:
             base = self.registry.get("planets", pd["def"])
-            if base is None:
-                L.error("惑星定義 '%s' がありません（スキップ）", pd["def"])
-                continue
             p = make_planet(base, pd.get("position", [0, 0, 0]), pd.get("override"))
             p.craters = [list(c) for c in pd.get("craters", [])]
             p.defn_override = pd.get("override")
             self.planets.append(p)
-        cons = _read_json(self.dir / "constructs.json", [])
         spawn = _read_json(self.dir / "spawn.json", {})
         for msg in [m for cd in cons for m in savefmt.check_construct(cd)] + savefmt.check_spawn(spawn):
             L.warning("保存形式: %s", msg)
@@ -428,9 +455,13 @@ class World:
     def _voxel_collisions(self, active, sleeping=()):
         """構築物どうし（と、同じ構築物の結合していないボクセルどうし）の押し出し。
         形は球（ボクセル中心）＋結合部（線の中点・三角形の重心の球）で近似する。
-        押し出された眠っている構築物のリストを返す。"""
+        押し出された眠っている構築物のリストを返す。Rust の物理コアがあれば、まとめて Rust で計算する。"""
         if not active:
             return []
+        from . import native
+        from .construct import NATIVE_STEP_OFF
+        if native.core is not None and hasattr(native.core, "contacts") and not NATIVE_STEP_OFF:
+            return self._voxel_collisions_native(native.core, active, sleeping)
         cons = list(active) + list(sleeping)
         n_active = len(active)
         pts, owner, row, is_ctr, inv, sizes = [], [], [], [], [], []
@@ -586,6 +617,21 @@ class World:
                 woke.add(oa)
             if ob >= n_active:
                 woke.add(ob)
+        return [cons[k] for k in woke]
+
+    def _voxel_collisions_native(self, core, active, sleeping):
+        """_voxel_collisions の Rust 版（同じ計算を1回の呼び出しで）。"""
+        cons = list(active) + list(sleeping)
+        items = []
+        for c in cons:
+            c._contig("pos", "vel")
+            items.append((c.native_proxy(), c.pos, c.vel, c.mode == "rigid"))
+        woke, touch, soft = core.contacts(items, len(active))
+        for c, t, w in zip(cons, touch, soft):
+            if t:
+                c._touch_moving = True
+            if w:
+                c._want_soft = True
         return [cons[k] for k in woke]
 
     def _cleanup(self, elapsed):

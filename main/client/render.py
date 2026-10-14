@@ -99,6 +99,24 @@ def shade(normals, colors):
     return colors * k[:, None]
 
 
+def preload(loader, registry):
+    """定義（本体と MOD）が使うテクスチャを全部読み込んでおく。読めないものはエラーのリストで返す。
+    アイコン用の画像もここで読む（プレイ中に MOD のファイルを読みに行かない）。"""
+    from . import icons
+    errors = []
+    paths_ = [EDGE_TEXTURE, DEVICE_TEXTURE]
+    for cat in ("materials", "devices", "planets", "players"):
+        for id_, d in registry.defs[cat].items():
+            if d.get("texture"):
+                paths_.append(d["texture"])
+    for p in dict.fromkeys(x for x in paths_ if x):
+        if load_texture(loader, p) is None:
+            errors.append(f"テクスチャ '{p}' を読み込めません")
+        if icons._texture_array(p) is None:
+            errors.append(f"テクスチャ '{p}' を画像として読めません")
+    return list(dict.fromkeys(errors))
+
+
 # 見た目の設定（game が config の graphics から入れる）
 STYLE = {"edges": True, "ao": True}
 EDGE_TEXTURE = None          # ブロックの輪郭の線のテクスチャ（game が sauce/textures/px_edge.png を入れる）

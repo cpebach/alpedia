@@ -5,7 +5,7 @@
 use crate::kernels::polar;
 
 #[inline]
-fn rot_left(r: &mut [f64], px: f64, py: f64, pz: f64) {
+pub(crate) fn rot_left(r: &mut [f64], px: f64, py: f64, pz: f64) {
     let th = (px * px + py * py + pz * pz).sqrt();
     if th < 1e-14 {
         return;
@@ -28,7 +28,7 @@ fn rot_left(r: &mut [f64], px: f64, py: f64, pz: f64) {
 
 /// ワールドの逆慣性 × v（= R Iinv_b R^T v）
 #[inline]
-fn iw(r: &[f64], ib: &[f64], g: usize, vx: f64, vy: f64, vz: f64) -> (f64, f64, f64) {
+pub(crate) fn iw(r: &[f64], ib: &[f64], g: usize, vx: f64, vy: f64, vz: f64) -> (f64, f64, f64) {
     let rg = &r[9 * g..9 * g + 9];
     let i = &ib[9 * g..9 * g + 9];
     let ax = rg[0] * vx + rg[3] * vy + rg[6] * vz;
