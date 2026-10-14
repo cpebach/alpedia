@@ -396,12 +396,12 @@ class MainMenu:
         self._text("地球型：山・洞窟・海・池がある（チュートリアルは常に球体）", (0.2, y - 0.105), 0.6,
                    col=U["color"].light_gray)
         y -= 0.07
-        self._stepper("ボクセルサイズ", y - 0.14, [0.25, 0.5, 1.0, 2.0], 0.5, lambda v: f"{v} m",
+        self._stepper("ボクセルサイズ", y - 0.07, [0.25, 0.5, 1.0, 2.0], 0.5, lambda v: f"{v} m",
                       lambda v: opts.__setitem__("voxel_size", v))
-        self._stepper("重力倍率", y - 0.21, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], 1.0, lambda v: f"×{v}",
+        self._stepper("重力倍率", y - 0.14, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], 1.0, lambda v: f"×{v}",
                       lambda v: opts.__setitem__("gravity_scale", v))
-        self._toggle("構築物の自動削除", y - 0.28, True, lambda v: opts.__setitem__("cleanup", v))
-        self._mod_toggles(y - 0.36, opts["mods"])
+        self._toggle("構築物の自動削除", y - 0.21, True, lambda v: opts.__setitem__("cleanup", v))
+        self._mod_toggles(y - 0.30, opts["mods"])
 
         def create(play):
             name = field.text_field.text.strip()

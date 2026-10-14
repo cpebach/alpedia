@@ -14,7 +14,9 @@ Minecraft と KSP を組み合わせたような、物理演算付きボクセ�
 ### メニュー画面
 
 - **ワールド一覧**: クリックで選択、選択中をもう一度クリックするか「遊ぶ」で開始
-- **新規作成**: 名前（半角英数字）、テンプレート（空／チュートリアル）、惑星（球体／地球型）、クリエイティブ、ボクセルサイズ、重力倍率、自動削除、MOD を選んで作成
+- **新規作成**: 名前（半角英数字）、テンプレート（空／チュートリアル）、惑星（球体／地球型）、ボクセルサイズ、重力倍率、自動削除、MOD を選んで作成
+- **MOD**: サバイバル（資源）・サイバーパンクの街はどちらも MOD です。ワールドごとに新規作成／ワールド設定の MOD 選択で入れます
+  （サバイバルを入れないワールドはクリエイティブ。取引・部屋は「街」と「サバイバル」を両方入れると使えます）
 - **ワールド設定**: 選択中のワールドの上記設定と、自動削除の距離・時間・頂点数、MOD の ON/OFF を変更
 - **削除**: 確認画面のあと、ワールドのフォルダごと削除（元に戻せません）
 - **ゲーム設定**: 解像度・フルスクリーン・視野角・描画距離・地表の細かさ・マウス感度・物理計算の精度（config/settings.json に保存）
@@ -95,15 +97,15 @@ main/     本体コード（下の「コード構成」）
 tests/    自動テスト（python -m unittest discover -s tests）
 saves/    セーブデータ
   <ワールド名>/
-    world.json       ワールド設定（惑星、クリエイティブ、自動削除など）
+    world.json       ワールド設定（惑星、自動削除など）
     constructs.json  構築物のデータ（ボクセル・機器・結合・資源）
     spawn.json       構築物の初期位置・初期速度・向き
-    mods.json        このワールドに適用する MOD
+    mods.json        このワールドに適用する MOD（サバイバル・街もここ）
     player.json      プレイヤーの状態
     scripts/         コンピューター用 Python スクリプト（README.txt に API 一覧）
     exports/         OBJ 出力先
     imports/         OBJ 読み込み元
-mods/     MOD（書き方は mods/README.md、例は mods/example_mod）
+mods/     MOD（survival＝サバイバル、city＝街、example_mod＝定義だけの例。書き方は mods/README.md）
 sauce/    本体のテクスチャ（textures/）と基本定義（base/）
 logs/     ログ（latest.log と日時付きログ）
 config/   設定（settings.json）
@@ -170,7 +172,7 @@ config/   設定（settings.json）
     **OK** で目の前に置きます。何もせずやめるときは**閉じる**（または Esc）。
 - **世界の広さ**: 制限なし（描画は浮動原点）。`world.json` の `cleanup` で、プレイヤーから一定距離以上・一定時間・
   電力なし・頂点数以下の構築物を自動削除します（`"enabled": false` で無効化）。
-- **サバイバル**: `world.json` の `"creative": false`（新規作成で選択）で、設置に資源が必要になります。詳しくは下の「サバイバル」。
+- **サバイバル**: サバイバル MOD（`mods/survival`）を入れたワールドでは、設置に資源が必要になります。詳しくは下の「サバイバル」。
 
 ## サイバーパンクの街
 
@@ -199,7 +201,7 @@ config/   設定（settings.json）
     固定した構築物の推進機を噴かすと街ごと加速し、軌道を変えたり落としたりできます（例：推進機2基で約10秒噴かすと近点が約200 m 下がる）。
   - 地面に落ちると、ぶつかった建物が壊れ、止まった所で「墜落した街」になります（台座は残ります）。
 - **保存**: 壊れた建物と軌道都市の位置・速度だけを `world.json` の `city_state` に保存します。
-  ワールド設定の「サイバーパンクの街」で ON/OFF（既存のワールドでも ON。チュートリアルは OFF）。
+  街は MOD（`mods/city`）です。ワールド設定の MOD 選択で「サイバーパンクの街」を入れると作られます。
   既存のワールドで、読み込んだ時点で構築物と重なる建物は最初から取り除き、構築物が街の地面（舗装・階段）と重なる場合はその街ごと作りません。
 
 ## 街の暮らし（通貨・NPC・取引・部屋）
@@ -250,6 +252,7 @@ config/   設定（settings.json）
 
 ## サバイバル
 
+サバイバル MOD（`mods/survival`）を入れたワールドです。入れないワールドがクリエイティブです。
 クリエイティブとの違いは「置くのに資源が要る」「ジェットパックに手持ちの燃料が要る」の2つだけです。
 
 - **最初の所持品**: 鉄 250・ケイ砂 40・機械部品 12・燃料 60。精錬機（鉄100）・手回し発電機・太陽光パネル・タンクを
@@ -323,26 +326,29 @@ config/   設定（settings.json）
 - 初回起動時だけ変換に数十秒かかります（裏で行うので、その間も遊べます。2回目以降は保存済みを使うので数秒）。
 - `config/settings.json` の `physics.threads` で使うスレッド数を指定できます（0 = 自動）。
 
-## コード構成（コア・拡張・画面）
+## コード構成（コア・MOD・画面）
 
 Rust などへの書き直しに向けて、物理とワールドの「コア」と、それ以外をはっきり分けています。
 
 | 区分 | 場所 | 中身 |
 |---|---|---|
 | コア | `main/` 直下 | ワールド（`world.py`）・構築物と物理（`construct.py`, `fastphys.py`, `shape.py`, `geom.py`）・機器（`devices.py`, `actuator.py`, `airtight.py`）・惑星・プレイヤー・無線・定義の読み込み |
-| コアの決まりごと | `hooks.py` / `devstate.py` / `savefmt.py` / `control.py` | 拡張の口／機器の状態の形／セーブの形／スクリプトから構築物を読み書きする窓口 |
+| コアの決まりごと | `hooks.py` / `modcode.py` / `devstate.py` / `savefmt.py` / `control.py` | MOD のプログラムの口／その読み込み／機器の状態の形／セーブの形／スクリプトから構築物を読み書きする窓口 |
 | スクリプト | `scripting.py`, `blocks.py` | `api` は `control.Port` だけを通して構築物を読み書きする |
-| 拡張 | `main/addons/` | 街パック（`addons/city/`：街・暮らしと経済・政治・その画面）。`addons/__init__.py` の `install()` で登録 |
-| 画面 | `main/client/` | ursina による描画と操作。拡張の画面は `client/addon_hooks.py` の口で足す |
+| MOD | `mods/` | 定義（JSON）とプログラム（`code/`）。本体に入っている MOD：サバイバル（`mods/survival`：資源のルール）、街（`mods/city`：街・暮らしと経済・政治・その画面） |
+| 画面 | `main/client/` | ursina による描画と操作。MOD の画面は `client/addon_hooks.py` の口で足す |
 | 中身 | `content.py`, `tutorial*.py` | スクリプトの説明・サンプル、チュートリアルのワールド |
 
-- コアは `main.addons` と `main.client` を読み込みません（`tests/test_core.py` が確かめます）。
-- 拡張は `hooks.Addon` を継承し、当たり判定の箱（`colliders`）・物理の前後（`before_physics` / `after_physics`）・
+- コアは MOD のプログラムと `main.client` を読み込みません（`tests/test_core.py` が確かめます）。
+- MOD のプログラムは `hooks.Addon` を継承し、当たり判定の箱（`colliders`）・物理の前後（`before_physics` / `after_physics`）・
   視線（`raycast`）・プレイヤーの押し出し（`push_sphere`）・E の操作（`interact`）・置いたとき（`on_placed`）・
-  読み込み/保存（`on_load` / `on_save`）の口を必要なものだけ使います。
+  読み込み/保存（`on_load` / `on_save`）、資源のルール（`pay` / `refund` / `on_dig` / `on_water` / `interact_device` / `jetpack`）の口を
+  必要なものだけ使います。書き方は `mods/README.md`。
 - 機器の状態（`state`）に入れてよい項目と型は `devstate.py` の表で決まっています。読み込み時に形をそろえ、
   計算中だけの項目（推進機の噴射量など）は保存しません。セーブの各ファイルの形は `savefmt.py` で調べます（違う所はログに出ます）。
-- 自動テスト: `python -m unittest discover -s tests -v`（コアだけで動く物理・スクリプト・無線・保存・拡張の口と、街パックを画面なしで読み込むテスト）。
+- 自動テスト: `python -m unittest discover -s tests -v`（コアだけで動く物理・スクリプト・無線・保存・MOD の口と、サバイバル・街の MOD を画面なしで読み込むテスト）。
+- 古い形式のワールド（world.json に `creative` / `cities` があるもの）は、読み込むときに MOD に読み替えます
+  （サバイバルだったら survival、街ありだったら city。保存すると新しい形式になります）。
 
 ## 現時点の制限（今後の拡張ポイント）
 
