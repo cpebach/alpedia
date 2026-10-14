@@ -601,15 +601,50 @@ class PlanetView:
         self.base[:, 10:12] = 0
         self.tris = np.concatenate(tris)
         self.dirs = dirs
+        self.pos = pos
         self.cut = None
+        self.frame_key = None
         e = np.linalg.norm(pos[self.tris[:, 0]] - pos[self.tris[:, 2]], axis=1).max()
         # プレイヤーのまわりは詳細な地表があるので、遠景の球をくり抜く（洞窟や穴を覆わないように）
         self.CUT = max(0.0, 46.0 - e)
         self.mesh.set(self.base, self.tris)
 
-    def update(self, origin, player_pos=None):
+    SINK = 60.0   # 詳細な地表の下に沈める深さ (m)
+
+    def _sunk(self, frame):
+        """詳細な地表（TerrainPatch）の真下にある遠景の頂点を深く沈めた頂点データ。
+        遠景の球は池・掘削跡・洞窟を含まない粗い形なので、そのままだとくぼみの上に平らな面が重なって見える。
+        沈めるのは、その頂点につながる三角形が全部詳細な地表の範囲に収まる頂点だけ（範囲の外に段差やすき間を作らない）。"""
+        if frame is None:
+            return self.base
+        up, t1, t2, R0, half = frame
+        q = self.pos
+        c = q @ up
+        with np.errstate(divide="ignore", invalid="ignore"):
+            a = (q @ t1) * R0 / c
+            b = (q @ t2) * R0 / c
+        inside = (c > 0) & (np.abs(a) < half) & (np.abs(b) < half)
+        if not inside.any():
+            return self.base
+        bad = np.zeros(len(q), bool)
+        bad[self.tris[~inside[self.tris].all(axis=1)].ravel()] = True
+        sink = inside & ~bad
+        if not sink.any():
+            return self.base
+        v = self.base.copy()
+        v[sink, 0:3] = q[sink] - self.dirs[sink] * self.SINK
+        return v
+
+    def update(self, origin, player_pos=None, patch_frame=None):
+        """patch_frame：この惑星の詳細な地表の範囲 (上, 接線1, 接線2, 半径, 半幅) か None。"""
         c = self.p.center - origin
         self.root.setPos(float(c[0]), float(c[1]), float(c[2]))
+        fkey = None if patch_frame is None else tuple(np.round(np.concatenate(
+            [patch_frame[0], patch_frame[1], [patch_frame[3], patch_frame[4]]]), 6))
+        if fkey != self.frame_key:
+            self.frame_key = fkey
+            self.verts = self._sunk(patch_frame)
+            self.cut = "redo"
         cut = None
         if player_pos is not None:
             rel = np.asarray(player_pos) - self.p.center
@@ -618,14 +653,15 @@ class PlanetView:
                 cut = rel / max(rn, 1e-9)
         if cut is None and self.cut is None:
             return
-        if cut is not None and self.cut is not None and np.linalg.norm(cut - self.cut) * self.p.radius < 4.0:
+        redo = isinstance(self.cut, str)
+        if not redo and cut is not None and self.cut is not None and np.linalg.norm(cut - self.cut) * self.p.radius < 4.0:
             return
         self.cut = cut
         tris = self.tris
         if cut is not None:
             near = np.linalg.norm(self.dirs - cut, axis=1) * self.p.radius < self.CUT
             tris = tris[~near[tris].any(axis=1)]
-        self.mesh.set(self.base, tris)
+        self.mesh.set(getattr(self, "verts", self.base), tris)
 
 
 class TerrainPatch:
@@ -648,10 +684,18 @@ class TerrainPatch:
         self.carve_version = -1
         self.center = np.zeros(3)
 
+    def frame_for(self, planet):
+        """この惑星の上に詳細な地表を出しているなら (上, 接線1, 接線2, 半径, 半幅)（遠景の球を沈める範囲）。"""
+        if self.planet is not planet or not getattr(self, "shown", False) or self.anchor is None:
+            return None
+        return self.frame
+
     def update(self, planet, player_pos, origin, carve=None):
         if planet is None or np.linalg.norm(player_pos - planet.center) - planet.radius > 400:
             self.root.hide()
+            self.shown = False
             return
+        self.shown = True
         self.root.show()
         cv = carve.version if carve is not None else -1
         need = (self.planet is not planet or self.anchor is None or self.version != planet.version
@@ -675,6 +719,7 @@ class TerrainPatch:
         t1 /= np.linalg.norm(t1)
         t2 = np.cross(up, t1)
         n = self.cells
+        self.frame = (up, t1, t2, R0, n * self.step)
         g = (np.arange(-n, n + 1)) * self.step
         gx, gy = np.meshgrid(g, g, indexing="ij")
         d = up[None] * R0 + t1[None] * gx.reshape(-1, 1) + t2[None] * gy.reshape(-1, 1)

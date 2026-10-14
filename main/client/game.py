@@ -574,11 +574,11 @@ class Game:
             v.update_displays(origin, far)
         for a in self.addons:
             a.update(origin, far)
-        for pv in self.planet_views:
-            pv.update(origin, w.player.pos)
         npl = w.nearest_planet(w.player.pos)
         self.carve.update(npl, w.player.pos, origin)
         self.patch.update(npl, w.player.pos, origin, self.carve)
+        for pv in self.planet_views:
+            pv.update(origin, w.player.pos, self.patch.frame_for(pv.p))
         self.underwater.enabled = bool(npl is not None and npl.has_water
                                        and npl.water_depth(origin[None])[0] > 0.02)
         # プレイヤーの体（三人称）
