@@ -244,7 +244,20 @@ class EarthPlanet(Planet):
         g = g + 4096
         return (g[..., 0] * 8192 + g[..., 1]) * 8192 + g[..., 2]
 
+    def _native_params(self):
+        earth = {"sea": self.sea, "mountain_h": self.mountain_h, "hill_h": self.hill_h, "flat_r": self.flat_r,
+                 "spawn_h": self.spawn_h, "cell": self.CELL}
+        for k in ("ponds_dir", "ponds_rad", "ponds_depth", "ponds_level", "cave_a", "cave_b", "cave_ra", "cave_rb"):
+            earth[k] = np.ascontiguousarray(getattr(self, k), dtype=np.float64)
+        for k, v in (("ck", self._ck), ("cstart", self._cstart), ("cend", self._cend), ("ccap", self._ccap)):
+            earth[k] = np.ascontiguousarray(v, dtype=np.int64)
+        return self.radius, self.amp, self.freq, self.seed, earth
+
     def cave_dist(self, q, grad=False):
+        nat = self._nat()
+        if nat is not None:
+            d, g = nat.cave_dist(np.ascontiguousarray(q, dtype=np.float64).reshape(-1, 3))
+            return (d, g) if grad else d
         q = np.asarray(q, dtype=np.float64)
         n = len(q)
         out = np.full(n, 1e9)

@@ -1,0 +1,20 @@
+[package]
+name = "alpedia_core"
+version = "0.1.0"
+edition = "2021"
+description = "Alpedia の物理コア（Rust）。Python から alpedia_core として使う。"
+
+[lib]
+name = "alpedia_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310", "generate-import-lib"] }
+numpy = "0.22"
+rayon = "1.10"
+nalgebra = "0.33"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

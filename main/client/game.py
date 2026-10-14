@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import log
+from .. import log, native
 from ..construct import DIR_NAMES
 from . import render
 
@@ -723,7 +723,7 @@ class Game:
         lines = [f"Alpedia  ワールド: {w.name}  時刻 {w.time:.0f}s",
                  f"{pl.name if pl else '宇宙'}  高度 {alt:.1f} m  速度 {spd:.1f} m/s",
                  f"構築物 {len(w.constructs)}  頂点 {sum(c.n_vert for c in w.constructs.values())}",
-                 f"ジェットパック {'ON' if p.jetpack else 'OFF'}{'' if w.creative or not p.jetpack else ('（燃料 %.0f）' % p.inventory.get('fuel', 0.0))}  {'クリエイティブ' if w.creative else 'サバイバル'}{'  完全剛体' if w.settings.get('full_rigid') else ''}"]
+                 f"ジェットパック {'ON' if p.jetpack else 'OFF'}{'' if w.creative or not p.jetpack else ('（燃料 %.0f）' % p.inventory.get('fuel', 0.0))}  {'クリエイティブ' if w.creative else 'サバイバル'}{'  完全剛体' if w.settings.get('full_rigid') else ''}  物理:{native.name()}"]
         if p.seated:
             c = w.constructs.get(p.seated[0])
             if c:

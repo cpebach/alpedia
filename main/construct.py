@@ -496,6 +496,9 @@ class Construct:
         （見た目の球・カプセル・斜面と同じ形で接地する）"""
         K = self.contact_cores()
         r = self.size * 0.5
+        nat = pl._nat()
+        if nat is not None:
+            return self._collide_planet_native(pl, nat, K, r, collect)
         rel = K - pl.center
         with np.errstate(invalid="ignore"):
             near = np.einsum("ij,ij->i", rel, rel) < (pl.bound + r) ** 2
@@ -540,6 +543,36 @@ class Construct:
         tang = disp - n * np.einsum("ij,ij->i", disp, n)[:, None]
         fr = np.clip(self.fric[hi], 0, 1)
         self.pos[hi] -= tang * fr[:, None]
+
+    def _ground_ref(self, pl):
+        """地面から高い頂点を省くための (上向き, その方向の地表半径)。重心が惑星の中心なら (None, 0)。"""
+        com = self.pos.mean(0) - pl.center
+        cn = float(np.linalg.norm(com))
+        if cn <= 1e-6:
+            return None, 0.0
+        up = com / cn
+        gc = getattr(self, "_ground_cache", None)
+        if gc is not None and gc[0] is pl and float(np.abs(gc[1] - up).max()) * pl.radius < 0.5:
+            return up, gc[2]
+        Rs = float(pl.surface_radius(up[None])[0])
+        self._ground_cache = (pl, up, Rs)
+        return up, Rs
+
+    def _collide_planet_native(self, pl, nat, K, r, collect):
+        """_collide_planet の Rust 版（同じ計算を1回の呼び出しで）。"""
+        up, Rs = self._ground_ref(pl)
+        if not (self.pos.flags.c_contiguous and self.pos.flags.writeable):
+            self.pos = np.ascontiguousarray(self.pos)
+        c_ = np.ascontiguousarray
+        want, hi, dep, n = nat.collide(self.pos, c_(self._prev), c_(self.vel), c_(K), c_(self.fric), r, float(pl.bound),
+                                       float(pl.lipschitz), None if up is None else [float(x) for x in up], Rs,
+                                       self.mode == "rigid", float(self.IMPACT_SPEED), float(CONTACT_SOFT),
+                                       not collect)
+        if want:
+            self._want_soft = True
+        if collect and len(hi):
+            return hi, dep, n
+        return None
 
     def _collide_boxes(self, bs, h, collect=False):
         """拡張が出した向き付きの箱（街の建物など）との当たり判定。

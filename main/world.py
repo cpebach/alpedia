@@ -91,6 +91,8 @@ class World:
         self.mods = []
         self._timers = {"rebond": 0.0, "cleanup": 0.0}
         phys = cfg.get("physics", {})
+        from . import native
+        native.ensure(phys.get("backend", "auto"))
         self.substeps = int(phys.get("substeps", 3))
         self.iters = int(phys.get("iterations", 2))
 
@@ -186,6 +188,16 @@ class World:
         self.msgs.append((time.time(), text))
 
     def gravity(self, p):
+        from . import native
+        if native.core is not None and self.planets:
+            pl = self.planets
+            if getattr(self, "_grav_key", None) != len(pl):
+                self._grav = (np.array([x.center for x in pl], float), np.array([x.gm for x in pl], float),
+                              np.array([x.radius for x in pl], float))
+                self._grav_key = len(pl)
+            c, gm, r = self._grav
+            g = native.core.gravity(np.ascontiguousarray(p, dtype=np.float64).reshape(-1, 3), c, gm, r)
+            return g * float(self.settings.get("gravity_scale", 1.0))
         g = np.zeros_like(np.asarray(p, dtype=np.float64))
         for pl in self.planets:
             g += pl.gravity(p)
@@ -470,9 +482,16 @@ class World:
                     if k >= n_active:
                         c._prox_tree = (key, trees[k])
             return trees[k]
+        from . import native
+        nat = native.core          # Rust があれば、近い点の組は Rust で探す（cKDTree の代わり）
         for k in range(n_active):
             n = cons[k].n_vox
-            if n > 1:
+            if n > 1 and nat is not None:
+                pa, pb = nat.pairs_within(np.ascontiguousarray(pts_list[k][:n]), 0.92 * cons[k].size)
+                if len(pa):
+                    pa_list.append(pa + offs[k])
+                    pb_list.append(pb + offs[k])
+            elif n > 1:
                 t = cKDTree(pts_list[k][:n])
                 pr = t.query_pairs(0.92 * cons[k].size, output_type="ndarray")
                 if len(pr):
@@ -489,6 +508,12 @@ class World:
         for k1, k2 in zip(*np.nonzero(ov)):
             k1, k2 = int(k1), int(k2)
             r = rr[k1, k2]
+            if nat is not None:
+                ia, ib = nat.pairs_between(np.ascontiguousarray(pts_list[k1]), np.ascontiguousarray(pts_list[k2]), r)
+                if len(ia):
+                    pa_list.append(ia + offs[k1])
+                    pb_list.append(ib + offs[k2])
+                continue
             res = tree_of(k1).query_ball_tree(tree_of(k2), r)
             ia = [i for i, lst in enumerate(res) for _ in lst]
             if not ia:

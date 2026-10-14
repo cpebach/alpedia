@@ -3,6 +3,8 @@ import threading
 
 import numpy as np
 
+from . import native
+
 _TILE_LOCK = threading.Lock()   # 物理演算を複数スレッドで進めるので、タイルの作成は1つずつ
 
 
@@ -94,6 +96,27 @@ class Planet:
         if "lipschitz" in d:
             self.lipschitz = float(d["lipschitz"])
 
+    # --- Rust の物理コア（あれば地形の計算をそちらで行う） -----------------
+    def _native_params(self):
+        """Rust 側に渡す地形の値：(radius, amp, freq, seed, earth の dict か None)"""
+        return self.radius, self.amp, self.freq, self.seed, None
+
+    def _nat(self):
+        """Rust の地形（使わないときは None）。掘削跡が増えていたら渡し直す。"""
+        if native.core is None:
+            return None
+        s = getattr(self, "_nat_shape", None)
+        if s is None or getattr(self, "_nat_core", None) is not native.core:
+            r, amp, freq, seed, earth = self._native_params()
+            s = self._nat_shape = native.core.PlanetShape(r, amp, freq, int(seed), [float(x) for x in self.center],
+                                                          earth)
+            self._nat_core = native.core
+            self._nat_ncr = -1
+        if self._nat_ncr != len(self.craters):
+            s.set_craters(np.asarray(self.craters, dtype=np.float64).reshape(-1, 4))
+            self._nat_ncr = len(self.craters)
+        return s
+
     # --- 形状 -----------------------------------------------------------
     TILE = 32          # タイル1辺のサンプル数
     RES = 0.25         # 地表サンプル間隔 (m)
@@ -106,6 +129,9 @@ class Planet:
     def _sample(self, dirs):
         """キューブマップ状のタイルにキャッシュした値（地表半径・水面半径）を双線形補間。"""
         dirs = np.asarray(dirs, dtype=np.float64)
+        nat = self._nat()
+        if nat is not None:
+            return nat.sample(np.ascontiguousarray(dirs))
         if not hasattr(self, "_N"):
             with _TILE_LOCK:
                 if not hasattr(self, "_tiles"):
@@ -241,6 +267,9 @@ class Planet:
 
     def sdf(self, p):
         """世界座標 (N,3) → 符号付き距離（負=地中）。"""
+        nat = self._nat()
+        if nat is not None:
+            return nat.sdf(np.ascontiguousarray(p, dtype=np.float64).reshape(-1, 3))
         q = np.asarray(p, dtype=np.float64) - self.center
         r = np.linalg.norm(q, axis=1)
         dirs = q / np.maximum(r, 1e-9)[:, None]
@@ -270,6 +299,9 @@ class Planet:
 
     def sdf_grad(self, p, eps=0.05):
         """距離と勾配（法線）を同時に求める（ノイズ評価を1回にまとめる）。"""
+        nat = self._nat()
+        if nat is not None:
+            return nat.sdf_grad(np.ascontiguousarray(p, dtype=np.float64).reshape(-1, 3), eps)
         q = np.asarray(p, dtype=np.float64) - self.center
         r = np.linalg.norm(q, axis=1)
         dirs = q / np.maximum(r, 1e-9)[:, None]

@@ -1,4 +1,7 @@
-"""物理演算の重い部分を numba で機械語に変換して高速化する（numba は必須）。
+"""物理演算の重い部分。Rust の物理コア（alpedia_core、native.py）があればそちらで、無ければ numba で計算する。
+
+下の公開関数（shape_match など）は、どちらで計算するかを毎回選ぶ（設定 physics.backend）。
+numba 版（_nb_ で始まる関数）は Rust 版と同じ計算で、比べるためのテストにも使う。
 
 - 形合わせ（ボクセルごとの最適な回転）、結合、当たり判定の芯の計算、構築物どうしの押し出しを
   ループのまま書き、numba でコンパイルする。
@@ -102,13 +105,13 @@ def _match_one(pos, rest, act_scale, stiff, i, lastR, quat):
 
 
 @njit(cache=True, nogil=True, fastmath=True)
-def shape_match(pos, rest, act_scale, stiff, vox, lastR, quat):
+def _nb_shape_match(pos, rest, act_scale, stiff, vox, lastR, quat):
     for t in range(vox.shape[0]):
         _match_one(pos, rest, act_scale, stiff, vox[t], lastR, quat)
 
 
 @njit(cache=True, nogil=True, fastmath=True, parallel=True)
-def shape_match_par(pos, rest, act_scale, stiff, vox, lastR, quat):
+def _nb_shape_match_par(pos, rest, act_scale, stiff, vox, lastR, quat):
     for t in prange(vox.shape[0]):
         _match_one(pos, rest, act_scale, stiff, vox[t], lastR, quat)
 
@@ -117,7 +120,7 @@ def shape_match_par(pos, rest, act_scale, stiff, vox, lastR, quat):
 # チャンク（かたまり）ごとの形合わせ
 # ---------------------------------------------------------------------------
 @njit(cache=True, nogil=True, fastmath=True)
-def solve_joints(pos, ja, jb, jr, jk, inv_mass, jcount):
+def _nb_solve_joints(pos, ja, jb, jr, jk, inv_mass, jcount):
     nv = pos.shape[0]
     delta = np.zeros((nv, 3))
     for j in range(ja.shape[0]):
@@ -199,7 +202,7 @@ def _closest_tri(p, a, b, c, out, q1, q2, q3):
 
 
 @njit(cache=True, nogil=True, fastmath=True)
-def contact_cores(pos, ctype, cidx):
+def _nb_contact_cores(pos, ctype, cidx):
     """各頂点の芯の最近点（内部の頂点は NaN）。"""
     nv = pos.shape[0]
     n = nv // 8
@@ -238,7 +241,7 @@ def contact_cores(pos, ctype, cidx):
 # 描画用：変形後の表面の頂点と法線
 # ---------------------------------------------------------------------------
 @njit(cache=True, nogil=True, fastmath=True)
-def skin(pos, vidx, w):
+def _nb_skin(pos, vidx, w):
     M = vidx.shape[0]
     out = np.zeros((M, 3))
     for m in range(M):
@@ -252,7 +255,7 @@ def skin(pos, vidx, w):
 
 
 @njit(cache=True, nogil=True, fastmath=True)
-def vertex_normals(v, faces):
+def _nb_vertex_normals(v, faces):
     vn = np.zeros_like(v)
     for f in range(faces.shape[0]):
         a, b, c = faces[f, 0], faces[f, 1], faces[f, 2]
@@ -351,7 +354,7 @@ def _ang_w(R, IinvB, g, ux, uy, uz):
 
 
 @njit(cache=True, nogil=True, fastmath=True)
-def art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN):
+def _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN):
     nr = ra.shape[0]
     nc = cg.shape[0]
     lamT = np.zeros(nc)
@@ -519,7 +522,7 @@ def art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, c
 
 
 @njit(cache=True, nogil=True, fastmath=True)
-def art_contact_vel(V, W, X, R, invM, IinvB, cg, cl, cn, lamN, iters):
+def _nb_art_contact_vel(V, W, X, R, invM, IinvB, cg, cl, cn, lamN, iters):
     """接触点の速度の後始末（XPBD の速度パス、はね返り 0）：めり込みを押し戻したことで生まれた
     「地面から離れる向きの速度」を消す（押し戻し → 跳ねる → 落ちる、の小刻みな揺れを防ぐ）。"""
     nc = cg.shape[0]
@@ -554,7 +557,7 @@ def art_contact_vel(V, W, X, R, invM, IinvB, cg, cl, cn, lamN, iters):
 
 
 @njit(cache=True, nogil=True, fastmath=True)
-def art_write(pos, X, R, gv, vg, vl):
+def _nb_art_write(pos, X, R, gv, vg, vl):
     """部分ごとの姿勢から頂点の位置を作る。"""
     for k in range(gv.shape[0]):
         v = gv[k]
@@ -564,7 +567,9 @@ def art_write(pos, X, R, gv, vg, vl):
 
 
 def warmup():
-    """起動時に一度だけ小さなデータで呼んでコンパイルしておく。"""
+    """起動時に一度だけ小さなデータで呼んでコンパイルしておく（Rust の物理コアを使うときは要らない）。"""
+    if native.core is not None:
+        return
     pos = np.random.rand(16, 3)
     rest = np.random.rand(2, 8, 3)
     sc = np.ones((2, 3))
@@ -573,24 +578,101 @@ def warmup():
     vox = np.arange(2, dtype=np.int64)
     qq = np.zeros((2, 4))
     qq[:, 0] = 1
-    shape_match(pos, rest, sc, st, vox, lr, qq)
-    shape_match_par(pos, rest, sc, st, vox, lr, qq)
+    _nb_shape_match(pos, rest, sc, st, vox, lr, qq)
+    _nb_shape_match_par(pos, rest, sc, st, vox, lr, qq)
     ja = np.array([0, 1], np.int64)
     jb = np.array([8, 9], np.int64)
-    solve_joints(pos, ja, jb, np.zeros(2), np.ones(2), np.ones(16), np.ones(16))
+    _nb_solve_joints(pos, ja, jb, np.zeros(2), np.ones(2), np.ones(16), np.ones(16))
     ct = np.array([0, 1, 2, -1] * 4, np.int64)
     ci = np.zeros((16, 3), np.int64)
     ci[:, 1] = 1
-    contact_cores(pos, ct, ci)
+    _nb_contact_cores(pos, ct, ci)
     vi = np.zeros((3, 8), np.int64)
-    sk = skin(pos, vi, np.full((3, 8), 0.125))
-    vertex_normals(sk, np.array([[0, 1, 2]], np.int64))
+    sk = _nb_skin(pos, vi, np.full((3, 8), 0.125))
+    _nb_vertex_normals(sk, np.array([[0, 1, 2]], np.int64))
     X = np.zeros((2, 3)); R2 = np.zeros((2, 3, 3)); R2[:] = np.eye(3)
     IB = np.zeros((2, 3, 3)); IB[:] = np.eye(3)
-    art_solve(X, R2, np.ones(2), IB, np.array([0], np.int64), np.array([1], np.int64), np.random.rand(1, 4, 3),
+    _nb_art_solve(X, R2, np.ones(2), IB, np.array([0], np.int64), np.array([1], np.int64), np.random.rand(1, 4, 3),
               np.random.rand(1, 4, 3), np.zeros((1, 3)), np.zeros(1), np.ones(1), np.array([0], np.int64), np.zeros((1, 3)),
               np.array([[0, 1.0, 0]]), np.ones(1) * 0.01, np.zeros((1, 3)), np.zeros((1, 3)), np.zeros((1, 3)),
               np.ones(1), 0.01, 2, np.zeros(1))
-    art_contact_vel(np.zeros((2, 3)), np.zeros((2, 3)), X, R2, np.ones(2), IB, np.array([0], np.int64), np.zeros((1, 3)),
+    _nb_art_contact_vel(np.zeros((2, 3)), np.zeros((2, 3)), X, R2, np.ones(2), IB, np.array([0], np.int64), np.zeros((1, 3)),
                     np.array([[0, 1.0, 0]]), np.ones(1), 2)
-    art_write(np.zeros((4, 3)), X, R2, np.arange(4, dtype=np.int64), np.zeros(4, np.int64), np.zeros((4, 3)))
+    _nb_art_write(np.zeros((4, 3)), X, R2, np.arange(4, dtype=np.int64), np.zeros(4, np.int64), np.zeros((4, 3)))
+
+
+# ---------------------------------------------------------------------------
+# 公開する関数：Rust があれば Rust、無ければ numba
+# ---------------------------------------------------------------------------
+from . import native  # noqa: E402
+
+native.load()
+_warned = set()
+
+
+def _rust(name, *args):
+    """Rust で計算する。配列の形が合わないときは numba に任せる（1回だけログに出す）。"""
+    c = native.core
+    if c is None:
+        return False, None
+    try:
+        return True, getattr(c, name)(*args)
+    except ValueError as e:
+        if name not in _warned:
+            _warned.add(name)
+            native.L.warning("Rust の %s が使えないので numba で計算します: %s", name, e)
+        return False, None
+
+
+def shape_match(pos, rest, act_scale, stiff, vox, lastR, quat):
+    ok, _ = _rust("shape_match", pos, rest, act_scale, stiff, vox, lastR, quat, False)
+    if not ok:
+        _nb_shape_match(pos, rest, act_scale, stiff, vox, lastR, quat)
+
+
+def shape_match_par(pos, rest, act_scale, stiff, vox, lastR, quat):
+    ok, _ = _rust("shape_match", pos, rest, act_scale, stiff, vox, lastR, quat, True)
+    if not ok:
+        _nb_shape_match_par(pos, rest, act_scale, stiff, vox, lastR, quat)
+
+
+def solve_joints(pos, ja, jb, jr, jk, inv_mass, jcount):
+    ok, _ = _rust("solve_joints", pos, ja, jb, jr, jk, inv_mass, jcount)
+    if not ok:
+        _nb_solve_joints(pos, ja, jb, jr, jk, inv_mass, jcount)
+
+
+def contact_cores(pos, ctype, cidx):
+    ok, r = _rust("contact_cores", pos, ctype, cidx)
+    return r if ok else _nb_contact_cores(pos, ctype, cidx)
+
+
+def skin(pos, vidx, w):
+    ok, r = _rust("skin", pos, vidx, w)
+    return r if ok else _nb_skin(pos, vidx, w)
+
+
+def vertex_normals(v, faces):
+    ok, r = _rust("vertex_normals", v, faces)
+    return r if ok else _nb_vertex_normals(v, faces)
+
+
+def art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN):
+    ok, _ = _rust("art_solve", X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu,
+                  float(h), int(iters), lamN)
+    if not ok:
+        _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters,
+                      lamN)
+
+
+def art_contact_vel(V, W, X, R, invM, IinvB, cg, cl, cn, lamN, iters):
+    ok, _ = _rust("art_contact_vel", V, W, R, invM, IinvB, cg, cl, cn, lamN, int(iters))
+    if not ok:
+        _nb_art_contact_vel(V, W, X, R, invM, IinvB, cg, cl, cn, lamN, iters)
+
+
+def art_write(pos, X, R, gv, vg, vl):
+    ok, _ = _rust("art_write", pos, X, R, gv, vg, vl)
+    if not ok:
+        _nb_art_write(pos, X, R, gv, vg, vl)
+

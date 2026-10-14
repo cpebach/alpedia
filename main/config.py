@@ -21,7 +21,9 @@ DEFAULTS = {
                 # 軽量化：剛体化・遠方のレール
                 "rigid_enabled": True, "rails_enabled": True, "rails_distance": 400.0,
                 # 構築物ごとの計算に使うスレッド数（0 = 自動）
-                "threads": 0},
+                "threads": 0,
+                # 物理コア："auto"（Rust の alpedia_core があれば使う）/ "rust"（必須）/ "python"（numba）
+                "backend": "auto"},
     "game": {"default_world": "tutorial", "language": "ja"},
     "log_level": "INFO",
 }
