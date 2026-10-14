@@ -119,6 +119,9 @@ class Game:
         self.editor = None
         self._esc_block = 0.0
         self.acc = 0.0
+        self._perf = dict.fromkeys(("frames", "wall", "phys", "ticks", "render", "update", "lost"), 0)
+        self._perf_text = ""
+        self._perf_log_t = _time.monotonic()
         self.import_idx = 0
         self.hit = None
         self.origin = self.world.player.eye()
@@ -493,6 +496,8 @@ class Game:
         tick = 1.0 / float(self.cfg["physics"].get("tick_rate", 60))
         self.acc += dt
         n = 0
+        pf = self._perf
+        t_phys = _time.perf_counter()
         while self.acc >= tick and n < 3:
             try:
                 w.step(tick, move, jump and n == 0, thrust)
@@ -501,7 +506,11 @@ class Game:
                 raise
             self.acc -= tick
             n += 1
+        t_rend = _time.perf_counter()
+        pf["phys"] += t_rend - t_phys
+        pf["ticks"] += n
         if n == 3:
+            pf["lost"] += self.acc      # 間に合わずに捨てた時間（ゲーム内の時間が遅れる）
             self.acc = 0.0
         # カメラ
         fwd, right, up, look = self.look_vectors()
@@ -513,10 +522,37 @@ class Game:
         from panda3d.core import LPoint3f, LVector3f
         cam.lookAt(LPoint3f(*look.astype(np.float32)), LVector3f(*up.astype(np.float32)))
         # 描画
+        t_r = _time.perf_counter()
         self._render(origin)
+        pf["render"] += _time.perf_counter() - t_r
         if not editing:
             self._update_aim(look)
         self._update_hud(dt)
+        pf["update"] += _time.perf_counter() - t_phys
+        self._perf_frame(U["utime"].dt)
+
+    def _perf_frame(self, real_dt):
+        """処理の重さの内訳を数秒ごとにまとめる（画面左上と、10秒ごとにログ）。"""
+        pf = self._perf
+        pf["frames"] += 1
+        pf["wall"] += real_dt
+        if pf["wall"] < 2.0:
+            return
+        f = max(pf["frames"], 1)
+        fps = f / pf["wall"]
+        ms = lambda x: x / f * 1000  # noqa: E731
+        phys_tick = pf["phys"] / max(pf["ticks"], 1) * 1000
+        other = max(pf["wall"] - pf["update"], 0.0) / f * 1000
+        slow = pf["lost"] / pf["wall"] * 100
+        self._perf_text = (f"fps {fps:.0f}  物理 {phys_tick:.1f} ms/回×{pf['ticks'] / f:.1f}  "
+                           f"描画準備 {ms(pf['render']):.1f} ms  描画・待ち {other:.1f} ms"
+                           + (f"  遅れ {slow:.0f}%" if slow >= 1 else ""))
+        now = _time.monotonic()
+        if now - self._perf_log_t >= 10.0:
+            self._perf_log_t = now
+            L.info("重さ: %s（構築物 %d, 物理:%s）", self._perf_text, len(self.world.constructs), native.name())
+        for k in pf:
+            pf[k] = 0
 
     def _render(self, origin):
         w = self.world
@@ -724,6 +760,8 @@ class Game:
                  f"{pl.name if pl else '宇宙'}  高度 {alt:.1f} m  速度 {spd:.1f} m/s",
                  f"構築物 {len(w.constructs)}  頂点 {sum(c.n_vert for c in w.constructs.values())}",
                  f"ジェットパック {'ON' if p.jetpack else 'OFF'}{'' if w.creative or not p.jetpack else ('（燃料 %.0f）' % p.inventory.get('fuel', 0.0))}  {'クリエイティブ' if w.creative else 'サバイバル'}{'  完全剛体' if w.settings.get('full_rigid') else ''}  物理:{native.name()}"]
+        if self._perf_text:
+            lines.append(self._perf_text)
         if p.seated:
             c = w.constructs.get(p.seated[0])
             if c:
