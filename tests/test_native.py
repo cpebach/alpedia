@@ -371,3 +371,36 @@ class TestStep(unittest.TestCase):
             x2 = core.nnls(np.ascontiguousarray(A), b)
             self.assertTrue((x2 >= 0).all())
             self.assertLess(np.abs(A @ x1 - A @ x2).max(), 1e-7)    # 解が1つでなくても、押し戻しの結果は同じ
+
+
+@unittest.skipIf(core is None or not hasattr(core, "mesh_pack"), "Rust の物理コア（描画用）がありません")
+class TestMesh(unittest.TestCase):
+    def test_mesh_pack_matches_numpy(self):
+        """描画用の頂点（位置・法線・陰影・噴射の色・UV）が numpy 版と同じ。"""
+        rng = np.random.default_rng(7)
+        nvox, m, nf = 6, 120, 200
+        pos = rng.normal(size=(8 * nvox, 3)) + 500.0
+        vidx = rng.integers(0, 8 * nvox, (m, 8))
+        w = rng.random((m, 8)); w /= w.sum(1, keepdims=True)
+        faces = rng.integers(0, m, (nf, 3))
+        origin = np.array([499.0, 501.0, 500.5])
+        firing = np.zeros(nvox); firing[2] = 0.7
+        sun = np.array([0.35, 0.85, 0.4]); sun /= np.linalg.norm(sun); amb = 0.38
+        groups = []
+        for vs in (np.arange(0, m, 2), np.arange(1, m, 3)):
+            groups.append((vs.astype(np.int64), rng.random((len(vs), 3)), rng.random((len(vs), 2)).astype(np.float32),
+                           rng.integers(0, nvox, len(vs))))
+        for fr in (None, firing):
+            outs = core.mesh_pack(pos, vidx, w, faces, list(origin), groups, list(sun), amb, fr)
+            V = np.einsum("mk,mkj->mj", w, pos[vidx]) - origin
+            N = fastphys._nb_vertex_normals(V, faces) if hasattr(fastphys, "_nb_vertex_normals") else core.vertex_normals(V, faces)
+            for (vs, cols, uv, owner), o in zip(groups, outs):
+                n = N[vs]
+                k = amb + (1 - amb) * np.clip(n @ sun, 0, 1)
+                col = cols * k[:, None]
+                if fr is not None:
+                    fl = fr[owner][:, None]
+                    col = col * (1 - fl * 0.6) + np.array([1.0, 0.75, 0.25]) * fl
+                ref = np.concatenate([V[vs], n, col, np.ones((len(vs), 1)), uv], axis=1).astype(np.float32)
+                self.assertEqual(o.dtype, np.float32)
+                self.assertLess(np.abs(o - ref).max(), 1e-5)

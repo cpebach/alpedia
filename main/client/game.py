@@ -61,7 +61,6 @@ class Game:
         loader = application.base.loader
         self.loader = loader
         self.views = {}
-        self.displays = {}
         self.planet_views = [render.PlanetView(self.scene_root, loader, p) for p in self.world.planets]
         g = self.cfg["graphics"]
         self.patch = render.TerrainPatch(self.scene_root, loader, int(g.get("terrain_patch_cells", 48)),
@@ -565,16 +564,14 @@ class Game:
             v = self.views.get(cid)
             if v is None:
                 v = self.views[cid] = render.ConstructView(self.scene_root, self.loader, c)
-            if np.linalg.norm(c.pos[0] - origin) > far:
-                for g in v.groups:
-                    g["mesh"].np.hide()
-                v.hide_decals()
+            q = c.pos[0] - origin
+            if float(q @ q) > far * far:
+                v.set_visible(False)
                 continue
-            for g in v.groups:
-                g["mesh"].np.show()
+            v.set_visible(True)
             v.update(origin)
             v.update_decals(origin, origin, decal_dist)
-        self._render_displays(origin, far)
+            v.update_displays(origin, far)
         for a in self.addons:
             a.update(origin, far)
         for pv in self.planet_views:
@@ -610,35 +607,6 @@ class Game:
                 destroy(root)
             self.editor_closed()
             self.world.message(f"⚠ 画面を開けませんでした: {e}")
-
-    def _render_displays(self, origin, far):
-        """コンピューターの表示（看板）を描画。"""
-        want = {}
-        for cid, c in self.world.constructs.items():
-            frames = None
-            for i, d in enumerate(c.devs):
-                if not d:
-                    continue
-                disp = d["state"].get("display")
-                if not disp or not disp.get("text"):
-                    continue
-                ctr = c.pos[8 * i]
-                if np.linalg.norm(ctr - origin) > min(far, 400.0):
-                    continue
-                if frames is None:
-                    frames = c.voxel_frames()
-                for f in render.display_faces(c, i, disp):
-                    want[(cid, c.cells[i], f)] = (c, i, f, disp, frames)
-        for k in list(self.displays):
-            if k not in want:
-                self.displays.pop(k).remove()
-        for k, (c, i, f, disp, frames) in want.items():
-            v = self.displays.get(k)
-            if v is None:
-                v = self.displays[k] = render.DisplayView(self.scene_root)
-            v.set(disp, c.size)
-            center, right, up, fwd = render.face_frame(c, i, f, frames)
-            v.place(center - origin, right, up, fwd)
 
     def _set_box(self, ent, center, axes, scale):
         from panda3d.core import LMatrix4f

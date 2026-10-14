@@ -10,6 +10,7 @@
 mod art;
 mod body;
 mod kernels;
+mod mesh;
 mod planet;
 
 use std::collections::HashMap;
@@ -636,6 +637,55 @@ fn nnls<'py>(py: Python<'py>, a: PyReadonlyArray2<'py, f64>, b: RoF<'py>) -> PyR
     Ok(PyArray1::from_vec_bound(py, x.as_slice().to_vec()))
 }
 
+
+// ---------------------------------------------------------------------------
+// 描画用のメッシュ
+// ---------------------------------------------------------------------------
+type MeshGroup<'py> = (RoI<'py>, RoF<'py>, PyReadonlyArrayDyn<'py, f32>, RoI<'py>);
+
+/// 構築物の表面メッシュの頂点を、テクスチャのまとまりごとに (k,12) float32 で返す。
+/// groups：[(頂点番号, 色 (k,3), UV (k,2) float32, 持ち主のボクセル), ...]、firing：ボクセルごとの噴射（無ければ None）
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (pos, vidx, w, faces, origin, groups, sun, ambient, firing=None))]
+fn mesh_pack<'py>(
+    py: Python<'py>, pos: RoF<'py>, vidx: RoI<'py>, w: RoF<'py>, faces: RoI<'py>, origin: [f64; 3], groups: Vec<MeshGroup<'py>>,
+    sun: [f64; 3], ambient: f64, firing: Option<RoF<'py>>,
+) -> PyResult<Vec<Bound<'py, PyArray2<f32>>>> {
+    let (p, vi, ww, f) = (ro(&pos, "pos")?, ro(&vidx, "vidx")?, ro(&w, "w")?, ro(&faces, "faces")?);
+    let nv = p.len() / 3;
+    let m = vi.len() / 8;
+    if ww.len() != vi.len() || vi.iter().any(|&i| i < 0 || i as usize >= nv) || f.iter().any(|&i| i < 0 || i as usize >= m) {
+        return Err(PyValueError::new_err("mesh_pack: 配列の大きさが合いません"));
+    }
+    let fr = match &firing {
+        None => None,
+        Some(a) => Some(ro(a, "firing")?),
+    };
+    let nvox = nv / 8;
+    let mut gs = Vec::with_capacity(groups.len());
+    for (a, b, c, d) in &groups {
+        let (verts, cols) = (ro(a, "verts")?, ro(b, "cols")?);
+        let uv = c.as_slice().map_err(|_| PyValueError::new_err("uv: 連続した配列ではありません"))?;
+        let owner = ro(d, "owner")?;
+        let k = verts.len();
+        if cols.len() != 3 * k || uv.len() != 2 * k || owner.len() != k || verts.iter().any(|&i| i < 0 || i as usize >= m)
+            || (fr.is_some() && owner.iter().any(|&o| o < 0 || o as usize >= fr.unwrap().len()))
+            || owner.iter().any(|&o| o < 0 || o as usize >= nvox.max(1))
+        {
+            return Err(PyValueError::new_err("mesh_pack: まとまりの配列の大きさが合いません"));
+        }
+        gs.push(mesh::Group { verts, cols, uv, owner });
+    }
+    let outs = py.allow_threads(|| mesh::pack(p, vi, ww, f, origin, &gs, sun, ambient, fr));
+    outs.into_iter()
+        .map(|o| {
+            let k = o.len() / 12;
+            Ok(PyArray1::from_vec_bound(py, o).reshape([k, 12])?)
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // 近い点の組（構築物どうしの押し出し用。scipy の cKDTree の代わり）
 // ---------------------------------------------------------------------------
@@ -753,5 +803,6 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Body>()?;
     m.add_function(wrap_pyfunction!(rigid_end, m)?)?;
     m.add_function(wrap_pyfunction!(nnls, m)?)?;
+    m.add_function(wrap_pyfunction!(mesh_pack, m)?)?;
     Ok(())
 }

@@ -99,15 +99,80 @@ def shade(normals, colors):
     return colors * k[:, None]
 
 
+def _centers8(P8):
+    return P8.mean(axis=1)
+
+
+def _frames8(P8):
+    """(n,8,3) の頂点 → 各ボクセルのローカル軸 (n,3,3)。construct.voxel_frames と同じ。"""
+    ex = (P8[:, [1, 3, 5, 7]] - P8[:, [0, 2, 4, 6]]).mean(1)
+    ey = (P8[:, [2, 3, 6, 7]] - P8[:, [0, 1, 4, 5]]).mean(1)
+    ez = (P8[:, [4, 5, 6, 7]] - P8[:, [0, 1, 2, 3]]).mean(1)
+    F = np.stack([ex, ey, ez], axis=1)
+    return F / np.maximum(np.linalg.norm(F, axis=2, keepdims=True), 1e-9)
+
+
+def _native():
+    from .. import native
+    core = native.core
+    return core if core is not None and hasattr(core, "mesh_pack") else None
+
+
 class ConstructView:
-    """1つの構築物の描画（テクスチャごとにメッシュを分ける）。"""
+    """1つの構築物の描画（テクスチャごとにメッシュを分ける）と、その機器の記号・看板。
+
+    全部を1つの親ノード（root）の下に置く。剛体・静止中の構築物は、形・記号・看板を構築物の向きで一度だけ作り、
+    毎フレームは親ノードの位置と向き（行列1つ）だけを動かす。ブロックごとに動いている構築物は毎フレーム作り直す
+    （Rust の物理コアがあれば、頂点・法線・陰影をまとめて Rust で作る）。"""
 
     def __init__(self, parent, loader, construct):
+        from ursina import Entity
         self.c = construct
-        self.parent = parent
+        self.root = Entity(parent=parent)
+        self.parent = self.root
         self.loader = loader
         self.version = -1
         self.groups = []   # [(mesh, face_rows, colors(F,3), tex)]
+        self.displays = {}  # (ボクセル, 面) → DisplayView
+        self._devs_ver = None
+        self._mat_key = None
+        self.visible = True
+
+    # -- 共通 --------------------------------------------------------------
+    def set_visible(self, on):
+        if on != self.visible:
+            self.visible = on
+            (self.root.show if on else self.root.hide)()
+
+    def _dev_ids(self):
+        """機器のあるボクセルの番号（形が変わったときだけ数え直す）。"""
+        c = self.c
+        if self._devs_ver != c.version:
+            self._devs_ver = c.version
+            self._devs = [i for i, d in enumerate(c.devs) if d]
+        return self._devs
+
+    def _firing(self):
+        c = self.c
+        ids = self._dev_ids()
+        f = np.zeros(c.n_vox)
+        for i in ids:
+            d = c.devs[i]
+            if d:
+                f[i] = d["state"].get("firing", 0.0)
+        return f
+
+    def _set_root_mat(self, M):
+        """M：4x4（行ベクトル形式）か None（単位行列）。"""
+        from panda3d.core import LMatrix4f
+        if M is None:
+            if self._mat_key is None:
+                return
+            self._mat_key = None
+            self.root.setMat(LMatrix4f.identMat())
+            return
+        self._mat_key = 1
+        self.root.setMat(LMatrix4f(*[float(x) for x in M.ravel()]))
 
     def _rebuild(self):
         """形のメッシュが作れない（ブロックが無い）とき：何も描かない。"""
@@ -142,6 +207,9 @@ class ConstructView:
         col_v = np.asarray(col_v, dtype=np.float64)
         owner = m["owner"]
         faces = m["faces"]
+        m["faces64"] = np.ascontiguousarray(faces, dtype=np.int64)
+        m["vidx64"] = np.ascontiguousarray(m["vidx"], dtype=np.int64)
+        m["w64"] = np.ascontiguousarray(m["w"], dtype=np.float64)
         # 静止時の法線で、テクスチャ座標を面の向きに合わせて付ける（ブロック1つでテクスチャ1枚）
         rest = m["rest"]
         rn = shape.vertex_normals(rest, faces)
@@ -155,20 +223,23 @@ class ConstructView:
             fl = np.asarray(fl, dtype=np.int64)
             sub = faces[fl]
             verts, inv = np.unique(sub.ravel(), return_inverse=True)
-            mesh = DynamicMesh(self.parent, f"c{c.id}")
+            mesh = DynamicMesh(self.root, f"c{c.id}")
             t = load_texture(self.loader, tex)
             if t:
                 mesh.np.setTexture(t, 1)
-            self.groups.append({"mesh": mesh, "verts": verts, "tris": inv.reshape(-1, 3),
-                                "cols": col_v[owner[verts]], "uv": uv[verts].astype(np.float32),
-                                "owner": owner[verts], "new": True})
+            self.groups.append({"mesh": mesh, "verts": np.ascontiguousarray(verts, dtype=np.int64),
+                                "tris": inv.reshape(-1, 3),
+                                "cols": np.ascontiguousarray(col_v[owner[verts]]),
+                                "uv": np.ascontiguousarray(uv[verts], dtype=np.float32),
+                                "owner": np.ascontiguousarray(owner[verts], dtype=np.int64), "new": True})
         return True
 
-    def _set_mats(self, M):
-        from panda3d.core import LMatrix4f
-        mat = LMatrix4f.identMat() if M is None else LMatrix4f(*[float(x) for x in M.ravel()])
-        for g in self.groups:
-            g["mesh"].np.setMat(mat)
+    def _set_mesh(self, g, v):
+        if g["new"]:
+            g["mesh"].set(v, g["tris"])
+            g["new"] = False
+        else:
+            g["mesh"].set(v)
 
     def _update_rigid(self, origin, tf, highlight_flames):
         """剛体・静止中の構築物：形は作り直さず（メッシュの使い回し）、位置と向きだけ動かす。
@@ -178,7 +249,7 @@ class ConstructView:
         R, x, epoch = tf
         firing = None
         if highlight_flames:
-            firing = tuple(round(float(d["state"].get("firing", 0.0)), 2) if d else 0.0 for d in c.devs)
+            firing = tuple(round(float(c.devs[i]["state"].get("firing", 0.0)), 2) for i in self._dev_ids())
         b = getattr(self, "_baked", None)
         if b is None or b["epoch"] != epoch:
             V = shape.skin(c, self.blob)
@@ -191,12 +262,15 @@ class ConstructView:
                       or float(np.trace(b["R"].T @ R)) < 1 + 2 * np.cos(np.radians(4.0)))
         if need_color or any(g["new"] for g in self.groups):
             b["R"], b["firing"] = R.copy(), firing
-            fl_all = np.asarray(firing) if firing is not None else None
+            fl_all = None
+            if firing is not None and any(firing):
+                fl_all = np.zeros(c.n_vox)
+                fl_all[self._dev_ids()] = firing
             for g in self.groups:
                 vs = g["verts"]
                 nw = b["nl"][vs] @ R.T
                 col = shade(nw, g["cols"])
-                if fl_all is not None and fl_all.any():
+                if fl_all is not None:
                     fl = fl_all[g["owner"]][:, None]
                     col = col * (1 - fl * 0.6) + np.array([1.0, 0.75, 0.25]) * fl
                 v = np.empty((len(vs), 12), dtype=np.float32)
@@ -205,26 +279,24 @@ class ConstructView:
                 v[:, 6:9] = col
                 v[:, 9] = 1.0
                 v[:, 10:12] = g["uv"]
-                if g["new"]:
-                    g["mesh"].set(v, g["tris"])
-                    g["new"] = False
-                else:
-                    g["mesh"].set(v)
-        # 行ベクトル形式（Panda3D）：p' = p R^T + (x - origin)
-        M = np.eye(4)
-        M[:3, :3] = R.T
-        M[3, :3] = x - origin
-        self._set_mats(M)
+                self._set_mesh(g, v)
 
     def _update_blob(self, origin, highlight_flames):
         from .. import shape
         c = self.c
         m = self.blob
+        firing = self._firing() if highlight_flames else None
+        core = _native()
+        if core is not None:
+            pos = c.pos if c.pos.flags.c_contiguous and c.pos.dtype == np.float64 else np.ascontiguousarray(c.pos, np.float64)
+            outs = core.mesh_pack(pos, m["vidx64"], m["w64"], m["faces64"], [float(x) for x in origin],
+                                  [(g["verts"], g["cols"], g["uv"], g["owner"]) for g in self.groups],
+                                  [float(x) for x in SUN], float(AMBIENT), firing)
+            for g, v in zip(self.groups, outs):
+                self._set_mesh(g, v)
+            return
         V = shape.skin(c, m) - origin
         N = shape.vertex_normals(V, m["faces"])
-        firing = None
-        if highlight_flames:
-            firing = np.array([(d["state"].get("firing", 0.0) if d else 0.0) for d in c.devs])
         for g in self.groups:
             vs = g["verts"]
             n = N[vs]
@@ -238,47 +310,112 @@ class ConstructView:
             v[:, 6:9] = col
             v[:, 9] = 1.0
             v[:, 10:12] = g["uv"]
-            if g["new"]:
-                g["mesh"].set(v, g["tris"])
-                g["new"] = False
+            self._set_mesh(g, v)
+
+    # -- 毎フレーム --------------------------------------------------------
+    def update(self, origin, highlight_flames=True):
+        """形を描く。戻り値：剛体・静止中なら (R, x, 版)、ブロックごとなら None（記号・看板の位置合わせに使う）。"""
+        c = self.c
+        self._tf = None
+        if self.version != c.version:
+            if not self._rebuild_blob():
+                self.blob = None
+                self._rebuild()
+            self._baked = None
+        tf = c.render_transform() if hasattr(c, "render_transform") else None
+        if tf is not None:
+            R, x, _ = tf
+            # 行ベクトル形式（Panda3D）：p' = p R^T + (x - origin)
+            M = np.eye(4)
+            M[:3, :3] = R.T
+            M[3, :3] = x - origin
+            self._set_root_mat(M)
+        else:
+            self._set_root_mat(None)
+        self._tf = tf
+        if getattr(self, "blob", None) is not None:
+            if tf is not None:
+                self._update_rigid(origin, tf, highlight_flames)
             else:
-                g["mesh"].set(v)
+                self._baked = None
+                self._update_blob(origin, highlight_flames)
+        return tf
+
+    def _local_pos(self):
+        """記号・看板用の頂点位置：剛体・静止中は構築物の向きでの位置（版ごとに1回だけ計算）、それ以外は None。"""
+        tf = self._tf
+        if tf is None:
+            return None
+        R, x, epoch = tf
+        lp = getattr(self, "_lp", None)
+        if lp is None or lp[0] != epoch:
+            lp = self._lp = (epoch, ((self.c.pos - x) @ R).reshape(-1, 8, 3))
+        return lp[1]
 
     def update_decals(self, origin, cam_pos, max_dist):
         if not hasattr(self, "decals"):
-            self.decals = DecalView(self.parent, self.c, max_dist)
+            self.decals = DecalView(self.root, self.c, max_dist)
         self.decals.max_dist = max_dist
-        self.decals.update(origin, cam_pos)
+        self.decals.update(origin, cam_pos, self)
 
     def hide_decals(self):
         if hasattr(self, "decals") and self.decals.visible:
             self.decals.mesh.np.hide()
             self.decals.visible = False
 
-    def update(self, origin, highlight_flames=True):
+    def update_displays(self, origin, far):
+        """コンピューターの表示（看板）。"""
         c = self.c
-        if self.version != c.version:
-            if not self._rebuild_blob():
-                self.blob = None
-                self._rebuild()
-            self._baked = None
-        if getattr(self, "blob", None) is not None:
-            tf = c.render_transform() if hasattr(c, "render_transform") else None
-            if tf is not None:
-                self._update_rigid(origin, tf, highlight_flames)
-            else:
-                if getattr(self, "_baked", None) is not None:
-                    self._baked = None
-                    self._set_mats(None)
-                self._update_blob(origin, highlight_flames)
+        want = {}
+        lim2 = min(far, 400.0) ** 2
+        for i in self._dev_ids():
+            d = c.devs[i]
+            if not d:
+                continue
+            disp = d["state"].get("display")
+            if not disp or not disp.get("text"):
+                continue
+            q = c.pos[8 * i] - origin
+            if float(q @ q) > lim2:
+                continue
+            for f in display_faces(c, i, disp):
+                want[(i, f)] = disp
+        for k in list(self.displays):
+            if k not in want:
+                self.displays.pop(k).remove()
+        if not want:
             return
+        L = self._local_pos()
+        key = None if self._tf is None else self._tf[2]
+        for (i, f), disp in want.items():
+            v = self.displays.get((i, f))
+            if v is None:
+                v = self.displays[(i, f)] = DisplayView(self.root)
+            v.set(disp, c.size)
+            if L is not None:
+                if v.placed == key:
+                    continue
+                P8 = L[i:i + 1]
+                center, right, up, fwd = face_frame_p(P8[0], _frames8(P8)[0], f, c.size)
+                v.place(center, right, up, fwd)
+                v.placed = key
+            else:
+                P8 = c.pos[8 * i:8 * i + 8][None]
+                center, right, up, fwd = face_frame_p(P8[0], _frames8(P8)[0], f, c.size)
+                v.place(center - origin, right, up, fwd)
+                v.placed = None
 
     def remove(self):
+        from .ui_destroy import destroy
         for g in self.groups:
             g["mesh"].remove()
         self.groups = []
         if hasattr(self, "decals"):
             self.decals.remove()
+        for v in self.displays.values():
+            v.remove()
+        self.displays = {}
+        destroy(self.root)
 
 
 class DecalView:
@@ -304,6 +441,7 @@ class DecalView:
         self.version = -1
         self.items = None
         self.visible = False
+        self._placed = None
 
     def _rebuild(self):
         from ..construct import DIRS
@@ -341,6 +479,7 @@ class DecalView:
                 upv.append(up)
                 uvs.append(self._uv[(kind, var)])
         self.version = c.version
+        self._placed = None
         if not vox:
             self.items = None
             self.mesh.set(np.zeros((0, 12), np.float32))
@@ -356,7 +495,7 @@ class DecalView:
     def _display_sig(self):
         return tuple(i for i, d in enumerate(self.c.devs) if d and (d["state"].get("display") or {}).get("text"))
 
-    def update(self, origin, cam_pos):
+    def update(self, origin, cam_pos, view=None):
         c = self.c
         if self.items is not None or self.version != c.version:
             sig = self._display_sig()
@@ -366,7 +505,8 @@ class DecalView:
         if self.items is None:
             return
         # 遠くの構築物では記号を出さない
-        near = np.einsum("ij,ij->i", c.pos[::8] - cam_pos, c.pos[::8] - cam_pos).min() < self.max_dist ** 2
+        rel = c.pos[::8] - cam_pos
+        near = np.einsum("ij,ij->i", rel, rel).min() < self.max_dist ** 2
         if not near:
             if self.visible:
                 self.mesh.np.hide()
@@ -375,9 +515,24 @@ class DecalView:
         if not self.visible:
             self.mesh.np.show()
             self.visible = True
+        L = view._local_pos() if view is not None else None
+        if L is not None:
+            # 剛体・静止中：構築物の向きで一度だけ作る（位置と向きは親ノードの行列で動く）
+            key = view._tf[2]
+            if self._placed == key:
+                return
+            self._placed = key
+            self._write(L, np.zeros(3))
+        else:
+            self._placed = None
+            self._write(c.pos.reshape(-1, 8, 3), origin)
+
+    def _write(self, P8, origin):
+        c = self.c
         vox, nl, al, uv = self.items
-        cen = c.voxel_centers()[vox]
-        F = c.voxel_frames()[vox]                      # 行がローカル x,y,z 軸
+        sel = P8[vox]
+        cen = _centers8(sel)
+        F = _frames8(sel)                             # 行がローカル x,y,z 軸
         n = np.einsum("dk,dkj->dj", nl, F)
         a = np.einsum("dk,dkj->dj", al, F)
         r = np.cross(a, n)
@@ -790,6 +945,7 @@ class DisplayView:
         self.text = Text(parent=self.root, text="", origin=(-0.5, 0), start_tag="\x01", end_tag="\x02", z=-0.004)
         self.text.setDepthOffset(2)
         self.key = None
+        self.placed = None
         self.U_color = color
 
     def set(self, disp, voxel_size):
@@ -842,6 +998,19 @@ def display_faces(c, i, disp):
             continue
         out.append(d)
     return out
+
+
+def face_frame_p(P8, F, d, size):
+    """ボクセルの8頂点 P8 とローカル軸 F から、面 d の (中心, 右, 上, 手前向き)。"""
+    axis, sign = d // 2, (1.0 if d % 2 == 0 else -1.0)
+    n = F[axis] * sign
+    up = F[2] * (-sign) if axis == 1 else F[1]
+    up = up - n * np.dot(up, n)
+    up /= max(np.linalg.norm(up), 1e-9)
+    fwd = -n
+    right = np.cross(up, fwd)
+    center = P8.mean(0) + n * (size * 0.5 + 0.004)
+    return center, right, up, fwd
 
 
 def face_frame(c, i, d, frames):

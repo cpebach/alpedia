@@ -9,6 +9,7 @@
 | 中身 | Rust（`alpedia_core/src/`） | 元の Python |
 |---|---|---|
 | 構築物1つの1サブステップまるごと（重力・浮力・減衰・積分・形合わせ・結合・回転ジョイント・地面との接触・塑性変形・ちぎれの判定、剛体・完全剛体モードの接触も） | `body.rs`, `lib.rs`（`Body`） | `main/construct.py` の `substep_begin` / `substep_end` |
+| 描画用の頂点（ブロックごとに動いている構築物の形・法線・陰影・噴射の色をまとめて） | `mesh.rs`, `lib.rs`（`mesh_pack`） | `main/client/render.py` の `_update_blob` |
 | ボクセルごとの形合わせ・結合 | `kernels.rs` | `main/fastphys.py` |
 | 当たり判定の芯・描画用の頂点と法線 | `kernels.rs` | `main/fastphys.py` |
 | 向き付きの箱との距離 | `kernels.rs` | `main/geom.py` |
