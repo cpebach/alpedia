@@ -9,10 +9,14 @@ name = "alpedia_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module", "abi3-py310", "generate-import-lib"] }
+pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"
 rayon = "1.10"
 nalgebra = "0.33"
+
+[features]
+# Python 3.10 以上のどれでも読める形（python3.dll を使う）。パッケージ版（Python 3.12 だけ）には使わない
+abi3 = ["pyo3/abi3-py310"]
 
 [profile.release]
 opt-level = 3

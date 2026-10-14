@@ -33,18 +33,25 @@ Python 側の入り口は `main/fastphys.py`（関数ごとに Rust と numba �
    - 選択肢は既定（1）のままで大丈夫です。
 2. 入れ終わったら、開いているコマンドのウィンドウは閉じます。
 
-あとは **`native\build_windows.bat` をダブルクリック**するだけです。
+あとは **`native\build_windows.bat` をダブルクリック**するだけです。2つ作ります。
+
+| できるもの | 使う Python |
+|---|---|
+| `lib\alpedia_core.pyd` | この PC の Python（3.10 以上ならどれでも。`python3.dll` を使う形） |
+| `lib\alpedia_core.cp312-win_amd64.pyd` と `package for windows\Alpedia\game\lib\` の同じもの | パッケージ版に同梱の Python 3.12（`python3.dll` が無いので 3.12 専用に作る） |
 
 - 初回は、Windows 用の GNU ツールチェーンの準備とビルドに数分かかります。
-- できた `lib\alpedia_core.pyd` は、元のフォルダと `package for windows\Alpedia\game\lib\` の両方に入ります。
+- ビルドの途中のファイルは `%LOCALAPPDATA%\alpedia_build` に置きます（OneDrive で同期されないように）。
+- 記録は `native\build_log.txt` に残ります。失敗したときはこのファイルを見ます。
+- Python のインストールが無くても、パッケージ版用は作れます（Python の情報は設定ファイルで渡し、
+  リンクは `python312.dll` に直接します）。
 - Rust のコードを変えたら、もう一度ダブルクリックします。
-- Python のインストールは要りません（`PYO3_NO_PYTHON=1` で、Python 3.10 以上のどれでも動く形 abi3 で作ります）。
 
 ## Linux / macOS でビルドする
 
 ```
 cd native/alpedia_core
-PYO3_NO_PYTHON=1 cargo build --release
+PYO3_NO_PYTHON=1 cargo build --release --features abi3
 cp target/release/libalpedia_core.so ../../lib/alpedia_core.abi3.so      # macOS は .dylib を .so の名前で
 ```
 
