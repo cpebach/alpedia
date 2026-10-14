@@ -63,6 +63,11 @@ class Game:
         self.views = {}
         self.planet_views = [render.PlanetView(self.scene_root, loader, p) for p in self.world.planets]
         g = self.cfg["graphics"]
+        from .. import paths as _paths
+        render.STYLE = {"edges": bool(g.get("block_edges", True)), "ao": bool(g.get("block_ao", True))}
+        tex_dir = _paths.ROOT / "sauce" / "textures"
+        render.EDGE_TEXTURE = str(tex_dir / "px_edge.png")
+        render.DEVICE_TEXTURE = str(tex_dir / "px_device.png")
         self.patch = render.TerrainPatch(self.scene_root, loader, int(g.get("terrain_patch_cells", 48)),
                                          float(g.get("terrain_patch_step", 1.0)))
         self.carve = render.CarveView(self.scene_root, loader)

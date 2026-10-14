@@ -8,6 +8,8 @@ DEFAULTS = {
     "window": {"width": 1280, "height": 720, "fullscreen": False, "vsync": True},
     "graphics": {"fov": 80, "terrain_patch_cells": 48, "terrain_patch_step": 1.0, "view_distance": 3000,
                  "decal_distance": 30.0,
+                 # ブロックの見た目：輪郭の線（セルの境目）・角の暗さ（環境光の遮り）
+                 "block_edges": True, "block_ao": True,
                  # 街：この距離（m、街の外周から）より近い街だけ窓・ネオンなどを詳しく描く／これより遠い街は描かない
                  "city_detail_distance": 100.0, "city_view_distance": 2500.0},
     "controls": {

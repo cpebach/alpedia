@@ -205,16 +205,16 @@ def build_mesh(c, k=None):
     if np.prod(dims) > 30_000_000:
         k = 2
         dims = np.ceil((hi - lo) * k).astype(int) + 1
-    sdf = np.full(int(np.prod(dims)), 1.0, dtype=np.float32)
     m = 2 * k + 3
     O = np.stack(np.meshgrid(*(np.arange(m),) * 3, indexing="ij"), -1).reshape(-1, 3)
 
-    def apply(kind, prims):
-        if not len(prims):
+    def apply(kind, pts_all, sdf):
+        """pts_all (C, q, 3)：芯（点・線分・三角形）の頂点（セル単位）。sdf に距離 − r を書き込む（小さい方）。"""
+        if not len(pts_all):
             return
-        for s in range(0, len(prims), max(1, 4_000_000 // len(O))):
-            P = prims[s:s + max(1, 4_000_000 // len(O))]
-            pts = centers[P].reshape(len(P), -1, 3)            # (C, q, 3)
+        step = max(1, 4_000_000 // len(O))
+        for s0 in range(0, len(pts_all), step):
+            pts = pts_all[s0:s0 + step]                        # (C, q, 3)
             pmin = pts.min(1) - r
             i0 = np.floor((pmin - lo) * k).astype(int)          # (C,3)
             idx = i0[:, None, :] + O[None]                      # (C, S, 3)
@@ -228,21 +228,80 @@ def build_mesh(c, k=None):
                 d, _ = dist_triangles(g, pts[:, 0][:, None], pts[:, 1][:, None], pts[:, 2][:, None])
             lin = (idx[..., 0] * dims[1] + idx[..., 1]) * dims[2] + idx[..., 2]
             np.minimum.at(sdf, lin.ravel(), (d - r).ravel().astype(np.float32))
-    apply("p", topo["points"].reshape(-1, 1))
-    apply("s", topo["segs"])
-    apply("t", topo["tris"])
-    vol = sdf.reshape(dims)
-    if vol.min() >= 0:
+
+    def shape_of(points, segs, tris, extra_segs=None):
+        sdf = np.full(int(np.prod(dims)), 1.0, dtype=np.float32)
+        apply("p", centers[points.reshape(-1, 1)], sdf)
+        sp = centers[segs] if len(segs) else np.zeros((0, 2, 3))
+        if extra_segs is not None and len(extra_segs):
+            sp = np.concatenate([sp, extra_segs])
+        apply("s", sp, sdf)
+        apply("t", centers[tris] if len(tris) else np.zeros((0, 3, 3)), sdf)
+        return sdf
+
+    points, segs, tris = topo["points"], topo["segs"], topo["tris"]
+    gid = c._art_groups() if getattr(c, "rotors", None) and hasattr(c, "_art_groups") else None
+    if gid is None or gid.max() == 0:
+        vol = shape_of(points, segs, tris).reshape(dims)
+        if vol.min() >= 0:
+            return None
+        parts = [(vol, None)]
+    else:
+        # 回転ジョイント（アクチュエーター）で別に動く部分ごとに、別の形・別のメッシュにする。
+        # 1つの形のままだと、出力側が回ったときに境目が引き伸ばされてねじれて見えるため。
+        # 部分ごとの形は、その部分のボクセルだけの芯から作る（部分どうしを埋める形は作らない）。
+        # アクチュエーターと出力をつなぐ線分は真ん中（2つのセルの境の面）で半分ずつに分ける。
+        rotor_pairs = {}
+        for r_ in c.rotors:
+            rotor_pairs[tuple(sorted((r_["a"], r_["b"])))] = True
+        G = int(gid.max()) + 1
+        vols = []
+        for g_ in range(G):
+            pts = points[gid[points] == g_] if len(points) else points
+            sg = segs[(gid[segs[:, 0]] == g_) & (gid[segs[:, 1]] == g_)] if len(segs) else segs
+            tr = tris[(gid[tris[:, 0]] == g_) & (gid[tris[:, 1]] == g_) & (gid[tris[:, 2]] == g_)] if len(tris) else tris
+            half = []
+            for a_, b_ in rotor_pairs:
+                for x, y in ((a_, b_), (b_, a_)):
+                    if gid[x] == g_ and gid[y] != g_:
+                        half.append([centers[x], (centers[x] + centers[y]) * 0.5])
+            vols.append(shape_of(pts, sg, tr, np.asarray(half) if half else None))
+        V = np.stack(vols)                                     # (G, N)
+        union = V.min(0)
+        if union.min() >= 0:
+            return None
+        lab = V.argmin(0)
+        parts = []
+        for g_ in range(G):
+            # ほかの部分の中は外側として扱う（境の切り口が両側で同じ位置になるように符号だけ反転）
+            # （ちょうど 0 の点は marching_cubes が中とみなすので、ほんの少し外へ）
+            v = np.where(lab == g_, union, np.maximum(np.abs(union), 1e-4))
+            parts.append((v.reshape(dims), gid == g_))
+    P, F, OW = [], [], []
+    off = 0
+    for vol_g, allowed in parts:
+        if vol_g.min() >= 0:
+            continue
+        try:
+            verts, faces, normals, _ = marching_cubes(vol_g, level=0.0)
+        except (ValueError, RuntimeError):
+            continue
+        p = lo + verts / k                                     # セル単位
+        # 面の向きをそろえる（外向き）：閉じた面の符号付き体積が正になる向き
+        # （以前は marching_cubes の法線に合わせていたが、それは内向きで、上の面が暗く描かれていた）
+        a, b, c3 = p[faces[:, 0]], p[faces[:, 1]], p[faces[:, 2]]
+        if np.einsum("ij,ij->", a - p.mean(0), np.cross(b - a, c3 - a)) < 0:
+            faces = faces[:, ::-1]
+        P.append(p)
+        F.append(faces + off)
+        OW.append(_owner(c, p, centers, allowed))
+        off += len(p)
+    if not P:
         return None
-    verts, faces, normals, _ = marching_cubes(vol, level=0.0)
-    p = lo + verts / k                                         # セル単位
-    # 面の向きをそろえる（外向き）
-    fn = np.cross(p[faces[:, 1]] - p[faces[:, 0]], p[faces[:, 2]] - p[faces[:, 0]])
-    vn = normals[faces].mean(1)
-    if np.einsum("ij,ij->", fn, vn) < 0:
-        faces = faces[:, ::-1]
+    p = np.concatenate(P)
+    faces = np.concatenate(F)
     # 各頂点をボクセルに割り当て、そのボクセルの8頂点で補間（スキニング）
-    owner = _owner(c, p, centers)
+    owner = np.concatenate(OW)
     u = p - cells[owner]                                       # ボクセル内の位置 0〜1（外へはみ出すこともある）
     W = np.ones((len(p), 8))
     for k8 in range(8):
@@ -253,18 +312,29 @@ def build_mesh(c, k=None):
             "vidx": (8 * owner[:, None] + np.arange(8)[None]).astype(np.int64), "version": c.version}
 
 
-def _owner(c, p, centers):
+def _owner(c, p, centers, allowed=None):
+    """点（セル単位）が属するボクセル：そのセルのボクセル、無ければいちばん近いボクセル。
+    allowed（ボクセルごとの bool）があれば、その中から選ぶ。"""
     cell = np.floor(p).astype(np.int64)
-    owner = np.full(len(p), -1, dtype=np.int64)
-    for k, cl in enumerate(map(tuple, cell)):
-        j = c.index.get(cl)
-        if j is not None:
-            owner[k] = j
+    vc = np.asarray(c.cells, dtype=np.int64)
+    lo = np.minimum(vc.min(0), cell.min(0)) if len(cell) else vc.min(0)
+    span = (np.maximum(vc.max(0), cell.max(0) if len(cell) else vc.max(0)) - lo + 1)
+    enc = lambda a: ((a[:, 0] - lo[0]) * span[1] + (a[:, 1] - lo[1])) * span[2] + (a[:, 2] - lo[2])  # noqa: E731
+    keys = enc(vc)
+    order = np.argsort(keys)
+    sk = keys[order]
+    q = enc(cell)
+    pos = np.clip(np.searchsorted(sk, q), 0, len(sk) - 1)
+    hit = sk[pos] == q
+    owner = np.where(hit, order[pos], -1).astype(np.int64)
+    if allowed is not None:
+        owner[(owner >= 0) & ~allowed[np.maximum(owner, 0)]] = -1
     miss = owner < 0
     if miss.any():
         from scipy.spatial import cKDTree
-        _, nn = cKDTree(centers).query(p[miss])
-        owner[miss] = nn
+        cand = np.arange(len(centers)) if allowed is None else np.nonzero(allowed)[0]
+        _, nn = cKDTree(centers[cand]).query(p[miss])
+        owner[miss] = cand[nn]
     return owner
 
 

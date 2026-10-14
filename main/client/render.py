@@ -99,6 +99,67 @@ def shade(normals, colors):
     return colors * k[:, None]
 
 
+# 見た目の設定（game が config の graphics から入れる）
+STYLE = {"edges": True, "ao": True}
+EDGE_TEXTURE = None          # ブロックの輪郭の線のテクスチャ（game が sauce/textures/px_edge.png を入れる）
+DEVICE_TEXTURE = None        # テクスチャの無い機器の外板
+_edge_ts = None
+
+
+def _edge_stage():
+    """輪郭の線を、本来のテクスチャに掛け合わせる2枚目のテクスチャの段。"""
+    global _edge_ts
+    if _edge_ts is None:
+        from panda3d.core import TextureStage
+        _edge_ts = TextureStage("block_edges")
+        _edge_ts.setMode(TextureStage.MModulate)
+        _edge_ts.setSort(20)
+    return _edge_ts
+
+
+def project_uv(p, axis):
+    """セル単位の位置を、軸 axis（0/1/2）に垂直な面へ投影したテクスチャ座標（1セルで 0〜1）。横の面は v が上（+Y）。"""
+    u = np.where(axis == 0, p[:, 2], p[:, 0])
+    v = np.where(axis == 1, p[:, 2], p[:, 1])
+    return np.stack([u, v], axis=1)
+
+
+_AO_DIRS = None
+
+
+def block_ao(c, p, n, owner=None, strength=0.42):
+    """角の暗さ（環境光の遮り）：頂点の外側の半球に、ほかのブロックがどれだけあるか（形が変わったときだけ計算）。
+    owner があれば、回転ジョイントの向こう側（別に動く部分）のブロックは数えない（回したときに出る切り口が暗くならないように）。"""
+    global _AO_DIRS
+    if _AO_DIRS is None:
+        g = np.array([[x, y, z] for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1) if (x, y, z) != (0, 0, 0)], float)
+        _AO_DIRS = g / np.linalg.norm(g, axis=1, keepdims=True)
+    if not len(p):
+        return np.ones(0)
+    D = _AO_DIRS
+    w = D @ n.T                                          # (26, V)
+    use = w > 0.25
+    q = p[None] + n[None] * 0.3 + D[:, None, :] * 0.75   # (26, V, 3)
+    cell = np.floor(q).astype(np.int64).reshape(-1, 3)
+    vc = np.asarray(c.cells, dtype=np.int64)
+    lo = np.minimum(vc.min(0), cell.min(0))
+    span = np.maximum(vc.max(0), cell.max(0)) - lo + 1
+    enc = lambda a: ((a[:, 0] - lo[0]) * span[1] + (a[:, 1] - lo[1])) * span[2] + (a[:, 2] - lo[2])  # noqa: E731
+    vk = enc(vc)
+    order = np.argsort(vk)
+    sk = vk[order]
+    qk = enc(cell)
+    pos = np.clip(np.searchsorted(sk, qk), 0, len(sk) - 1)
+    occ = (sk[pos] == qk)
+    gid = c._art_groups() if owner is not None and getattr(c, "rotors", None) and hasattr(c, "_art_groups") else None
+    if gid is not None and gid.max() > 0:
+        same = gid[order[pos]] == np.tile(gid[owner], len(D))
+        occ &= same
+    occ = occ.reshape(len(D), len(p))
+    frac = (occ * use * w).sum(0) / np.maximum((use * w).sum(0), 1e-9)
+    return 1.0 - strength * np.clip(frac * 1.6, 0, 1)
+
+
 def _centers8(P8):
     return P8.mean(axis=1)
 
@@ -199,7 +260,7 @@ class ConstructView:
             if d:
                 dd = reg.device(d["def"]) or {}
                 col_v.append(dd.get("color", [1, 0, 1]))
-                tex_v.append(dd.get("texture"))
+                tex_v.append(dd.get("texture") or DEVICE_TEXTURE)
             else:
                 mt = reg.material(c.mats[i])
                 col_v.append(mt["color"])
@@ -210,27 +271,35 @@ class ConstructView:
         m["faces64"] = np.ascontiguousarray(faces, dtype=np.int64)
         m["vidx64"] = np.ascontiguousarray(m["vidx"], dtype=np.int64)
         m["w64"] = np.ascontiguousarray(m["w"], dtype=np.float64)
-        # 静止時の法線で、テクスチャ座標を面の向きに合わせて付ける（ブロック1つでテクスチャ1枚）
         rest = m["rest"]
         rn = shape.vertex_normals(rest, faces)
-        ax = np.argmax(np.abs(rn), axis=1)
-        uv = np.where(ax[:, None] == 0, rest[:, [1, 2]], np.where(ax[:, None] == 1, rest[:, [0, 2]], rest[:, [0, 1]]))
+        # テクスチャ座標：三角形ごとに、静止時の面の向きにいちばん近い軸の面へ投影する（ブロック1つでテクスチャ1枚）。
+        # 頂点ごとに決めると、向きの変わり目の三角形でテクスチャが引き伸ばされてぼやけるので、
+        # 頂点を軸ごとに分けて持つ（位置と法線は共通、テクスチャ座標だけ別）。
+        fnrm = np.cross(rest[faces[:, 1]] - rest[faces[:, 0]], rest[faces[:, 2]] - rest[faces[:, 0]])
+        fax = np.argmax(np.abs(fnrm), axis=1)
+        ao = block_ao(c, rest, rn, owner) if STYLE.get("ao", True) else np.ones(len(rest))
         face_tex = [tex_v[o] for o in owner[faces[:, 0]]]
         groups = {}
         for f, t in enumerate(face_tex):
             groups.setdefault(t, []).append(f)
+        edges = load_texture(self.loader, EDGE_TEXTURE) if STYLE.get("edges", True) else None
         for tex, fl in groups.items():
             fl = np.asarray(fl, dtype=np.int64)
             sub = faces[fl]
-            verts, inv = np.unique(sub.ravel(), return_inverse=True)
+            keys = sub * 3 + fax[fl][:, None]
+            ukeys, inv = np.unique(keys.ravel(), return_inverse=True)
+            verts, axv = ukeys // 3, ukeys % 3
             mesh = DynamicMesh(self.root, f"c{c.id}")
             t = load_texture(self.loader, tex)
             if t:
                 mesh.np.setTexture(t, 1)
+            if edges is not None:
+                mesh.np.setTexture(_edge_stage(), edges, 1)
             self.groups.append({"mesh": mesh, "verts": np.ascontiguousarray(verts, dtype=np.int64),
                                 "tris": inv.reshape(-1, 3),
-                                "cols": np.ascontiguousarray(col_v[owner[verts]]),
-                                "uv": np.ascontiguousarray(uv[verts], dtype=np.float32),
+                                "cols": np.ascontiguousarray(col_v[owner[verts]] * ao[verts][:, None]),
+                                "uv": np.ascontiguousarray(project_uv(rest[verts], axv), dtype=np.float32),
                                 "owner": np.ascontiguousarray(owner[verts], dtype=np.int64), "new": True})
         return True
 
