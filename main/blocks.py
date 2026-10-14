@@ -125,7 +125,7 @@ SENSORS = {
 }
 OPS = {"+": "+", "-": "-", "×": "*", "÷": "/", "余り": "%"}
 CMPS = {"<": "<", ">": ">", "=": "==", "≦": "<=", "≧": ">=", "≠": "!="}
-FUNCS = {"絶対値": "abs", "四捨五入": "round", "平方根": "math.sqrt", "sin": "_sin", "cos": "_cos"}
+FUNCS = {"絶対値": "abs", "四捨五入": "_round", "平方根": "math.sqrt", "sin": "_sin", "cos": "_cos"}
 DEVPROPS = {"角度": "angle", "出力の向き": "output_angle", "伸び": "extension", "出力": "throttle",
             "燃料": "fuel", "蓄電": "charge"}
 DEVBOOLS = {"動作中": "busy", "結合している": "attached", "開いている": "open"}
@@ -316,6 +316,11 @@ def _val(api, name, prop, kind=None):
 
 def _div(a, b):
     return a / b if b else 0
+
+
+def _round(a):
+    # 無限大（脱出軌道の遠点など）や非数はそのまま（round では止まってしまうため）
+    return round(a) if math.isfinite(a) else a
 
 
 def _mod(a, b):

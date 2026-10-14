@@ -38,6 +38,50 @@ def open_external(path):
         subprocess.Popen(["xdg-open", path])  # noqa: S603, S607
 
 
+def _win_editors():
+    """Windows で使えるエディタ（見つかった順）。"""
+    import shutil
+    out = []
+    for exe in ("code.cmd", "code"):
+        w = shutil.which(exe)
+        if w:
+            out.append([w])
+            break
+    local = os.environ.get("LOCALAPPDATA", "")
+    vs = os.path.join(local, "Programs", "Microsoft VS Code", "Code.exe")
+    if not out and local and os.path.exists(vs):
+        out.append([vs])
+    out.append(["notepad.exe"])
+    return out
+
+
+def open_in_editor(path, command=""):
+    """テキストエディタでファイルを開く。
+    Windows では .py を既定のアプリで「開く」と、編集ではなく Python で実行されてしまう（画面が一瞬出て消える）ので、
+    エディタを指定して開く。command（設定 game.editor）があればそれを使い、無ければ VS Code、無ければメモ帳。"""
+    import shlex
+    path = str(path)
+    win = sys.platform.startswith("win")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if win else 0
+    if command:
+        args = [a.strip('"') for a in shlex.split(command, posix=not win)]
+        subprocess.Popen(args + [path], creationflags=flags)  # noqa: S603
+        return
+    if win:
+        err = None
+        for cmd in _win_editors():
+            try:
+                subprocess.Popen(cmd + [path], creationflags=flags)  # noqa: S603
+                return
+            except OSError as e:
+                err = e
+        raise err
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-t", path])  # noqa: S603, S607
+    else:
+        subprocess.Popen(["xdg-open", path])  # noqa: S603, S607
+
+
 def _wrap(s, n):
     s = str(s)
     return "\n  ".join(s[i:i + n] for i in range(0, len(s), n)) if len(s) > n else s
@@ -119,9 +163,12 @@ class ScriptPanel:
         self.status.text = msg
         self._status_time = time.time()
 
-    def _open(self, path):
+    def _open(self, path, edit=False):
         try:
-            open_external(path)
+            if edit:
+                open_in_editor(path, str(self.game.cfg.get("game", {}).get("editor", "") or ""))
+            else:
+                open_external(path)
             self.set_status(f"{path.name} を開きました")
         except Exception as e:  # noqa: BLE001
             L.warning("開けませんでした: %s (%s)", path, e)
@@ -171,7 +218,7 @@ class ScriptPanel:
             return
         if not p.exists():
             p.write_text(NEW_TEMPLATE, encoding="utf-8")
-        self._open(p)
+        self._open(p, edit=True)
 
     def run(self):
         d = self.device()
