@@ -322,6 +322,8 @@ config/   設定（settings.json）
 
 物理演算の重い部分（形合わせ・結合・当たり判定・惑星の地形・構築物どうしの押し出しの組探し）は、
 Rust で書いた物理コア `alpedia_core`（`native/`）があればそれで計算します（画面左上に「物理:Rust」）。
+構築物1つの1サブステップ（重力・浮力・減衰・形合わせ・結合・回転ジョイント・地面との接触・塑性変形・ちぎれの判定、剛体モードも）は
+Rust の1回の呼び出しでまとめて計算し、その間は Python を止めないので、構築物ごとの計算が複数コアで本当に同時に進みます。
 作り方は `native/README.md`（Windows は `native\build_windows.bat` をダブルクリック）。無いときは次の numba 版で計算します。
 
 物理演算の重い部分（形合わせ・結合・当たり判定・表面の形の計算）は `numba`（必須）で機械語に変換して実行し、
@@ -339,7 +341,7 @@ Rust などへの書き直しに向けて、物理とワールドの「コア」
 |---|---|---|
 | コア | `main/` 直下 | ワールド（`world.py`）・構築物と物理（`construct.py`, `fastphys.py`, `shape.py`, `geom.py`）・機器（`devices.py`, `actuator.py`, `airtight.py`）・惑星・プレイヤー・無線・定義の読み込み |
 | コアの決まりごと | `hooks.py` / `modcode.py` / `devstate.py` / `savefmt.py` / `control.py` | MOD のプログラムの口／その読み込み／機器の状態の形／セーブの形／スクリプトから構築物を読み書きする窓口 |
-| Rust の物理コア | `native/alpedia_core/`（`lib/` にビルドしたもの） | 形合わせ・結合・関節つき剛体・惑星の地形と接触・重力・近い点の組。Python 側の入り口は `native.py`・`fastphys.py`・`planet.py` |
+| Rust の物理コア | `native/alpedia_core/`（`lib/` にビルドしたもの） | 構築物の1サブステップまるごと（`Body`）・形合わせ・結合・関節つき剛体・惑星の地形と接触・重力・近い点の組。Python 側の入り口は `native.py`・`construct.py`（`_native_begin`）・`fastphys.py`・`planet.py` |
 | スクリプト | `scripting.py`, `blocks.py` | `api` は `control.Port` だけを通して構築物を読み書きする |
 | MOD | `mods/` | 定義（JSON）とプログラム（`code/`）。本体に入っている MOD：サバイバル（`mods/survival`：資源のルール）、街（`mods/city`：街・暮らしと経済・政治・その画面） |
 | 画面 | `main/client/` | ursina による描画と操作。MOD の画面は `client/addon_hooks.py` の口で足す |

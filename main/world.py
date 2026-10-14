@@ -311,7 +311,8 @@ class World:
             self._prep_ext(c, dt)
         broken = set()
         for _ in range(self.substeps):
-            self._each(cons, lambda c: c.substep_begin(h, self.iters, self.gravity, self.planets))
+            gs = float(self.settings.get("gravity_scale", 1.0))
+            self._each(cons, lambda c: c.substep_begin(h, self.iters, self.gravity, self.planets, gs))
             woke = self._voxel_collisions(cons, sleeping)
             woke = [c for c in woke if c.id not in anchored_ids]
             ends = self._each(cons, lambda c: c.substep_end(h))

@@ -8,6 +8,7 @@
 
 | 中身 | Rust（`alpedia_core/src/`） | 元の Python |
 |---|---|---|
+| 構築物1つの1サブステップまるごと（重力・浮力・減衰・積分・形合わせ・結合・回転ジョイント・地面との接触・塑性変形・ちぎれの判定、剛体・完全剛体モードの接触も） | `body.rs`, `lib.rs`（`Body`） | `main/construct.py` の `substep_begin` / `substep_end` |
 | ボクセルごとの形合わせ・結合 | `kernels.rs` | `main/fastphys.py` |
 | 当たり判定の芯・描画用の頂点と法線 | `kernels.rs` | `main/fastphys.py` |
 | 向き付きの箱との距離 | `kernels.rs` | `main/geom.py` |
@@ -23,6 +24,15 @@ Python 側の入り口は `main/fastphys.py`（関数ごとに Rust と numba �
 - `"python"`：Rust を使わない（比べるとき用）。
 
 環境変数 `ALPEDIA_BACKEND=python` でも切り替えられます。
+
+構築物の1サブステップまるごとの計算（`Body`）は、次のときだけ Python の順の計算に戻ります。
+
+- 関節つき剛体（完全剛体モードで関節を持つもの）：もともと `art.rs` の部品を Python から順に呼ぶ
+- 完全剛体モードで、街などの MOD が出す当たり判定の箱に触れているとき（MOD のプログラムを呼ぶため）
+- 環境変数 `ALPEDIA_NATIVE_STEP=0`（比べるとき用）
+
+MOD の箱との当たり判定は、それ以外のときも Rust の計算の後に Python で行います。
+構築物の形が変わったとき（ブロックの追加・削除・ちぎれ）は、`Body` を作り直します。
 
 ## Windows でビルドする
 

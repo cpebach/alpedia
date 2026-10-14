@@ -7,6 +7,7 @@
 - 塑性: 変形が yield_strain を超えると plasticity に応じて元の形自体が変わる。
 - 再結合: rebond な素材（液体・粘土）は近づいた頂点同士が新たに結合する。
 """
+import os
 import uuid
 from itertools import combinations
 
@@ -67,6 +68,14 @@ CONTACT_SOFT = 1.0
 
 from . import devstate, fastphys  # noqa: E402
 from .planet import fcross  # noqa: E402
+
+
+NATIVE_STEP_OFF = os.environ.get("ALPEDIA_NATIVE_STEP") == "0"   # 比べるとき用：1サブステップまとめての Rust を使わない
+
+
+def native_core():
+    from . import native
+    return native.core
 
 
 class Construct:
@@ -329,13 +338,16 @@ class Construct:
         self.substep_begin(h, iters, gravity_fn, planets)
         return self.substep_end(h)
 
-    def substep_begin(self, h, iters, gravity_fn, planets):
+    def substep_begin(self, h, iters, gravity_fn, planets, gscale=None):
+        """gscale：重力倍率。渡されたとき（gravity_fn が世界の重力そのもののとき）は Rust でまとめて計算できる。"""
         if not self.n_vox:
+            return
+        if self.mode == "art":
+            return self._art_begin(h, gravity_fn, planets)
+        if gscale is not None and self._native_begin(h, iters, planets, gscale):
             return
         if self.mode == "rigid":
             return self._rigid_begin(h, gravity_fn, planets)
-        if self.mode == "art":
-            return self._art_begin(h, gravity_fn, planets)
         acc = gravity_fn(self.pos) + self.force * self.inv_mass[:, None]
         self.vel += acc * h
         for pl in planets:
@@ -622,6 +634,9 @@ class Construct:
     def substep_end(self, h):
         if not self.n_vox:
             return False
+        if getattr(self, "_nb_used", False):
+            self._nb_used = False
+            return self._native_end(h)
         if self.mode == "rigid":
             self._rigid_fit_pos()
             self.vel = (self.pos - self._prev) / h
@@ -632,6 +647,118 @@ class Construct:
         self.vel = (self.pos - self._prev) / h
         self._plasticity(h)
         return self._check_breaks()
+
+    # ------------------------------------------------------------------
+    # Rust で1サブステップをまとめて計算する（native/alpedia_core の Body）
+    # ------------------------------------------------------------------
+    def _native_body(self):
+        """この構築物の Rust の Body（形が変わったら作り直す）。Rust が無いときは None。"""
+        from . import native
+        core = native.core
+        if core is None or not hasattr(core, "Body") or NATIVE_STEP_OFF:
+            return None
+        key = (self.version, id(core), self.n_vox)
+        nb = getattr(self, "_nb_cache", None)
+        if nb is not None and nb[0] == key:
+            return nb[1]
+        i64 = lambda a: np.ascontiguousarray(a, dtype=np.int64)  # noqa: E731
+        f64 = lambda a: np.ascontiguousarray(a, dtype=np.float64)  # noqa: E731
+        R = len(self.rotors)
+        ra = np.zeros(R, np.int64)
+        rva = np.zeros((R, 4), np.int64)
+        rvb = np.zeros((R, 4), np.int64)
+        rbr = np.zeros(R)
+        for q, r in enumerate(self.rotors):
+            pairs = JOINT_PAIRS[r["d"]]
+            ra[q] = r["a"]
+            rva[q] = 8 * r["a"] + pairs[:, 0]
+            rvb[q] = 8 * r["b"] + pairs[:, 1]
+            rbr[q] = r["br"]
+        body = core.Body(float(self.size), i64(self.ja), i64(self.jb), f64(self.jr), f64(self.jk), f64(self.jbrk),
+                         f64(self.jcount), f64(self.inv_mass), f64(self.mass), f64(self.damp), f64(self.fric),
+                         f64(self.v_stiff), f64(self.v_plast), f64(self.v_yield), f64(self.v_density),
+                         i64(self.ctype), i64(self.cidx), ra, rva, rvb, rbr)
+        self._nb_cache = (key, body)
+        return body
+
+    def _rotor_angles(self):
+        return [float(np.radians(float(r["dev"]["state"].get("angle", 0.0)))) for r in self.rotors]
+
+    def _contig(self, *names):
+        """Rust に渡す配列を、連続した書き込める float64 にそろえる。"""
+        for k in names:
+            a = getattr(self, k)
+            if not (isinstance(a, np.ndarray) and a.dtype == np.float64 and a.flags.c_contiguous and a.flags.writeable):
+                setattr(self, k, np.array(a, dtype=np.float64, order="C"))
+
+    def _native_begin(self, h, iters, planets, gscale):
+        """substep_begin の Rust 版。使えないとき（Rust が無い・惑星が Rust 化できない・
+        完全剛体モードで MOD の箱がある）は False を返して Python で計算する。"""
+        body = self._native_body()
+        if body is None:
+            return False
+        pls = []
+        for pl in planets:
+            nat = pl._nat()
+            if nat is None:
+                return False
+            pls.append((nat, float(pl.bound), float(pl.lipschitz), float(pl.gm), float(pl.radius), bool(pl.has_water)))
+        rigid = self.mode == "rigid"
+        full = rigid and getattr(self, "_full_rigid", False)
+        if full and self.ext_colliders:
+            return False
+        if getattr(self, "_prev", None) is None or self._prev.shape != self.pos.shape:
+            self._prev = self.pos.copy()
+        self._contig("pos", "vel", "_prev", "force")
+        cav = self._cavity_neighbors() if any(p[5] for p in pls) else None
+        cav = None if cav is None else np.ascontiguousarray(cav[0], dtype=np.int64)
+        if rigid:
+            rb = self.rb
+            want = body.rigid_begin(self.pos, self.vel, self._prev, self.force,
+                                    np.ascontiguousarray(rb["R"], dtype=np.float64),
+                                    np.ascontiguousarray(rb["Ib"], dtype=np.float64), pls, gscale, h, cav, bool(full),
+                                    float(self.IMPACT_SPEED), float(CONTACT_SOFT))
+            if want:
+                self._want_soft = True
+        else:
+            self._ensure_lastR()
+            self._contig("rest", "act_scale", "_last_R", "_quat")
+            par = self.n_vox >= fastphys.PARALLEL_MIN_VOXELS and not self._in_pool
+            body.soft_begin(self.pos, self.vel, self._prev, self.force, self.rest, self.act_scale, self._last_R,
+                            self._quat, pls, gscale, h, int(iters), self._rotor_angles(), bool(par), cav,
+                            float(CONTACT_SOFT))
+        for bs in self.ext_colliders:
+            self._collide_boxes(bs, h)
+        self._nb_used = True
+        return True
+
+    def _native_end(self, h):
+        if self.mode == "rigid":
+            rb = self.rb
+            rb["local"] = np.ascontiguousarray(rb["local"], dtype=np.float64)
+            self._contig("pos", "vel", "_prev")
+            R, x = native_core().rigid_end(self.pos, self.vel, self._prev, rb["local"], np.ascontiguousarray(self.mass), h)
+            rb["R"], rb["x"] = R, x
+            return False
+        body = self._native_body()
+        self._contig("rest")
+        lastR = self._last_R if hasattr(self, "_last_R") else np.zeros(0)
+        broken, rot = body.soft_end(self.pos, self.vel, self._prev, self.rest, self.act_scale, lastR, h,
+                                    self._rotor_angles())
+        broke = False
+        for q in rot.tolist():
+            self.links.discard(self.rotors[q]["key"])
+            broke = True
+        for j in broken.tolist():
+            key = self.jkey[j]
+            if key[0] == "x":
+                self.extras.pop(key[1:], None)
+            else:
+                self.links.discard(key)
+            broke = True
+        if broke:
+            self.rebuild()
+        return broke
 
     def _ensure_lastR(self):
         if not hasattr(self, "_last_R") or len(self._last_R) != self.n_vox:

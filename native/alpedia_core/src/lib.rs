@@ -8,13 +8,14 @@
 //! Python 側のスレッドから同時に呼べる（構築物ごとの並列計算）。
 
 mod art;
+mod body;
 mod kernels;
 mod planet;
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
-use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArrayDyn, PyReadwriteArrayDyn, PyUntypedArrayMethods};
+use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2, PyReadonlyArrayDyn, PyReadwriteArrayDyn, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -220,7 +221,7 @@ fn gravity<'py>(py: Python<'py>, p: RoF<'py>, centers: RoF<'py>, gm: RoF<'py>, r
 // ---------------------------------------------------------------------------
 #[pyclass(frozen)]
 struct PlanetShape {
-    shape: planet::Shape,
+    shape: Arc<planet::Shape>,
     center: [f64; 3],
     craters: RwLock<Vec<[f64; 4]>>,
 }
@@ -291,7 +292,7 @@ impl PlanetShape {
                 })
             }
         };
-        Ok(PlanetShape { shape: planet::Shape::new(radius, amp, freq, seed, e), center, craters: RwLock::new(Vec::new()) })
+        Ok(PlanetShape { shape: Arc::new(planet::Shape::new(radius, amp, freq, seed, e)), center, craters: RwLock::new(Vec::new()) })
     }
 
     /// 掘削跡（惑星ローカル座標の [x, y, z, 半径]）を入れ替える
@@ -437,6 +438,205 @@ impl PlanetShape {
 }
 
 // ---------------------------------------------------------------------------
+// 構築物1つの1サブステップをまとめて（段階B）
+// ---------------------------------------------------------------------------
+/// 構築物の「形が変わるまで変わらない値」。Python の rebuild ごとに作り直す。
+#[pyclass(frozen)]
+struct Body {
+    t: body::Topo,
+}
+
+/// planets：[(PlanetShape, bound, lipschitz, gm, radius, has_water), ...]（世界の全部の惑星）
+fn planet_ctx(planets: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<body::PlanetCtx>> {
+    let mut out = Vec::with_capacity(planets.len());
+    for it in planets.iter() {
+        let (ps, bound, lipschitz, gm, radius, has_water): (Bound<'_, PlanetShape>, f64, f64, f64, f64, bool) = it.extract()?;
+        let p = ps.get();
+        out.push(body::PlanetCtx {
+            shape: p.shape.clone(),
+            center: p.center,
+            craters: p.craters.read().unwrap().clone(),
+            bound,
+            lipschitz,
+            gm,
+            radius,
+            has_water,
+        });
+    }
+    Ok(out)
+}
+
+fn cav_rows(cav: &Option<RoI<'_>>) -> PyResult<Vec<[i64; 6]>> {
+    match cav {
+        None => Ok(Vec::new()),
+        Some(a) => Ok(ro(a, "cav")?.chunks_exact(6).map(|c| [c[0], c[1], c[2], c[3], c[4], c[5]]).collect()),
+    }
+}
+
+fn need(ok: bool, what: &str) -> PyResult<()> {
+    if ok {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!("{what}: 配列の大きさが合いません")))
+    }
+}
+
+#[pymethods]
+impl Body {
+    /// rotor_avox (R,)、rotor_a / rotor_b (R,4)：回転ジョイントの土台のボクセル・土台側と出力側の4頂点、rotor_br (R,)：ちぎれる距離
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (size, ja, jb, jr, jk, jbrk, jcount, inv_mass, mass, damp, fric, stiff, plast, yield_, density, ctype, cidx,
+                        rotor_avox, rotor_a, rotor_b, rotor_br))]
+    fn new(
+        size: f64, ja: RoI, jb: RoI, jr: RoF, jk: RoF, jbrk: RoF, jcount: RoF, inv_mass: RoF, mass: RoF, damp: RoF, fric: RoF,
+        stiff: RoF, plast: RoF, yield_: RoF, density: RoF, ctype: RoI, cidx: RoI, rotor_avox: RoI, rotor_a: RoI, rotor_b: RoI,
+        rotor_br: RoF,
+    ) -> PyResult<Self> {
+        let nvox = ro(&stiff, "stiff")?.len();
+        let nv = 8 * nvox;
+        let (ja, jb) = (ro(&ja, "ja")?.to_vec(), ro(&jb, "jb")?.to_vec());
+        let nj = ja.len();
+        need(jb.len() == nj && ja.iter().chain(jb.iter()).all(|&i| i >= 0 && (i as usize) < nv), "Body 結合")?;
+        let ra = ro(&rotor_avox, "rotor_avox")?;
+        let (rva, rvb, rbr) = (ro(&rotor_a, "rotor_a")?, ro(&rotor_b, "rotor_b")?, ro(&rotor_br, "rotor_br")?);
+        let nr = ra.len();
+        need(rva.len() == 4 * nr && rvb.len() == 4 * nr && rbr.len() == nr, "Body 回転ジョイント")?;
+        need(
+            ra.iter().all(|&i| i >= 0 && (i as usize) < nvox)
+                && rva.iter().chain(rvb.iter()).all(|&i| i >= 0 && (i as usize) < nv),
+            "Body 回転ジョイントの番号",
+        )?;
+        let rotors = (0..nr)
+            .map(|q| body::Rotor {
+                a_vox: ra[q] as usize,
+                a: [rva[4 * q] as usize, rva[4 * q + 1] as usize, rva[4 * q + 2] as usize, rva[4 * q + 3] as usize],
+                b: [rvb[4 * q] as usize, rvb[4 * q + 1] as usize, rvb[4 * q + 2] as usize, rvb[4 * q + 3] as usize],
+                br: rbr[q],
+            })
+            .collect();
+        let t = body::Topo {
+            size,
+            nvox,
+            ja,
+            jb,
+            jr: ro(&jr, "jr")?.to_vec(),
+            jk: ro(&jk, "jk")?.to_vec(),
+            jbrk: ro(&jbrk, "jbrk")?.to_vec(),
+            jcount: ro(&jcount, "jcount")?.to_vec(),
+            inv_mass: ro(&inv_mass, "inv_mass")?.to_vec(),
+            mass: ro(&mass, "mass")?.to_vec(),
+            damp: ro(&damp, "damp")?.to_vec(),
+            fric: ro(&fric, "fric")?.to_vec(),
+            stiff: ro(&stiff, "stiff")?.to_vec(),
+            plast: ro(&plast, "plast")?.to_vec(),
+            yield_: ro(&yield_, "yield")?.to_vec(),
+            density: ro(&density, "density")?.to_vec(),
+            ctype: ro(&ctype, "ctype")?.to_vec(),
+            cidx: ro(&cidx, "cidx")?.to_vec(),
+            rotors,
+        };
+        need(
+            t.jr.len() == nj && t.jk.len() == nj && t.jbrk.len() == nj && t.jcount.len() == nv && t.inv_mass.len() == nv
+                && t.mass.len() == nv && t.damp.len() == nv && t.fric.len() == nv && t.plast.len() == nvox
+                && t.yield_.len() == nvox && t.density.len() == nvox && t.ctype.len() == nv && t.cidx.len() == 3 * nv,
+            "Body",
+        )?;
+        Ok(Body { t })
+    }
+
+    /// ブロックごとの計算の1サブステップの前半（重力・浮力・減衰・積分・形合わせ・結合・回転ジョイント・地面）。
+    /// angles：回転ジョイントの角度（ラジアン）。cav：気密の空洞の6方向のボクセル番号 (K,6) か None
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (pos, vel, prev, force, rest, act_scale, last_r, quat, planets, scale, h, iters, angles, parallel, cav, soft))]
+    fn soft_begin(
+        &self, py: Python<'_>, mut pos: RwF, mut vel: RwF, mut prev: RwF, force: RoF, rest: RoF, act_scale: RoF,
+        mut last_r: RwF, mut quat: RwF, planets: &Bound<'_, pyo3::types::PyList>, scale: f64, h: f64, iters: i64,
+        angles: Vec<f64>, parallel: bool, cav: Option<RoI>, soft: f64,
+    ) -> PyResult<()> {
+        let t = &self.t;
+        let pls = planet_ctx(planets)?;
+        let cv = cav_rows(&cav)?;
+        let (p, v, pv) = (rw(&mut pos, "pos")?, rw(&mut vel, "vel")?, rw(&mut prev, "prev")?);
+        let (f, r, s) = (ro(&force, "force")?, ro(&rest, "rest")?, ro(&act_scale, "act_scale")?);
+        let (lr, q) = (rw(&mut last_r, "lastR")?, rw(&mut quat, "quat")?);
+        let nv = 8 * t.nvox;
+        need(
+            p.len() == 3 * nv && v.len() == 3 * nv && pv.len() == 3 * nv && f.len() == 3 * nv && r.len() == 3 * nv
+                && s.len() == 3 * t.nvox && lr.len() == 9 * t.nvox && q.len() == 4 * t.nvox && angles.len() == t.rotors.len()
+                && cv.iter().flatten().all(|&j| j < t.nvox as i64),
+            "soft_begin",
+        )?;
+        py.allow_threads(|| body::soft_begin(p, v, pv, f, r, s, lr, q, t, &pls, scale, h, iters, &angles, parallel, &cv, soft));
+        Ok(())
+    }
+
+    /// 後半：速度・塑性変形・ちぎれの判定。戻り値 (ちぎれた結合の番号, ちぎれた回転ジョイントの番号)
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn soft_end<'py>(
+        &self, py: Python<'py>, pos: RoF<'py>, mut vel: RwF<'py>, prev: RoF<'py>, mut rest: RwF<'py>, act_scale: RoF<'py>,
+        last_r: RoF<'py>, h: f64, angles: Vec<f64>,
+    ) -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>)> {
+        let t = &self.t;
+        let (p, pv, s, lr) = (ro(&pos, "pos")?, ro(&prev, "prev")?, ro(&act_scale, "act_scale")?, ro(&last_r, "lastR")?);
+        let (v, r) = (rw(&mut vel, "vel")?, rw(&mut rest, "rest")?);
+        let nv = 8 * t.nvox;
+        need(
+            p.len() == 3 * nv && v.len() == 3 * nv && pv.len() == 3 * nv && r.len() == 3 * nv && s.len() == 3 * t.nvox
+                && (lr.is_empty() || lr.len() == 9 * t.nvox) && angles.len() == t.rotors.len(),
+            "soft_end",
+        )?;
+        let (br, rot) = py.allow_threads(|| body::soft_end(p, v, pv, r, s, lr, t, h, &angles));
+        Ok((PyArray1::from_vec_bound(py, br), PyArray1::from_vec_bound(py, rot)))
+    }
+
+    /// 剛体の1サブステップの前半。full：完全剛体モード（接触をまとめて解く）。戻り値：速くぶつかりそうか
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (pos, vel, prev, force, rot, ib, planets, scale, h, cav, full, impact_speed, soft))]
+    fn rigid_begin(
+        &self, py: Python<'_>, mut pos: RwF, mut vel: RwF, mut prev: RwF, force: RoF, rot: RoF, ib: RoF,
+        planets: &Bound<'_, pyo3::types::PyList>, scale: f64, h: f64, cav: Option<RoI>, full: bool, impact_speed: f64, soft: f64,
+    ) -> PyResult<bool> {
+        let t = &self.t;
+        let pls = planet_ctx(planets)?;
+        let cv = cav_rows(&cav)?;
+        let (p, v, pv) = (rw(&mut pos, "pos")?, rw(&mut vel, "vel")?, rw(&mut prev, "prev")?);
+        let (f, rr, ii) = (ro(&force, "force")?, ro(&rot, "R")?, ro(&ib, "Ib")?);
+        let nv = 8 * t.nvox;
+        need(
+            p.len() == 3 * nv && v.len() == 3 * nv && pv.len() == 3 * nv && f.len() == 3 * nv && rr.len() == 9 && ii.len() == 9
+                && cv.iter().flatten().all(|&j| j < t.nvox as i64),
+            "rigid_begin",
+        )?;
+        Ok(py.allow_threads(|| body::rigid_begin(p, v, pv, f, rr, ii, t, &pls, scale, h, &cv, full, impact_speed, soft)))
+    }
+}
+
+/// 剛体の形に戻して速度を出す（construct._rigid_fit_pos と速度）。戻り値 (R (3,3), 重心 (3,))
+#[pyfunction]
+fn rigid_end<'py>(
+    py: Python<'py>, mut pos: RwF<'py>, mut vel: RwF<'py>, prev: RoF<'py>, local: RoF<'py>, mass: RoF<'py>, h: f64,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<f64>>)> {
+    let (p, v) = (rw(&mut pos, "pos")?, rw(&mut vel, "vel")?);
+    let (pv, l, m) = (ro(&prev, "prev")?, ro(&local, "local")?, ro(&mass, "mass")?);
+    let nv = m.len();
+    need(p.len() == 3 * nv && v.len() == 3 * nv && pv.len() == 3 * nv && l.len() == 3 * nv && nv > 0, "rigid_end")?;
+    let (r, x) = py.allow_threads(|| body::rigid_end(p, v, pv, l, m, h));
+    Ok((PyArray1::from_vec_bound(py, r.to_vec()).reshape([3, 3])?, PyArray1::from_vec_bound(py, x.to_vec())))
+}
+
+/// 非負の最小二乗（テスト用）
+#[pyfunction]
+fn nnls<'py>(py: Python<'py>, a: PyReadonlyArray2<'py, f64>, b: RoF<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let s = a.shape();
+    let (n, m) = (s[0], s[1]);
+    let am = nalgebra::DMatrix::from_row_slice(n, m, a.as_slice().map_err(|_| PyValueError::new_err("a: 連続した配列ではありません"))?);
+    let bv = nalgebra::DVector::from_column_slice(ro(&b, "b")?);
+    let x = body::nnls(&am, &bv, 200).ok_or_else(|| PyValueError::new_err("nnls: 解けません"))?;
+    Ok(PyArray1::from_vec_bound(py, x.as_slice().to_vec()))
+}
+
+// ---------------------------------------------------------------------------
 // 近い点の組（構築物どうしの押し出し用。scipy の cKDTree の代わり）
 // ---------------------------------------------------------------------------
 fn grid_key(p: &[f64], cell: f64) -> (i64, i64, i64) {
@@ -550,5 +750,8 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pairs_within, m)?)?;
     m.add_function(wrap_pyfunction!(pairs_between, m)?)?;
     m.add_class::<PlanetShape>()?;
+    m.add_class::<Body>()?;
+    m.add_function(wrap_pyfunction!(rigid_end, m)?)?;
+    m.add_function(wrap_pyfunction!(nnls, m)?)?;
     Ok(())
 }

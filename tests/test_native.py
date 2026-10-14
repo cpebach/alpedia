@@ -227,3 +227,147 @@ class TestPairs(unittest.TestCase):
         finally:
             paths.SAVES = saves
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+@unittest.skipIf(core is None or not hasattr(core, "Body"), "Rust の物理コア（段階B）がありません")
+class TestStep(unittest.TestCase):
+    """1サブステップをまとめて Rust で計算したものと、Python で順に計算したものが同じになる。"""
+    H = 1 / 180
+
+    @classmethod
+    def setUpClass(cls):
+        import json, tempfile
+        from main import config, log, paths
+        from main.world import World, DEFAULT_SETTINGS
+        log.setup("ERROR")
+        cls.tmp = Path(tempfile.mkdtemp())
+        cls._saves = paths.SAVES
+        paths.SAVES = cls.tmp
+        d = paths.world_dir("t")
+        (d / "scripts").mkdir(parents=True)
+        planets = [{"def": "gaia", "position": [0, 0, 0], "craters": []},
+                   {"def": "luna", "position": [2500, 0, 0], "craters": []}]
+        (d / "world.json").write_text(json.dumps(dict(DEFAULT_SETTINGS, name="t", format=2, planets=planets,
+                                                      gravity_scale=1.3)), "utf-8")
+        cls.w = World("t", json.loads(json.dumps(config.DEFAULTS)), addons=[]).load()
+        cls.w.planets[0].dig(cls.w.planets[0].center + np.array([0, 600.0, 0]), 2.0)   # 掘削跡も渡す
+
+    @classmethod
+    def tearDownClass(cls):
+        import shutil
+        from main import paths
+        paths.SAVES = cls._saves
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _ground(self, water=False):
+        pl = self.w.planets[0]
+        rng = np.random.default_rng(5)
+        for _ in range(20000):
+            u = rng.normal(size=3)
+            u /= np.linalg.norm(u)
+            s = pl._sample(u[None])[0]
+            if (s[1] > s[0] + 3) == water:
+                return pl.center + u * (s[1] if water else s[0]), u
+        raise RuntimeError
+
+    def _make(self, voxels, extra, water=False, mode="soft", seed=0, size=0.5, setup=None):
+        from main import devices
+        from main.construct import Construct
+        g, up = self._ground(water)
+        q = np.linalg.qr(np.c_[up, np.random.default_rng(1).normal(size=(3, 2))])[0]
+        R = np.c_[q[:, 1], q[:, 0], q[:, 2]]
+        c = Construct.from_voxels(self.w.registry, voxels, g, R, size=size)
+        if not water:      # いちばん低い所が地面から extra の高さになるように
+            k = c.contact_cores()
+            k = k[~np.isnan(k[:, 0])]
+            c.pos += up * (extra - (float(self.w.planets[0].sdf(k).min()) - c.size * 0.5))
+        else:
+            c.pos += up * extra
+        devices.rebuild_networks(c)
+        rng = np.random.default_rng(seed)
+        c.pos += rng.normal(0, 0.01, c.pos.shape)
+        c.vel = rng.normal(0, 0.3, c.vel.shape) - up * 2.0
+        c.force = rng.normal(0, 50, c.force.shape)
+        if setup:
+            setup(c)
+        if mode != "soft":
+            c.enter_rigid()
+            c._full_rigid = mode == "full"
+        return c
+
+    def _run(self, make, n=12):
+        out = {}
+        for native_ in (False, True):
+            c = make()
+            br = []
+            for _ in range(n):
+                c.substep_begin(self.H, self.w.iters, self.w.gravity, self.w.planets,
+                                float(self.w.settings["gravity_scale"]) if native_ else None)
+                br.append(c.substep_end(self.H))
+            out[native_] = (c, br)
+        (a, ba), (b, bb) = out[False], out[True]
+        r = a.size * 0.5
+        self.touch = min(float(np.nanmin(pl.sdf(a.contact_cores()[~np.isnan(a.contact_cores()[:, 0])]))) - r
+                         for pl in self.w.planets[:1])
+        self.assertEqual(ba, bb)
+        self.assertTrue(hasattr(b, "_nb_cache") and not hasattr(a, "_nb_cache"))    # 本当に Rust でまとめて計算した
+        self.assertEqual(a.links, b.links)
+        self.assertEqual(a.n_vox, b.n_vox)
+        self.assertLess(np.abs(a.pos - b.pos).max(), 1e-6)
+        self.assertLess(np.abs(a.vel - b.vel).max(), 1e-4)
+        self.assertLess(np.abs(a.rest - b.rest).max(), 1e-6)
+        self.assertEqual(getattr(a, "_want_soft", False), getattr(b, "_want_soft", False))
+        return a, b
+
+    SLAB = [((x, 0, z), "steel", None) for x in range(4) for z in range(3)]
+
+    def test_soft_on_ground(self):
+        self._run(lambda: self._make(self.SLAB, 0.02))
+        self.assertLess(self.touch, 0.01)
+
+    def test_soft_plastic_clay(self):
+        a, _ = self._run(lambda: self._make([((x, 0, 0), "clay", None) for x in range(3)], 0.1, seed=3))
+
+    def test_soft_rotor(self):
+        vox = [((0, 0, 0), "steel", {"def": "battery", "dir": 2}),
+               ((1, 0, 0), "steel", {"def": "actuator", "dir": 2, "name": "arm"}),
+               ((1, 1, 0), "steel", None), ((2, 1, 0), "steel", None)]
+
+        def setup(c):
+            next(d for d in c.devs if d and d["def"] == "actuator")["state"]["angle"] = 35.0
+        a, b = self._run(lambda: self._make(vox, 0.3, setup=setup))
+        self.assertTrue(a.rotors)
+
+    def test_soft_breaks(self):
+        def setup(c):
+            c.pos[8:16] += np.array([2.0, 0, 0])      # 2つめのボクセルを引きはがす
+        a, b = self._run(lambda: self._make([((0, 0, 0), "wood", None), ((1, 0, 0), "wood", None)], 2.0, setup=setup), n=2)
+        self.assertEqual(len(a.links), 0)
+
+    def test_soft_water_with_cavity(self):
+        box = [((x, y, z), "steel", None) for x in range(3) for y in range(3) for z in range(3) if (x, y, z) != (1, 1, 1)]
+        a, _ = self._run(lambda: self._make(box, 0.0, water=True))
+        self.assertTrue(a._net.cavities)
+
+    def test_rigid(self):
+        self._run(lambda: self._make(self.SLAB, 0.03, mode="rigid"))
+        self.assertLess(self.touch, 0.01)
+
+    def test_rigid_water(self):
+        self._run(lambda: self._make(self.SLAB, 0.0, water=True, mode="rigid"))
+
+    def test_full_rigid(self):
+        self._run(lambda: self._make(self.SLAB, 0.03, mode="full"))
+        self.assertLess(self.touch, 0.01)
+
+    def test_nnls(self):
+        from scipy.optimize import nnls
+        rng = np.random.default_rng(4)
+        for n in (1, 3, 8, 32):
+            J = rng.normal(size=(n, 6))
+            A = J @ J.T
+            b = rng.normal(size=n) + 0.3
+            x1, _ = nnls(A, b, maxiter=200)
+            x2 = core.nnls(np.ascontiguousarray(A), b)
+            self.assertTrue((x2 >= 0).all())
+            self.assertLess(np.abs(A @ x1 - A @ x2).max(), 1e-7)    # 解が1つでなくても、押し戻しの結果は同じ
