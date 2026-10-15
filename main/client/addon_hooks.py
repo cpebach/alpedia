@@ -25,6 +25,12 @@ class ClientAddon:
         """視線の先の説明。(文, ブロックを置ける面なら True) か None（この拡張のものでない）。"""
         return None
 
+    def player_body(self):
+        """プレイヤーの体の見た目を引き受けるなら、そのオブジェクトを返す（ゲームを始めるときに1回だけ呼ばれる）。
+        オブジェクトは update(origin, shown, dt) を毎フレーム受け取る（shown: 三人称で体を見せるか）。
+        後片付けは、この拡張の destroy で行う。"""
+        return None
+
     def update(self, origin, far):
         """毎フレームの描画。origin はカメラの位置（浮動原点）。"""
 

@@ -79,7 +79,6 @@ class Game:
                                  z=1, enabled=False)
         self.highlight = Entity(model="wireframe_cube", color=color.yellow, parent=self.scene_root)
         self.ghost = Entity(model="wireframe_cube", color=color.lime, parent=self.scene_root)
-        self.body = self._make_body(Entity, load_model, color)
         # UI
         ui = self.ui_root
         Entity(parent=ui, model="quad", scale=0.006, color=color.white)
@@ -95,6 +94,10 @@ class Game:
         from ..modcode import client_addons, load_client
         load_client(self.load_errors)
         self.addons = client_addons(self, self.load_errors)
+        # プレイヤーの体：MOD（VRM の見た目など）が引き受けなければ、コアが定義の色の箱（またはモデル）で描く
+        self.body_view = next((b for a in self.addons
+                               if (b := getattr(a, "player_body", lambda: None)()) is not None), None)
+        self.body = None if self.body_view is not None else self._make_body(Entity, load_model, color)
         extra = " / ".join(a.help_text for a in self.addons if a.help_text)
         if extra:
             self.help_text.text = HELP + extra + "\n"
@@ -334,7 +337,10 @@ class Game:
         d = self.world.player.defn
         col = d.get("color", [1, 1, 1])
         model = None
-        if d.get("model"):
+        if d.get("model") and str(d["model"]).lower().endswith(".vrm"):
+            if not self.load_errors:        # VRM は MOD（VRM の見た目）が描く。MOD 側のエラーがあればそちらだけ出す
+                self.load_errors.append(f"プレイヤーのモデル '{d['model']}' は VRM です。VRM を表示する MOD が必要です")
+        elif d.get("model"):
             try:
                 model = load_model(str(d["model"]))
             except Exception as e:  # noqa: BLE001
@@ -597,7 +603,9 @@ class Game:
         self.underwater.enabled = bool(npl is not None and npl.has_water
                                        and npl.water_depth(origin[None])[0] > 0.02)
         # プレイヤーの体（三人称）
-        if self.third_person:
+        if self.body_view is not None:
+            self.body_view.update(origin, self.third_person, self.U["utime"].dt)
+        elif self.third_person:
             p = w.player
             fwd, right, up, _ = self.look_vectors()
             center = p.pos + up * (p.height / 2 - p.radius) - origin

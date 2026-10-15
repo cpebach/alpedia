@@ -1,0 +1,3 @@
+*.vrm
+*.unitypackage.gz
+__pycache__/

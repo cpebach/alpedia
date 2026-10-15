@@ -139,5 +139,77 @@ class TestModLoading(ModCase):
         self.assertEqual(sorted(a.name for a in w.addons), ["city", "survival"])
 
 
+SKIN = "skinmodel(dummy)"
+
+
+class TestVRMMod(ModCase):
+    """VRM の見た目 MOD（モデルのファイルがあるときだけ）"""
+
+    def setUp(self):
+        super().setUp()
+        paths.MODS = self._mods
+        d = paths.MODS / SKIN
+        self.files = sorted(d.glob("*.vrm")) if d.is_dir() else []
+        if not self.files:
+            self.skipTest("VRM のファイルが無い")
+        modcode.load([SKIN], [])
+        import importlib
+        self.vrm = importlib.import_module(f"alpedia_mods.{SKIN}.vrm")
+        self.motion = importlib.import_module(f"alpedia_mods.{SKIN}.motion")
+        self.spring = importlib.import_module(f"alpedia_mods.{SKIN}.spring")
+
+    def test_world_with_vrm_player_loads(self):
+        d = paths.world_dir("w")
+        w = self.world([SKIN])
+        s = json.loads((d / "world.json").read_text("utf-8"))
+        s["player"] = "zonko"
+        (d / "world.json").write_text(json.dumps(s), "utf-8")
+        w = World("w", CFG).load()
+        self.assertTrue(w.player.defn["model"].endswith(".vrm"))
+        self.assertEqual([a.name for a in w.addons], ["skinmodel"])
+
+    def test_rest_pose_and_motion(self):
+        import numpy as np
+        v = self.vrm.VRM(self.files[0])
+        M0 = v.pose()
+        m = v.meshes[0]
+        P = np.c_[m.pos, np.ones(len(m.pos))]
+        sk = sum(m.weights[:, k, None] * np.einsum("nij,nj->ni", M0[m.joints[:, k]], P) for k in range(4))
+        self.assertLess(np.abs(sk - m.pos).max(), 1e-4)              # 初期姿勢では形が変わらない
+        mo = self.motion.Motion(v)
+        R_, U, F = v.basis()
+        foot = v.human["leftFoot"]
+        # 左脚を前に出す → 左足が前（F の向き）に動く
+        mo.p.update(leg_l=0.6, knee_l=0.0)
+        G = v.globals(*self._apply(v, mo.rotations()))
+        self.assertGreater((G[foot, :3, 3] - v.rest_global[foot, :3, 3]) @ F, 0.2)
+        for st in ({"speed": 0}, {"speed": 5, "on_ground": True}, {"on_ground": False, "vup": -5},
+                   {"flying": True}, {"water": 1.0}, {"seated": True}):
+            for _ in range(30):
+                rot, hips, blink, seat = mo.update(dict(st, on_ground=st.get("on_ground", True)), 1 / 60)
+            self.assertTrue(np.isfinite(v.pose(rot, hips)).all())
+
+    def _apply(self, v, rot):
+        from importlib import import_module
+        q = import_module(f"alpedia_mods.{SKIN}.vrm")
+        T, R = v.T.copy(), v.R.copy()
+        for n, r in rot.items():
+            W = v.rest_rot[n]
+            R[n] = q.qmul(R[n], q.qmul(q.qinv(W), q.qmul(r, W)))
+        return T, R, v.S
+
+    def test_spring_follows_motion(self):
+        import numpy as np
+        v = self.vrm.VRM(self.files[0])
+        sp = self.spring.Spring(v)
+        if not sp.n:
+            self.skipTest("揺れものが無い")
+        A = np.eye(3)
+        for i in range(60):
+            M = v.pose(None, None, (sp, A, np.array([0.0, 0.0, 0.08 * i]), 1 / 60))   # 前へ走る
+        self.assertTrue(np.isfinite(M).all())
+        self.assertGreater(np.abs(M - v.pose()).max(), 1e-3)                     # 揺れている
+
+
 if __name__ == "__main__":
     unittest.main()

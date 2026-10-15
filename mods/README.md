@@ -82,7 +82,8 @@ radius, surface_gravity, noise_amp, noise_freq, seed, color, texture, dig_resour
 ## プレイヤー (players)
 
 color, model（.obj）, height, radius, walk_speed, jump_speed, jetpack_accel, reach。
-`world.json` の `"player"` に ID を書くと使われます。
+メニューのワールド設定の「プレイヤーの見た目」で選べます（`world.json` の `"player"`）。
+VRM のモデル（.vrm）を使うときは `skinmodel(dummy)` MOD（VRM の見た目）を参照してください。
 
 ## プログラムを持つ MOD
 
@@ -104,6 +105,7 @@ def client_addon(game):     # 画面側（任意）：main.client.addon_hooks.Cl
   - 物理：`before_physics`（物理で動かさない構築物の ID を返す）/ `colliders`（当たり判定の箱）/ `after_physics`
   - 視線・プレイヤー・操作：`raycast` / `push_sphere` / `interact`（機器以外）/ `interact_device`（機器。コアより先）/ `on_placed`
   - 資源のルール：`resource_rules = True` にするとクリエイティブでなくなる。`pay` / `refund` / `on_device_placed` / `on_dig` / `on_water` / `jetpack`
-- 画面側 `ClientAddon` の口：`on_key` / `interact` / `aim`（視線の先の説明）/ `update`（毎フレームの描画）/ `destroy` と `help_text`。
+- 画面側 `ClientAddon` の口：`on_key` / `interact` / `aim`（視線の先の説明）/ `update`（毎フレームの描画）/ `destroy` と `help_text`、
+  `player_body`（プレイヤーの体の見た目を引き受けるとき。例は `skinmodel(dummy)`）。
 - `mod.json` の `"builtin": true` は本体に入っている MOD の印です（パッケージを作り直すと上書きされます）。
 

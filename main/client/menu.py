@@ -66,6 +66,31 @@ def list_mods():
     return [(m, n) for m, n, _ in out]
 
 
+def list_players():
+    """[(プレイヤーの定義 ID, 表示名, MOD名 または None)]。本体の定義と、mods/ にある全 MOD の players/*.json。"""
+    out, names = [], {}
+
+    def scan(d, mod):
+        pd = d / "players"
+        if not pd.is_dir():
+            return
+        for f in sorted(pd.glob("*.json")):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                continue
+            for it in data if isinstance(data, list) else [data]:
+                if isinstance(it, dict) and "id" in it:
+                    nm = it.get("name") or names.get(it.get("extends")) or it["id"]
+                    names[it["id"]] = nm
+                    out.append((it["id"], nm, mod))
+    scan(paths.BASE_DEFS, None)
+    if paths.MODS.exists():
+        for mid, _ in list_mods():
+            scan(paths.MODS / mid, mid)
+    return out
+
+
 def read_world_settings(name):
     d = paths.world_dir(name)
     from ..world import DEFAULT_SETTINGS
@@ -460,7 +485,7 @@ class MainMenu:
                    col=U["color"].light_gray)
         if not mods:
             self._text("（mods フォルダに MOD がありません）", (0.12, y), 0.75, col=U["color"].light_gray)
-            return
+            return lambda: None
         for k, (mid, mname) in enumerate(mods[:6]):
             x = -0.02 + (k % 3) * 0.24
             yy = y - (k // 3) * 0.06
@@ -473,6 +498,11 @@ class MainMenu:
                 btns[m].color = on_col if m in selected else off_col
             btns[mid] = self._button(mname, (x + 0.1, yy), flip, size=(0.22, 0.05),
                                      col=on_col if mid in selected else off_col)
+
+        def refresh():
+            for m, b in btns.items():
+                b.color = on_col if m in selected else off_col
+        return refresh
 
     def _back(self):
         self.status = ""
@@ -526,17 +556,44 @@ class MainMenu:
                       float(cl.get("seconds", 60)), lambda v: f"{v:.0f} 秒", lambda v: cl.__setitem__("seconds", v))
         self._stepper("　対象の最大頂点数", y - 0.42, [80, 200, 400, 800, 1600, 4000],
                       int(cl.get("max_vertices", 400)), lambda v: f"{v}", lambda v: cl.__setitem__("max_vertices", v))
-        self._mod_toggles(y - 0.50, sel)
+        refresh_mods = self._mod_toggles(y - 0.50, sel)
+        # プレイヤーの見た目（MOD の定義を選ぶと、その MOD も入れる）
+        players = list_players()
+        mod_names = dict(list_mods())
+        pids = [p[0] for p in players]
+        if s.get("player", "default") not in pids:
+            players.append((s.get("player", "default"), s.get("player", "default") + "（見つからない）", None))
+            pids.append(players[-1][0])
+        info = {pid: (nm, mod) for pid, nm, mod in players}
+
+        auto = {"mod": None}            # 見た目を選んだときに自動で入れた MOD（別の見た目にしたら戻す）
+
+        def pick(pid):
+            s["player"] = pid
+            mod = info[pid][1]
+            if auto["mod"] and auto["mod"] != mod:
+                sel.discard(auto["mod"])
+                auto["mod"] = None
+            if mod and mod not in sel:
+                sel.add(mod)
+                auto["mod"] = mod
+            refresh_mods()
+        self._stepper("プレイヤーの見た目", y - 0.635, pids, s.get("player", "default"), lambda pid: info[pid][0], pick)
         planets = ", ".join(p.get("def", "?") for p in s.get("planets", []))
-        self._text(f"惑星: {planets}（world.json で編集）", (0, y - 0.64), 0.7, col=U["color"].light_gray)
+        self._text(f"惑星: {planets}（world.json で編集）", (0, y - 0.69), 0.6, col=U["color"].light_gray)
         self._text("MOD を入れる・外す前に、ワールド（saves/ のフォルダ）をコピーしておくことをすすめます。"
-                   "使っている MOD を外すと、そのワールドは始められなくなります。", (0, y - 0.70), 0.58,
+                   "使っている MOD を外すと、そのワールドは始められなくなります。", (0, y - 0.735), 0.55,
                    col=U["color"].rgb(1, 0.8, 0.45))
 
         def save():
+            pmod = info.get(s.get("player", "default"), (None, None))[1]
+            extra = ""
+            if pmod and pmod not in sel:      # 見た目の MOD を外したら、宇宙飛行士に戻す
+                s["player"] = "default"
+                extra = f"（「{mod_names.get(pmod, pmod)}」を外したので、プレイヤーの見た目は宇宙飛行士に戻しました）"
             try:
                 write_world_settings(name, s, sorted(sel))
-                self.status = "ワールド設定を保存しました"
+                self.status = "ワールド設定を保存しました" + extra
             except Exception as e:  # noqa: BLE001
                 self.status = f"保存できません: {e}"
             self.show_main()
