@@ -162,7 +162,7 @@ class TestVRMMod(ModCase):
         d = paths.world_dir("w")
         w = self.world([SKIN])
         s = json.loads((d / "world.json").read_text("utf-8"))
-        s["player"] = "zonko"
+        s["player"] = "player1"
         (d / "world.json").write_text(json.dumps(s), "utf-8")
         w = World("w", CFG).load()
         self.assertTrue(w.player.defn["model"].endswith(".vrm"))

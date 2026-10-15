@@ -29,6 +29,8 @@ DEFAULTS = {
     "game": {"default_world": "tutorial", "language": "ja",
              # スクリプトを開くエディタのコマンド（空なら自動：VS Code があればそれ、無ければメモ帳）。例 "notepad++.exe"
              "editor": ""},
+    # マルチプレイ（LAN）：自分の名前（空ならパソコンのユーザー名）、公開するポート
+    "multiplayer": {"name": "", "port": 47620},
     "log_level": "INFO",
 }
 

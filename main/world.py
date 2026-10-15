@@ -13,6 +13,7 @@ saves/<ワールド名>/
 import json
 import time
 from collections import deque
+from contextlib import contextmanager
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -79,9 +80,6 @@ def missing_references(reg, settings, cons, mods):
     for pd in settings.get("planets", []):
         if reg.get("planets", pd.get("def")) is None:
             out.append(f"惑星 '{pd.get('def')}' の定義がありません{hint}")
-    pl = settings.get("player", "default")
-    if pl != "default" and reg.get("players", pl) is None:
-        out.append(f"プレイヤーの見た目 '{pl}' の定義がありません{hint}")
     for cd in cons:
         mats, devs = set(), set()
         for v in cd.get("voxels", []):
@@ -99,10 +97,14 @@ def missing_references(reg, settings, cons, mods):
 
 
 class World:
-    def __init__(self, name, cfg, addons=None):
+    def __init__(self, name, cfg, addons=None, directory=None):
         self.name = name
         self.cfg = cfg
-        self.dir = paths.world_dir(name)
+        self.dir = paths.world_dir(name) if directory is None else directory
+        self.exports_dir = self.dir / "exports"     # F9 の出力先（マルチプレイの参加中は自分の PC の別の場所）
+        self.net = None             # マルチプレイ：ホスト（netserver.Host）か参加者（netclient.Client）
+        self.remote = {}            # ホスト：参加しているほかのプレイヤー {番号: Player}
+        self._msg_sink = None
         self.time = 0.0
         self.constructs = {}
         self.planets = []
@@ -169,20 +171,62 @@ class World:
                 self.constructs[c.id] = c
             except Exception as e:  # noqa: BLE001
                 L.exception("構築物 %s の読み込みに失敗: %s", cd.get("id"), e)
-        pdef = self.registry.get("players", self.settings.get("player", "default")) or \
-            self.registry.get("players", "default")
-        self.player = Player(pdef, self._default_spawn())
         pj = _read_json(self.dir / "player.json", None)
+        # 見た目：保存されていたもの → ワールド設定の見た目（古い形式）→ 宇宙飛行士 の順に、定義があるもの
+        cands = [(pj or {}).get("def"), self.settings.get("player"), "default"]
+        self.player = self.make_player(next((d for d in cands if d and self.registry.get("players", d)), "default"))
         if pj:
             for msg in savefmt.check_player(pj):
                 L.warning("保存形式: %s", msg)
             self.player.load_dict(pj)
+        self.local_player = self.player
         for a in self.addons:
             a.on_load(self)
         L.info("ワールド '%s' を読み込み: 構築物 %d, 惑星 %d, MOD %s", self.name, len(self.constructs),
                len(self.planets), mods)
         self.message(f"ワールド「{self.name}」を読み込みました")
         return self
+
+    def player_def(self, def_id):
+        """プレイヤーの見た目の定義。無ければ（MOD を外したなど）宇宙飛行士。"""
+        d = self.registry.get("players", def_id or "default")
+        if d is None:
+            L.warning("プレイヤーの見た目 '%s' の定義が無いので、宇宙飛行士にします", def_id)
+            d = self.registry.get("players", "default")
+        return d
+
+    def make_player(self, def_id, pos=None):
+        return Player(self.player_def(def_id), self._default_spawn() if pos is None else pos)
+
+    def all_players(self):
+        """このワールドにいるプレイヤー全員（自分＋参加者）。"""
+        return [self.local_player] + list(self.remote.values())
+
+    @contextmanager
+    def as_player(self, p):
+        """参加者の操作をホストで行う間、world.player をその人にする（資源の支払い・メッセージの宛先など）。"""
+        if p is None or p is self.player:
+            yield
+            return
+        prev, sink = self.player, self._msg_sink
+        self.player, self._msg_sink = p, p.msgs
+        try:
+            yield
+        finally:
+            self.player, self._msg_sink = prev, sink
+
+    def player_distance(self, x):
+        """いちばん近いプレイヤーまでの距離。"""
+        x = np.asarray(x, dtype=np.float64)
+        return min(float(np.linalg.norm(x - p.pos)) for p in self.all_players())
+
+    def keys_for(self, c):
+        """構築物 c の操縦席に座っている人が押しているキー。"""
+        out = set()
+        for p in self.all_players():
+            if p.seated and p.seated[0] == c.id:
+                out |= set(self.input_keys if p is self.local_player else p.input_keys)
+        return out
 
     def _default_spawn(self):
         if not self.planets:
@@ -192,7 +236,8 @@ class World:
         r = float(p.surface_radius(up[None])[0])
         return p.center + up * (r + 2.0)
 
-    def save(self):
+    def snapshot(self):
+        """保存する中身（ファイル名 → JSON）。保存と、マルチプレイの参加者へ送るのに使う。"""
         self.settings["time"] = self.time
         self.settings["format"] = savefmt.FORMAT
         for a in self.addons:
@@ -200,11 +245,21 @@ class World:
         self.settings["planets"] = [
             {**pl.to_dict(), **({"override": pl.defn_override} if getattr(pl, "defn_override", None) else {})}
             for pl in self.planets]
-        _write_json(self.dir / "world.json", self.settings)
-        _write_json(self.dir / "constructs.json", [c.to_dict() for c in self.constructs.values()])
-        _write_json(self.dir / "spawn.json", {c.id: c.spawn_dict() for c in self.constructs.values()})
-        _write_json(self.dir / "player.json", self.player.to_dict())
-        _write_json(self.dir / "mods.json", {"enabled": list(self.mods)})
+        return {"world.json": self.settings,
+                "constructs.json": [c.to_dict() for c in self.constructs.values()],
+                "spawn.json": {c.id: c.spawn_dict() for c in self.constructs.values()},
+                "player.json": self.local_player.to_dict(),
+                "mods.json": {"enabled": list(self.mods)}}
+
+    def save(self):
+        if self.net is not None and not self.net.can_save():
+            self.message("保存はホストが行います（ワールドはホストの PC にあります）")
+            return
+        snap = self.snapshot()
+        if self.net is not None:
+            snap.update(self.net.save_extra())      # 参加した人の状態（players.json）
+        for fname, data in snap.items():
+            _write_json(self.dir / fname, data)
         L.info("保存しました: %s", self.dir)
         self.message("保存しました")
 
@@ -212,7 +267,7 @@ class World:
     # 共通
     # ------------------------------------------------------------------
     def message(self, text):
-        self.msgs.append((time.time(), text))
+        (self._msg_sink if self._msg_sink is not None else self.msgs).append((time.time(), text))
 
     def gravity(self, p):
         from . import native
@@ -293,13 +348,14 @@ class World:
     def merge_constructs(self, c, other, cell_map, xform=None):
         """other を c に取り込む（座っているプレイヤーの参照も付け替える）。"""
         c.absorb(other, cell_map, xform)
-        if self.player.seated and self.player.seated[0] == other.id:
-            self.player.seated = (c.id, cell_map[self.player.seated[1]])
+        for p in self.all_players():
+            if p.seated and p.seated[0] == other.id:
+                p.seated = (c.id, cell_map[p.seated[1]])
         self.constructs.pop(other.id, None)
         L.info("構築物を結合: %s ← %s", c.name, other.name)
 
     def seated_in(self, c):
-        return self.player.seated is not None and self.player.seated[0] == c.id
+        return any(p.seated is not None and p.seated[0] == c.id for p in self.all_players())
 
     def add_construct(self, c):
         self.constructs[c.id] = c
@@ -311,10 +367,25 @@ class World:
     def step(self, dt, move=np.zeros(3), jump=False, thrust_dir=np.zeros(3)):
         self.time += dt
         ambient = 0.0
+        seats = {}
+        for p in self.all_players():
+            if p.seated:
+                seats.setdefault(p.seated[0], set()).update(
+                    self.input_keys if p is self.local_player else p.input_keys)
         for c in list(self.constructs.values()):
-            devices.update(c, dt, frozenset(self.input_keys), self.seated_in(c), ambient)
+            devices.update(c, dt, frozenset(seats.get(c.id, ())), c.id in seats, ambient)
             self.runner.tick(c, dt)
         self.player.update(self, dt, move, jump, thrust_dir)
+        for p in self.remote.values():          # 参加者の体は参加者の PC が動かす。ジェットパックの燃料と体重だけここで
+            if p.flying and p.jetpack:
+                with self.as_player(p):
+                    self.jetpack(p, dt, p.thrust)
+            if p.stand:
+                c = self.constructs.get(p.stand[0])
+                i = c.index.get(tuple(p.stand[1])) if c else None
+                if i is not None:
+                    gn = np.linalg.norm(self.gravity(p.pos[None])[0])
+                    c.force[8 * i:8 * i + 8] += -p.up * p.mass * gn / 8
         h = dt / self.substeps
         # 拡張（軌道上の街など）が位置を決める構築物は、物理計算しない
         anchored_ids = set()
@@ -392,6 +463,38 @@ class World:
     def addon(self, name):
         """名前で拡張を探す（無ければ None）。"""
         return next((a for a in self.addons if a.name == name), None)
+
+    def addon_call(self, name, path, *args):
+        """拡張の状態を変える操作（街での売り買いなど）。画面側からはこれを通して呼ぶ。
+        マルチプレイの参加者なら、自分の PC でもすぐに行い（画面にすぐ出すため）、ホストへも送る（ホストの結果が正しい）。
+        path は "economy.buy" のように拡張からたどる名前。"""
+        a = self.addon(name)
+        if a is None:
+            return None
+        fn = a
+        for part in path.split("."):
+            fn = getattr(fn, part)
+        res = fn(*args)
+        if self.net is not None and getattr(self.net, "role", "") == "client":
+            enc = []
+            for x in args:
+                r = a.net_ref_of(x)
+                enc.append({"__ref__": list(r)} if r is not None else x)
+            self.net.send({"t": "call", "addon": name, "path": path, "args": enc})
+        return res
+
+    def run_addon_call(self, name, path, args):
+        """ホスト：参加者からの addon_call を行う（world.player はその人にしてから呼ぶ）。"""
+        a = self.addon(name)
+        if a is None:
+            return None
+        fn = a
+        for part in path.split("."):
+            if part.startswith("_"):
+                return None
+            fn = getattr(fn, part)
+        real = [a.net_ref(self, *x["__ref__"]) if isinstance(x, dict) and "__ref__" in x else x for x in args]
+        return fn(*real)
 
     def _prep_ext(self, c, dt):
         """このティックで当たりそうな、拡張の当たり判定の箱を集めておく。"""
@@ -638,18 +741,17 @@ class World:
         cl = self.settings["cleanup"]
         if not cl.get("enabled", True):
             return
-        pp = self.player.pos
         for cid, c in list(self.constructs.items()):
             if self.seated_in(c):
                 c.far_time = 0
                 continue
-            far = np.linalg.norm(c.center_of_mass() - pp) > float(cl["distance"])
+            far = self.player_distance(c.center_of_mass()) > float(cl["distance"])
             if far and not c.powered and c.n_vert <= int(cl["max_vertices"]):
                 c.far_time += elapsed
                 if c.far_time >= float(cl["seconds"]):
                     del self.constructs[cid]
                     L.info("自動削除: %s（頂点 %d, 距離 %.0f m）", c.name, c.n_vert,
-                           np.linalg.norm(c.center_of_mass() - pp))
+                           self.player_distance(c.center_of_mass()))
             else:
                 c.far_time = 0.0
 
@@ -818,11 +920,11 @@ class World:
         return True
 
     def _blocked(self, ctr, size):
-        p = self.player
-        for off in (0.0, p.height - 2 * p.radius):
-            if np.linalg.norm(p.pos + p.up * off - ctr) < size * 0.5 + p.radius * 0.9:
-                self.message("自分の位置には置けません")
-                return True
+        for p in self.all_players():
+            for off in (0.0, p.height - 2 * p.radius):
+                if np.linalg.norm(p.pos + p.up * off - ctr) < size * 0.5 + p.radius * 0.9:
+                    self.message("自分の位置には置けません" if p is self.player else f"{p.name} がいる所には置けません")
+                    return True
         return False
 
     def remove(self, hit):
@@ -831,8 +933,9 @@ class World:
         c = hit["construct"]
         i = hit["index"]
         mat, dev = c.mats[i], c.devs[i]
-        if self.player.seated and self.player.seated[0] == c.id and self.player.seated[1] == c.cells[i]:
-            self.player.seated = None
+        for p in self.all_players():
+            if p.seated and p.seated[0] == c.id and p.seated[1] == c.cells[i]:
+                p.seated = None
         c.remove_voxels([i])
         self.refund(self.item_cost(("device", dev["def"]) if dev else ("material", mat)))
         if not c.n_vox:
@@ -937,8 +1040,8 @@ class World:
     # ------------------------------------------------------------------
     def export_obj(self, c):
         name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in c.name) + "_" + c.id[:4]
-        path = objio.export_construct(c, self.dir / "exports", name, scripts_dir=self.dir / "scripts")
-        self.message(f"OBJ 出力: exports/{path.name}")
+        path = objio.export_construct(c, self.exports_dir, name, scripts_dir=self.dir / "scripts")
+        self.message(f"OBJ 出力: {self.exports_dir.name}/{path.name}")
         return path
 
     def voxels_cost(self, voxels):

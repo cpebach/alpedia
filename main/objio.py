@@ -255,7 +255,7 @@ def import_construct(registry, obj_or_json: Path, voxel_size=None, scale=None, d
 
 def list_sources(world_dir: Path, saves_dir: Path):
     """読み込めるファイルの一覧: [(グループ名, Path)]
-    このワールドの imports・exports と、ほかのワールドの exports。"""
+    このワールドの imports・exports と、マルチプレイで出力したもの、ほかのワールドの exports。"""
     def scan(d):
         if not d.exists():
             return []
@@ -264,6 +264,8 @@ def list_sources(world_dir: Path, saves_dir: Path):
         return sorted(objs + js, key=lambda p: p.name.lower())
     out = [("imports", p) for p in scan(world_dir / "imports")]
     out += [("exports", p) for p in scan(world_dir / "exports")]
+    mp = saves_dir / ".net" / "exports"         # マルチプレイで参加中に F9 で出力したもの（自分の PC）
+    out += [("マルチプレイで出力", p) for p in scan(mp)]
     if saves_dir.exists():
         for wd in sorted(saves_dir.iterdir()):
             if wd.is_dir() and not wd.name.startswith(".") and wd.resolve() != world_dir.resolve():

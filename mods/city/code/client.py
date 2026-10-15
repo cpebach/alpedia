@@ -92,9 +92,12 @@ class CityClient(ClientAddon):
                     w.message(f"{home['name']} は使えません（不動産屋で買うか借りると使えます）")
                     return True
                 if tag[0] == "bed":
-                    self.pack.set_home(home["id"])
-                    w.save()
-                    w.message(f"{home['name']} で休みました（保存しました）。ここが自宅です（M で自宅の目印）")
+                    w.addon_call("city", "set_home", home["id"])
+                    if w.net is None or w.net.can_save():
+                        w.save()
+                        w.message(f"{home['name']} で休みました（保存しました）。ここが自宅です（M で自宅の目印）")
+                    else:
+                        w.message(f"{home['name']} で休みました。ここが自宅です（保存はホストが行います）")
                     return True
                 game._open_panel(lambda: ui.StoragePanel(game, city, home))
                 return True

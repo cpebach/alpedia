@@ -40,11 +40,41 @@ def _find_font(cfg):
     return None
 
 
+class BoxBody:
+    """コアの体の見た目：定義の色の箱（または定義の .obj モデル）。"""
+
+    def __init__(self, game, player, model=None):
+        U = game.U
+        col = player.defn.get("color", [1, 1, 1])
+        self.game, self.player = game, player
+        self.e = U["Entity"](model=model or "cube", parent=game.scene_root,
+                             color=U["color"].rgb(*col) if max(col) <= 1 else U["color"].rgb32(*col))
+        self.e.hide()
+
+    def update(self, origin, shown, dt):
+        if not shown:
+            self.e.hide()
+            return
+        p = self.player
+        up = p.up / np.linalg.norm(p.up)
+        f = np.asarray(p.look_fwd, float)
+        f = f - up * (f @ up)
+        f = f / np.linalg.norm(f) if np.linalg.norm(f) > 1e-6 else np.cross(up, [1.0, 0, 0])
+        right = np.cross(up, f)
+        center = p.pos + up * (p.height / 2 - p.radius) - origin
+        self.game._set_box(self.e, center, np.stack([right, up, f]), np.array([p.radius * 2, p.height, p.radius * 1.4]))
+        self.e.show()
+
+    def destroy(self):
+        from .ui_destroy import destroy
+        destroy(self.e)
+
+
 class Game:
     def __init__(self, world, cfg, on_exit=None):
         self.world = world
         self.cfg = cfg
-        self.on_exit = on_exit or (lambda action: None)
+        self.on_exit = on_exit or (lambda action, status="": None)
 
     def start(self):
         from ursina import Entity, Text, Button, camera, window, color, application, held_keys, mouse, load_model
@@ -94,10 +124,11 @@ class Game:
         from ..modcode import client_addons, load_client
         load_client(self.load_errors)
         self.addons = client_addons(self, self.load_errors)
-        # プレイヤーの体：MOD（VRM の見た目など）が引き受けなければ、コアが定義の色の箱（またはモデル）で描く
-        self.body_view = next((b for a in self.addons
-                               if (b := getattr(a, "player_body", lambda: None)()) is not None), None)
-        self.body = None if self.body_view is not None else self._make_body(Entity, load_model, color)
+        # プレイヤーの体：MOD（VRM の見た目など）が引き受けなければ、コアが定義の色の箱（またはモデル）で描く。
+        # 見た目のモデルはここで全部読み込む（ゲーム中に見た目を変える・ほかの参加者が来ても、ファイルを読まない）
+        self.bodies = {}            # キー → (見た目の ID, Player, 体)
+        self.labels = {}
+        self._obj_models = self._load_player_models(load_model)
         extra = " / ".join(a.help_text for a in self.addons if a.help_text)
         if extra:
             self.help_text.text = HELP + extra + "\n"
@@ -111,11 +142,8 @@ class Game:
                        color=col or color.rgb(0.22, 0.32, 0.45), text_size=0.8)
             b.on_click = fn
             return b
-        pbtn("再開", 0.12, self.toggle_pause, color.rgb(0.2, 0.5, 0.3))
-        pbtn("保存", 0.04, self.world.save)
-        pbtn("保存してメニューへ", -0.04, lambda: self._leave("menu"))
-        pbtn("保存せずにメニューへ", -0.12, lambda: self._leave("menu", save=False), color.rgb(0.4, 0.3, 0.2))
-        pbtn("保存して終了", -0.20, lambda: self._leave("quit"), color.rgb(0.5, 0.2, 0.2))
+        self._pbtn = pbtn
+        self._build_pause()
         # 状態
         from . import inventory
         inventory.ensure_hotbar(self.world.player, self.world.registry)
@@ -302,16 +330,22 @@ class Game:
         self.set_mouse_capture(not self.paused)
         self.pause_root.enabled = self.paused
 
-    def _leave(self, action, save=True):
+    def _leave(self, action, save=True, status=""):
         if self.leaving:
             return
-        if save:
+        net = self.world.net
+        if save and not (net is not None and net.role == "client"):
             try:
                 self.world.save()
             except Exception:  # noqa: BLE001
                 L.exception("保存に失敗")
+        if net is not None:
+            try:
+                net.close()
+            except Exception:  # noqa: BLE001
+                L.exception("マルチプレイの終了でエラー")
         self.leaving = True
-        self.on_exit(action)
+        self.on_exit(action, status)
 
     def destroy(self):
         from .ui_destroy import destroy
@@ -324,6 +358,20 @@ class Game:
         for v in self.views.values():
             v.remove()
         self.views = {}
+        for ent in getattr(self, "bodies", {}).values():
+            try:
+                ent[2].destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        self.bodies = {}
+        for t in getattr(self, "labels", {}).values():
+            destroy(t)
+        self.labels = {}
+        if self.world.net is not None:
+            try:
+                self.world.net.close()
+            except Exception:  # noqa: BLE001
+                L.exception("マルチプレイの終了でエラー")
         for a in getattr(self, "addons", []):
             a.destroy()
         self.addons = []
@@ -333,25 +381,136 @@ class Game:
         L.info("ゲーム終了: %s", self.world.name)
 
     # ------------------------------------------------------------------
-    def _make_body(self, Entity, load_model, color):
-        d = self.world.player.defn
-        col = d.get("color", [1, 1, 1])
-        model = None
-        if d.get("model") and str(d["model"]).lower().endswith(".vrm"):
-            if not self.load_errors:        # VRM は MOD（VRM の見た目）が描く。MOD 側のエラーがあればそちらだけ出す
-                self.load_errors.append(f"プレイヤーのモデル '{d['model']}' は VRM です。VRM を表示する MOD が必要です")
-        elif d.get("model"):
+    def _load_player_models(self, load_model):
+        """見た目の定義の .obj モデル（VRM は MOD が読む）。"""
+        out = {}
+        for d in self.world.registry.defs["players"].values():
+            m = d.get("model")
+            if not m or str(m).lower().endswith(".vrm") or m in out:
+                continue
             try:
-                model = load_model(str(d["model"]))
+                out[m] = load_model(str(m))
             except Exception as e:  # noqa: BLE001
-                model = None
-                self.load_errors.append(f"プレイヤーのモデル '{d['model']}' を読み込めません: {e}")
-            if model is None and not any("モデル" in x for x in self.load_errors):
-                self.load_errors.append(f"プレイヤーのモデル '{d['model']}' を読み込めません")
-        e = Entity(model=model or "cube", color=color.rgb(*col) if max(col) <= 1 else color.rgb32(*col),
-                   parent=self.scene_root)
-        e.hide()
-        return e
+                out[m] = None
+                self.load_errors.append(f"プレイヤーのモデル '{m}' を読み込めません: {e}")
+            if out[m] is None and not any(str(m) in x for x in self.load_errors):
+                self.load_errors.append(f"プレイヤーのモデル '{m}' を読み込めません")
+        return out
+
+    def _new_body(self, player):
+        for a in self.addons:
+            try:
+                b = a.player_body(player)
+            except Exception:  # noqa: BLE001
+                L.exception("体の見た目を作れません（%s）", getattr(a, "name", "?"))
+                b = None
+            if b is not None:
+                return b
+        return BoxBody(self, player, self._obj_models.get(player.defn.get("model")))
+
+    def _render_players(self, origin, dt):
+        """自分と、マルチプレイのほかの人の体・名前。見た目を変えたら作り直す。"""
+        w = self.world
+        net = w.net
+        want = [("me", w.local_player)]
+        if net is not None:
+            others = net.others() if callable(getattr(net, "others", None)) else list(net.others.values())
+            want += [(f"p{p.pid}", p) for p in others]
+        keys = set()
+        for key, p in want:
+            keys.add(key)
+            ent = self.bodies.get(key)
+            if ent is None or ent[0] != p.defn.get("id") or ent[1] is not p:
+                if ent is not None:
+                    ent[2].destroy()
+                ent = self.bodies[key] = (p.defn.get("id"), p, self._new_body(p))
+            if key == "me":
+                shown = self.third_person
+            else:
+                q = p.pos - origin
+                shown = float(q @ q) < 500.0 ** 2
+            ent[2].update(origin, shown, dt)
+            if key != "me":
+                self._label(key, p, origin, shown)
+        for key in [k for k in self.bodies if k not in keys]:
+            self.bodies.pop(key)[2].destroy()
+        for key in [k for k in self.labels if k not in keys]:
+            from .ui_destroy import destroy
+            destroy(self.labels.pop(key))
+
+    def _label(self, key, p, origin, shown):
+        t = self.labels.get(key)
+        if t is None:
+            t = self.labels[key] = self.U["Text"](text=p.name, parent=self.scene_root, billboard=True, origin=(0, 0),
+                                                  scale=2, color=self.U["color"].white)
+        if t.text != p.name:
+            t.text = p.name
+        t.enabled = bool(shown)
+        if shown:
+            up = p.up / np.linalg.norm(p.up)
+            q = p.pos + up * (p.height - p.radius + 0.3) - origin
+            t.setPos(float(q[0]), float(q[1]), float(q[2]))
+            t.setScale(float(np.clip(np.linalg.norm(q) * 0.12, 1.2, 40.0)))   # 遠くても読める大きさ
+
+    # --- 一時停止メニュー（保存・見た目・LAN） ---------------------------------
+    def _build_pause(self):
+        from .ui_destroy import destroy
+        U = self.U
+        color, Text = U["color"], U["Text"]
+        for e in list(getattr(self, "_pause_items", [])):
+            destroy(e)
+        items = self._pause_items = []
+        pbtn = self._pbtn
+        net = self.world.net
+        client = net is not None and net.role == "client"
+        items.append(pbtn("再開", 0.12, self.toggle_pause, color.rgb(0.2, 0.5, 0.3)))
+        if client:
+            items.append(pbtn("ワールドから抜けてメニューへ", 0.04, lambda: self._leave("menu"), color.rgb(0.4, 0.3, 0.2)))
+            items.append(pbtn("ワールドから抜けて終了", -0.04, lambda: self._leave("quit"), color.rgb(0.5, 0.2, 0.2)))
+        else:
+            items.append(pbtn("保存", 0.04, self.world.save))
+            items.append(pbtn("保存してメニューへ", -0.04, lambda: self._leave("menu")))
+            items.append(pbtn("保存せずにメニューへ", -0.12, lambda: self._leave("menu", save=False), color.rgb(0.4, 0.3, 0.2)))
+            items.append(pbtn("保存して終了", -0.20, lambda: self._leave("quit"), color.rgb(0.5, 0.2, 0.2)))
+            if net is None:
+                items.append(pbtn("LAN に公開（マルチプレイ）", -0.30, self.start_hosting, color.rgb(0.25, 0.35, 0.55)))
+            else:
+                items.append(Text(parent=self.pause_root, origin=(0, 0), position=(0, -0.30), scale=0.8,
+                                  text="LAN に公開中: " + "  ".join(net.addresses()[:2])))
+        # 見た目（自分だけ。ほかの人に見える）
+        defs = list(self.world.registry.defs["players"].values())
+        cur = self.world.local_player.defn
+        items.append(Text(parent=self.pause_root, origin=(0, 0), position=(0, 0.19), scale=0.9,
+                          text=f"見た目: {cur.get('name', cur.get('id'))}"))
+        if len(defs) > 1:
+            from ursina import Button
+            for x, d, txt in ((-0.25, -1, "◀"), (0.25, 1, "▶")):
+                b = Button(parent=self.pause_root, text=txt, position=(x, 0.19), scale=(0.045, 0.045),
+                           color=color.rgb(0.22, 0.32, 0.45), text_size=0.8)
+                b.on_click = (lambda d=d: self.cycle_skin(d))
+                items.append(b)
+
+    def cycle_skin(self, step):
+        """見た目を変える（宇宙飛行士・VRM など。ワールドに入っている MOD の見た目から選ぶ）。"""
+        w = self.world
+        ids = list(w.registry.defs["players"])
+        cur = w.local_player.defn.get("id")
+        i = ids.index(cur) if cur in ids else 0
+        w.local_player.defn = w.player_def(ids[(i + step) % len(ids)])
+        w.message(f"見た目: {w.local_player.defn.get('name')}")
+        self._build_pause()
+
+    def start_hosting(self):
+        from ..netserver import Host
+        try:
+            Host(self.world, self.cfg)
+        except OSError as e:
+            L.exception("LAN に公開できません")
+            self.world.message(f"LAN に公開できません（ポート {self.cfg.get('multiplayer', {}).get('port')} が使えない？）: {e}")
+            return
+        self.world.message("LAN に公開しました: " + "  ".join(self.world.net.addresses()[:2])
+                           + "（参加する人はメニューの「マルチプレイ」から）")
+        self._build_pause()
 
     def look_vectors(self):
         p = self.world.player
@@ -488,9 +647,11 @@ class Game:
         dt = min(U["utime"].dt, 0.1)
         held = U["held_keys"]
         c = self.cfg["controls"]
-        if self.paused:
-            return
-        editing = self.editor is not None
+        net = w.net
+        online = net is not None and (net.role == "client" or w.remote)
+        if self.paused and not online:
+            return                  # マルチプレイ中は一時停止しても世界は止めない（ほかの人がいるので）
+        editing = self.editor is not None or self.paused
         # 視点
         sens = float(c.get("mouse_sensitivity", 60.0))
         if self._captured and not editing:
@@ -498,6 +659,7 @@ class Game:
             self._rotate_yaw(np.radians(dx * sens))
             self.pitch = float(np.clip(self.pitch + np.radians(dy * sens), -1.55, 1.55))
         fwd, right, up, look = self.look_vectors()
+        w.local_player.look_fwd, w.local_player.pitch = fwd, self.pitch
         # 入力
         move = np.zeros(3)
         if not w.player.seated and not editing:
@@ -518,14 +680,26 @@ class Game:
         n = 0
         pf = self._perf
         t_phys = _time.perf_counter()
+        client = net is not None and net.role == "client"
+        if client:
+            net.look = look
+            net.frame(self, dt)            # ホストから届いた世界を当てる
+            if net.closed:
+                self._leave("menu", status=f"マルチプレイから抜けました：{net.closed}")
+                return
         while self.acc >= tick and n < 3:
             try:
-                w.step(tick, move, jump and n == 0, thrust)
+                if client:
+                    net.step(tick, move, jump and n == 0, thrust)      # 自分の体だけ動かす
+                else:
+                    w.step(tick, move, jump and n == 0, thrust)
             except Exception:  # noqa: BLE001
                 L.exception("シミュレーションエラー")
                 raise
             self.acc -= tick
             n += 1
+        if net is not None and not client:
+            net.tick(dt)                   # 参加者へ送る・参加者の操作を行う
         t_rend = _time.perf_counter()
         pf["phys"] += t_rend - t_phys
         pf["ticks"] += n
@@ -583,6 +757,9 @@ class Game:
         decal_dist = float(self.cfg["graphics"].get("decal_distance", 30.0))
         for cid, c in w.constructs.items():
             v = self.views.get(cid)
+            if v is not None and v.c is not c:       # マルチプレイ：形が変わって作り直された
+                v.remove()
+                v = None
             if v is None:
                 v = self.views[cid] = render.ConstructView(self.scene_root, self.loader, c)
             q = c.pos[0] - origin
@@ -602,18 +779,8 @@ class Game:
             pv.update(origin, w.player.pos, self.patch.frame_for(pv.p))
         self.underwater.enabled = bool(npl is not None and npl.has_water
                                        and npl.water_depth(origin[None])[0] > 0.02)
-        # プレイヤーの体（三人称）
-        if self.body_view is not None:
-            self.body_view.update(origin, self.third_person, self.U["utime"].dt)
-        elif self.third_person:
-            p = w.player
-            fwd, right, up, _ = self.look_vectors()
-            center = p.pos + up * (p.height / 2 - p.radius) - origin
-            self._set_box(self.body, center, np.stack([right, up, fwd]),
-                          np.array([p.radius * 2, p.height, p.radius * 1.4]))
-            self.body.show()
-        else:
-            self.body.hide()
+        # プレイヤーの体（自分は三人称のとき、ほかの参加者はいつも）
+        self._render_players(origin, self.U["utime"].dt)
         self.origin = origin
 
     def _open_panel(self, make):
@@ -753,6 +920,11 @@ class Game:
                  f"ジェットパック {'ON' if p.jetpack else 'OFF'}{'' if w.creative or not p.jetpack else ('（燃料 %.0f）' % p.inventory.get('fuel', 0.0))}  {'クリエイティブ' if w.creative else 'サバイバル'}{'  完全剛体' if w.settings.get('full_rigid') else ''}  物理:{native.name()}"]
         if self._perf_text:
             lines.append(self._perf_text)
+        net = w.net
+        if net is not None and net.role == "client":
+            lines.append(f"マルチプレイ参加中（ホスト {net.host_name}）  {1 + len(net.others)} 人")
+        elif net is not None:
+            lines.append(f"LAN に公開中 {'  '.join(net.addresses()[:1])}  {1 + len(w.remote)} 人")
         if p.seated:
             c = w.constructs.get(p.seated[0])
             if c:

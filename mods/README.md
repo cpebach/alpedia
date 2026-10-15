@@ -82,7 +82,7 @@ radius, surface_gravity, noise_amp, noise_freq, seed, color, texture, dig_resour
 ## プレイヤー (players)
 
 color, model（.obj）, height, radius, walk_speed, jump_speed, jetpack_accel, reach。
-メニューのワールド設定の「プレイヤーの見た目」で選べます（`world.json` の `"player"`）。
+ゲーム中の Esc（一時停止）の「見た目 ◀ ▶」で、ワールドに入っている MOD の見た目から選べます（プレイヤーごと。`player.json` の `"def"`）。
 VRM のモデル（.vrm）を使うときは `skinmodel(dummy)` MOD（VRM の見た目）を参照してください。
 
 ## プログラムを持つ MOD
@@ -106,6 +106,23 @@ def client_addon(game):     # 画面側（任意）：main.client.addon_hooks.Cl
   - 視線・プレイヤー・操作：`raycast` / `push_sphere` / `interact`（機器以外）/ `interact_device`（機器。コアより先）/ `on_placed`
   - 資源のルール：`resource_rules = True` にするとクリエイティブでなくなる。`pay` / `refund` / `on_device_placed` / `on_dig` / `on_water` / `jetpack`
 - 画面側 `ClientAddon` の口：`on_key` / `interact` / `aim`（視線の先の説明）/ `update`（毎フレームの描画）/ `destroy` と `help_text`、
-  `player_body`（プレイヤーの体の見た目を引き受けるとき。例は `skinmodel(dummy)`）。
+  `player_body(player)`（プレイヤーの体の見た目を引き受けるとき。自分にもマルチプレイのほかの人にも呼ばれる。例は `skinmodel(dummy)`）。
+
+## マルチプレイ（LAN）で動くようにする
+
+ホストの PC が世界を動かし、参加者の PC は結果を受け取って描きます。MOD（プログラムも）は参加する人に自動で届きます。
+
+- 参加者の PC では、ティックごとの口（`before_physics` / `after_physics` など）は呼ばれません。`on_load` は呼ばれます
+  （ホストから受け取ったセーブで、同じ物ができるように作ってください）。
+- `world.player` は「いま操作している人」です。参加者の操作をホストで行う間はその人になるので、
+  支払い（`pay`）・持ち物・メッセージはそのまま参加者ごとになります。
+- `Addon` の口：
+  - `on_player_join(world, player)`：参加者が入った（最初の資材を渡すなど。サバイバル・街が使っています）
+  - `net_state(world)` → `net_apply(world, state)`：ホストの状態を参加者へ（変わったときだけ、1秒に10回まで）。動く物・壊れ具合・経済など
+  - `net_client_tick(world, dt)`：参加者の PC で毎フレーム。次の状態が届くまで動く物を進めておく
+  - `net_ref_of(obj)` / `net_ref(world, kind, id)`：下の `addon_call` の引数（街・部屋など）を ID でやり取りする
+- 画面から MOD の状態を変える操作（売り買いなど）は `world.addon_call("MOD の名前", "economy.buy", 引数…)` で呼びます。
+  参加者の PC でもすぐに行い（画面にすぐ出すため）、ホストでも行います（ホストの結果が正しく、`net_state` で揃います）。
+  例は `mods/city/code/ui.py`。
 - `mod.json` の `"builtin": true` は本体に入っている MOD の印です（パッケージを作り直すと上書きされます）。
 

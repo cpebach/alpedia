@@ -19,6 +19,16 @@ class Player:
         self.starter_given = False   # サバイバルの最初の資材を受け取ったか
         self.credits_given = False   # 最初のクレジットを受け取ったか
         self.out_of_fuel = False
+        # マルチプレイ・描画用
+        self.name = ""
+        self.pid = 0
+        self.msgs = []              # ホスト：この人に送るメッセージ
+        self.input_keys = set()     # 参加者が操縦席で押しているキー
+        self.flying = False         # ジェットパックで飛んでいる
+        self.thrust = np.zeros(3)
+        self.look_fwd = np.array([0.0, 0.0, 1.0])
+        self.pitch = 0.0
+        self.stand = None           # 乗っている構築物 (ID, セル)（体重を伝える）
 
     @property
     def radius(self):
@@ -70,6 +80,7 @@ class Player:
                 return
         # ジェットパック（燃料などの決まりは MOD が決める。サバイバルでは手持ちの燃料が要る）
         flying, thrust_dir = world.jetpack(self, dt, thrust_dir)
+        self.flying, self.thrust = bool(flying), np.asarray(thrust_dir, dtype=np.float64)
         g = world.gravity(self.pos[None])[0]
         self.vel += g * dt
         # 水中：浮力と抵抗、泳ぐ（Space で上、Ctrl で下、WASD で前後左右）
@@ -102,6 +113,7 @@ class Player:
         self.pos = self.pos + self.vel * dt
         self.on_ground = False
         self.ground_vel = np.zeros(3)
+        self.stand = None
         r = self.radius
         # 惑星
         for p in world.planets:
@@ -169,5 +181,6 @@ class Player:
                 if off == 0.0 and np.dot(n, self.up) > 0.5:
                     self.on_ground = True
                     self.ground_vel = vv
+                    self.stand = (c.id, c.cells[i])
                     # 体重を構築物に伝える
                     c.force[8 * i:8 * i + 8] += -n * self.mass * np.linalg.norm(world.gravity(center[None])[0]) / 8

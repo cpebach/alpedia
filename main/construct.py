@@ -1480,7 +1480,7 @@ class Construct:
     # ------------------------------------------------------------------
     def _rails_ok(self, world, dist):
         x = self.rb["x"] if self.rb is not None else self.center_of_mass()
-        if np.linalg.norm(x - world.player.pos) < dist:
+        if world.player_distance(x) < dist:
             return False
         if np.any(self.force):
             return False

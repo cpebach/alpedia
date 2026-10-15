@@ -79,3 +79,28 @@ class Addon:
     def jetpack(self, world, player, dt, thrust_dir):
         """ジェットパックを使えるか：(使えるか, 噴射の向き) を返す。"""
         return player.jetpack, thrust_dir
+
+    # --- マルチプレイ（LAN） -------------------------------------------------
+    # ホストの PC が世界を動かし、参加者の PC は結果を受け取って描く。参加者の PC では
+    # before_physics / after_physics などのティックごとの口は呼ばれない（on_load は呼ばれる）。
+    # world.player は「いま操作している人」。参加者の操作をホストで行う間はその人になる（支払い・メッセージの宛先）。
+    def on_player_join(self, world, player):
+        """ホスト：参加者が初めて（または戻って）入った。最初の資材を渡すなど（world.player はその人）。"""
+
+    def net_state(self, world):
+        """ホスト：参加者へ送るこの拡張の状態（JSON で書けるもの。変わったときだけ送られる）。None なら送らない。"""
+        return None
+
+    def net_apply(self, world, state):
+        """参加者：net_state で送られた状態を受け取った。"""
+
+    def net_client_tick(self, world, dt):
+        """参加者：毎フレーム。次の状態が届くまで、動いている物を進めておく（動きをなめらかにする）。"""
+
+    def net_ref_of(self, obj):
+        """world.addon_call の引数を相手に送れる形にする（この拡張の物なら (種類, ID)、そうでなければ None）。"""
+        return None
+
+    def net_ref(self, world, kind, id_):
+        """net_ref_of の逆（ホストで、種類と ID から物を探す）。"""
+        return None

@@ -94,41 +94,27 @@ def _texture(data, mime, name):
     return t
 
 
-class VRMBody:
-    """プレイヤーの体（VRM）。game が毎フレーム update(origin, shown, dt) を呼ぶ。"""
+class VRMModel:
+    """1つの VRM の、描くための形（メッシュ・テクスチャ・シェーダー）。ワールドを始めるときに1回だけ作り、
+    プレイヤーごとの体はこれを共有する（骨の行列だけ体ごと）。"""
 
-    def __init__(self, game, defn, vrm, sun):
-        self.game, self.v = game, vrm
+    def __init__(self, defn, vrm, sun):
+        self.v = vrm
         self.scale = float(defn.get("model_scale", 1.0))
-        self.motion = Motion(vrm)
-        self.spring = Spring(vrm)
-        self.shown = False
-        self.root = NodePath("vrm_player")
-        self.root.reparentTo(game.scene_root)
-        self.root.node().setBounds(OmniBoundingVolume())
-        self.root.node().setFinal(True)
-        nj = len(vrm.joint_node)
-        self.bones = Texture("vrm_bones")
-        self.bones.setupBufferTexture(nj * 3, Texture.T_float, Texture.F_rgba32, GeomEnums.UH_dynamic)
-        self._write_bones(vrm.pose())
-        self.root.setShader(Shader.make(Shader.SL_GLSL, vertex=VERT, fragment=FRAG))
-        self.root.setShaderInput("bones", self.bones)
-        self.root.setShaderInput("blink", 0.0)
-        self.root.setShaderInput("sun_dir", Vec3(*[float(x) for x in sun]))
-        self.root.setLightOff(1)
+        self.template = NodePath("vrm_model")
+        self.shader = Shader.make(Shader.SL_GLSL, vertex=VERT, fragment=FRAG)
+        self.sun = Vec3(*[float(x) for x in sun])
         white = Texture("white")
         white.setup2dTexture(1, 1, Texture.T_unsigned_byte, Texture.F_rgba8)
         white.setRamImage(b"\xff\xff\xff\xff")
         texs = {}
-        for i, m in enumerate(vrm.materials):
+        for m in vrm.materials:
             ti = m["texture"]
             if ti is not None and ti not in texs:
                 data, mime = vrm.image_bytes(ti)
                 texs[ti] = _texture(data, mime, f"vrm_tex{ti}")
-        for mi, mesh in enumerate(vrm.meshes):
+        for mesh in vrm.meshes:
             self._add_mesh(mesh, texs, white)
-        self.face = None                # 体の向き（ワールド、地面に沿った単位ベクトル）
-        self.root.hide()
 
     def _add_mesh(self, mesh, texs, white):
         n = len(mesh.pos)
@@ -159,7 +145,7 @@ class VRMBody:
             g.addPrimitive(tris)
             node = GeomNode(m["name"] if m else "vrm")
             node.addGeom(g)
-            np_ = self.root.attachNewNode(node)
+            np_ = self.template.attachNewNode(node)
             m = m or {"texture": None, "color": [1, 1, 1, 1], "shade": [0.7, 0.7, 0.75], "alpha": "OPAQUE",
                       "cutoff": 0.5, "double": False}
             np_.setTexture(texs.get(m["texture"], white), 1)
@@ -173,21 +159,49 @@ class VRMBody:
                 np_.setBin("transparent", 10)
                 np_.setDepthWrite(False)
 
+
+class VRMBody:
+    """プレイヤー1人の体（VRM）。game が毎フレーム update(origin, shown, dt) を呼ぶ。
+    player の pos・up・vel・look_fwd（見ている向き）・pitch などを読んで動く（自分も、ほかの参加者も同じ）。"""
+
+    def __init__(self, game, player, model):
+        self.game, self.player, self.model, self.v = game, player, model, model.v
+        vrm = model.v
+        self.scale = model.scale
+        self.motion = Motion(vrm)
+        self.spring = Spring(vrm)
+        self.shown = False
+        self.root = NodePath("vrm_player")
+        self.root.reparentTo(game.scene_root)
+        self.root.node().setBounds(OmniBoundingVolume())
+        self.root.node().setFinal(True)
+        model.template.instanceTo(self.root)
+        nj = len(vrm.joint_node)
+        self.bones = Texture("vrm_bones")
+        self.bones.setupBufferTexture(nj * 3, Texture.T_float, Texture.F_rgba32, GeomEnums.UH_dynamic)
+        self._write_bones(vrm.pose())
+        self.root.setShader(model.shader)
+        self.root.setShaderInput("bones", self.bones)
+        self.root.setShaderInput("blink", 0.0)
+        self.root.setShaderInput("sun_dir", model.sun)
+        self.root.setLightOff(1)
+        self.face = None                # 体の向き（ワールド、地面に沿った単位ベクトル）
+        self.root.hide()
+
     def _write_bones(self, M):
         self.bones.setRamImage(np.ascontiguousarray(M, np.float32).tobytes())
 
     # ------------------------------------------------------------------
     def state(self):
         """プレイヤーの状態（モーションに渡す）。"""
-        g = self.game
-        p = g.world.player
+        p = self.player
         up = p.up
         rel = p.vel - getattr(p, "ground_vel", 0.0)
         vup = float(rel @ up)
         tang = rel - up * vup
         return {"speed": float(np.linalg.norm(tang)), "vup": vup, "tang": tang, "on_ground": bool(p.on_ground),
                 "flying": bool(p.jetpack) and not p.on_ground, "water": float(getattr(p, "in_water", 0.0)),
-                "seated": p.seated is not None, "pitch": float(g.pitch)}
+                "seated": p.seated is not None, "pitch": float(getattr(p, "pitch", 0.0))}
 
     def _turn(self, up, want, dt):
         """体の向きを want（地面に沿った方向）へなめらかに回す。"""
@@ -209,10 +223,10 @@ class VRMBody:
         if not self.shown:
             self.spring.reset()             # 見えていなかった間の動きで髪が跳ねないように
             self.shown = True
-        g = self.game
-        p = g.world.player
+        p = self.player
         up = p.up / np.linalg.norm(p.up)
-        cam_f, _, _, _ = g.look_vectors()
+        cam_f = np.asarray(getattr(p, "look_fwd", self.face if self.face is not None else np.array([0, 0, 1.0])),
+                           dtype=np.float64)
         st = self.state()
         if self.face is None:
             self.face = cam_f.copy()

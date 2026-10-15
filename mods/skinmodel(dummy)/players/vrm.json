@@ -1,2 +1,4 @@
-[{"id": "zonko", "extends": "default", "name": "ぞん子（VRM）", "model": "Zonko_VRM_221128.vrm",
-  "height": 1.68, "radius": 0.3, "model_scale": 1.0}]
+[
+  {"id": "player1", "extends": "default", "name": "player1（VRM）", "model": "alpedia_player1.vrm",
+  "height": 1.68, "radius": 0.3, "model_scale": 1.0}
+]

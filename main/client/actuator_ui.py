@@ -143,7 +143,11 @@ class ActuatorPanel:
 
     def run_now(self):
         if self._store():
-            self.world.message(act.execute_preset(self.world, self.c, self.index))
+            net = getattr(self.world, "net", None)
+            if net is not None and net.role == "client":
+                net.actuator_run(self.c, self.index)        # マルチプレイの参加者：ホストで実行する
+            else:
+                self.world.message(act.execute_preset(self.world, self.c, self.index))
         self.close()
 
     def cancel(self):

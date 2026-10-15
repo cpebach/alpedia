@@ -66,31 +66,6 @@ def list_mods():
     return [(m, n) for m, n, _ in out]
 
 
-def list_players():
-    """[(プレイヤーの定義 ID, 表示名, MOD名 または None)]。本体の定義と、mods/ にある全 MOD の players/*.json。"""
-    out, names = [], {}
-
-    def scan(d, mod):
-        pd = d / "players"
-        if not pd.is_dir():
-            return
-        for f in sorted(pd.glob("*.json")):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                continue
-            for it in data if isinstance(data, list) else [data]:
-                if isinstance(it, dict) and "id" in it:
-                    nm = it.get("name") or names.get(it.get("extends")) or it["id"]
-                    names[it["id"]] = nm
-                    out.append((it["id"], nm, mod))
-    scan(paths.BASE_DEFS, None)
-    if paths.MODS.exists():
-        for mid, _ in list_mods():
-            scan(paths.MODS / mid, mid)
-    return out
-
-
 def read_world_settings(name):
     d = paths.world_dir(name)
     from ..world import DEFAULT_SETTINGS
@@ -256,13 +231,15 @@ def save_config(cfg):
 # 画面
 # ---------------------------------------------------------------------------
 class MainMenu:
-    def __init__(self, cfg, on_play, on_quit):
+    def __init__(self, cfg, on_play, on_quit, on_join=None):
         from ursina import Entity, Text, Button, InputField, camera, color, window, mouse
         self.U = dict(Entity=Entity, Text=Text, Button=Button, InputField=InputField, camera=camera,
                       color=color, window=window)
         self.cfg = cfg
         self.on_play = on_play
         self.on_quit = on_quit
+        self.on_join = on_join
+        self.browser = None
         self.selected = None
         self.page_index = 0
         self.status = ""
@@ -370,11 +347,118 @@ class MainMenu:
         self._button("ワールド設定", (x, 0.04), lambda: self.show_world_settings(self.selected), enabled=has)
         self._button("削除", (x, -0.03), lambda: self.show_delete(self.selected), col=U["color"].rgb(0.5, 0.2, 0.2),
                      enabled=has)
-        self._button("ゲーム設定", (x, -0.12), self.show_game_settings)
-        self._button("終了", (x, -0.21), self.on_quit, col=U["color"].rgb(0.3, 0.3, 0.33))
+        self._button("マルチプレイ（LAN）", (x, -0.12), self.show_multiplayer, col=U["color"].rgb(0.25, 0.35, 0.55))
+        self._button("ゲーム設定", (x, -0.19), self.show_game_settings)
+        self._button("終了", (x, -0.26), self.on_quit, col=U["color"].rgb(0.3, 0.3, 0.33))
         if has:
             self._text(f"選択中: {self.selected}", (-0.2, -0.33), 0.85, col=U["color"].light_gray)
         self._status_line()
+
+    # --- マルチプレイ（LAN） -------------------------------------------------
+    def show_multiplayer(self):
+        """LAN の中で公開中のワールドの一覧と、IP アドレスを入れて参加する画面。"""
+        from .. import net
+        self._clear()
+        U = self.U
+        mp = self.cfg.setdefault("multiplayer", {})
+        if self.browser is None:
+            self.browser = net.Browser()
+        self._text("マルチプレイ（LAN）", (0, 0.42), 1.8)
+        self._text("名前", (-0.62, 0.32), 0.9, origin=(-0.5, 0))
+        name = U["InputField"](parent=self.root, default_value=mp.get("name") or _default_name(), position=(-0.2, 0.32),
+                               scale=(0.5, 0.05), character_limit=24)
+        self._panel((-0.2, 0.03), (0.92, 0.46))
+        self._text("LAN で公開中のワールド", (-0.64, 0.23), 0.9, origin=(-0.5, 0))
+        rows = self.U["Entity"](parent=self.root)
+        state = {"key": None, "t": 0.0}
+
+        def player_name():
+            n = name.text_field.text.strip() if hasattr(name, "text_field") else name.text.strip()
+            return n or _default_name()
+
+        def join(host, port):
+            mp["name"] = player_name()
+            try:
+                save_config(self.cfg)
+            except Exception:  # noqa: BLE001
+                pass
+            self._close_browser()
+            if self.on_join:
+                self.on_join(host, port, mp["name"])
+
+        def redraw():
+            from .ui_destroy import destroy
+            found = self.browser.worlds() if self.browser else []
+            key = tuple((ip, port, info.get("world"), info.get("players")) for ip, port, info in found)
+            if key == state["key"]:
+                return
+            state["key"] = key
+            for ch in list(rows.children):
+                destroy(ch)
+            if not found:
+                msg = "探しています…（同じ LAN でホストが「LAN に公開」すると、ここに出ます）"
+                if self.browser is not None and self.browser.error:
+                    msg = f"LAN の知らせを受け取れません（{self.browser.error}）。下で IP アドレスを入れて参加してください"
+                U["Text"](parent=rows, text=msg, position=(-0.2, 0.1), origin=(0, 0), scale=0.75,
+                          color=U["color"].light_gray)
+            for k, (ip, port, info) in enumerate(found[:5]):
+                y = 0.16 - k * 0.07
+                label = (f"{info.get('world', '?')}   ホスト {info.get('host', '?')}  /  {info.get('players', 1)} 人"
+                         f"  /  {ip}:{port}")
+                b = U["Button"](parent=rows, text=label, position=(-0.2, y), scale=(0.88, 0.06),
+                                color=U["color"].rgb(0.15, 0.25, 0.35), text_size=0.8)
+                b.text_entity.origin = (-0.5, 0)
+                b.text_entity.x = -0.47
+                b.on_click = (lambda ip=ip, port=port: join(ip, port))
+
+        class Ticker(U["Entity"]):
+            def update(self_):
+                import time as _t
+                if _t.time() - state["t"] > 0.5:
+                    state["t"] = _t.time()
+                    redraw()
+        Ticker(parent=self.root)
+        redraw()
+        self._text("IP アドレスで参加", (-0.64, -0.26), 0.85, origin=(-0.5, 0))
+        addr = U["InputField"](parent=self.root, default_value=mp.get("last_host", ""), position=(-0.12, -0.26),
+                               scale=(0.36, 0.05), character_limit=40)
+
+        def join_addr():
+            txt = (addr.text_field.text if hasattr(addr, "text_field") else addr.text).strip()
+            if not txt:
+                return
+            host, _, port = txt.partition(":")
+            mp["last_host"] = txt
+            join(host.strip(), int(port) if port.strip().isdigit() else int(mp.get("port", net.PORT)))
+        self._button("参加", (0.18, -0.26), join_addr, size=(0.16, 0.05), col=U["color"].rgb(0.2, 0.5, 0.3))
+        self._text("ホストになるには：ワールドで遊んで Esc →「LAN に公開」。ワールド・セーブ・MOD はホストの PC のものを使い、\n"
+                   "参加する人には MOD が自動で届きます。保存はホストが行います（参加者は F9 で構築物を自分の PC に出力できます）。",
+                   (0, -0.36), 0.62, col=U["color"].light_gray)
+
+        def back():
+            self._close_browser()
+            self._back()
+        self._button("戻る", (0.5, 0.42), back, size=(0.2, 0.055), col=U["color"].rgb(0.3, 0.3, 0.33))
+        self._status_line()
+
+    def _close_browser(self):
+        if self.browser is not None:
+            self.browser.close()
+            self.browser = None
+
+    def show_joining(self, joiner, on_cancel):
+        """参加の準備中（MOD・ワールドを受け取っている）。"""
+        self._clear()
+        U = self.U
+        self._text("マルチプレイに参加", (0, 0.2), 1.6)
+        msg = self._text(joiner.status, (0, 0.05), 0.95)
+
+        class Ticker(U["Entity"]):
+            def update(self_):
+                if msg.text != joiner.status:
+                    msg.text = joiner.status
+        Ticker(parent=self.root)
+        self._button("やめる", (0, -0.15), on_cancel, size=(0.25, 0.055), col=U["color"].rgb(0.4, 0.3, 0.2))
 
     def _select(self, name):
         if name == self.selected:  # 同じワールドをもう一度押したら開始
@@ -556,44 +640,17 @@ class MainMenu:
                       float(cl.get("seconds", 60)), lambda v: f"{v:.0f} 秒", lambda v: cl.__setitem__("seconds", v))
         self._stepper("　対象の最大頂点数", y - 0.42, [80, 200, 400, 800, 1600, 4000],
                       int(cl.get("max_vertices", 400)), lambda v: f"{v}", lambda v: cl.__setitem__("max_vertices", v))
-        refresh_mods = self._mod_toggles(y - 0.50, sel)
-        # プレイヤーの見た目（MOD の定義を選ぶと、その MOD も入れる）
-        players = list_players()
-        mod_names = dict(list_mods())
-        pids = [p[0] for p in players]
-        if s.get("player", "default") not in pids:
-            players.append((s.get("player", "default"), s.get("player", "default") + "（見つからない）", None))
-            pids.append(players[-1][0])
-        info = {pid: (nm, mod) for pid, nm, mod in players}
-
-        auto = {"mod": None}            # 見た目を選んだときに自動で入れた MOD（別の見た目にしたら戻す）
-
-        def pick(pid):
-            s["player"] = pid
-            mod = info[pid][1]
-            if auto["mod"] and auto["mod"] != mod:
-                sel.discard(auto["mod"])
-                auto["mod"] = None
-            if mod and mod not in sel:
-                sel.add(mod)
-                auto["mod"] = mod
-            refresh_mods()
-        self._stepper("プレイヤーの見た目", y - 0.635, pids, s.get("player", "default"), lambda pid: info[pid][0], pick)
+        self._mod_toggles(y - 0.50, sel)
         planets = ", ".join(p.get("def", "?") for p in s.get("planets", []))
-        self._text(f"惑星: {planets}（world.json で編集）", (0, y - 0.69), 0.6, col=U["color"].light_gray)
+        self._text(f"惑星: {planets}（world.json で編集）", (0, y - 0.64), 0.7, col=U["color"].light_gray)
         self._text("MOD を入れる・外す前に、ワールド（saves/ のフォルダ）をコピーしておくことをすすめます。"
-                   "使っている MOD を外すと、そのワールドは始められなくなります。", (0, y - 0.735), 0.55,
+                   "使っている MOD を外すと、そのワールドは始められなくなります。", (0, y - 0.70), 0.58,
                    col=U["color"].rgb(1, 0.8, 0.45))
 
         def save():
-            pmod = info.get(s.get("player", "default"), (None, None))[1]
-            extra = ""
-            if pmod and pmod not in sel:      # 見た目の MOD を外したら、宇宙飛行士に戻す
-                s["player"] = "default"
-                extra = f"（「{mod_names.get(pmod, pmod)}」を外したので、プレイヤーの見た目は宇宙飛行士に戻しました）"
             try:
                 write_world_settings(name, s, sorted(sel))
-                self.status = "ワールド設定を保存しました" + extra
+                self.status = "ワールド設定を保存しました"
             except Exception as e:  # noqa: BLE001
                 self.status = f"保存できません: {e}"
             self.show_main()
@@ -652,7 +709,16 @@ class MainMenu:
 
     def destroy(self):
         from .ui_destroy import destroy
+        self._close_browser()
         destroy(self.root)
+
+
+def _default_name():
+    import getpass
+    try:
+        return getpass.getuser()[:24] or "player"
+    except Exception:  # noqa: BLE001
+        return "player"
 
 
 def apply_window_settings(cfg):
@@ -697,7 +763,7 @@ def run_client(cfg, world_name=None, on_ready=None):
         application.quit()
 
     def open_menu(status=""):
-        state["menu"] = MainMenu(cfg, play, quit_app)
+        state["menu"] = MainMenu(cfg, play, quit_app, join)
         if status:
             state["menu"].error(status)
 
@@ -738,7 +804,7 @@ def run_client(cfg, world_name=None, on_ready=None):
             state["game"] = None
             load_failed(name, e.errors)
 
-    def leave(action):
+    def leave(action, status=""):
         def later():
             g = state["game"]
             if g is not None:
@@ -747,8 +813,70 @@ def run_client(cfg, world_name=None, on_ready=None):
             if action == "quit":
                 quit_app()
             else:
-                open_menu()
+                open_menu(status)
         invoke(later, delay=0.01)
+
+    def join(host, port, name):
+        """マルチプレイに参加：MOD とワールドを受け取ってから（別スレッド）、そのワールドで遊ぶ。"""
+        from ..netclient import Joiner
+        from ursina import Entity
+        menu = state["menu"]
+        j = Joiner(host, port, name)
+
+        def cancel():
+            j.cancel()
+            menu.show_multiplayer()
+        menu.show_joining(j, cancel)
+
+        class Wait(Entity):
+            def update(self_):
+                if j.error:
+                    from .ui_destroy import destroy
+                    destroy(self_)
+                    if state["menu"] is not None and not j.cancelled:
+                        state["menu"].status = f"参加できません：{j.error}"
+                        state["menu"].show_multiplayer()
+                elif j.done:
+                    from .ui_destroy import destroy
+                    destroy(self_)
+                    start_joined(j.result)
+        Wait()
+
+    def start_joined(info):
+        from ..netclient import Client, mods_cache
+        from ..world import World
+        from ..modcode import ModLoadError
+        orig = paths.MODS
+        paths.MODS = mods_cache()           # ホストから受け取った MOD で読み込む
+        try:
+            try:
+                world = World(info["world"], cfg, directory=info["dir"]).load()
+            except ModLoadError as e:
+                info["conn"].close()
+                load_failed(info["world"], e.errors)
+                return
+            except Exception as e:  # noqa: BLE001
+                L.exception("受け取ったワールドを読み込めません")
+                info["conn"].close()
+                state["menu"].error(f"受け取ったワールドを読み込めません: {e}")
+                return
+            Client(info, world, cfg)
+            if state["menu"] is not None:
+                state["menu"].destroy()
+                state["menu"] = None
+            game = Game(world, cfg, on_exit=leave)
+            state["game"] = game
+            try:
+                game.start()
+            except ModLoadError as e:
+                try:
+                    game.destroy()
+                except Exception:  # noqa: BLE001
+                    L.exception("画面の後片付けに失敗")
+                state["game"] = None
+                load_failed(info["world"], e.errors)
+        finally:
+            paths.MODS = orig
 
     if world_name:
         play(world_name)

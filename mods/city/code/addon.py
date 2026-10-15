@@ -150,6 +150,81 @@ class CityAddon(Addon):
             c.anchor = {"to": city.id}      # ステーションに直接置いたものは街に固定
 
     # ------------------------------------------------------------------
+    # マルチプレイ（LAN）
+    # ------------------------------------------------------------------
+    def on_player_join(self, world, player):
+        if self.economy is not None and self.cities.enabled:
+            self.economy.give_starter()             # world.player は参加した人
+
+    def net_state(self, world):
+        """参加者へ：街の状態（動くステーションの位置・建物の壊れ具合）と、経済・政治の状態。"""
+        if not self.cities.enabled:
+            return None
+        return {"cities": self.cities.to_state(), "eco": world.settings.get("economy"),
+                "pol": world.settings.get("politics")}
+
+    def net_apply(self, world, st):
+        if not self.cities.enabled:
+            return
+        for cid, d in (st.get("cities") or {}).items():
+            c = self.cities.by_id.get(cid)
+            if c is None:
+                continue
+            b = d.get("b") or {}
+            want = [0] * len(c.state)
+            for k, v in b.items():
+                if int(k) < len(want):
+                    want[int(k)] = int(v)
+            if list(map(int, c.state)) != want:
+                c.load_state({"b": b})              # 壊れ具合が変わった（描き直す）
+            if "x" in d:
+                c.kind = d.get("kind", c.kind)
+                c.x, c.v = np.asarray(d["x"], float), np.asarray(d["v"], float)
+                c.R, c.w = np.asarray(d["R"], float), np.asarray(d["w"], float)
+        for key, new in (("economy", st.get("eco")), ("politics", st.get("pol"))):
+            cur = world.settings.get(key)
+            if isinstance(cur, dict) and isinstance(new, dict):
+                for k, v in new.items():            # 中身を入れ替える（経済・政治は同じ辞書を持ち続けている）
+                    if isinstance(cur.get(k), dict) and isinstance(v, dict):
+                        cur[k].clear()
+                        cur[k].update(v)
+                    elif isinstance(cur.get(k), list) and isinstance(v, list):
+                        cur[k][:] = v
+                    else:
+                        cur[k] = v
+
+    def net_client_tick(self, world, dt):
+        """参加者：次の状態が届くまで、軌道上の街を速度のまま進める。"""
+        if not self.cities.enabled:
+            return
+        for c in self.cities.cities:
+            if c.kind != "orbit":
+                continue
+            c.x = c.x + c.v * dt
+            wn = float(np.linalg.norm(c.w))
+            if wn > 1e-12:
+                from .cities import _rot
+                c.R = _rot(c.w, wn * dt) @ c.R
+
+    def net_ref_of(self, obj):
+        from .cities import City
+        if isinstance(obj, City):
+            return ("city", obj.id)
+        if isinstance(obj, dict) and "id" in obj and "bld" in obj:
+            return ("home", obj["id"])
+        return None
+
+    def net_ref(self, world, kind, id_):
+        if kind == "city":
+            return self.cities.by_id.get(id_)
+        if kind == "home":
+            for c in self.cities.cities:
+                for h in c.homes:
+                    if h["id"] == id_:
+                        return h
+        return None
+
+    # ------------------------------------------------------------------
     # 問い合わせ（画面側から。街パックの中身を直接触らずに使う）
     # ------------------------------------------------------------------
     @property

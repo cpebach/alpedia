@@ -57,6 +57,10 @@ class _Panel:
         for ch in list(self.body.children):
             destroy(ch)
 
+    def _call(self, path, *args):
+        """街パックの状態を変える操作（マルチプレイではホストでも行う）。"""
+        return self.world.addon_call("city", path, *args)
+
     def act(self, fn):
         def run():
             msg = fn()
@@ -104,11 +108,11 @@ class TradePanel(_Panel):
             self._text(f"{buy:.2f}", (-0.27, y), col=color.rgb(1, 0.75, 0.6))
             self._text(f"{sell:.2f}", (-0.15, y), col=color.rgb(0.6, 1, 0.7))
             x = 0.0
-            for lab, fn, col in ((f"買う 1", lambda r=res: self.eco.buy(self.city, r, 1), None),
-                                 (f"買う 10", lambda r=res: self.eco.buy(self.city, r, 10), None),
-                                 (f"売る 1", lambda r=res: self.eco.sell(self.city, r, 1), color.rgb(0.2, 0.45, 0.3)),
-                                 (f"売る 10", lambda r=res: self.eco.sell(self.city, r, 10), color.rgb(0.2, 0.45, 0.3)),
-                                 (f"全部売る", lambda r=res: self.eco.sell(self.city, r, inv.get(r, 0.0)),
+            for lab, fn, col in ((f"買う 1", lambda r=res: self._call("economy.buy", self.city, r, 1), None),
+                                 (f"買う 10", lambda r=res: self._call("economy.buy", self.city, r, 10), None),
+                                 (f"売る 1", lambda r=res: self._call("economy.sell", self.city, r, 1), color.rgb(0.2, 0.45, 0.3)),
+                                 (f"売る 10", lambda r=res: self._call("economy.sell", self.city, r, 10), color.rgb(0.2, 0.45, 0.3)),
+                                 (f"全部売る", lambda r=res: self._call("economy.sell", self.city, r, inv.get(r, 0.0)),
                                   color.rgb(0.25, 0.5, 0.35))):
                 self._btn(lab, (x + 0.05, y), self.act(fn), w=0.1 if lab != "全部売る" else 0.12, parent=self.body)
                 x += 0.115
@@ -153,17 +157,17 @@ class EstatePanel(_Panel):
             self._text(h["name"], (-0.7, y))
             self._text(txt, (-0.38, y), 0.65, color.light_gray)
             if usable and st != "own":
-                self._btn(f"買う {price:.0f}", (0.2, y), self.act(lambda h=h: self.eco.buy_home(self.city, h)),
+                self._btn(f"買う {price:.0f}", (0.2, y), self.act(lambda h=h: self._call("economy.buy_home", self.city, h)),
                           w=0.16, parent=self.body, col=color.rgb(0.25, 0.5, 0.35))
                 self._btn(("延長 " if st == "rent" else "借りる ") + f"{rent:.0f}", (0.38, y),
-                          self.act(lambda h=h: self.eco.rent_home(self.city, h)), w=0.16, parent=self.body)
+                          self.act(lambda h=h: self._call("economy.rent_home", self.city, h)), w=0.16, parent=self.body)
             y -= 0.07
         self._text(f"所持金  {self.eco.credits():.1f} クレジット", (-0.7, y - 0.04), 0.85, color.rgb(1.0, 0.85, 0.3))
         esc = self.eco.state.get("escrow") or {}
         if esc:
             self._text("預かり品（滅びた街の部屋の収納箱から）：" + self.reg.res_text(esc), (-0.7, y - 0.1), 0.62,
                        color.light_gray)
-            self._btn("預かり品を受け取る", (0.35, y - 0.1), self.act(self.eco.claim_escrow), w=0.24, parent=self.body,
+            self._btn("預かり品を受け取る", (0.35, y - 0.1), self.act(lambda: self._call("economy.claim_escrow")), w=0.24, parent=self.body,
                       col=color.rgb(0.25, 0.5, 0.35))
         self.status_text.text = self.status
 
@@ -197,7 +201,7 @@ class StoragePanel(_Panel):
             self._text(f"{box.get(k, 0.0):.0f}", (-0.3, y))
             x = -0.12
             for lab, amt in (("預ける 10", 10), ("全部預ける", 1e12), ("出す 10", -10), ("全部出す", -1e12)):
-                self._btn(lab, (x + 0.06, y), self.act(lambda k=k, a=amt: (self.eco.store(self.home["id"], k, a), None)[1]),
+                self._btn(lab, (x + 0.06, y), self.act(lambda k=k, a=amt: (self._call("economy.store", self.home["id"], k, a), None)[1]),
                           w=0.13, parent=self.body, col=color.rgb(0.25, 0.4, 0.3) if amt > 0 else None)
                 x += 0.145
         self.status_text.text = self.status
@@ -376,9 +380,9 @@ class MapPanel(_Panel):
         T(parent=self.side_root, text="\n".join(lines), position=(x0, 0.3), origin=(-0.5, 0.5), scale=0.62)
         if not fallen:
             y = -0.02
-            self._btn(f"説得する（緊張を下げる）", (x0 + 0.15, y), self.act(lambda: self.pol.persuade(c)), w=0.3,
+            self._btn(f"説得する（緊張を下げる）", (x0 + 0.15, y), self.act(lambda: self._call("politics.persuade", c)), w=0.3,
                       parent=self.side_root, col=color.rgb(0.25, 0.45, 0.35))
-            self._btn(f"防御を促す", (x0 + 0.47, y), self.act(lambda: self.pol.urge_defense(c)), w=0.24,
+            self._btn(f"防御を促す", (x0 + 0.47, y), self.act(lambda: self._call("politics.urge_defense", c)), w=0.24,
                       parent=self.side_root)
             if s.get("plan"):
                 y -= 0.055
@@ -386,7 +390,7 @@ class MapPanel(_Panel):
                 for k, tc in enumerate([x for x in self.pol.candidates(c, 7) if x.id != s["plan"]["target"]][:6]):
                     yy = y - 0.048 * (1 + k // 2)
                     xx = x0 + 0.15 + (k % 2) * 0.32
-                    self._btn(f"→ {tc.name}", (xx, yy), self.act(lambda tc=tc: self.pol.retarget(c, tc)), w=0.3,
+                    self._btn(f"→ {tc.name}", (xx, yy), self.act(lambda tc=tc: self._call("politics.retarget", c, tc)), w=0.3,
                               parent=self.side_root, col=color.rgb(0.5, 0.25, 0.25))
         self.status_text.text = self.status
 

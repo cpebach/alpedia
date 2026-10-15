@@ -23,6 +23,10 @@ class SurvivalRules(Addon):
         p.starter_given = True
         world.message("サバイバル開始: 最初の資材を受け取りました（I でインベントリ）")
 
+    def on_player_join(self, world, player):
+        """マルチプレイ：参加した人にも最初の資材を（world.player はその人）。"""
+        self.on_load(world)
+
     # --- 置く・外す ---------------------------------------------------------
     def pay(self, world, cost):
         inv = world.player.inventory

@@ -65,7 +65,7 @@ class Port:
 
     def input_keys(self):
         """操縦席に座っている間に押されているキー（座っていなければ空）。"""
-        return set(self._w.input_keys) if self._w.seated_in(self._c) else set()
+        return self._w.keys_for(self._c)
 
     # ------------------------------------------------------------------
     # 惑星
