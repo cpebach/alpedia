@@ -648,7 +648,7 @@ class Game:
         held = U["held_keys"]
         c = self.cfg["controls"]
         net = w.net
-        online = net is not None and (net.role == "client" or w.remote)
+        online = net is not None        # LAN に公開中・参加中は、一時停止しても世界と通信を止めない（参加の受け付けも）
         if self.paused and not online:
             return                  # マルチプレイ中は一時停止しても世界は止めない（ほかの人がいるので）
         editing = self.editor is not None or self.paused
