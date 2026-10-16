@@ -244,6 +244,8 @@ def make_zip(out):
             top = rel.parts[0]
             if p.is_dir() or top == "cache" or "__pycache__" in rel.parts:
                 continue
+            if len(rel.parts) == 1 and p.suffix.lower() == ".zip":
+                continue            # Alpedia フォルダに置いてある古い zip などは入れない
             if top == "game" and len(rel.parts) > 1 and rel.parts[1] in ("saves", "logs"):
                 continue
             z.write(p, Path("Alpedia") / rel)

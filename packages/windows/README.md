@@ -75,3 +75,16 @@ Python やライブラリのインストールなしで遊べる版です。
 | ランチャー | `build/launcher/launcher.c`（C 言語）。`runtime/python312.dll` を読み込んで `boot.py` を実行します。<br>`pip install ziglang` が入っていれば、作り直すたびに zig の C コンパイラで exe も作り直します（なければ同梱の exe を使います）。 |
 
 `build/cache` はダウンロードしたものの置き場です。消してもかまいません（次に作るときにもう一度ダウンロードします）。
+
+## 配る（GitHub のリリース）
+
+パッケージ本体（`Alpedia/`、約 800MB）は git には入れません（GitHub は 1 ファイル 100MB まで・リポジトリも重くなるため）。
+配るときは zip にして、GitHub の「Releases」に添付します（1 ファイル 2GB まで）。
+
+1. **`配布用zipを作る.bat` をダブルクリック** → `dist\Alpedia-win64.zip` ができる
+   （ゲーム部分を `dev` から入れ直してから zip にします。セーブ・ログ・cache は入りません）
+2. GitHub のリポジトリのページ → 右側の「Releases」→「Draft a new release」
+3. 「Choose a tag」に `v1.1` などの版を入れて「Create new tag」、タイトルと説明を書く
+4. `Alpedia-win64.zip` をページ下の枠にドラッグして、「Publish release」
+
+もらった人は zip を展開して `Alpedia.exe` を起動します。
