@@ -22,8 +22,10 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -152,20 +154,75 @@ def _ignore(_d, names):
     return [n for n in names if n in SKIP_NAMES or n.endswith(".pyc")]
 
 
+def _retry(fn, *a, tries=8):
+    """OneDrive の同期・エクスプローラー・ウイルス対策が一瞬ファイルをつかんでいると「アクセスが拒否されました」になるので、
+    読み取り専用を外して少し待ちながら何度かやり直す。"""
+    for k in range(tries):
+        try:
+            return fn(*a)
+        except PermissionError:
+            if k == tries - 1:
+                raise
+            for x in a:
+                try:
+                    if isinstance(x, (str, Path)) and Path(x).exists():
+                        os.chmod(x, stat.S_IWRITE | stat.S_IREAD)
+                except OSError:
+                    pass
+            time.sleep(0.3 * (k + 1))
+
+
+def sync_tree(s, d):
+    """s の中身を d にそろえる（フォルダは消さずに、ファイルを上書き・足す・余分なファイルを消す）。
+    フォルダごと消して作り直すと、OneDrive やエクスプローラーがフォルダを開いているだけで失敗するため。"""
+    if s.is_file():
+        if d.is_dir():
+            _retry(shutil.rmtree, d)
+        d.parent.mkdir(parents=True, exist_ok=True)
+        _retry(shutil.copy2, s, d)
+        return
+    want = set()
+    for p in s.rglob("*"):
+        rel = p.relative_to(s)
+        if any(x in SKIP_NAMES for x in rel.parts):
+            continue
+        want.add(rel)
+        t = d / rel
+        if p.is_dir():
+            t.mkdir(parents=True, exist_ok=True)
+            continue
+        if t.is_file():
+            ss, ts = p.stat(), t.stat()
+            if ss.st_size == ts.st_size and int(ss.st_mtime) == int(ts.st_mtime):
+                continue                    # 同じファイル（コピー済み）
+        t.parent.mkdir(parents=True, exist_ok=True)
+        _retry(shutil.copy2, p, t)
+    if not d.is_dir():
+        return
+    stale = 0
+    for t in sorted(d.rglob("*"), key=lambda x: len(x.parts), reverse=True):
+        rel = t.relative_to(d)
+        if rel in want or any(x in SKIP_NAMES for x in rel.parts):
+            continue
+        try:
+            if t.is_dir():
+                if not any(t.iterdir()):
+                    _retry(os.rmdir, t)
+            else:
+                _retry(os.unlink, t)
+        except OSError as e:
+            stale += 1
+            log("消せないファイルを残しました（動作には影響しません）:", t, e)
+    if stale:
+        log(f"  残したもの {stale} 個")
+
+
 def copy_game(game):
     game.mkdir(parents=True, exist_ok=True)
     for item in GAME_ITEMS:
         s, d = SRC / item, game / item
-        if not s.exists():
-            continue
-        if d.is_dir():
-            shutil.rmtree(d)
-        elif d.exists():
-            d.unlink()
-        if s.is_dir():
-            shutil.copytree(s, d, ignore=_ignore)
-        else:
-            shutil.copy2(s, d)
+        if s.exists():
+            sync_tree(s, d)
     # 本体に入っている MOD（mod.json の "builtin": true。サバイバル・街）は毎回入れ替える
     for mj in sorted((SRC / "mods").glob("*/mod.json")):
         try:
@@ -173,10 +230,7 @@ def copy_game(game):
         except Exception:  # noqa: BLE001
             builtin = False
         if builtin:
-            d = game / "mods" / mj.parent.name
-            if d.exists():
-                shutil.rmtree(d)
-            shutil.copytree(mj.parent, d, ignore=_ignore)
+            sync_tree(mj.parent, game / "mods" / mj.parent.name)
     for item in GAME_KEEP:                               # 後から足したものは残し、足りないものだけ足す
         s = SRC / item
         if not s.exists():
