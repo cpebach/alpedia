@@ -97,7 +97,9 @@ class Host:
         self._last_state = world.time
         world.net = self
         world.local_player.name = self.name
-        L.info("LAN に公開: %s ポート %d（%s）", world.name, self.port, ", ".join(net.local_addresses()))
+        L.info("LAN に公開: %s ポート %d（%s）。参加できないときは、この PC のファイアウォールで TCP %d・UDP %d を許可してください"
+               "（LANで公開できるようにする.bat）", world.name, self.port, ", ".join(net.local_addresses()),
+               self.port, net.DISCOVERY_PORT)
 
     # --- 情報 ------------------------------------------------------------
     def _info(self):
@@ -220,11 +222,14 @@ class Host:
         t = m.get("t")
         if t == "_open":
             self.peers[conn] = Peer(conn, m.get("addr"))
+            L.info("つながりを受け付けました: %s", m.get("addr"))
             return
         peer = self.peers.get(conn)
         if peer is None:
             return
         if t == "_closed" or t == "bye":
+            if peer.player is None:
+                L.info("参加の途中で切れました: %s（%s）%s", peer.addr, peer.name or "名前の前", m.get("why") or "")
             self._leave(peer)
             return
         if t == "hello":
@@ -237,6 +242,7 @@ class Host:
             self._game_msg(peer, m)
 
     def _hello(self, peer, m):
+        L.info("参加の申し込み: %s（%s）", m.get("name"), peer.addr)
         if m.get("proto") != net.PROTO:
             peer.conn.send({"t": "error", "text": "ゲームの版が違うので参加できません（ホストと同じ版にしてください）"})
             return

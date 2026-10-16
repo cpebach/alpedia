@@ -82,27 +82,36 @@ class Joiner:
             if t == "error":
                 raise JoinError(m.get("text", "参加できません"))
             if t in ("_closed", "bye"):
-                raise JoinError(m.get("text") or "ホストとのつながりが切れました")
+                why = m.get("text") or m.get("why") or ""
+                raise JoinError("ホストとのつながりが切れました" + (f"（{why}）" if why else "")
+                                + "。ホストがワールドを閉じた・ホストの PC のセキュリティソフトが切った などが考えられます")
             if t in types:
                 return m
 
     def _run(self):
+        L.info("参加を試みます: %s:%s（名前 %s）", self.host, self.port, self.name)
         try:
             self._join()
             self.done = True
+            L.info("参加の準備ができました: %s:%s", self.host, self.port)
         except Exception as e:  # noqa: BLE001
             if not isinstance(e, JoinError):
                 L.exception("参加に失敗")
             self.error = str(e) or type(e).__name__
+            L.warning("参加できません（%s:%s、%s）: %s", self.host, self.port, self.status, self.error)
             if self.conn is not None:
                 self.conn.close()
 
     def _join(self):
         try:
             self.conn = net.connect(self.host, self.port)
-        except OSError as e:
-            raise JoinError(f"{self.host}:{self.port} につなげません（{e}）。ホストの IP・ポートと、"
-                            "ファイアウォールで Alpedia が許可されているかを確かめてください")
+        except ConnectionRefusedError as e:
+            raise JoinError(f"{self.host}:{self.port} につなげません（相手が受け付けていません：{e}）。"
+                            "ホストが「LAN に公開」しているか、IP・ポートが合っているかを確かめてください")
+        except (TimeoutError, OSError) as e:
+            raise JoinError(f"{self.host}:{self.port} につなげません（返事がありません：{e}）。"
+                            "ホストの PC のファイアウォールで止められていることが多いです"
+                            "（ホストの PC で「LANで公開できるようにする.bat」を実行）")
         self.conn.send({"t": "hello", "name": self.name, "proto": net.PROTO})
         self.status = "ホストの返事を待っています…"
         w = self._wait("welcome")

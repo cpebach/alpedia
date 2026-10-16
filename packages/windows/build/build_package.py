@@ -287,6 +287,8 @@ def copy_game(game):
 def copy_boot(out):
     overlay = HERE / "overlay"
     _retry(shutil.copy2, overlay / "boot.py", out / "boot.py")
+    for bat in overlay.glob("*.bat"):                    # LANで公開できるようにする.bat など
+        _retry(shutil.copy2, bat, out / bat.name)
     sync_tree(overlay / "alpedia_gpu", out / "alpedia_gpu")
     launcher = HERE / "launcher"
     exes = [launcher / "Alpedia.exe", launcher / "Alpedia-console.exe"]
