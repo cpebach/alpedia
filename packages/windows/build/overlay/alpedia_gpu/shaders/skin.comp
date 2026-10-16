@@ -1,0 +1,30 @@
+// Alpedia GPU スキニング（コンピュートシェーダー）
+// 柔らかい構築物の表面メッシュの各頂点を、持ち主ボクセルの 8 節点の現在位置から重み付きで求める。
+//   node_pos : 節点の位置（カメラ相対、rgba32f、xyz を使う）  … 毎フレーム CPU から送る
+//   v_owner  : 頂点ごとの持ち主ボクセル番号（r32i）         … 形が変わった時だけ送る
+//   v_w      : 頂点ごとの 8 つの重み（rgba32f × 2）         … 同上
+//   skinned  : 結果（rgba32f）。頂点シェーダーが法線計算と描画に使う
+#version 430
+layout(local_size_x = 64) in;
+
+uniform samplerBuffer node_pos;
+uniform isamplerBuffer v_owner;
+uniform samplerBuffer v_w;
+layout(rgba32f) uniform writeonly imageBuffer skinned;
+
+void main() {
+    int g = int(gl_GlobalInvocationID.x);
+    if (g >= imageSize(skinned)) return;
+    int o = texelFetch(v_owner, g).r * 8;
+    vec4 w0 = texelFetch(v_w, 2 * g);
+    vec4 w1 = texelFetch(v_w, 2 * g + 1);
+    vec3 p = w0.x * texelFetch(node_pos, o + 0).xyz
+           + w0.y * texelFetch(node_pos, o + 1).xyz
+           + w0.z * texelFetch(node_pos, o + 2).xyz
+           + w0.w * texelFetch(node_pos, o + 3).xyz
+           + w1.x * texelFetch(node_pos, o + 4).xyz
+           + w1.y * texelFetch(node_pos, o + 5).xyz
+           + w1.z * texelFetch(node_pos, o + 6).xyz
+           + w1.w * texelFetch(node_pos, o + 7).xyz;
+    imageStore(skinned, g, vec4(p, 1.0));
+}

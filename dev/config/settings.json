@@ -1,0 +1,43 @@
+{
+  "window": {
+    "width": 1280,
+    "height": 720,
+    "fullscreen": false,
+    "vsync": true
+  },
+  "graphics": {
+    "fov": 80,
+    "terrain_patch_cells": 48,
+    "terrain_patch_step": 1.0,
+    "view_distance": 3000
+  },
+  "controls": {
+    "mouse_sensitivity": 60.0,
+    "forward": "w",
+    "back": "s",
+    "left": "a",
+    "right": "d",
+    "jump": "space",
+    "down": "left control",
+    "jetpack": "f",
+    "interact": "e",
+    "rotate": "r",
+    "new_construct": "n",
+    "save": "f5",
+    "export": "f9",
+    "import": "f8",
+    "toggle_help": "f1"
+  },
+  "physics": {
+    "tick_rate": 60,
+    "substeps": 3,
+    "iterations": 2,
+    "fast": true,
+    "threads": 10
+  },
+  "game": {
+    "default_world": "demo",
+    "language": "ja"
+  },
+  "log_level": "INFO"
+}

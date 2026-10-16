@@ -1,3 +1,15 @@
-*.vrm
-*.unitypackage.gz
 __pycache__/
+*.pyc
+*.unitypackage.gz
+# 開発版の実行で増えるもの（セーブ・ログ・作った物理コア・ビルドの途中）
+dev/saves/
+dev/logs/
+dev/lib/
+dev/cache/
+dev/native/alpedia_core/target/
+dev/native/build_log.txt
+# パッケージ版（作った物・ダウンロードの置き場）
+packages/windows/Alpedia/
+packages/windows/dist/
+packages/windows/build/cache/
+_repo_export.tar

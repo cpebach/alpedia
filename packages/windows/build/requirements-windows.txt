@@ -1,0 +1,9 @@
+# Alpedia パッケージ版（Windows 64bit / Python 3.12）に同梱するライブラリ。動作確認した版に固定している。
+ursina==8.3.0
+panda3d==1.10.16
+numpy==2.5.3
+scipy==1.18.1
+pillow==12.3.0
+scikit-image==0.26.0
+numba==0.68.0
+llvmlite==0.50.0
