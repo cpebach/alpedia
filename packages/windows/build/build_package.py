@@ -88,8 +88,8 @@ import site
 
 def build_runtime(rt, wheels):
     if rt.exists():
-        shutil.rmtree(rt)
-    rt.mkdir(parents=True)
+        _clear(rt)
+    rt.mkdir(parents=True, exist_ok=True)
     how = None
     try:
         z = fetch(EMBED_URL, CACHE / Path(EMBED_URL).name)
@@ -172,12 +172,30 @@ def _retry(fn, *a, tries=8):
             time.sleep(0.3 * (k + 1))
 
 
+def _clear(path):
+    """フォルダの中身を消す（ファイルは消せるまでやり直す。フォルダ自体は消せなければ残す）。
+    Windows ではエクスプローラーや OneDrive が開いているだけでフォルダを消せないことがあるため。"""
+    path = Path(path)
+    for t in sorted(path.rglob("*"), key=lambda x: len(x.parts), reverse=True):
+        if t.is_dir() and not t.is_symlink():
+            try:
+                os.rmdir(t)
+            except OSError:
+                pass                        # 開かれている空のフォルダは残る（中身は消えている）
+        else:
+            _retry(os.unlink, t)
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
 def sync_tree(s, d):
     """s の中身を d にそろえる（フォルダは消さずに、ファイルを上書き・足す・余分なファイルを消す）。
     フォルダごと消して作り直すと、OneDrive やエクスプローラーがフォルダを開いているだけで失敗するため。"""
     if s.is_file():
         if d.is_dir():
-            _retry(shutil.rmtree, d)
+            _clear(d)
         d.parent.mkdir(parents=True, exist_ok=True)
         _retry(shutil.copy2, s, d)
         return
@@ -268,10 +286,8 @@ def copy_game(game):
 
 def copy_boot(out):
     overlay = HERE / "overlay"
-    shutil.copy2(overlay / "boot.py", out / "boot.py")
-    if (out / "alpedia_gpu").exists():
-        shutil.rmtree(out / "alpedia_gpu")
-    shutil.copytree(overlay / "alpedia_gpu", out / "alpedia_gpu", ignore=_ignore)
+    _retry(shutil.copy2, overlay / "boot.py", out / "boot.py")
+    sync_tree(overlay / "alpedia_gpu", out / "alpedia_gpu")
     launcher = HERE / "launcher"
     exes = [launcher / "Alpedia.exe", launcher / "Alpedia-console.exe"]
     try:                                                 # ziglang があれば作り直す（なければ同梱の exe を使う）
@@ -284,7 +300,7 @@ def copy_boot(out):
     except Exception as e:  # noqa: BLE001
         log("ランチャーの作り直しに失敗（同梱の exe を使います）:", e)
     for e in exes:
-        shutil.copy2(e, out / e.name)
+        _retry(shutil.copy2, e, out / e.name)
 
 
 def make_zip(out):
