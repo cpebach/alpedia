@@ -139,6 +139,9 @@ def create_world(name, template, settings_patch, mods, planet="terra"):
     s, current_mods = read_world_settings(name)
     if mods is None:
         mods = current_mods
+    elif template == "tutorial":
+        from ..tutorial import STORY_MOD
+        mods = [STORY_MOD] + [m for m in mods if m != STORY_MOD]     # 物語の MOD は必ず入れる
     s.update({k: v for k, v in settings_patch.items() if k != "cleanup"})
     if "cleanup" in settings_patch:
         s["cleanup"].update(settings_patch["cleanup"])
@@ -347,9 +350,10 @@ class MainMenu:
         self._button("ワールド設定", (x, 0.04), lambda: self.show_world_settings(self.selected), enabled=has)
         self._button("削除", (x, -0.03), lambda: self.show_delete(self.selected), col=U["color"].rgb(0.5, 0.2, 0.2),
                      enabled=has)
-        self._button("マルチプレイ（LAN）", (x, -0.12), self.show_multiplayer, col=U["color"].rgb(0.25, 0.35, 0.55))
-        self._button("ゲーム設定", (x, -0.19), self.show_game_settings)
-        self._button("終了", (x, -0.26), self.on_quit, col=U["color"].rgb(0.3, 0.3, 0.33))
+        self._button("チュートリアル（物語）", (x, -0.1), self._tutorial, col=U["color"].rgb(0.55, 0.38, 0.15))
+        self._button("マルチプレイ（LAN）", (x, -0.17), self.show_multiplayer, col=U["color"].rgb(0.25, 0.35, 0.55))
+        self._button("ゲーム設定", (x, -0.24), self.show_game_settings)
+        self._button("終了", (x, -0.31), self.on_quit, col=U["color"].rgb(0.3, 0.3, 0.33))
         if has:
             self._text(f"選択中: {self.selected}", (-0.2, -0.33), 0.85, col=U["color"].light_gray)
         self._status_line()
@@ -476,6 +480,24 @@ class MainMenu:
         if self.selected:
             self.on_play(self.selected)
 
+    def _tutorial(self):
+        """物語のチュートリアルを遊ぶ（無ければ作る。前の版のチュートリアルが残っていれば、新しい名前で作る）。"""
+        from ..tutorial import create_tutorial, is_story_world
+        name = "tutorial"
+        k = 2
+        while paths.world_dir(name).exists() and not is_story_world(name):
+            name = f"tutorial{k}"
+            k += 1
+        if not paths.world_dir(name).exists():
+            try:
+                create_tutorial(name)
+            except Exception as e:  # noqa: BLE001
+                L.exception("チュートリアルを作れません")
+                self.error(f"チュートリアルを作れません: {e}")
+                return
+        self.selected = name
+        self.on_play(name)
+
     def error(self, msg):
         self.status = msg
         self.show_main()
@@ -516,7 +538,7 @@ class MainMenu:
         y = 0.21
         self._stepper("テンプレート", y, ["empty", "tutorial"], "empty",
                       lambda v: {"empty": "空のワールド",
-                                 "tutorial": "チュートリアル（操作〜姿勢制御〜軌道投入）"}[v],
+                                 "tutorial": "チュートリアル（物語：墜落から月の街へ）"}[v],
                       lambda v: opts.__setitem__("template", v))
         self._stepper("惑星", y - 0.07, list(PLANETS), "terra",
                       lambda v: PLANETS[v], lambda v: opts.__setitem__("planet", v))

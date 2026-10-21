@@ -87,6 +87,7 @@ class Game:
         camera.clip_plane_far = float(self.cfg["graphics"].get("view_distance", 3000)) * 4
         camera.position = (0, 0, 0)
         self.scene_root = Entity()  # 世界の描画ルート
+        self._make_stars()
         self.ui_root = Entity(parent=camera.ui)
         loader = application.base.loader
         self.loader = loader
@@ -521,8 +522,10 @@ class Game:
         for a in getattr(self, "addons", []):
             a.destroy()
         self.addons = []
-        for e in (self.driver, self.scene_root, self.ui_root, self.underwater):
-            destroy(e)
+        for e in (self.driver, self.scene_root, self.ui_root, self.underwater, getattr(self, "stars", None)):
+            if e is not None:
+                destroy(e)
+        self.U["window"].color = self.U["color"].rgb(*self.SKY_DAY)
         self.set_mouse_capture(False)
         L.info("ゲーム終了: %s", self.world.name)
 
@@ -730,6 +733,10 @@ class Game:
                 w.save()
             elif key == c["export"]:
                 self._export()
+            elif key not in SEAT_KEYS:
+                for a in self.addons:          # MOD のキー（座っている間も使えるもの）
+                    if a.on_key(key):
+                        break
             return
         if key == "left mouse down":
             self.do_remove()
@@ -980,11 +987,52 @@ class Game:
         self.patch.update(npl, w.player.pos, origin, self.carve)
         for pv in self.planet_views:
             pv.update(origin, w.player.pos, self.patch.frame_for(pv.p))
+        self._update_sky(npl, origin)
         self.underwater.enabled = bool(npl is not None and npl.has_water
                                        and npl.water_depth(origin[None])[0] > 0.02)
         # プレイヤーの体（自分は三人称のとき、ほかの参加者はいつも）
         self._render_players(origin, self.U["utime"].dt)
         self.origin = origin
+
+    def _make_stars(self):
+        """星空（カメラを中心にした遠い球面の点）。空が暗いほど見える。"""
+        from ursina import Entity, Mesh
+        from panda3d.core import TransparencyAttrib
+        rng = np.random.default_rng(5)
+        n = 1400
+        d = rng.normal(size=(n, 3))
+        d /= np.linalg.norm(d, axis=1)[:, None]
+        far = float(self.cfg["graphics"].get("view_distance", 3000)) * 3.0
+        b = rng.uniform(0.35, 1.0, n) ** 2
+        tint = rng.uniform(0.85, 1.0, (n, 3))
+        cols = [self.U["color"].rgba(float(b_ * t[0]), float(b_ * t[1]), float(b_), 1.0) for b_, t in zip(b, tint)]
+        self.stars = Entity(model=Mesh(vertices=(d * far).tolist(), colors=cols, mode="point", thickness=2.0),
+                            unlit=True)
+        self.stars.setTransparency(TransparencyAttrib.M_alpha)
+        self.stars.setBin("background", 5)
+        self.stars.setDepthWrite(False)
+        self.stars.setLightOff()
+        self.stars.setColorScale(1, 1, 1, 0)
+
+    SKY_DAY = (0.45, 0.65, 0.9)
+    SKY_SPACE = (0.012, 0.016, 0.04)
+
+    def _update_sky(self, pl, cam):
+        """空の色：大気のある惑星の低い所は青、高く上がるほど・大気のない月などでは宇宙の黒に近づく。"""
+        air = 0.0
+        if pl is not None:
+            p = min(max(float(pl.defn.get("atmosphere_pressure", 101.3)) / 101.3, 0.0), 1.0)
+            alt = max(float(np.linalg.norm(cam - pl.center)) - pl.radius, 0.0)
+            air = p * float(np.exp(-alt / max(pl.radius * 0.25, 30.0)))
+        if abs(air - getattr(self, "_sky_air", -1.0)) > 0.004:
+            self._sky_air = air
+            c = [s_ + (d - s_) * air for s_, d in zip(self.SKY_SPACE, self.SKY_DAY)]
+            self.U["window"].color = self.U["color"].rgb(*c)
+            stars = getattr(self, "stars", None)
+            if stars is not None:
+                a = max(0.0, 1.0 - air * 2.2)
+                stars.setColorScale(1, 1, 1, a)
+                stars.enabled = a > 0.01
 
     def _open_panel(self, make):
         self.set_mouse_capture(False)

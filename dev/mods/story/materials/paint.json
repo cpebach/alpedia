@@ -1,0 +1,8 @@
+[
+  {"id": "hull_white", "extends": "aluminum", "name": "白い外装", "color": [0.93, 0.94, 0.95]},
+  {"id": "hull_red", "extends": "aluminum", "name": "赤い外装", "color": [0.85, 0.18, 0.15]},
+  {"id": "hull_orange", "extends": "aluminum", "name": "橙の外装", "color": [0.98, 0.5, 0.12]},
+  {"id": "hull_blue", "extends": "aluminum", "name": "青い外装", "color": [0.2, 0.42, 0.85]},
+  {"id": "bar_red", "extends": "wood", "name": "赤く塗った木", "color": [0.85, 0.2, 0.15]},
+  {"id": "bar_white", "extends": "wood", "name": "白く塗った木", "color": [0.92, 0.92, 0.9]}
+]

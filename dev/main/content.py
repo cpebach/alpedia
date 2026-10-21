@@ -85,6 +85,7 @@ api.mass              質量 kg
 api.power             {"production", "demand", "stored", "capacity", "ratio"}
 api.storage           構築物の固形資源
 api.input             操縦席に座っている時に押されているキーの集合
+api.seated            この構築物の操縦席に誰かが座っているか（True/False）
 api.memory            スクリプト用の保存領域（dict、セーブされる）
 api.orientation()     回転行列
 api.cavities()        気密空洞の一覧と気圧

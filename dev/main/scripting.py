@@ -267,6 +267,11 @@ class ScriptAPI:
         return self._p.input_keys()
 
     @property
+    def seated(self):
+        """この構築物の操縦席に誰かが座っているか（True/False）。"""
+        return self._p.seated()
+
+    @property
     def storage(self):
         return self._p.storage()
 
