@@ -18,7 +18,7 @@ DEFAULTS = {
         "jump": "space", "down": "left control", "jetpack": "f",
         "interact": "e", "rotate": "r", "edit_script": "p", "new_construct": "n",
         "save": "f5", "export": "f9", "import": "f8", "toggle_help": "f1", "inventory": "i", "city_marker": "m", "city_map": "k",
-        "third_person": "v",
+        "third_person": "v", "camera_mode": "c",
         # タッチ操作：画面左下の仮想ジョイスティックで移動・画面をなぞって視点（マウスで視点を回さない）
         "touch": False,
     },

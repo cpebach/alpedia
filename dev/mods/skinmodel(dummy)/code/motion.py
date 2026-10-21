@@ -10,7 +10,7 @@ import random
 
 import numpy as np
 
-from .vrm import qaxis, qmul
+from .vrm import qaxis, qinv, qmul, qrot
 
 PARAMS = ("leg_l", "leg_r", "knee_l", "knee_r", "arm_l", "arm_r", "swing_l", "swing_r", "elbow_l", "elbow_r",
           "lean", "twist", "bob", "head", "seat", "spread")
@@ -103,8 +103,13 @@ class Motion:
         p["bob"] = -(0.02 + 0.04 * run) * (1 - abs(c)) - 0.03 * run
         return p
 
-    def update(self, st, dt):
-        """1フレーム進めて、(骨の回転 {ノード: 四元数}, hips のずれ, まばたき 0-1, 座り具合 0-1) を返す。"""
+    def update(self, st, dt, emote=None, et=0.0):
+        """1フレーム進めて、(骨の回転 {ノード: 四元数}, hips のずれ, まばたき 0-1, 座り具合 0-1, 体の向きのずれ rad) を返す。
+        emote：MOD のモーション（関数 pose(t) か {"pose": 関数}）。et はモーションを始めてからの秒"""
+        rot, hips, blink, seat = self._update(st, dt)
+        return self._emote(rot, hips, blink, seat, emote, et, dt)
+
+    def _update(self, st, dt):
         dt = float(min(max(dt, 0.0), 0.1))
         self.t += dt
         speed = float(st.get("speed", 0.0))
@@ -159,3 +164,108 @@ class Motion:
         put("neck", qaxis(np.cross(U, -F), p["head"] * 0.4 - p["lean"] * 0.5))
         put("head", qaxis(np.cross(U, -F), p["head"] * 0.6 - p["lean"] * 0.3))
         return out
+
+    # --- MOD のモーション（カメラモードなどで選ぶ） ------------------------------------
+    # pose(t) が返す辞書（向きは体の向きで表す。腕・脚は (外, 上, 前)：左右とも「外」が体の外側）
+    #   "arm_l"/"arm_r"：上腕の向き  "fore_l"/"fore_r"：前腕の向き
+    #   "thigh_l"/"thigh_r"：太ももの向き  "shin_l"/"shin_r"：すねの向き（足先は地面と平行に保つ）
+    #   "spine"/"chest"：胴の上の向き (右, 上, 前)  "head"：顔の向き (右, 上, 前)  "tilt"：首をかしげる角度（右へ +）
+    #   "twist"：腰のひねり（rad）  "bob"：腰の上下（m）  "face"：体全体の向きのずれ（rad、左回り +）
+    #   "blink"：目を閉じる 0-1（無ければ自動のまばたき）
+    # 書いていない骨は、ふだんの動き（立つ・歩くなど）のまま。始めと終わりはなめらかにつなぐ。
+    def _emote(self, rot, hips, blink, seat, emote, et, dt):
+        a = 1.0 - math.exp(-dt * 8.0)
+        if emote is not None:
+            fn = emote.get("pose") if isinstance(emote, dict) else emote
+            try:
+                pose = fn(float(et)) or {}
+            except Exception:  # noqa: BLE001
+                pose = {}
+            self._emote_last = (self._emote_quats(pose), pose)
+            self.emote_w = getattr(self, "emote_w", 0.0) + (1.0 - getattr(self, "emote_w", 0.0)) * a
+        else:
+            self.emote_w = getattr(self, "emote_w", 0.0) * (1.0 - a)
+        w = getattr(self, "emote_w", 0.0)
+        last = getattr(self, "_emote_last", None)
+        if w < 1e-3 or last is None:
+            return rot, hips, blink, seat, 0.0
+        quats, pose = last
+        out = dict(rot)
+        ident = np.array([0.0, 0.0, 0.0, 1.0])
+        for n, q in quats.items():
+            out[n] = _slerp(rot.get(n, ident), q, w)
+        hips = hips * (1 - w) + self.U * float(pose.get("bob", 0.0)) * w
+        if "blink" in pose:
+            blink = blink * (1 - w) + float(pose["blink"]) * w
+        return out, hips, blink, seat, float(pose.get("face", 0.0)) * w
+
+    def _body(self, v, side=None):
+        """体の向きの (外または右, 上, 前) → モデル座標。"""
+        x, y, z = (float(c) for c in v)
+        if side == "left":
+            x = -x
+        d = x * self.R + y * self.U + z * self.F
+        n = np.linalg.norm(d)
+        return d / n if n > 1e-9 else self.U.copy()
+
+    def _emote_quats(self, pose):
+        h = self.node
+        out = {}
+        for s_, sl in (("left", "l"), ("right", "r")):
+            for upper, lower, ku, kl in ((f"{s_}UpperArm", f"{s_}LowerArm", f"arm_{sl}", f"fore_{sl}"),
+                                         (f"{s_}UpperLeg", f"{s_}LowerLeg", f"thigh_{sl}", f"shin_{sl}")):
+                if upper not in h:
+                    continue
+                qu = None
+                if ku in pose:
+                    qu = _arc(self.dir[upper], self._body(pose[ku], s_))
+                    out[h[upper]] = qu
+                if kl in pose and lower in h:
+                    t = self._body(pose[kl], s_)
+                    if qu is not None:
+                        t = qrot(qinv(qu), t)
+                    ql = _arc(self.dir[lower], t)
+                    out[h[lower]] = ql
+                    if "Leg" in upper and f"{s_}Foot" in h:
+                        tot = qmul(qu, ql) if qu is not None else ql
+                        out[h[f"{s_}Foot"]] = qinv(tot)       # 足先は地面と平行のまま
+        for key, bone in (("spine", "spine"), ("chest", "upperChest" if "upperChest" in h else "chest")):
+            if key in pose and bone in h:
+                out[h[bone]] = _arc(self.U, self._body(pose[key]))
+        if "twist" in pose and "hips" in h:
+            out[h["hips"]] = qaxis(self.U, float(pose["twist"]))
+        if ("head" in pose or "tilt" in pose) and "head" in h:
+            f = self._body(pose.get("head", (0, 0, 1)))
+            q = _arc(self.F, f)
+            out[h["head"]] = qmul(qaxis(f, float(pose.get("tilt", 0.0))), q)
+        return out
+
+
+def _arc(a, b):
+    """向き a を向き b に回す、いちばん小さい回転。"""
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    a = a / max(np.linalg.norm(a), 1e-12)
+    b = b / max(np.linalg.norm(b), 1e-12)
+    c = float(a @ b)
+    if c < -0.9999:
+        ax = np.cross(a, [1.0, 0, 0])
+        if np.linalg.norm(ax) < 1e-6:
+            ax = np.cross(a, [0, 1.0, 0])
+        return qaxis(ax, math.pi)
+    v = np.cross(a, b)
+    q = np.array([v[0], v[1], v[2], 1.0 + c])
+    return q / np.linalg.norm(q)
+
+
+def _slerp(q0, q1, t):
+    q0 = np.asarray(q0, dtype=np.float64)
+    q1 = np.asarray(q1, dtype=np.float64)
+    d = float(q0 @ q1)
+    if d < 0:
+        q1, d = -q1, -d
+    if d > 0.9995:
+        q = q0 + (q1 - q0) * t
+        return q / np.linalg.norm(q)
+    th = math.acos(d)
+    return (math.sin((1 - t) * th) * q0 + math.sin(t * th) * q1) / math.sin(th)

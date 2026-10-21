@@ -25,6 +25,11 @@ class ClientAddon:
         """視線の先の説明。(文, ブロックを置ける面なら True) か None（この拡張のものでない）。"""
         return None
 
+    def emotes(self):
+        """カメラモードで選べるモーション：{表示名: pose(t)}（pose は秒 t を受け取り、骨の向きの辞書を返す関数）。
+        辞書の書き方は mods/README.md の「モーション」。体の見た目の MOD（VRM の見た目など）が使う。"""
+        return {}
+
     def nearby(self, pos, radius):
         """プレイヤーの近く（pos から radius m 以内）にある、この拡張の触れるもの（お店・NPC など）。
         画面右にボタンが出て、押す（または E）と interact(hit) が呼ばれる。

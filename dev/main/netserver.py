@@ -341,6 +341,9 @@ class Host:
             p.pitch = float(m.get("pitch", 0.0))
             st = m.get("stand")
             p.stand = (st[0], tuple(st[1])) if st else None
+            if m.get("emote") != p.emote:
+                p.emote, p.emote_t0 = m.get("emote"), time.monotonic()
+            p.face_dir = None if m.get("face") is None else np.asarray(m["face"], float)
             if m.get("def") and m["def"] != p.defn.get("id"):
                 p.defn = w.player_def(m["def"])
             if "hotbar" in m:
