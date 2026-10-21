@@ -9,7 +9,12 @@
     "fov": 80,
     "terrain_patch_cells": 48,
     "terrain_patch_step": 1.0,
-    "view_distance": 3000
+    "view_distance": 3000,
+    "decal_distance": 30.0,
+    "block_edges": true,
+    "block_ao": true,
+    "city_detail_distance": 100.0,
+    "city_view_distance": 2500.0
   },
   "controls": {
     "mouse_sensitivity": 60.0,
@@ -22,22 +27,37 @@
     "jetpack": "f",
     "interact": "e",
     "rotate": "r",
+    "edit_script": "p",
     "new_construct": "n",
     "save": "f5",
     "export": "f9",
     "import": "f8",
-    "toggle_help": "f1"
+    "toggle_help": "f1",
+    "inventory": "i",
+    "city_marker": "m",
+    "city_map": "k",
+    "third_person": "v",
+    "touch": true
   },
   "physics": {
     "tick_rate": 60,
     "substeps": 3,
     "iterations": 2,
-    "fast": true,
-    "threads": 10
+    "rigid_enabled": true,
+    "rails_enabled": true,
+    "rails_distance": 400.0,
+    "threads": 10,
+    "backend": "auto",
+    "fast": true
   },
   "game": {
     "default_world": "demo",
-    "language": "ja"
+    "language": "ja",
+    "editor": ""
+  },
+  "multiplayer": {
+    "name": "akiomi",
+    "port": 47620
   },
   "log_level": "INFO"
 }
