@@ -230,7 +230,10 @@ class VRMBody:
         st = self.state()
         if self.face is None:
             self.face = cam_f.copy()
-        if st["seated"]:
+        face_dir = getattr(p, "face_dir", None)
+        if face_dir is not None:
+            want = np.asarray(face_dir, dtype=np.float64)   # カメラモードで決めた体の向き
+        elif st["seated"]:
             want = cam_f
         elif st["speed"] > 0.6:
             want = st["tang"] / st["speed"]
@@ -239,9 +242,16 @@ class VRMBody:
         want = want - up * (want @ up)
         if np.linalg.norm(want) > 1e-6:
             self._turn(up, want / np.linalg.norm(want), dt)
-        rot, hips, blink, seat = self.motion.update(st, dt)
+        emote = None
+        name = getattr(p, "emote", None)
+        if name:
+            emote = getattr(self.game, "emotes", {}).get(name)
+        import time as _t
+        rot, hips, blink, seat, face_off = self.motion.update(st, dt, emote, _t.monotonic() - getattr(p, "emote_t0", 0.0))
         # 置き方：モデルの (右, 上, 前) → ワールドの (右, 上, 体の向き)
         f = self.face
+        if face_off:
+            f = f * math.cos(face_off) - np.cross(up, f) * math.sin(face_off)   # 左回り +
         right = np.cross(up, f)                          # ゲームの「右」（コアの look_vectors と同じ）
         Bm = np.stack([self.motion.R, self.motion.U, self.motion.F])
         W = np.stack([right, up, f])

@@ -186,8 +186,33 @@ class TestVRMMod(ModCase):
         for st in ({"speed": 0}, {"speed": 5, "on_ground": True}, {"on_ground": False, "vup": -5},
                    {"flying": True}, {"water": 1.0}, {"seated": True}):
             for _ in range(30):
-                rot, hips, blink, seat = mo.update(dict(st, on_ground=st.get("on_ground", True)), 1 / 60)
+                rot, hips, blink, seat, _ = mo.update(dict(st, on_ground=st.get("on_ground", True)), 1 / 60)
             self.assertTrue(np.isfinite(v.pose(rot, hips)).all())
+        # かわいいモーション MOD の動き：どれも形が崩れず、腕などが動く
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cute_motions_test", paths.MODS / "cute_motions" / "code" / "motions.py")
+        cm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cm)
+        hand = v.human["rightHand"]
+        st = {"speed": 0, "on_ground": True}
+        for _ in range(60):
+            rot0, hips0, *_ = mo.update(st, 1 / 60)
+        G0 = v.globals(*self._apply(v, rot0))
+        for name, fn in cm.MOTIONS.items():
+            for k in range(90):
+                rot, hips, blink, seat, face = mo.update(st, 1 / 60, fn, k / 60)
+            M = v.pose(rot, hips)
+            self.assertTrue(np.isfinite(M).all(), name)
+            G = v.globals(*self._apply(v, rot))
+            moved = np.linalg.norm(G[hand, :3, 3] - G0[hand, :3, 3])
+            self.assertGreater(moved, 0.05, name)
+        if True:
+            # 「ばんざい」では右手が頭より上
+            for k in range(90):
+                rot, *_ = mo.update(st, 1 / 60, cm.banzai, 0.0)
+            G = v.globals(*self._apply(v, rot))
+            R_, U, F = v.basis()
+            self.assertGreater((G[hand, :3, 3] - G[v.human["head"], :3, 3]) @ U, 0.1)
 
     def _apply(self, v, rot):
         from importlib import import_module

@@ -111,7 +111,7 @@ class Game:
         self.ghost = Entity(model="wireframe_cube", color=color.lime, parent=self.scene_root)
         # UI
         ui = self.ui_root
-        Entity(parent=ui, model="quad", scale=0.006, color=color.white)
+        self.crosshair = Entity(parent=ui, model="quad", scale=0.006, color=color.white)
         self.hud = Text(parent=ui, position=window.top_left + (0.01, -0.01), origin=(-0.5, 0.5),
                         scale=0.75, text="", background=False)
         self.sel_text = Text(parent=ui, position=(0, -0.385), origin=(0, 0), scale=0.85, text="")
@@ -129,6 +129,15 @@ class Game:
         self._obj_models = self._load_player_models(load_model)
         # 画面のボタン（タッチ・マウス）と仮想ジョイスティック
         self.vkeys = {}
+        self.cam_mode = None
+        # MOD のモーション（カメラモードで選ぶ）：{名前: モーション}
+        self.emotes = {}
+        for a in self.addons:
+            try:
+                for name, spec in (a.emotes() or {}).items():
+                    self.emotes[name] = spec
+            except Exception as e:  # noqa: BLE001
+                self.load_errors.append(f"MOD '{getattr(a, 'name', '?')}' のモーションを読めません: {e}")
         from .touch_ui import TouchHUD
         self.touch_hud = TouchHUD(self)
         # 一時停止メニュー
@@ -337,9 +346,25 @@ class Game:
         if self.paused:
             self._build_pause()
 
+    # --- カメラモード ------------------------------------------------------------
+    def enter_camera(self):
+        if self.cam_mode is not None or self.editor is not None:
+            return
+        from .camera_mode import CameraMode
+        self.touch_hud._release_all()
+        self.cam_mode = CameraMode(self)
+
+    def exit_camera(self):
+        if self.cam_mode is None:
+            return
+        self.cam_mode.destroy()
+        self.cam_mode = None
+        self._esc_block = _time.time() + 0.2
+        self.set_mouse_capture(self._want_capture())
+
     def _want_capture(self):
         """マウスで視点を回す（カーソルを隠して捕まえる）か。タッチ操作の ON・Alt を押している間は捕まえない。"""
-        if self.cfg["controls"].get("touch", False):
+        if self.cfg["controls"].get("touch", False) or self.cam_mode is not None:
             return False
         try:
             hk = self.U["held_keys"]
@@ -464,6 +489,12 @@ class Game:
 
     def destroy(self):
         from .ui_destroy import destroy
+        if getattr(self, "cam_mode", None) is not None:
+            try:
+                self.cam_mode.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+            self.cam_mode = None
         if self.editor is not None:
             try:
                 destroy(self.editor.root)
@@ -540,7 +571,7 @@ class Game:
                     ent[2].destroy()
                 ent = self.bodies[key] = (p.defn.get("id"), p, self._new_body(p))
             if key == "me":
-                shown = self.third_person
+                shown = self.third_person or self.cam_mode is not None
             else:
                 q = p.pos - origin
                 shown = float(q @ q) < 500.0 ** 2
@@ -670,6 +701,9 @@ class Game:
         c = self.cfg["controls"]
         if self.editor is not None or _time.time() < self._esc_block:
             return  # エディタ表示中のキーはエディタが処理する
+        if self.cam_mode is not None:
+            self.cam_mode.on_key(key)
+            return
         if key == "escape":
             self.toggle_pause()
             return
@@ -683,6 +717,9 @@ class Game:
             return
         if key == c.get("toggle_help", "f1"):
             self.open_keys()
+            return
+        if key == c.get("camera_mode", "c") and not w.player.seated:
+            self.enter_camera()
             return
         if w.player.seated:
             if key in SEAT_KEYS or key in ("x",):
@@ -779,7 +816,9 @@ class Game:
         c = self.cfg["controls"]
         net = w.net
         hud = self.touch_hud
-        hud.update(dt)                     # 画面のボタン・ジョイスティック（押されたキー → self.vkeys）
+        cam_mode = self.cam_mode
+        if cam_mode is None:
+            hud.update(dt)                 # 画面のボタン・ジョイスティック（押されたキー → self.vkeys）
         vk = self.vkeys
 
         def H(k):
@@ -787,8 +826,10 @@ class Game:
         online = net is not None        # LAN に公開中・参加中は、一時停止しても世界と通信を止めない（参加の受け付けも）
         if self.paused and not online:
             return                  # マルチプレイ中は一時停止しても世界は止めない（ほかの人がいるので）
-        editing = self.editor is not None or self.paused
-        if not editing:
+        if cam_mode is not None:
+            cam_mode.update(dt, held, vk, np.zeros(2))     # カメラを動かす（自分は動かない）
+        editing = self.editor is not None or self.paused or cam_mode is not None
+        if not editing or cam_mode is not None:
             want = self._want_capture()
             if want != bool(self._captured):
                 self.set_mouse_capture(want)    # Alt を押している間・タッチ操作中はカーソルを出す
@@ -865,16 +906,23 @@ class Game:
         fwd, right, up, look = self.look_vectors()
         origin = w.player.eye()
         cam = U["camera"]
-        if self.third_person:
+        cam_up = up
+        cam_look = look
+        if self.cam_mode is not None:
+            origin, cam_look, cam_up, _ = self.cam_mode.camera()
+        elif self.third_person:
             origin = origin - look * 5.0 + up * 0.8
         cam.position = (0, 0, 0)
         from panda3d.core import LPoint3f, LVector3f
-        cam.lookAt(LPoint3f(*look.astype(np.float32)), LVector3f(*up.astype(np.float32)))
+        cam.lookAt(LPoint3f(*cam_look.astype(np.float32)), LVector3f(*cam_up.astype(np.float32)))
         # 描画
         t_r = _time.perf_counter()
         self._render(origin)
         pf["render"] += _time.perf_counter() - t_r
-        if not editing:
+        if self.cam_mode is not None and not self.cam_mode.frame_on:
+            self.highlight.hide()
+            self.ghost.hide()
+        elif not editing or self.cam_mode is not None:
             self._update_aim(look)
         self._update_hud(dt)
         pf["update"] += _time.perf_counter() - t_phys

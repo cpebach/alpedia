@@ -13,7 +13,7 @@ ACTIONS = [
     ("jump", "ジャンプ・上昇"), ("down", "下降"), ("jetpack", "ジェットパック"),
     ("interact", "使う・座る／降りる"), ("edit_script", "機器の設定・プログラム"),
     ("rotate", "置く向きを変える"), ("new_construct", "空中に置く"), ("inventory", "持ち物"),
-    ("third_person", "視点（一人称／三人称）"), ("save", "保存"), ("export", "OBJ 出力"), ("import", "読み込み"),
+    ("third_person", "視点（一人称／三人称）"), ("camera_mode", "カメラモード"), ("save", "保存"), ("export", "OBJ 出力"), ("import", "読み込み"),
     ("city_marker", "目印（街）"), ("city_map", "マップ（街）"), ("toggle_help", "この画面"),
 ]
 

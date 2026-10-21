@@ -360,7 +360,8 @@ def player_public(p, pid, name):
             "jp": bool(p.jetpack), "fl": bool(getattr(p, "flying", False)), "wt": float(p.in_water),
             "seat": [p.seated[0], list(p.seated[1])] if p.seated else None,
             "fwd": np.asarray(getattr(p, "look_fwd", np.array([0, 0, 1.0])), float).tolist(),
-            "pitch": float(getattr(p, "pitch", 0.0))}
+            "pitch": float(getattr(p, "pitch", 0.0)), "emote": getattr(p, "emote", None),
+            "face": None if getattr(p, "face_dir", None) is None else np.asarray(p.face_dir, float).tolist()}
 
 
 def apply_player_public(world, p, d):
@@ -380,3 +381,8 @@ def apply_player_public(world, p, d):
     p.pitch = d["pitch"]
     p.name = d["name"]
     p.pid = d["pid"]
+    em = d.get("emote")
+    if em != getattr(p, "emote", None):
+        import time as _t
+        p.emote, p.emote_t0 = em, _t.monotonic()
+    p.face_dir = None if d.get("face") is None else np.asarray(d["face"], float)

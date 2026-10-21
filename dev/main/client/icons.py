@@ -368,6 +368,11 @@ def ui_image(name, size=128, bg=(20, 26, 36, 170), fg=(240, 244, 250, 255), ring
         d.line([P(0.02, 0.24), P(-0.2, 0.24), P(-0.2, -0.24), P(0.02, -0.24)], fill=fg, width=w)
         line((-0.06, 0), (0.24, 0))
         poly((0.14, 0.1), (0.27, 0.0), (0.14, -0.1))
+    elif name == "camera":
+        d.rounded_rectangle([P(-0.26, 0.14), P(0.26, -0.2)], radius=s * 0.04, fill=fg)
+        d.rectangle([P(-0.1, 0.2), P(0.08, 0.13)], fill=fg)
+        d.ellipse([P(-0.12, 0.09), P(0.12, -0.15)], fill=bg)
+        d.ellipse([P(-0.07, 0.04), P(0.07, -0.1)], fill=fg)
     elif name == "key":
         d.rounded_rectangle([P(-0.22, 0.16), P(0.22, -0.16)], radius=s * 0.05, outline=fg, width=w)
     small = img.resize((size, size), Image.LANCZOS)

@@ -304,7 +304,8 @@ class Client:
                "fl": bool(p.flying), "thrust": np.asarray(p.thrust, float).tolist(), "wt": float(p.in_water),
                "keys": sorted(self.w.input_keys), "fwd": np.asarray(p.look_fwd, float).tolist(),
                "pitch": float(p.pitch), "def": p.defn.get("id"),
-               "stand": [p.stand[0], list(p.stand[1])] if p.stand else None}
+               "stand": [p.stand[0], list(p.stand[1])] if p.stand else None, "emote": p.emote,
+               "face": None if p.face_dir is None else np.asarray(p.face_dir, float).tolist()}
         hb = netsync.jsonable([list(x) if x else None for x in p.hotbar]) if p.hotbar else None
         key = json.dumps(hb)
         if key != self._hotbar_key:

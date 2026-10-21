@@ -175,6 +175,7 @@ class TouchHUD:
             B(self, "map", "map", "マップ", SMALL, on_tap=key("city_map")),
             B(self, "marker", "marker", "目印", SMALL, on_tap=key("city_marker")),
             B(self, "view", "view", "視点", SMALL, on_tap=key("third_person")),
+            B(self, "camera", "camera", "カメラ", SMALL, on_tap=g.enter_camera),
             B(self, "import", "import", "読み込み", SMALL, on_tap=key("import")),
             B(self, "export", "export", "出力", SMALL, on_tap=key("export")),
             B(self, "save", "save", "保存", SMALL, on_tap=key("save")),
@@ -244,10 +245,10 @@ class TouchHUD:
         has_city = bool(city is not None and getattr(city, "enabled", False))
         net = w.net
         can_save = net is None or net.can_save()
-        show = {"menu": True, "inventory": not seated, "map": has_city, "marker": has_city, "view": True,
+        show = {"menu": True, "inventory": not seated, "map": has_city, "marker": has_city, "view": True, "camera": True,
                 "import": not seated, "export": True, "save": can_save}
         hints = {"menu": "Esc", "inventory": "inventory", "map": "city_map", "marker": "city_marker",
-                 "view": "third_person", "import": "import", "export": "export", "save": "save"}
+                 "view": "third_person", "camera": "camera_mode", "import": "import", "export": "export", "save": "save"}
         x = right - 0.045
         for b in self.top:
             if not show[b.id]:

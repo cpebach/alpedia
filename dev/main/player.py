@@ -29,6 +29,9 @@ class Player:
         self.look_fwd = np.array([0.0, 0.0, 1.0])
         self.pitch = 0.0
         self.stand = None           # 乗っている構築物 (ID, セル)（体重を伝える）
+        self.emote = None           # MOD のモーションの名前（カメラモードで選ぶ）
+        self.emote_t0 = 0.0
+        self.face_dir = None        # 体の向き（カメラモードで決める。None ならふだんどおり）
 
     @property
     def radius(self):
