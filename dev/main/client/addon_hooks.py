@@ -25,6 +25,12 @@ class ClientAddon:
         """視線の先の説明。(文, ブロックを置ける面なら True) か None（この拡張のものでない）。"""
         return None
 
+    def nearby(self, pos, radius):
+        """プレイヤーの近く（pos から radius m 以内）にある、この拡張の触れるもの（お店・NPC など）。
+        画面右にボタンが出て、押す（または E）と interact(hit) が呼ばれる。
+        [{"label": 表示, "hit": interact に渡すもの, "kind": "e", "dist": 距離, "icon": "interact"}]"""
+        return []
+
     def player_body(self, player):
         """プレイヤー（自分・マルチプレイのほかの人）の体の見た目を引き受けるなら、そのオブジェクトを返す。
         オブジェクトは update(origin, shown, dt) を毎フレーム受け取り（shown: 見せるか）、destroy() で消える。

@@ -115,6 +115,54 @@ class CityClient(ClientAddon):
         return True
 
     # ------------------------------------------------------------------
+    # 近くのもの（画面右のボタン）：NPC・カウンター・ベッド・収納箱
+    # ------------------------------------------------------------------
+    def nearby(self, pos, radius):
+        if not self.pack.enabled:
+            return []
+        out = []
+        w = self.world
+        pos = np.asarray(pos, dtype=np.float64)
+        for city in self.pack.cities.near(pos, radius + 2.0):
+            if city.npcs:
+                for n in city.npcs:
+                    if not citylife.npc_alive(city, n):
+                        continue
+                    p, _, up = citylife.npc_pose(city, n, w.time)
+                    d = float(np.linalg.norm(p + up * 0.9 - pos))
+                    if d <= radius + 0.6:
+                        h = {"kind": "npc", "city": city, "npc": n, "t": d, "point": p}
+                        txt = (self.aim(h) or ("",))[0]
+                        act = txt[txt.find("［E ") + 3:txt.rfind("］")] if "［E " in txt else "話す"
+                        out.append({"label": f"{act}（{n['name']}）", "hit": h, "kind": "e", "dist": d,
+                                    "icon": "interact"})
+            tags = getattr(city, "_tag_parts", None)
+            if tags is None:
+                tags = city._tag_parts = np.array([k for k, p_ in enumerate(city.parts) if p_.get("tag")], np.int64)
+            if not len(tags):
+                continue
+            wps = city.x + city.C0[tags] @ city.R.T
+            near = np.nonzero(np.linalg.norm(wps - pos, axis=1) <= radius + 0.8)[0]
+            for j in near:
+                k = int(tags[j])
+                wp = wps[j]
+                d = float(np.linalg.norm(wp - pos))
+                if d > radius + 0.8:
+                    continue
+                tag = city.parts[k]["tag"]
+                if tag[0] == "counter" and any(t["hit"].get("npc", {}).get("id") == tag[1] for t in out):
+                    continue                    # 商人がもう出ている（同じお店）
+                h = {"kind": "city", "city": city, "part": k, "t": d, "point": wp}
+                txt = (self.aim(h) or ("",))[0]
+                if "［E " not in txt:
+                    continue                    # 使えない（借りていない部屋など）
+                act = txt[txt.find("［E ") + 3:txt.rfind("］")]
+                what = txt[:txt.find("［")]
+                out.append({"label": f"{act.split('：')[0]}（{what}）", "hit": h, "kind": "e", "dist": d,
+                            "icon": "interact"})
+        return out
+
+    # ------------------------------------------------------------------
     # 視線の先の説明
     # ------------------------------------------------------------------
     def aim(self, h):

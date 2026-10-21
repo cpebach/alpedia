@@ -226,7 +226,11 @@ class Client:
             return True
 
         def interact(hit):
-            self.act("interact", none=hit is None)
+            if hit and hit.get("kind") == "voxel":       # 見ている物・近くの物（ホストでも同じ物を使う）
+                c = hit["construct"]
+                self.act("interact", target={"id": c.id, "cell": list(c.cells[hit["index"]])})
+            else:
+                self.act("interact", none=hit is None)
 
         def key_pressed(key):
             self.act("key", key=key)

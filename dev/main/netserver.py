@@ -393,6 +393,14 @@ class Host:
         elif a == "place":
             w.place(hit() if not m.get("air") else None, tuple(m["item"]), int(m.get("dir", 2)), look)
         elif a == "interact":
+            tg = m.get("target")
+            if tg:
+                c = w.constructs.get(tg["id"])
+                i = c.index.get(tuple(tg["cell"])) if c else None
+                if i is not None:
+                    w.interact({"kind": "voxel", "construct": c, "index": i, "t": 0.0, "face": 2,
+                                "point": c.pos[8 * i:8 * i + 8].mean(0)})
+                return
             w.interact(None if m.get("none") else hit())
         elif a == "key":
             w.key_pressed(m["key"])

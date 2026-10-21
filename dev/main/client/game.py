@@ -17,7 +17,7 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
 ]
 
-HELP = """[操作]  （F1 で表示切替）
+HELP = """[操作]  （Esc →「操作とキー設定」・F1 でいつでも見られます）
 WASD 移動 / Space ジャンプ・上昇 / Ctrl 下降 / F ジェットパック
 マウス 視点 / 左クリック 削除・掘る / 右クリック 設置
 I インベントリ / ホイール・数字キー アイテムバーの選択 / R 向き変更 / N 空中に新しい構築物
@@ -115,11 +115,9 @@ class Game:
         self.hud = Text(parent=ui, position=window.top_left + (0.01, -0.01), origin=(-0.5, 0.5),
                         scale=0.75, text="", background=False)
         self.sel_text = Text(parent=ui, position=(0, -0.385), origin=(0, 0), scale=0.85, text="")
-        self.msg_text = Text(parent=ui, position=window.bottom_left + (0.01, 0.16), origin=(-0.5, -0.5),
+        self.msg_text = Text(parent=ui, position=window.left + (0.01, 0.06), origin=(-0.5, -0.5),
                              scale=0.7, text="")
         self.aim_text = Text(parent=ui, position=(0.02, -0.03), origin=(-0.5, 0.5), scale=0.7, text="")
-        self.help_text = Text(parent=ui, position=window.top_right + (-0.01, -0.01), origin=(0.5, 0.5),
-                              scale=0.65, text=HELP)
         # 拡張（街パックなど）の画面側
         from ..modcode import client_addons, load_client
         load_client(self.load_errors)
@@ -129,9 +127,10 @@ class Game:
         self.bodies = {}            # キー → (見た目の ID, Player, 体)
         self.labels = {}
         self._obj_models = self._load_player_models(load_model)
-        extra = " / ".join(a.help_text for a in self.addons if a.help_text)
-        if extra:
-            self.help_text.text = HELP + extra + "\n"
+        # 画面のボタン（タッチ・マウス）と仮想ジョイスティック
+        self.vkeys = {}
+        from .touch_ui import TouchHUD
+        self.touch_hud = TouchHUD(self)
         # 一時停止メニュー
         self.pause_root = Entity(parent=ui, enabled=False)
         Entity(parent=self.pause_root, model="quad", scale=(3, 2), color=color.rgba(0, 0, 0, 0.55), z=0.1)
@@ -198,15 +197,21 @@ class Game:
                     out.append(i)
         return out
 
-    def open_editor(self):
+    def open_editor(self, hit=None):
         w = self.world
         target = None
+        if hit is None:
+            hit = self.hit
+            if not (hit and hit["kind"] == "voxel" and hit["construct"].devs[hit["index"]]):
+                near = next((t for t in self.nearby_targets() if t["kind"] == "p"), None)
+                if near is not None:
+                    hit = near["hit"]           # 見ていなくても、近くの機器の設定を開く
         if w.player.seated:
             c = w.constructs.get(w.player.seated[0])
             if c and self._computers(c):
                 target = (c, self._computers(c)[0])
-        elif self.hit and self.hit["kind"] == "voxel":
-            c, i = self.hit["construct"], self.hit["index"]
+        elif hit and hit["kind"] == "voxel":
+            c, i = hit["construct"], hit["index"]
             from .. import actuator as act
             if act.is_actuator(c, i):
                 from .actuator_ui import ActuatorPanel
@@ -327,8 +332,118 @@ class Game:
 
     def toggle_pause(self):
         self.paused = not self.paused
-        self.set_mouse_capture(not self.paused)
+        self.set_mouse_capture(not self.paused and self._want_capture())
         self.pause_root.enabled = self.paused
+        if self.paused:
+            self._build_pause()
+
+    def _want_capture(self):
+        """マウスで視点を回す（カーソルを隠して捕まえる）か。タッチ操作の ON・Alt を押している間は捕まえない。"""
+        if self.cfg["controls"].get("touch", False):
+            return False
+        try:
+            hk = self.U["held_keys"]
+            return not (hk["left alt"] or hk["alt"] or hk["right alt"])
+        except Exception:  # noqa: BLE001
+            return True
+
+    def set_touch(self, on):
+        """仮想ジョイスティック（タッチ操作）の ON/OFF（設定に保存）。"""
+        self.cfg["controls"]["touch"] = bool(on)
+        try:
+            from .menu import save_config
+            save_config(self.cfg)
+        except Exception:  # noqa: BLE001
+            L.exception("設定を保存できません")
+        self.world.message("タッチ操作（仮想ジョイスティック） " + ("ON" if on else "OFF"))
+        self._build_pause()
+
+    def open_keys(self):
+        from .keys_panel import KeysPanel
+        extra = [a.help_text for a in self.addons if a.help_text]
+        self._open_panel(lambda: KeysPanel(self.U, self.cfg, self.ui_root.parent, self.editor_closed, extra,
+                                           on_change=self._keys_changed))
+
+    def _keys_changed(self):
+        self._build_pause()
+
+    # --- 操作（キー・画面のボタン・近くのもの） ---------------------------------
+    def do_remove(self):
+        w = self.world
+        if self.hit and self.hit["kind"] == "voxel":
+            w.remove(self.hit)
+        elif self.hit and self.hit["kind"] in ("terrain", "water"):
+            w.dig(self.hit)
+
+    def do_place(self):
+        item = self.current_item()
+        if item:
+            _, _, _, look = self.look_vectors()
+            self.world.place(self.hit, item, self.dir_index, look)
+
+    def do_interact(self, hit):
+        if not any(a.interact(hit) for a in self.addons):
+            self.world.interact(hit)
+
+    def do_target(self, t):
+        """近くのもの（画面右のボタン）を使う。"""
+        if t["kind"] == "p":
+            self.open_editor(t["hit"])
+        else:
+            self.do_interact(t["hit"])
+
+    def _usable(self, hit):
+        """視線の先が E で使える物か（機器・お店・NPC など）。"""
+        if not hit:
+            return False
+        if hit["kind"] == "voxel":
+            return bool(hit["construct"].devs[hit["index"]]) or any(a.aim(hit) for a in self.addons)
+        return any(a.aim(hit) for a in self.addons)
+
+    def nearby_targets(self, radius=2.6):
+        """近くにある、触れるもの（近い順）：[{"label", "hit", "kind": "e"(E)/"p"(設定), "icon", "dist"}]"""
+        w = self.world
+        p = w.player
+        if p.seated:
+            return []
+        eye = p.eye()
+        out = []
+        surv = not w.creative
+        names = {"seat": "座る", "computer": "起動・停止", "tank": "燃料を入れる" if surv else "中身を切り替える",
+                 "actuator": "動かす", "processor": "原料を入れる・受け取る" if surv else None}
+        for c in w.constructs.values():
+            if not c.n_vox or not any(c.devs):
+                continue
+            lo, hi = c.pos.min(0) - radius, c.pos.max(0) + radius
+            if np.any(eye < lo) or np.any(eye > hi):
+                continue
+            for i, d in enumerate(c.devs):
+                if not d:
+                    continue
+                ctr = c.pos[8 * i:8 * i + 8].mean(0)
+                dist = float(np.linalg.norm(ctr - eye))
+                if dist > radius:
+                    continue
+                dd = c.reg.device(d["def"]) or {}
+                t_ = dd.get("type")
+                hit = {"kind": "voxel", "t": dist, "construct": c, "index": i, "face": 2, "point": ctr}
+                lab = names.get(t_, "操作") if t_ in names else "操作"
+                if lab:
+                    out.append({"label": f"{lab}（{d['name']}）", "hit": hit, "kind": "e", "dist": dist,
+                                "icon": "interact"})
+                if t_ in ("computer", "actuator") or t_ not in ("seat",):
+                    sl = {"computer": "プログラム", "actuator": "動作の設定"}.get(t_, "名前の設定")
+                    out.append({"label": f"{sl}（{d['name']}）", "hit": hit, "kind": "p", "dist": dist + 0.01,
+                                "icon": "settings"})
+        for a in self.addons:
+            try:
+                out += a.nearby(p.pos, radius) or []
+            except Exception:  # noqa: BLE001
+                L.exception("近くのものを探せません（%s）", a.name)
+        out.sort(key=lambda t: t["dist"])
+        # 同じ物の E と設定は並べて、最大 4 つ
+        return out[:4]
+
 
     def _leave(self, action, save=True, status=""):
         if self.leaving:
@@ -477,6 +592,19 @@ class Game:
             else:
                 items.append(Text(parent=self.pause_root, origin=(0, 0), position=(0, -0.30), scale=0.8,
                                   text="LAN に公開中: " + "  ".join(net.addresses()[:2])))
+        # 右の列：操作の説明・キー設定、タッチ操作
+        b = pbtn("操作とキー設定", 0.12, self.open_keys, color.rgb(0.25, 0.35, 0.45))
+        b.x = 0.45
+        items.append(b)
+        touch = bool(self.cfg["controls"].get("touch", False))
+        b = pbtn(f"仮想ジョイスティック {'ON' if touch else 'OFF'}", 0.04, lambda: self.set_touch(not touch),
+                 color.rgb(0.2, 0.45, 0.35) if touch else color.rgb(0.3, 0.3, 0.33))
+        b.x = 0.45
+        items.append(b)
+        items.append(Text(parent=self.pause_root, origin=(0, 0.5), position=(0.45, -0.01), scale=0.6,
+                          color=color.light_gray,
+                          text="ON：画面左下のスティックで移動、ほかの所をなぞって視点\n"
+                               "（タッチ画面向け。OFF でもボタンは Alt を押すと押せます）"))
         # 見た目（自分だけ。ほかの人に見える）
         defs = list(self.world.registry.defs["players"].values())
         cur = self.world.local_player.defn
@@ -547,8 +675,14 @@ class Game:
             return
         if self.paused:
             return
+        if key in ("left mouse down", "right mouse down") and (
+                self.cfg["controls"].get("touch", False) or self.touch_hud.mouse_over_ui()):
+            return  # 画面のボタンを押した（ボタンの方で処理する）・タッチ操作中は画面を触っても掘らない
         if key == c.get("edit_script", "p"):
             self.open_editor()
+            return
+        if key == c.get("toggle_help", "f1"):
+            self.open_keys()
             return
         if w.player.seated:
             if key in SEAT_KEYS or key in ("x",):
@@ -561,15 +695,9 @@ class Game:
                 self._export()
             return
         if key == "left mouse down":
-            if self.hit and self.hit["kind"] == "voxel":
-                w.remove(self.hit)
-            elif self.hit and self.hit["kind"] in ("terrain", "water"):
-                w.dig(self.hit)
+            self.do_remove()
         elif key == "right mouse down":
-            item = self.current_item()
-            if item:
-                _, _, _, look = self.look_vectors()
-                w.place(self.hit, item, self.dir_index, look)
+            self.do_place()
         elif key == c["new_construct"]:
             item = self.current_item()
             if item:
@@ -586,8 +714,12 @@ class Game:
         elif key == c["rotate"]:
             self.dir_index = (self.dir_index + 1) % 6
         elif key == c["interact"]:
-            if not any(a.interact(self.hit) for a in self.addons):
-                w.interact(self.hit)
+            hit = self.hit
+            if not self._usable(hit):          # 見ている物が使えなければ、近くにある物（画面右のボタンの一番上）
+                near = next((t for t in self.nearby_targets() if t["kind"] == "e"), None)
+                if near is not None:
+                    hit = near["hit"]
+            self.do_interact(hit)
         elif key == c["jetpack"]:
             w.player.jetpack = not w.player.jetpack
             w.message("ジェットパック " + ("ON" if w.player.jetpack else "OFF"))
@@ -597,9 +729,7 @@ class Game:
             self._export()
         elif key == c["import"]:
             self._import()
-        elif key == c["toggle_help"]:
-            self.help_text.enabled = not self.help_text.enabled
-        elif key == "v":
+        elif key == c.get("third_person", "v"):
             self.third_person = not self.third_person
         else:
             for a in self.addons:
@@ -648,32 +778,57 @@ class Game:
         held = U["held_keys"]
         c = self.cfg["controls"]
         net = w.net
+        hud = self.touch_hud
+        hud.update(dt)                     # 画面のボタン・ジョイスティック（押されたキー → self.vkeys）
+        vk = self.vkeys
+
+        def H(k):
+            return 1 if (held[k] or vk.get(k)) else 0
         online = net is not None        # LAN に公開中・参加中は、一時停止しても世界と通信を止めない（参加の受け付けも）
         if self.paused and not online:
             return                  # マルチプレイ中は一時停止しても世界は止めない（ほかの人がいるので）
         editing = self.editor is not None or self.paused
+        if not editing:
+            want = self._want_capture()
+            if want != bool(self._captured):
+                self.set_mouse_capture(want)    # Alt を押している間・タッチ操作中はカーソルを出す
         # 視点
         sens = float(c.get("mouse_sensitivity", 60.0))
+        dx = dy = 0.0
         if self._captured and not editing:
             dx, dy = self._look_delta()
+        if not editing:
+            tdx, tdy = hud.take_look()          # 画面をなぞった量（タッチ）
+            dx, dy = dx + tdx * 1.6, dy + tdy * 1.6
+        if dx or dy:
             self._rotate_yaw(np.radians(dx * sens))
             self.pitch = float(np.clip(self.pitch + np.radians(dy * sens), -1.55, 1.55))
         fwd, right, up, look = self.look_vectors()
         w.local_player.look_fwd, w.local_player.pitch = fwd, self.pitch
-        # 入力
+        # 入力（キーボード ＋ 画面のボタン・ジョイスティック）
+        st = hud.stick
         move = np.zeros(3)
         if not w.player.seated and not editing:
-            move += fwd * (held[c["forward"]] - held[c["back"]])
-            move += right * (held[c["right"]] - held[c["left"]])
+            move += fwd * (H(c["forward"]) - H(c["back"]) + st[1])
+            move += right * (H(c["right"]) - H(c["left"]) + st[0])
             nm = np.linalg.norm(move)
-            if nm > 0:
+            if nm > 1:
                 move /= nm
-        jump = bool(held[c["jump"]]) and not w.player.seated and not editing
+        jump = bool(H(c["jump"])) and not w.player.seated and not editing
         thrust = np.zeros(3)
         if not w.player.seated and not editing:
             # ジェットパックの噴射方向（水中では泳ぐ方向にも使う）
-            thrust = move * 0.6 + up * (held[c["jump"]] - held[c["down"]])
-        w.input_keys = {k for k in SEAT_KEYS if held[k]} if (w.player.seated and not editing) else set()
+            thrust = move * 0.6 + up * (H(c["jump"]) - H(c["down"]))
+        if w.player.seated and not editing:
+            keys = {k for k in SEAT_KEYS if H(k)}
+            # 操縦席ではジョイスティックを W/A/S/D として使う
+            for k, on in ((c["forward"], st[1] > 0.4), (c["back"], st[1] < -0.4), (c["right"], st[0] > 0.4),
+                          (c["left"], st[0] < -0.4)):
+                if on:
+                    keys.add(k)
+            w.input_keys = keys
+        else:
+            w.input_keys = set()
         # 固定ステップでシミュレーション
         tick = 1.0 / float(self.cfg["physics"].get("tick_rate", 60))
         self.acc += dt

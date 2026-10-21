@@ -275,3 +275,107 @@ def panda_texture(img, name="tex"):
     t.setWrapU(PandaTexture.WM_clamp)
     t.setWrapV(PandaTexture.WM_clamp)
     return t
+
+
+# ---------------------------------------------------------------------------
+# 画面のボタン（タッチ操作）のアイコン：丸い下地に白い絵
+# ---------------------------------------------------------------------------
+_ui_cache = {}
+
+
+def ui_image(name, size=128, bg=(20, 26, 36, 170), fg=(240, 244, 250, 255), ring=(255, 255, 255, 90)):
+    s = size * 2                                   # 大きく描いて縮める（ふちをなめらかに）
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    c = s / 2
+    w = max(3, s // 22)
+    d.ellipse([s * 0.03, s * 0.03, s * 0.97, s * 0.97], fill=bg, outline=ring, width=max(2, s // 64))
+
+    def P(x, y):
+        return (c + x * s, c - y * s)
+
+    def line(*pts, width=w):
+        d.line([P(*p) for p in pts], fill=fg, width=width, joint="curve")
+
+    def poly(*pts, fill=fg):
+        d.polygon([P(*p) for p in pts], fill=fill)
+    if name == "menu":
+        for yy in (0.13, 0.0, -0.13):
+            line((-0.2, yy), (0.2, yy))
+    elif name == "inventory":
+        for i in range(3):
+            for j in range(3):
+                x0, y0 = -0.2 + i * 0.14, 0.2 - j * 0.14
+                d.rectangle([P(x0, y0), P(x0 + 0.1, y0 - 0.1)], fill=fg)
+    elif name == "map":
+        poly((-0.26, 0.18), (-0.09, 0.24), (0.09, 0.18), (0.26, 0.24), (0.26, -0.18), (0.09, -0.24),
+             (-0.09, -0.18), (-0.26, -0.24))
+        d.line([P(-0.09, 0.24), P(-0.09, -0.18)], fill=bg, width=w // 2 + 1)
+        d.line([P(0.09, 0.18), P(0.09, -0.24)], fill=bg, width=w // 2 + 1)
+    elif name == "marker":
+        poly((0, 0.26), (0.17, 0.0), (0, -0.26), (-0.17, 0.0))
+        d.ellipse([P(-0.06, 0.06), P(0.06, -0.06)], fill=bg)
+    elif name == "view":
+        d.ellipse([P(-0.27, 0.15), P(0.27, -0.15)], outline=fg, width=w)
+        d.ellipse([P(-0.09, 0.09), P(0.09, -0.09)], fill=fg)
+    elif name == "jump":
+        line((-0.2, -0.04), (0.0, 0.16), (0.2, -0.04), width=w + 2)
+        line((-0.2, -0.2), (0.0, 0.0), (0.2, -0.2), width=w + 2)
+    elif name == "down":
+        line((-0.2, 0.04), (0.0, -0.16), (0.2, 0.04), width=w + 2)
+        line((-0.2, 0.2), (0.0, 0.0), (0.2, 0.2), width=w + 2)
+    elif name == "jetpack":
+        poly((0, 0.3), (0.1, 0.12), (0.1, -0.1), (-0.1, -0.1), (-0.1, 0.12))
+        poly((-0.1, -0.02), (-0.2, -0.14), (-0.1, -0.1))
+        poly((0.1, -0.02), (0.2, -0.14), (0.1, -0.1))
+        poly((-0.07, -0.13), (0.07, -0.13), (0.0, -0.3), fill=(255, 170, 60, 255))
+    elif name == "place":
+        d.rectangle([P(-0.2, 0.2), P(0.2, -0.2)], outline=fg, width=w)
+        line((0, 0.11), (0, -0.11))
+        line((-0.11, 0), (0.11, 0))
+    elif name == "remove":
+        d.arc([P(-0.26, 0.3), P(0.26, -0.06)], start=200, end=340, fill=fg, width=w + 2)
+        line((0.0, 0.12), (-0.04, -0.28), width=w + 1)
+    elif name == "rotate":
+        d.arc([P(-0.2, 0.2), P(0.2, -0.2)], start=40, end=330, fill=fg, width=w + 1)
+        poly((0.2, 0.0), (0.27, 0.12), (0.1, 0.1))
+    elif name == "new":
+        d.rectangle([P(-0.14, 0.14), P(0.14, -0.14)], outline=fg, width=w)
+        for (a, b) in (((0, 0.3), (0, 0.2)), ((0, -0.2), (0, -0.3)), ((-0.3, 0), (-0.2, 0)), ((0.2, 0), (0.3, 0))):
+            line(a, b)
+    elif name == "interact":
+        d.ellipse([P(-0.2, 0.2), P(0.2, -0.2)], outline=fg, width=w)
+        d.ellipse([P(-0.07, 0.07), P(0.07, -0.07)], fill=fg)
+    elif name == "settings":
+        for k in range(8):
+            a = k * math.pi / 4
+            line((0.14 * math.cos(a), 0.14 * math.sin(a)), (0.26 * math.cos(a), 0.26 * math.sin(a)), width=w + 3)
+        d.ellipse([P(-0.17, 0.17), P(0.17, -0.17)], fill=fg)
+        d.ellipse([P(-0.07, 0.07), P(0.07, -0.07)], fill=bg)
+    elif name in ("import", "export"):
+        d.line([P(-0.24, -0.06), P(-0.24, -0.24), P(0.24, -0.24), P(0.24, -0.06)], fill=fg, width=w)
+        if name == "import":
+            line((0, 0.26), (0, -0.06))
+            poly((-0.11, 0.02), (0.11, 0.02), (0, -0.14))
+        else:
+            line((0, -0.14), (0, 0.16))
+            poly((-0.11, 0.1), (0.11, 0.1), (0, 0.27))
+    elif name == "save":
+        d.rectangle([P(-0.22, 0.22), P(0.22, -0.22)], fill=fg)
+        d.rectangle([P(-0.12, 0.22), P(0.1, 0.06)], fill=bg)
+        d.rectangle([P(-0.14, -0.04), P(0.14, -0.18)], fill=bg)
+    elif name == "exit":
+        d.line([P(0.02, 0.24), P(-0.2, 0.24), P(-0.2, -0.24), P(0.02, -0.24)], fill=fg, width=w)
+        line((-0.06, 0), (0.24, 0))
+        poly((0.14, 0.1), (0.27, 0.0), (0.14, -0.1))
+    elif name == "key":
+        d.rounded_rectangle([P(-0.22, 0.16), P(0.22, -0.16)], radius=s * 0.05, outline=fg, width=w)
+    small = img.resize((size, size), Image.LANCZOS)
+    return small
+
+
+def ui_texture(name, size=128):
+    t = _ui_cache.get((name, size))
+    if t is None:
+        t = _ui_cache[(name, size)] = _to_texture(ui_image(name, size))
+    return t

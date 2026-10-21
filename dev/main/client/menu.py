@@ -685,8 +685,17 @@ class MainMenu:
                       lambda v: f"{v}", lambda v: ph.__setitem__("substeps", v))
         self._stepper("物理反復回数（多いほど硬い・重い）", y - 0.56, [1, 2, 3, 4, 6], int(ph.get("iterations", 2)),
                       lambda v: f"{v}", lambda v: ph.__setitem__("iterations", v))
-        self._text("キー割り当て・フォントは config/settings.json で変更できます", (0, y - 0.65), 0.7,
-                   col=U["color"].light_gray)
+        self._toggle("仮想ジョイスティック（タッチ操作）", y - 0.63, c.get("touch", False), lambda v: c.__setitem__("touch", v))
+
+        def keys():
+            from .keys_panel import KeysPanel, ACTIONS
+
+            def changed():
+                for aid, _ in ACTIONS:
+                    c[aid] = self.cfg["controls"].get(aid, c.get(aid))
+            KeysPanel(self.U, self.cfg, self.root, None, on_change=changed)
+        self._button("操作とキー設定", (0.62, -0.09), keys, size=(0.2, 0.055), col=U["color"].rgb(0.25, 0.35, 0.45))
+        self._text("フォントは config/settings.json で変更できます", (0, y - 0.7), 0.6, col=U["color"].light_gray)
 
         def save():
             self.cfg.clear()
