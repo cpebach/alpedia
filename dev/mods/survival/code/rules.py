@@ -91,24 +91,25 @@ class SurvivalRules(Addon):
 
     def _exchange(self, world, c, d, dd):
         """精錬機・加工機：所持品の原料を入れ、できた物を受け取る（何も動かなければ None：ふつうの操作へ）。"""
+        from main.devices import proc_inputs, proc_outputs
         p = world.player
         moved = []
-        for r in dd["params"].get("recipes", []):
-            for k in r.get("in", {}):
-                amt = p.inventory.pop(k, 0.0)
-                if amt:
-                    c.storage[k] = c.storage.get(k, 0.0) + amt
-                    moved.append(f"{world.registry.res_name(k)} {amt:.0f} 投入")
-            for k in r.get("out", {}):
-                amt = c.storage.pop(k, 0.0)
-                if amt:
-                    p.inventory[k] = p.inventory.get(k, 0.0) + amt
-                    moved.append(f"{world.registry.res_name(k)} {amt:.0f} 回収")
+        store = d["state"].setdefault("store", {})
+        for k in proc_inputs(dd):
+            amt = p.inventory.pop(k, 0.0)
+            if amt:
+                store[k] = store.get(k, 0.0) + amt
+                moved.append(f"{world.registry.res_name(k)} {amt:.0f} 投入")
+        for k in proc_outputs(dd):
+            amt = store.pop(k, 0.0)
+            if amt >= 1e-6:
+                p.inventory[k] = p.inventory.get(k, 0.0) + amt
+                moved.append(f"{world.registry.res_name(k)} {amt:.0f} 回収")
         if not moved:
             return None
         st = c.status or {}
         hint = "" if (st.get("stored", 0) > 1 or st.get("production", 0) > 0) else \
-            "（電気がありません：手回し発電機・太陽光パネル・発電機をつなげて）"
+            "（電気がありません：手回し発電機・太陽光パネル・燃えている推進機をつなげて）"
         return f"{d['name']}: " + ", ".join(moved) + hint
 
     # --- ジェットパック ---------------------------------------------------------

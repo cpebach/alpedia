@@ -1,61 +1,5 @@
-"""ゲーム同梱の文章とサンプル（スクリプトの説明 README・ホバー制御のサンプル）。チュートリアルなどが使う。"""
+"""ゲーム同梱の文章（スクリプトの説明 README）。チュートリアルなどが使う。"""
 import numpy as np
-
-HOVER_SCRIPT = '''"""ホバー制御スクリプト（サンプル）
-
-コンピューターを E で起動すると、高度 target m で浮くように推進機を調整します。
-四隅の推進機の出力差で姿勢（傾き）も保ちます。
-操縦席に座っている間は W/S で目標高度、矢印キーで傾けて移動できます。
-api の使い方は scripts/README.txt を参照。
-"""
-
-
-def tick(api):
-    target = api.memory.get("target", 12.0)
-    keys = api.input
-    if "w" in keys:
-        target += 0.2
-    if "s" in keys:
-        target = max(2.0, target - 0.2)
-    api.memory["target"] = target
-
-    # 高度：重力を打ち消す基本スロットル + PD 制御
-    err = target - api.altitude
-    vs = api.vertical_speed
-    base = 0.5 + err * 0.03 - vs * 0.2
-
-    # 姿勢：ローカルY軸を惑星の上方向へ向ける
-    ux, uy, uz = api.up_local
-    wx, wy, wz = api.angular_velocity_local
-    # 矢印キーで少し傾ける（その方向へ移動）
-    lean_x = (0.15 if "right arrow" in keys else 0) - (0.15 if "left arrow" in keys else 0)
-    lean_z = (0.15 if "up arrow" in keys else 0) - (0.15 if "down arrow" in keys else 0)
-    # キーを押していない時は横方向の速度を打ち消すように傾ける
-    vx, vy, vz = api.velocity_local
-    if lean_x == 0:
-        lean_x = max(-0.1, min(0.1, -vx * 0.04))
-    if lean_z == 0:
-        lean_z = max(-0.1, min(0.1, -vz * 0.04))
-    ex, ez = ux + lean_x, uz + lean_z
-    # 重心の偏りを打ち消す積分項
-    ix = api.memory.get("ix", 0.0) + ex * 0.05
-    iz = api.memory.get("iz", 0.0) + ez * 0.05
-    ix, iz = max(-1, min(1, ix)), max(-1, min(1, iz))
-    api.memory["ix"], api.memory["iz"] = ix, iz
-    tx = (ez * 2.0 + iz * 1.0) - wx * 1.2
-    tz = -(ex * 2.0 + ix * 1.0) - wz * 1.2
-
-    thrusters = api.devices("thruster")
-    for t in thrusters:
-        ox, oy, oz = t.offset
-        adj = -oz * tx + ox * tz
-        t.throttle = min(max(base + adj * 0.4, 0.0), 1.0)
-
-    n = api.memory.get("n", 0) + 1
-    api.memory["n"] = n
-    if n % 60 == 0:
-        print(f"高度 {api.altitude:.1f} m / 目標 {target:.1f} m / 傾き {(1 - uy) * 100:.1f}%")
-'''
 
 SCRIPT_README = '''ゲーム内 Python スクリプト
 ========================
@@ -83,7 +27,7 @@ api.angular_velocity_local  角速度（ローカル座標）
 api.velocity_local    速度（ローカル座標）
 api.mass              質量 kg
 api.power             {"production", "demand", "stored", "capacity", "ratio"}
-api.storage           構築物の固形資源
+api.storage           構築物の精錬機・加工機の中にある物の合計
 api.input             操縦席に座っている時に押されているキーの集合
 api.seated            この構築物の操縦席に誰かが座っているか（True/False）
 api.memory            スクリプト用の保存領域（dict、セーブされる）
@@ -118,9 +62,15 @@ api.antenna_range           届く距離 m（送る側と受ける側の短い�
 機器（devices() の要素）
 ------------------------
 .name .type .kind .direction .state .cell .offset（重心からのローカル位置）
-推進機:         .throttle = 0.0〜1.0
-バルブ:         .open = True/False
-発電機/精錬機/加工機/通気口: .enabled = True/False
+推進機:         .ignite()  点火（電気を少し使う。燃えていれば何もしない）
+                .lit       燃えているか　.throttle  いまの出力 0〜1（読み取り）
+                燃えている間は燃料を使って推力と電気を出す。タンクと直接つながっていると
+                燃料が尽きるまで全開で燃え続ける（止められない）。止める・出力を変えるには、
+                タンクとのあいだにバルブを入れて、バルブで（閉じると火が消える。開けたら点火し直す）
+バルブ:         .open = 0.0〜1.0  開き具合（True/False も可）。最大流量 × 開き具合だけ燃料・物資を通す
+太陽光パネル/精錬機/加工機/通気口: .enabled = True/False
+精錬機・加工機: 原料は配管でつながった所（タンク・ほかの機械の作った物）から自動で受け取り、
+                作った物は自分の中にためる。つながったタンクは、作った燃料などを受け取る
 タンク:         .contents（読み取り）
 バッテリー:     .charge（読み取り）
 コンピューター: .display(text, ...) / .clear_display()（他のコンピューターに表示）

@@ -470,10 +470,12 @@ def build_luna(planet, terra):
 # ---------------------------------------------------------------------------
 # 構築物（ボクセル）
 # ---------------------------------------------------------------------------
-# ルミナス号（5×5、前 = +Z、右 = +X、上 = +Y）。下の段の四隅と各辺の真ん中が推進機
+# ルミナス号（5×5、前 = +Z、右 = +X、上 = +Y）。下の段の四隅と各辺の真ん中が推進機で、
+# それぞれの真上にバルブ（燃料タンクとのあいだ。航法プログラムがバルブの開き具合で推力を変える）
 SHIP_THRUSTERS = [(0, 0, 0), (4, 0, 0), (0, 0, 4), (4, 0, 4)]                 # 墜落でなくなった推進機
 SHIP_THRUSTERS_OK = [(2, 0, 0), (0, 0, 2), (4, 0, 2), (2, 0, 4)]
-SHIP_HOLES = [(0, 3, 2), (4, 3, 1), (1, 2, 0), (2, 1, 0), (4, 1, 3), (-1, 1, 2)]   # 墜落でなくなった外壁
+SHIP_VALVES = [(x, 1, z) for x, _, z in SHIP_THRUSTERS + SHIP_THRUSTERS_OK]
+SHIP_HOLES = [(0, 3, 2), (4, 3, 1), (1, 2, 0), (4, 2, 3), (3, 3, 0), (-1, 1, 2)]   # 墜落でなくなった外壁
 SHIP_EMPTY_TANKS = [(1, 1, 1), (3, 1, 2), (2, 1, 3)]
 SHIP_SEAT = (2, 2, 2)
 SHIP_NAVI = (2, 2, 3)
@@ -486,13 +488,16 @@ def ship_voxels(broken=False):
             if (x, 0, z) in SHIP_THRUSTERS or (x, 0, z) in SHIP_THRUSTERS_OK:
                 V.append(((x, 0, z), "steel", {"def": "thruster", "dir": 2, "name": "推進機"}))
             else:
-                V.append(((x, 0, z), "steel", {"def": "pipe", "dir": 2}))
+                V.append(((x, 0, z), "steel", None))          # 底板（配管ではない：推進機はバルブだけを通す）
             inner = 1 <= x <= 3 and 1 <= z <= 3
             if inner:
                 st = {} if broken and (x, 1, z) in SHIP_EMPTY_TANKS else {"contents": {"fuel": 800.0}}
                 V.append(((x, 1, z), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク", "state": st}))
+            elif (x, 1, z) in SHIP_VALVES:
+                V.append(((x, 1, z), "steel", {"def": "valve", "dir": 2, "name": "推進機のバルブ",
+                                               "state": {"open": 0.0, "set": 1.0}}))
             else:
-                V.append(((x, 1, z), "hull_red" if z in (0, 4) else "hull_white", None))
+                V.append(((x, 1, z), "steel", {"def": "pipe", "dir": 2}))
     deck = {(2, 2): {"def": "seat", "dir": 4, "name": "操縦席"},
             (2, 3): {"def": "computer", "dir": 5, "name": "航法コンピューター",
                      "state": {"script": "" if broken else "moon.py"}},
@@ -501,7 +506,7 @@ def ship_voxels(broken=False):
     for x in range(5):
         for z in range(5):
             d = deck.get((x, z))
-            V.append(((x, 2, z), "steel" if d else "hull_white", d))
+            V.append(((x, 2, z), "steel" if d else ("hull_red" if z in (0, 4) else "hull_white"), d))
     # 風よけ（前はガラス）と、後ろ・横の囲い
     V += [((x, 3, 4), "glass", None) for x in (1, 2, 3)]
     V += [((0, 3, 4), "hull_red", None), ((4, 3, 4), "hull_red", None)]
@@ -545,18 +550,22 @@ def tick(api):
                 color=(1.0, 0.35, 0.3) if on else (0.6, 0.25, 0.2), background=(0.08, 0.02, 0.02))
 '''
 
-POWER_SCRIPT = '''"""観測基地の電源の状態表示"""
+POWER_SCRIPT = '''"""観測基地の電源の状態表示
+
+発電用の推進機2つが背中合わせ（反対向き）なので、燃えても推力は打ち消し合い、電気だけが残る。
+バルブの開き具合で燃料の量（＝発電の量）が変わる。閉じると火が消える。
+"""
 
 
 def tick(api):
     p = api.power
     valves = api.devices("valve")
-    gens = api.devices("generator")
+    lit = sum(1 for t in api.devices("thruster") if t.lit)
     fuel = sum(t.contents.get("fuel", 0) for t in api.devices("tank"))
-    v = "開" if valves and valves[0].open else "閉"
-    g = "運転中" if gens and gens[0].enabled else "停止"
-    api.display(f"観測基地 電源\\nバルブ {v}　発電機 {g}\\n発電 {p['production'] / 1000:.1f} kW\\n燃料 {fuel:.0f} kg",
-                width=1.6, color=(1.0, 0.9, 0.5))
+    o = valves[0].open if valves else 0
+    v = f"開 {o:.0%}" if o > 0 else "閉"
+    api.display(f"観測基地 電源\\nバルブ {v}　推進機 {lit}/2 燃焼中\\n発電 {p['production'] / 1000:.1f} kW\\n燃料 {fuel:.0f} kg",
+                width=1.7, color=(1.0, 0.9, 0.5))
 '''
 
 
@@ -587,14 +596,16 @@ def rock_voxels(seed, w=4, h=4, d=3):
 
 
 def power_voxels():
-    """観測基地の電源：タンク → バルブ（閉）→ 配管 → 発電機（停止）→ バッテリー（空に近い）＋状態の表示。"""
-    V = [((x, 0, z), "rock", None) for x in range(-1, 7) for z in range(-1, 2)]
+    """観測基地の電源：タンク → バルブ（閉。E で 15% 開く）→ 配管 → 背中合わせの推進機2つ（発電用）
+    ＋バッテリー（点火に使う分だけ）＋状態の表示。"""
+    V = [((x, 0, z), "rock", None) for x in range(-1, 7) for z in range(-2, 3)]
     V += [((0, 1, 0), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}}),
           ((0, 2, 0), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}}),
-          ((1, 1, 0), "steel", {"def": "valve", "dir": 0, "name": "バルブ", "state": {"open": False}}),
+          ((1, 1, 0), "steel", {"def": "valve", "dir": 0, "name": "バルブ", "state": {"open": 0.0, "set": 0.15}}),
           ((2, 1, 0), "steel", {"def": "pipe", "dir": 0}),
           ((3, 1, 0), "steel", {"def": "pipe", "dir": 0}),
-          ((4, 1, 0), "steel", {"def": "generator", "dir": 2, "name": "発電機", "state": {"enabled": False}}),
+          ((3, 1, 1), "steel", {"def": "thruster", "dir": 4, "name": "発電用の推進機"}),
+          ((3, 1, -1), "steel", {"def": "thruster", "dir": 5, "name": "発電用の推進機"}),
           ((5, 1, 0), "steel", {"def": "battery", "dir": 2, "name": "基地のバッテリー", "state": {"charge": 4.0e5}}),
           ((5, 2, 0), "steel", {"def": "computer", "dir": 5, "name": "電源の表示",
                                 "state": {"script": "power.py", "running": True}})]
@@ -614,23 +625,26 @@ def gate_voxels():
 
 
 def bike_voxels():
-    """ホバーバイク（前 = +Z）。四隅が推進機、真ん中に座席。"""
+    """ホバーバイク（前 = +Z）。四隅が推進機で、その真上にバルブ（制御のプログラムが開き具合で推力を変える）。"""
     V = []
     corners = {(0, 0), (2, 0), (0, 4), (2, 4)}
     for x in range(3):
         for z in range(5):
             if (x, z) in corners:
                 V.append(((x, 0, z), "steel", {"def": "thruster", "dir": 2, "name": "推進機"}))
-            elif x == 1:
-                V.append(((x, 0, z), "steel", {"def": "pipe", "dir": 2}))
             else:
                 V.append(((x, 0, z), "hull_blue", None))
-    V += [((1, 1, 1), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}}),
+    for x, z in corners:
+        V.append(((x, 1, z), "steel", {"def": "valve", "dir": 2, "name": "推進機のバルブ", "state": {"open": 0.0}}))
+    V += [((1, 1, 0), "steel", {"def": "pipe", "dir": 2}),
+          ((1, 1, 1), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}}),
           ((1, 1, 2), "steel", {"def": "seat", "dir": 4, "name": "バイクの座席"}),
-          ((1, 1, 0), "steel", {"def": "battery", "dir": 2, "name": "バッテリー"}),
-          ((1, 1, 4), "steel", {"def": "computer", "dir": 5, "name": "バイクの制御",
+          ((1, 1, 3), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}}),
+          ((1, 1, 4), "steel", {"def": "pipe", "dir": 2}),
+          ((1, 2, 0), "steel", {"def": "battery", "dir": 2, "name": "バッテリー"}),
+          ((1, 2, 4), "steel", {"def": "computer", "dir": 5, "name": "バイクの制御",
                                 "state": {"script": "bike.py", "running": True}}),
-          ((1, 1, 3), "glass", None)]
+          ((1, 2, 3), "glass", None)]
     return V
 
 

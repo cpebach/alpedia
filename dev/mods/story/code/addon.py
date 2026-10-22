@@ -181,8 +181,8 @@ class StoryAddon(Addon):
         if key == "navi":
             c, i = self.dev("ship", "computer")
             return c.pos[8 * i:8 * i + 8].mean(0) if c is not None and i is not None else None
-        if key in ("valve", "generator"):
-            c, i = self.dev("power", key)
+        if key in ("valve", "engine"):
+            c, i = self.dev("power", "thruster" if key == "engine" else key)
             return c.pos[8 * i:8 * i + 8].mean(0) if c is not None and i is not None else None
         if key == "gate":
             c, i = self.dev("gate", "actuator")
@@ -257,18 +257,20 @@ class StoryAddon(Addon):
 
     def check_valve(self):
         c, i = self.dev("power", "valve")
-        return i is not None and bool(c.devs[i]["state"].get("open"))
+        return i is not None and float(c.devs[i]["state"].get("open", 0.0)) > 0
 
-    def check_generator(self):
-        c, i = self.dev("power", "generator")
-        return i is not None and bool(c.devs[i]["state"].get("enabled", True))
+    def _engines_lit(self):
+        c = self.con("power")
+        if c is None:
+            return 0
+        return sum(1 for d in c.devs if d and d["def"] == "thruster" and d["state"].get("lit"))
+
+    def check_engine(self):
+        return self._engines_lit() >= 2
 
     def check_lights(self):
         c = self.con("power")
-        if c is None or not (self.check_valve() and self.check_generator()):
-            return False
-        fuel = sum(d["state"].get("contents", {}).get("fuel", 0) for d in c.devs if d and d["def"] == "tank")
-        if fuel <= 0:
+        if c is None or not (c.status or {}).get("production", 0) > 0:
             return False
         self.st["lights"] = True
         return True
@@ -360,6 +362,8 @@ class StoryAddon(Addon):
         if gid == "fuel":
             f = self._ship_progress()[2]
             return f"{f[0]}/{f[1]}" if f else ""
+        if gid == "engine":
+            return f"{self._engines_lit()}/2"
         if gid == "dig":
             return f"{min(self.st['dig'], 3)}/3"
         if gid == "rod":
@@ -525,9 +529,9 @@ class StoryAddon(Addon):
         if ch > ids.index("power"):
             for d in self.con("power").devs if self.con("power") else []:
                 if d and d["def"] == "valve":
-                    d["state"]["open"] = True
-                if d and d["def"] == "generator":
-                    d["state"]["enabled"] = True
+                    d["state"]["open"] = float(d["state"].get("set", 0.15) or 0.15)
+                if d and d["def"] == "thruster":
+                    d["state"]["ignite"] = True
             self.st["lights"] = True
         if ch >= ids.index("launch"):
             self._rebuild_ship()

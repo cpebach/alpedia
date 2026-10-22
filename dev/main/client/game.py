@@ -1089,13 +1089,17 @@ class Game:
                 if d["def"] and (c.reg.device(d["def"]) or {}).get("type") == "computer":
                     info += "  ［E 起動/停止・P プログラム編集］"
                 elif (c.reg.device(d["def"]) or {}).get("type") != "actuator":
-                    info += "  ［P 名前の設定］"
+                    info += "  ［P 設定］"
                 t_ = (c.reg.device(d["def"]) or {}).get("type")
                 surv = not w.creative
                 if t_ == "tank":
                     info += "  ［E 手持ちの燃料を入れる］" if surv else "  ［E 中身の切り替え］"
                 elif t_ == "processor" and surv:
                     info += "  ［E 原料を入れる・できた物を受け取る］"
+                elif t_ == "thruster":
+                    info += "  ［E 点火（止める・出力はバルブで）］"
+                elif t_ == "valve":
+                    info += "  ［E 開閉・P 開き具合］"
                 if (c.reg.device(d["def"]) or {}).get("type") == "actuator":
                     from .. import actuator as act
                     st = d["state"]
@@ -1114,8 +1118,10 @@ class Game:
             cav = cavity_report(c)
             if cav:
                 info += "\n気密空洞: " + ", ".join(f"{n}セル {p_:.1f}kPa" for _, n, p_ in cav)
-            if c.storage:
-                info += "\n資源: " + c.reg.res_text(c.storage, ", ")
+            from ..devices import storage_total
+            tot = storage_total(c)
+            if tot:
+                info += "\n機械の中の物: " + c.reg.res_text(tot, ", ")
             self.aim_text.text = info
         elif h and h["kind"] == "terrain":
             self.highlight.hide()

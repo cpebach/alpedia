@@ -1,7 +1,7 @@
 """チュートリアルの「無線とドローン」パート。
 
 操縦台（操縦席・コンピューター・アンテナ）に座って押したキーを無線で送り、
-ドローン（推進機4つ・燃料タンク・コンピューター・アンテナ）がそれを受け取って飛ぶ。
+ドローン（推進機4つとそのバルブ・燃料タンク・コンピューター・アンテナ）がそれを受け取って飛ぶ。
 ストーリーのチュートリアル（mods/story）の観測基地で使う。
 """
 
@@ -77,7 +77,7 @@ DRONE_SCRIPT = '''"""遠隔操作ドローン（受信側）
 ・前後左右のキー → その向きに進む（操縦台の向きが前）。離すとその場で止まる
 ・Space / Left Shift → 上昇・下降。何も押さなければ高さを保つ
 ・電波が切れたら、その場でゆっくり降りて着陸する
-四隅の推進機の出力に差をつけて機体を傾け、傾いた向きに進みます。
+四隅の推進機の出力（真上のバルブの開き具合）に差をつけて機体を傾け、傾いた向きに進みます。
 自分の状態はチャンネル "drone/status" で送り返します。
 """
 import math
@@ -88,6 +88,34 @@ MAX_SPEED = 8.0        # 水平の最高速度 (m/s)
 CLIMB = 3.0            # 上昇・下降の速さ (m/s)
 MAX_LEAN = 0.45        # 最大の傾き（約 24°）
 DT = 0.05              # コンピューターの実行間隔 (秒)
+KEEP = 0.02            # 飛んでいる間のバルブのいちばん小さい開き具合（火を消さない）
+
+
+def engines(api):
+    """推進機と、その燃料を通すバルブ（いちばん近いもの）の組。推力はバルブの開き具合で変える。"""
+    vs = api.devices("valve")
+    out = []
+    for t in api.devices("thruster"):
+        to = t.offset
+        best = min(vs, key=lambda v: sum((a - b) ** 2 for a, b in zip(v.offset, to)), default=None)
+        out.append((t, best))
+    return out
+
+
+def set_power(t, v, x, keep=KEEP):
+    """推進機 t の出力を x（0〜1）にする：バルブ v を開き、火が消えていれば点火し直す（点火は電気を少し使う）。
+    keep：飛んでいる間は少しだけ開けておき、火が消えないようにする。"""
+    x = min(keep + max(x, 0.0), 1.0)          # 少し足しておく（差をつける分は消さない）
+    if v is not None:
+        v.open = x
+    if x > 0:
+        t.ignite()
+
+
+def stop_all(api):
+    """すべてのバルブを閉じる（推進機の火が消える）。"""
+    for v in api.devices("valve"):
+        v.open = 0.0
 
 
 def dot(a, b):
@@ -133,8 +161,7 @@ def tick(api):
     target = max(target, m["ground"])
     m["target"] = target
     if alt < m["ground"] + 0.3 and target <= m["ground"] + 0.01:
-        for t in api.devices("thruster"):
-            t.throttle = 0.0               # 地面に着いたら止める
+        stop_all(api)                      # 地面に着いたら止める（バルブを閉じると火が消える）
         report(api, alt, "着陸中" if link else "電波なし（着陸）")
         return
 
@@ -168,10 +195,9 @@ def tick(api):
     thrusters = api.devices("thruster")
     tilt = max(dot(Y, up), 0.5)
     base = api.mass * (g + acc) / (len(thrusters) * THRUST * tilt) if thrusters else 0.0
-    for t in thrusters:
+    for t, v in engines(api):
         ox, oy, oz = t.offset
-        adj = -oz * tx + ox * tz
-        t.throttle = min(max(base + adj * 0.4, 0.0), 1.0)
+        set_power(t, v, base + (-oz * tx + ox * tz) * 0.4)
     report(api, alt, "飛行中" if link else "電波なし（降下中）")
 
 
@@ -185,25 +211,26 @@ def report(api, alt, mode):
 
 
 def drone_voxels():
-    """3×3×3 のドローン。下の段の四隅が推進機（上向きに押す）、真ん中の段は燃料タンク、上にアンテナ。"""
+    """3×3×3 のドローン。下の段の四隅が推進機（上向きに押す）、その真上にバルブ（開き具合で推力を変える）、
+    真ん中の段の十字に燃料タンク・バッテリー・制御のコンピューター、上にアンテナ。"""
     V = []
-    corners = {(0, 0): "推進機 左前", (2, 0): "推進機 右前", (0, 2): "推進機 左後", (2, 2): "推進機 右後"}
+    corners = {(0, 0): "左前", (2, 0): "右前", (0, 2): "左後", (2, 2): "右後"}
     for x in range(3):
         for z in range(3):
             if (x, z) in corners:
-                V.append(((x, 0, z), "steel", {"def": "thruster", "dir": 2, "name": corners[(x, z)]}))
+                V.append(((x, 0, z), "steel", {"def": "thruster", "dir": 2, "name": "推進機 " + corners[(x, z)]}))
+                V.append(((x, 1, z), "steel", {"def": "valve", "dir": 2, "name": "バルブ " + corners[(x, z)],
+                                               "state": {"open": 0.0}}))
             else:
-                V.append(((x, 0, z), "steel", {"def": "pipe", "dir": 2}))
+                V.append(((x, 0, z), "aluminum", None))
     mid = {(1, 1): {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}},
+           (1, 0): {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}},
+           (1, 2): {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}},
            (0, 1): {"def": "battery", "dir": 2},
            (2, 1): {"def": "computer", "dir": 0, "name": "ドローン制御",
                     "state": {"script": "drone.py", "running": True}}}
-    for x in range(3):
-        for z in range(3):
-            d = mid.get((x, z))
-            if d is None and (x == 1 or z == 1):
-                d = {"def": "tank", "dir": 2, "state": {"contents": {"fuel": 800.0}}}
-            V.append(((x, 1, z), "steel" if d else "aluminum", d))
+    for (x, z), d in mid.items():
+        V.append(((x, 1, z), "steel", d))
     V.append(((1, 2, 1), "aluminum", {"def": "antenna", "dir": 2, "name": "アンテナ"}))
     return V
 

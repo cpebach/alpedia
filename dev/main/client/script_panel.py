@@ -20,10 +20,14 @@ tick(api) が一定間隔で呼ばれます。使える機能は scripts/README.
 
 
 def tick(api):
-    # 例: 操縦席で Space を押している間だけ推進機を全開にする
-    on = "space" in api.input
-    for t in api.devices("thruster"):
-        t.throttle = 1.0 if on else 0.0
+    # 例: 操縦席で W を押している間だけ、バルブを開けて推進機を燃やす
+    # （推進機とタンクのあいだにバルブが必要。バルブを閉じると火が消え、開けたら点火し直す）
+    on = "w" in api.input
+    for v in api.devices("valve"):
+        v.open = 1.0 if on else 0.0
+    if on:
+        for t in api.devices("thruster"):
+            t.ignite()
 '''
 
 

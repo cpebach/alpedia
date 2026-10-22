@@ -67,8 +67,9 @@ mods/<MOD名>/
 
 `type` は次のいずれか。`params` は type ごとに異なります（`sauce/base/devices/base.json` 参照）。
 
-thruster（推進機）, tank, pipe, valve, battery, generator, crank（手回し発電機）, computer,
-actuator, processor（精錬機・加工機。recipes で入出力を定義）, seat, air_vent
+thruster（推進機：thrust・fuel_rate・ignite_energy＝点火の電気 J・power_output＝燃えている間の発電 W）, tank,
+pipe, valve（max_flow＝最大流量 kg/秒）, battery, generator（太陽光パネルなど燃料を使わない発電。output W）, crank（手回し発電機）, computer,
+actuator, processor（精錬機・加工機。recipes で入出力、capacity で中にためられる量。pipe_port で配管につながる）, seat, air_vent
 
 共通: `material`（外装素材）, `power`（none / manual / electric）, `power_use`（W）,
 `pipe_port`（配管に繋がるか）, `directional`（向きを持つか）, `cost`

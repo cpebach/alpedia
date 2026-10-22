@@ -113,22 +113,27 @@ class TestPhysics(CoreCase):
 
 
 class TestScripts(CoreCase):
-    def test_script_sets_throttle_and_reports(self):
+    def test_script_ignites_and_sets_valve(self):
         w = self.world()
         self.script(w, "t.py", "def tick(api):\n"
                                "    api.memory['n'] = api.memory.get('n', 0) + 1\n"
+                               "    for v in api.devices('valve'):\n"
+                               "        v.open = 0.25\n"
                                "    for t in api.devices('thruster'):\n"
-                               "        t.throttle = 0.25\n"
+                               "        t.ignite()\n"
                                "    api.display('alt %.1f' % api.altitude)\n")
         c = self.put(w, [((0, 0, 0), "steel", {"def": "battery", "dir": 2}),
                          ((1, 0, 0), "steel", {"def": "computer", "dir": 2, "state": {"script": "t.py", "running": True}}),
-                         ((2, 0, 0), "steel", {"def": "thruster", "dir": 3})])
+                         ((0, 1, 0), "steel", {"def": "tank", "dir": 2, "state": {"contents": {"fuel": 500.0}}}),
+                         ((1, 1, 0), "steel", {"def": "valve", "dir": 2}),
+                         ((2, 1, 0), "steel", {"def": "thruster", "dir": 3})])
         self.run_for(w, 0.5)
         comp = next(d for d in c.devs if d and d["def"] == "computer")
         thr = next(d for d in c.devs if d and d["def"] == "thruster")
         self.assertIsNone(comp["state"].get("error"))
         self.assertGreater(comp["state"]["memory"]["n"], 3)
-        self.assertEqual(thr["state"]["throttle"], 0.25)
+        self.assertTrue(thr["state"]["lit"])
+        self.assertAlmostEqual(thr["state"]["firing"], 0.25, places=3)
         self.assertTrue(comp["state"]["display"]["text"].startswith("alt"))
 
     def test_script_error_stops_computer(self):
@@ -147,13 +152,15 @@ class TestScripts(CoreCase):
         c = self.put(w, [((0, 0, 0), "steel", {"def": "thruster", "dir": 3}), ((1, 0, 0), "steel", {"def": "tank", "dir": 2})])
         p = Port(w, c)
         ti = next(i for i, *_ in p.devices() if c.devs[i]["def"] == "thruster")
-        p.device_set(ti, "throttle", 5.0)
-        self.assertEqual(c.devs[ti]["state"]["throttle"], 1.0)
+        p.device_set(ti, "throttle", 5.0)                  # 前の版との互換：点火の頼みになる
+        self.assertTrue(c.devs[ti]["state"].get("ignite"))
         with self.assertRaises(PortError):
             p.device_set(ti, "firing", 1.0)
+        with self.assertRaises(PortError):
+            p.device_set(ti, "lit", False)               # 消すのはバルブで
         st = p.device_state(ti)
-        st["throttle"] = 0.0                     # コピーなので本体は変わらない
-        self.assertEqual(c.devs[ti]["state"]["throttle"], 1.0)
+        st["ignite"] = False                     # コピーなので本体は変わらない
+        self.assertTrue(c.devs[ti]["state"]["ignite"])
 
     def test_actuator_rotates(self):
         w = self.world()
@@ -318,6 +325,161 @@ class TestHooks(CoreCase):
         self.run_for(w, 0.1)
         self.assertGreater(float((w.player.pos - spot) @ up), 0.4)  # 板の中から押し出された
 
+
+
+class TestFuelAndFlow(CoreCase):
+    """推進機・バルブ・配管と、精錬機・加工機・タンクの物の流れ。"""
+    TANK = {"def": "tank", "dir": 2, "state": {"contents": {"fuel": 600.0}}}
+
+    def dev(self, c, def_id, k=0):
+        return [d for d in c.devs if d and d["def"] == def_id][k]
+
+    def idx(self, c, def_id, k=0):
+        return [i for i, d in enumerate(c.devs) if d and d["def"] == def_id][k]
+
+    def use(self, w, c, i):
+        w.interact({"kind": "voxel", "construct": c, "index": i, "face": 2})
+
+    def test_direct_tank_burns_full_and_cannot_stop(self):
+        w = self.world(gravity_scale=0.0)
+        c = self.put(w, [((0, 0, 0), "steel", {"def": "battery", "dir": 2}), ((1, 0, 0), "steel", self.TANK),
+                         ((2, 0, 0), "steel", {"def": "pipe", "dir": 2}), ((3, 0, 0), "steel", {"def": "thruster", "dir": 2})],
+                     extra=40.0)
+        thr = self.dev(c, "thruster")
+        self.run_for(w, 0.3)
+        self.assertFalse(thr["state"]["lit"])            # 点火するまでは燃えない
+        charge0 = self.dev(c, "battery")["state"]["charge"]
+        self.use(w, c, self.idx(c, "thruster"))
+        self.run_for(w, 0.5)
+        self.assertTrue(thr["state"]["lit"])
+        self.assertAlmostEqual(thr["state"]["firing"], 1.0, places=3)   # バルブなし：全開
+        self.use(w, c, self.idx(c, "thruster"))         # E でも消せない
+        self.run_for(w, 0.2)
+        self.assertTrue(thr["state"]["lit"])
+        self.assertGreater(self.dev(c, "battery")["state"]["charge"], charge0 - 20000 + 1)  # 点火で使い、燃焼で発電
+        self.assertGreater(c.status["production"], 15000)
+        fuel = self.dev(c, "tank")["state"]["contents"]["fuel"]
+        self.assertLess(fuel, 600.0 - 6.0 * 0.6)
+
+    def test_valve_sets_thrust_and_closing_puts_it_out(self):
+        w = self.world(gravity_scale=0.0)
+        c = self.put(w, [((0, 0, 0), "steel", {"def": "battery", "dir": 2}), ((1, 0, 0), "steel", self.TANK),
+                         ((2, 0, 0), "steel", {"def": "valve", "dir": 2, "state": {"open": 0.4}}),
+                         ((3, 0, 0), "steel", {"def": "thruster", "dir": 2})], extra=40.0)
+        thr = self.dev(c, "thruster")
+        self.use(w, c, self.idx(c, "thruster"))
+        self.run_for(w, 0.3)
+        self.assertAlmostEqual(thr["state"]["firing"], 0.4, places=3)
+        self.dev(c, "valve")["state"]["open"] = 0.8
+        self.run_for(w, 0.1)
+        self.assertAlmostEqual(thr["state"]["firing"], 0.8, places=3)
+        self.use(w, c, self.idx(c, "valve"))            # E：閉じる → 消える
+        self.run_for(w, 0.1)
+        self.assertFalse(thr["state"]["lit"])
+        self.use(w, c, self.idx(c, "valve"))            # 開け直しても、点火し直すまで燃えない
+        self.run_for(w, 0.1)
+        self.assertFalse(thr["state"]["lit"])
+        self.assertAlmostEqual(self.dev(c, "valve")["state"]["open"], 0.8)
+
+    def test_one_valve_is_shared_and_back_to_back_makes_only_power(self):
+        w = self.world()
+        c = self.put(w, [((x, 0, z), "steel", None) for x in range(-1, 4) for z in range(-1, 2)] + [
+            ((-1, 1, 0), "steel", {"def": "battery", "dir": 2}), ((0, 1, 0), "steel", self.TANK),
+            ((1, 1, 0), "steel", {"def": "valve", "dir": 2, "state": {"open": 0.5}}),
+            ((2, 1, 0), "steel", {"def": "pipe", "dir": 2}),
+            ((2, 1, 1), "steel", {"def": "thruster", "dir": 4}), ((2, 1, -1), "steel", {"def": "thruster", "dir": 5})],
+            extra=0.3)
+        self.run_for(w, 0.5)
+        p0 = c.center_of_mass()
+        for k in range(2):
+            self.use(w, c, self.idx(c, "thruster", k))
+        self.run_for(w, 2.0)
+        f = [self.dev(c, "thruster", k)["state"]["firing"] for k in range(2)]
+        self.assertAlmostEqual(f[0], 0.25, places=3)
+        self.assertAlmostEqual(f[1], 0.25, places=3)
+        self.assertAlmostEqual(c.status["production"], 10000.0, delta=1.0)
+        self.assertLess(float(np.linalg.norm(c.center_of_mass() - p0)), 0.03)
+
+    def test_ignition_needs_power(self):
+        w = self.world(gravity_scale=0.0)
+        c = self.put(w, [((1, 0, 0), "steel", self.TANK), ((3, 0, 0), "steel", {"def": "thruster", "dir": 2}),
+                         ((2, 0, 0), "steel", {"def": "pipe", "dir": 2})], extra=40.0)
+        self.use(w, c, self.idx(c, "thruster"))
+        self.run_for(w, 0.2)
+        thr = self.dev(c, "thruster")
+        self.assertFalse(thr["state"]["lit"])
+        self.assertIn("電気", thr["state"].get("error", ""))
+
+    def _plant(self, w, open_tank, open_thr):
+        """精錬機（水 → 燃料）を真ん中に、バルブ越しにタンクと推進機。電気は太陽光パネルとバッテリー。"""
+        return self.put(w, [
+            ((0, 0, 0), "steel", {"def": "refiner", "dir": 2, "state": {"store": {"water": 200.0}}}),
+            ((-1, 0, 0), "steel", {"def": "valve", "dir": 2, "state": {"open": open_tank}}),
+            ((-2, 0, 0), "steel", {"def": "tank", "dir": 2}),
+            ((1, 0, 0), "steel", {"def": "valve", "dir": 2, "state": {"open": open_thr}}),
+            ((2, 0, 0), "steel", {"def": "thruster", "dir": 3}),
+            ((0, 1, 0), "steel", {"def": "battery", "dir": 2, "state": {"charge": 2.0e7}}),
+        ], extra=0.6)
+
+    def test_refiner_fuel_goes_through_open_valves(self):
+        for open_tank, open_thr in ((1.0, 0.0), (0.0, 1.0), (1.0, 1.0)):
+            with self.subTest(tank=open_tank, thruster=open_thr):
+                w = self.world()
+                c = self._plant(w, open_tank, open_thr)
+                self.run_for(w, 5.0)
+                before = self.dev(c, "refiner")["state"]["store"].get("fuel", 0.0)
+                self.dev(c, "thruster")["state"]["ignite"] = True
+                self.run_for(w, 0.5)
+                tank = self.dev(c, "tank")["state"]["contents"].get("fuel", 0.0)
+                burned = self.dev(c, "thruster")["state"]["lit"] or self.dev(c, "thruster")["state"].get("firing", 0) > 0
+                made = self.dev(c, "refiner")["state"]["store"].get("fuel", 0.0)
+                if open_tank:
+                    self.assertGreater(tank, 0.0)
+                    self.assertLess(made, 1e-6)          # できた燃料はタンクへ流れた
+                else:
+                    self.assertEqual(tank, 0.0)
+                if not open_tank and not open_thr:
+                    self.assertGreater(made, 0)
+                if open_thr and not open_tank:
+                    self.assertGreater(before, 0.0)
+                    self.assertLess(made, before)        # 推進機が精錬機の燃料を燃やしている
+                shutil.rmtree(paths.world_dir("t"), ignore_errors=True)
+
+    def test_iron_moves_to_fabricator_only_when_connected(self):
+        cases = {"adjacent": [((1, 0, 0), "steel", {"def": "fabricator", "dir": 2})],
+                 "pipe": [((1, 0, 0), "steel", {"def": "pipe", "dir": 2}),
+                          ((2, 0, 0), "steel", {"def": "fabricator", "dir": 2})],
+                 "valve_closed": [((1, 0, 0), "steel", {"def": "valve", "dir": 2, "state": {"open": 0.0}}),
+                                  ((2, 0, 0), "steel", {"def": "fabricator", "dir": 2})],
+                 "apart": [((1, 0, 0), "steel", None), ((2, 0, 0), "steel", {"def": "fabricator", "dir": 2})]}
+        for name, rest in cases.items():
+            with self.subTest(name):
+                w = self.world()
+                c = self.put(w, [((0, 0, 0), "steel", {"def": "refiner", "dir": 2, "state": {"store": {"ore": 60.0}}}),
+                                 ((0, 1, 0), "steel", {"def": "battery", "dir": 2, "state": {"charge": 2.0e7}})] + rest,
+                             extra=0.6)
+                self.run_for(w, 9.0)
+                fab = self.dev(c, "fabricator")["state"]["store"]
+                ref = self.dev(c, "refiner")["state"]["store"]
+                if name in ("adjacent", "pipe"):
+                    self.assertGreater(fab.get("parts", 0.0), 0.0, name)
+                else:
+                    self.assertEqual(fab.get("parts", 0.0), 0.0, name)
+                    self.assertGreater(ref.get("iron", 0.0), 0.0, name)
+                shutil.rmtree(paths.world_dir("t"), ignore_errors=True)
+
+    def test_old_world_generator_becomes_pipe(self):
+        d = paths.world_dir("t")
+        (d / "scripts").mkdir(parents=True, exist_ok=True)
+        s = dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
+        (d / "world.json").write_text(json.dumps(s), encoding="utf-8")
+        (d / "constructs.json").write_text(json.dumps([{"id": "g", "name": "古い", "voxel_size": 0.5, "voxels": [
+            [0, 0, 0, "steel", {"def": "generator", "dir": 2, "name": "発電機", "state": {"enabled": True}}],
+            [1, 0, 0, "steel", {"def": "valve", "dir": 2, "name": "バルブ", "state": {"open": True}}]]}]), encoding="utf-8")
+        w = World("t", CFG).load()
+        c = w.constructs["g"]
+        self.assertEqual([d["def"] for d in c.devs], ["pipe", "valve"])
+        self.assertEqual(c.devs[1]["state"]["open"], 1.0)
 
 if __name__ == "__main__":
     unittest.main()

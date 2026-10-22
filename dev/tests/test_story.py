@@ -126,12 +126,23 @@ class StoryCase(unittest.TestCase):
         self.tp(0.0, 42.0)
         self.run_for(0.4)
         self.assertEqual(self.ch(), "power")
-        # 第2章：バルブ・発電機
+        # 第2章：バルブを開ける → 背中合わせの推進機2つに点火（発電）。押す力は打ち消し合って動かない
+        pc = s.con("power")
+        thr = [i for i, d in enumerate(pc.devs) if d and d["def"] == "thruster"]
+        w.interact({"kind": "voxel", "construct": pc, "index": thr[0], "face": 2})
+        self.run_for(0.3)
+        self.assertFalse(pc.devs[thr[0]]["state"]["lit"], "バルブが閉じていると点火できない")
         self.use("power", "valve")
-        self.use("power", "generator")
+        for i in thr:
+            w.interact({"kind": "voxel", "construct": pc, "index": i, "face": 2})
+        p0 = pc.center_of_mass()
         self.run_for(0.6)
         self.assertEqual(self.ch(), "control")
         self.assertTrue(s.st["lights"])
+        self.assertGreater(pc.status["production"], 0)
+        self.run_for(3.0)
+        self.assertLess(float(np.linalg.norm(pc.center_of_mass() - p0)), 0.05, "発電用の推進機で電源が動いた")
+        self.assertEqual(pc.n_vox, len(self.sites.power_voxels()), "電源が壊れた")
         # 第3章：お手本を見る・課題（お手本と同じプログラムにして棒を立てる）
         self.tp(*s.map_xz(s.con("model").center_of_mass()))
         c, i = s.dev("task", "computer", "課題")

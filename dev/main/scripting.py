@@ -109,23 +109,37 @@ class DeviceHandle:
         """構築物の重心から見たローカル座標での位置 [x,y,z] (m)。"""
         return self._p.device_offset(self._i)
 
-    # 推進機
+    # 推進機 -----------------------------------------------------------
+    def ignite(self):
+        """点火する（電気を使う。燃えていれば何もしない）。止める・出力を変えるのは、つながるバルブで。"""
+        self._p.device_set(self._i, "ignite", True)
+
+    @property
+    def lit(self):
+        """燃えているか。"""
+        return bool(self._p.device_get(self._i, "lit", False))
+
     @property
     def throttle(self):
-        return self._p.device_get(self._i, "throttle", 0.0)
+        """いまの出力 0〜1（バルブから来る燃料の量で決まる）。"""
+        return self._p.device_get(self._i, "firing", 0.0) or 0.0
 
     @throttle.setter
     def throttle(self, v):
+        """前の版との互換：0 より大きい値で点火する（出力は変えられない。バルブの open で変える）。"""
         self._p.device_set(self._i, "throttle", v)
 
-    # バルブ
+    # バルブ -----------------------------------------------------------
     @property
     def open(self):
-        return self._p.device_get(self._i, "open", True)
+        """開き具合 0〜1（0 で閉）。True / False も使える。"""
+        return self._p.device_get(self._i, "open", 1.0)
 
     @open.setter
     def open(self, v):
         self._p.device_set(self._i, "open", v)
+
+    flow = open
 
     # アクチュエーター -------------------------------------------------
     def rotate(self, angle, speed=None):

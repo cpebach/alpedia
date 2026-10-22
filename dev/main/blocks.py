@@ -50,9 +50,13 @@ STATEMENTS = {
     "reset_timer": dict(cat="control", label="タイマーをリセット"),
     "stop": dict(cat="control", label="プログラムを止める"),
     # 機器
-    "throttle": dict(cat="device", label="推進機 {dev} の出力を {value} にする",
-                     slots={"dev": "dev:thruster", "value": "num"}),
+    "ignite": dict(cat="device", label="推進機 {dev} に点火する", slots={"dev": "dev:thruster"}),
+    "valve_flow": dict(cat="device", label="バルブ {dev} の開き具合を {value} にする",
+                       slots={"dev": "dev:valve", "value": "num"}),
     "valve": dict(cat="device", label="バルブ {dev} を {state}", slots={"dev": "dev:valve", "state": "choice:開く|閉じる"}),
+    # 前の版のブロック（0 より大きいと点火するだけ。出力はバルブで変える）
+    "throttle": dict(cat="device", label="推進機 {dev} の出力を {value} にする（点火のみ）",
+                     slots={"dev": "dev:thruster", "value": "num"}),
     "enable": dict(cat="device", label="機器 {dev} を {state}", slots={"dev": "dev:*", "state": "choice:ON|OFF"}),
     # アクチュエーター
     "act_rotate": dict(cat="actuator", label="{dev} を {angle} 度回す（速さ {speed} 度/秒）",
@@ -86,6 +90,8 @@ STMT_DEFAULTS = {
     "if_else": {"cond": {"type": "key", "key": "space"}},
     "repeat": {"n": {"type": "num", "v": 3}},
     "throttle": {"dev": "*", "value": {"type": "num", "v": 1.0}},
+    "ignite": {"dev": "*"},
+    "valve_flow": {"dev": "*", "value": {"type": "num", "v": 0.5}},
     "valve": {"dev": "*", "state": "開く"},
     "enable": {"dev": "*", "state": "ON"},
     "act_rotate": {"dev": "*", "angle": {"type": "num", "v": 90}, "speed": {"type": "num", "v": 45}},
@@ -126,9 +132,9 @@ SENSORS = {
 OPS = {"+": "+", "-": "-", "×": "*", "÷": "/", "余り": "%"}
 CMPS = {"<": "<", ">": ">", "=": "==", "≦": "<=", "≧": ">=", "≠": "!="}
 FUNCS = {"絶対値": "abs", "四捨五入": "_round", "平方根": "math.sqrt", "sin": "_sin", "cos": "_cos"}
-DEVPROPS = {"角度": "angle", "出力の向き": "output_angle", "伸び": "extension", "出力": "throttle",
+DEVPROPS = {"角度": "angle", "出力の向き": "output_angle", "伸び": "extension", "出力": "throttle", "開き具合": "open",
             "燃料": "fuel", "蓄電": "charge"}
-DEVBOOLS = {"動作中": "busy", "結合している": "attached", "開いている": "open"}
+DEVBOOLS = {"動作中": "busy", "結合している": "attached", "開いている": "open", "燃えている": "lit"}
 
 # パレットに並べる式ブロック（種類, 表示名, 作るノード）
 EXPR_PALETTE = [
@@ -432,6 +438,10 @@ def gen_stmt(node):
         return _dev_loop(node, "thruster", f"d.throttle = {g(node.get('value'))}")
     if t == "valve":
         return _dev_loop(node, "valve", f"d.open = {node.get('state') == '開く'}")
+    if t == "ignite":
+        return _dev_loop(node, "thruster", "d.ignite()")
+    if t == "valve_flow":
+        return _dev_loop(node, "valve", f"d.open = max(0.0, min(1.0, {g(node.get('value'))}))")
     if t == "enable":
         return _dev_loop(node, None, f"d.enabled = {node.get('state') == 'ON'}") if node.get("dev") != "*" else \
             ["for d in api.devices():", f"    d.enabled = {node.get('state') == 'ON'}"]

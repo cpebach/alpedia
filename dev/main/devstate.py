@@ -44,12 +44,16 @@ COMMON = {
 }
 
 SCHEMA = {
-    "thruster": {"throttle": F("float", 0.0), "firing": F("float", optional=True, saved=False)},
+    # 推進機：lit＝燃えている（燃料が来なくなると消える）。ignite＝点火の頼み（次のティックで点火する）
+    # firing / throttle＝いまの出力 0〜1（毎ティック計算。throttle は前の版のスクリプト向けの名前）
+    "thruster": {"lit": F("bool", False), "ignite": F("bool", optional=True, saved=False),
+                 "firing": F("float", optional=True, saved=False), "throttle": F("float", optional=True, saved=False)},
     "tank": {"contents": F("dict", lambda p, st: dict(p.get("contents", {})))},
     "pipe": {},
-    "valve": {"open": F("bool", _p("open", True))},
+    # バルブ：open＝開き具合 0〜1（0 で閉。前の版の True/False は 1/0）。set＝E で開け直すときの開き具合
+    "valve": {"open": F("float", _p("open", 1.0)), "set": F("float", optional=True)},
     "battery": {"charge": F("float", _p("charge", 0.0))},
-    "generator": {"enabled": F("bool", True)},
+    "generator": {"enabled": F("bool", True)},                  # 太陽光パネル
     "crank": {"pending": F("float", optional=True)},           # 回したけれどまだ配っていない電気 (J)
     "computer": {"script": F("str", _p("script", "")), "running": F("bool", False), "memory": F("dict", {}),
                  "blocks": F("str", optional=True)},         # ブロックプログラムのファイル名
@@ -60,6 +64,7 @@ SCHEMA = {
                  "rot_speed": F("float", _p("rot_speed", 90.0)),
                  "preset": F("dict", lambda p, st: _default_preset())},
     "processor": {"progress": F("float", 0.0), "enabled": F("bool", True), "next": F("int", optional=True),
+                  "store": F("dict", {}),                       # 中にある物（原料と、作った物）
                   "working": F("bool", optional=True, saved=False)},
     "seat": {},
     "air_vent": {"mode": F("str", _p("mode", "fill")), "enabled": F("bool", True),

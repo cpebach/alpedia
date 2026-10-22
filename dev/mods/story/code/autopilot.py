@@ -8,7 +8,8 @@ MOON_SCRIPT = r'''"""ルミナス号 航法プログラム：月の街「ルナ�
 このコンピューターを E で起動してから、操縦席に E で座ります（座ると発進のカウントダウン）。
   待機 → カウントダウン → 上昇 → 巡航（月の発着場の上空へ）→ 降下 → 着陸
 考え方は「行きたい速度 − 今の速度」のぶんだけ加速する、です（重力のぶんも足す）。
-船の向き（上 = 推力の向き）は、4つの推進機の出力に差をつけて合わせます（姿勢制御）。
+船の向き（上 = 推力の向き）は、推進機の出力に差をつけて合わせます（姿勢制御）。
+推進機の出力は、それぞれの真上のバルブの開き具合で変えます（バルブを閉じると火が消えるので、点火し直す）。
 数字を変えると、速さや降り方が変わります。
 """
 import math
@@ -22,6 +23,7 @@ BRAKE = 2.5              # 減速の強さ (m/s²)
 HOVER_ALT = 90.0         # 降下を始める、発着場の上の高さ (m)
 LAND_H = 1.5             # 着陸したとみなす、発着場の上面からの重心の高さ (m)
 KV = 0.8                 # 速度のずれへの効き
+KEEP = 0.01              # 飛んでいる間のバルブのいちばん小さい開き具合（火を消さない）
 
 
 def add(a, b, k=1.0):
@@ -45,6 +47,33 @@ def unit(a):
     return [a[0] / n, a[1] / n, a[2] / n]
 
 
+def engines(api):
+    """推進機と、その燃料を通すバルブ（いちばん近いもの）の組。推力はバルブの開き具合で変える。"""
+    vs = api.devices("valve")
+    out = []
+    for t in api.devices("thruster"):
+        to = t.offset
+        best = min(vs, key=lambda v: sum((a - b) ** 2 for a, b in zip(v.offset, to)), default=None)
+        out.append((t, best))
+    return out
+
+
+def set_power(t, v, x, keep=KEEP):
+    """推進機 t の出力を x（0〜1）にする：バルブ v を開き、火が消えていれば点火し直す（点火は電気を少し使う）。
+    keep：飛んでいる間は少しだけ開けておき、火が消えないようにする。"""
+    x = min(keep + max(x, 0.0), 1.0)          # 少し足しておく（差をつける分は消さない）
+    if v is not None:
+        v.open = x
+    if x > 0:
+        t.ignite()
+
+
+def stop_all(api):
+    """すべてのバルブを閉じる（推進機の火が消える）。"""
+    for v in api.devices("valve"):
+        v.open = 0.0
+
+
 def gravity(p):
     g = [0.0, 0.0, 0.0]
     for c, mu in BODIES:
@@ -65,9 +94,9 @@ def steer(api, d, base):
     wx, wy, wz = api.angular_velocity_local
     tx = dz * 2.0 - wx * 2.4
     tz = -dx * 2.0 - wz * 2.4
-    for t in api.devices("thruster"):
+    for t, v in engines(api):
         ox, oy, oz = t.offset
-        t.throttle = min(max(base + (-oz * tx + ox * tz) * 0.5, 0.0), 1.0)
+        set_power(t, v, base + (-oz * tx + ox * tz) * 0.5)
 
 
 def limit_tilt(d, up, deg):
@@ -128,9 +157,9 @@ def tick(api):
             print("降下")
     if phase == "descent":
         side = sub(to_pad, [x * dot(to_pad, PAD_UP) for x in PAD_UP])   # 横のずれ
-        rate = min(max((h_pad - LAND_H) * 0.25, 0.6), 6.0)
-        if length(side) > 1.0 and h_pad < 12:
-            rate = 0.0                    # 低い所では、真上に来てから降りる
+        rate = min(max((h_pad - LAND_H) * 0.2, 0.6), 4.0)
+        if length(side) > max(1.0, h_pad * 0.15):
+            rate = 0.0                    # ずれているときは高さを保って、真上に来てから降りる
         k = min(0.35, 3.0 / max(length(side), 1e-6))     # 横は 3 m/s まで
         v_des = add([-x * rate for x in PAD_UP], side, k)
         msg = f"降下  高さ {h_pad:.1f} m"
@@ -138,8 +167,7 @@ def tick(api):
             phase = "landed"
             print("着陸しました！ ようこそルナ・ポートへ")
     if phase in ("landed", "wait"):
-        for t in api.devices("thruster"):
-            t.throttle = 0.0
+        stop_all(api)
         if phase == "landed":
             msg = "着陸"
     else:
@@ -150,11 +178,14 @@ def tick(api):
         base = min(length(a_cmd) / a_max, 1.0)
         d = unit(a_cmd) if base > 0.001 else up
         if phase in ("ascent", "descent"):
+            up = unit([-x for x in g])     # 重力の反対向き（テラにも引かれるので、月の真上から少しずれる）
             a_up = dot(a_cmd, up)
-            if a_up <= 0.05:              # 下へ速めたいときは噴かさない（重力で落ちる）。向きだけ保つ
-                d, base = up, 0.0
+            if a_up <= 0.05:              # 下へ速めたいときはほとんど噴かさない（重力で落ちる）。横のずれだけ直す
+                a_h = add(a_cmd, up, -a_up)
+                d = limit_tilt(unit(add(a_h, up, 1.0)), up, 25.0)
+                base = min(length(a_h) / a_max, 0.02)
             else:
-                d = limit_tilt(d, up, 25.0)
+                d = limit_tilt(d, up, 30.0)
                 base = min(a_up / dot(d, up) / a_max, 1.0)
         steer(api, d, base)
     m["phase"] = phase
@@ -172,7 +203,7 @@ BIKE_SCRIPT = r'''"""ホバーバイクの制御（座っている人のキー�
 
 操縦席に座ると、このコンピューターが動き出します（座っていない間は止まって着地します）。
   W/S：前・後　A/D：左・右（バイクの向きが前）　Space：上へ　Left Shift：下へ
-地面から HOVER m の高さに浮き、四隅の推進機の出力に差をつけて、進みたい方へ少し傾けます。
+地面から HOVER m の高さに浮き、四隅の推進機の出力（それぞれの真上のバルブの開き具合）に差をつけて、進みたい方へ少し傾けます。
 ドローン（drone.py）と同じ考え方です。
 """
 import math
@@ -181,6 +212,7 @@ THRUST = 150000.0      # 推進機1つの最大推力 (N)
 HOVER = 1.2            # 浮く高さ（地面に置いたときより上）(m)
 MAX_SPEED = 11.0       # 水平の最高速度 (m/s)
 MAX_LEAN = 0.4
+KEEP = 0.02            # 浮いている間のバルブのいちばん小さい開き具合（火を消さない）
 
 
 def dot(a, b):
@@ -195,6 +227,33 @@ def flat(v, up):
 def unit(v):
     n = math.sqrt(dot(v, v)) or 1.0
     return [v[0] / n, v[1] / n, v[2] / n]
+
+
+def engines(api):
+    """推進機と、その燃料を通すバルブ（いちばん近いもの）の組。推力はバルブの開き具合で変える。"""
+    vs = api.devices("valve")
+    out = []
+    for t in api.devices("thruster"):
+        to = t.offset
+        best = min(vs, key=lambda v: sum((a - b) ** 2 for a, b in zip(v.offset, to)), default=None)
+        out.append((t, best))
+    return out
+
+
+def set_power(t, v, x, keep=KEEP):
+    """推進機 t の出力を x（0〜1）にする：バルブ v を開き、火が消えていれば点火し直す（点火は電気を少し使う）。
+    keep：飛んでいる間は少しだけ開けておき、火が消えないようにする。"""
+    x = min(keep + max(x, 0.0), 1.0)          # 少し足しておく（差をつける分は消さない）
+    if v is not None:
+        v.open = x
+    if x > 0:
+        t.ignite()
+
+
+def stop_all(api):
+    """すべてのバルブを閉じる（推進機の火が消える）。"""
+    for v in api.devices("valve"):
+        v.open = 0.0
 
 
 def tick(api):
@@ -221,8 +280,7 @@ def tick(api):
     else:
         m["flying"] = False
         m["lift"] = HOVER
-        for t in api.devices("thruster"):
-            t.throttle = 0.0
+        stop_all(api)
         api.display("ホバーバイク\\n座ると動きます", width=1.0, color=(1.0, 0.85, 0.5))
         return
     X, Y, Z = api.orientation()
@@ -247,9 +305,9 @@ def tick(api):
     g = pl["mu"] / max(r2, 1.0)
     thrusters = api.devices("thruster")
     base = api.mass * (g + acc) / (len(thrusters) * THRUST * max(dot(Y, up), 0.5)) if thrusters else 0.0
-    for t in thrusters:
+    for t, v in engines(api):
         ox, oy, oz = t.offset
-        t.throttle = min(max(base + (-oz * tx + ox * tz) * 0.4, 0.0), 1.0)
+        set_power(t, v, base + (-oz * tx + ox * tz) * 0.4)
     api.display(f"ホバーバイク\\n速さ {math.sqrt(dot(vh, vh)):.1f} m/s\\n高さ {alt - m['ground']:.1f} m", width=1.0,
                 color=(0.6, 1.0, 0.8))
 '''

@@ -150,6 +150,16 @@ class DevicePanel:
              text="同じ名前の機器は、コンピューターからまとめて動きます。\n"
                   "名前を分けると、ブロックの機器選択や api.device(\"名前\") で個別に制御できます。\n"
                   "（名前はキーボードで入力します）")
+        self.valve_text = None
+        if dd.get("type") == "valve":
+            # バルブの開き具合（燃料・物資を通す量。推進機につなげば推力が変わる）
+            self.valve_text = Text(parent=self.root, text="", position=(-0.5, -0.245), origin=(-0.5, 0), scale=0.8)
+            for k, v in enumerate((0.0, 0.1, 0.25, 0.5, 0.75, 1.0)):
+                btn(f"{v:.0%}", (-0.18 + k * 0.1, -0.245), (lambda v=v: self.set_open(v)), w=0.085)
+        elif dd.get("type") == "thruster":
+            Text(parent=self.root, position=(-0.5, -0.245), origin=(-0.5, 0), scale=0.62, color=color.rgb(1, 0.85, 0.5),
+                 text="E で点火（電気を少し使う）。燃えている間は発電もする。\n"
+                      "止める・出力を変えるには、タンクとのあいだにバルブを入れて、バルブで。")
         btn("OK", (0.2, -0.33), self.ok, w=0.16, col=color.rgb(0.2, 0.5, 0.3), ts=0.8)
         btn("キャンセル", (0.38, -0.33), self.close, w=0.16, col=color.rgb(0.3, 0.3, 0.33), ts=0.8)
 
@@ -190,11 +200,23 @@ class DevicePanel:
         self.set_text(self.c.devs[i]["name"])
         self.world.message(f"「{name}」{n} 個に番号を付けました" if n else f"「{name}」という名前の機器は1つだけです")
 
+    def set_open(self, v):
+        i = self.index
+        if i is None:
+            return
+        st = self.c.devs[i]["state"]
+        st["open"] = float(v)
+        if v > 0:
+            st["set"] = float(v)
+
     def refresh(self):
         i = self.index
         if i is None:
             self.info.text = "機器が見つかりません"
             return
+        if self.valve_text is not None:
+            o = float(self.c.devs[i]["state"].get("open", 1.0))
+            self.valve_text.text = f"開き具合 {o:.0%}" + ("（閉）" if o <= 0 else "")
         name = self.text()
         dup = [k for k in same_named(self.c, name) if k != i]
         lines = [f"構築物: {self.c.name}　種類: {self.type_name}（{self.c.devs[i]['def']}）"]

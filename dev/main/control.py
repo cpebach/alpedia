@@ -15,8 +15,9 @@ from .construct import DIR_NAMES
 
 # スクリプトから書き換えてよい機器の状態：{項目: 値を検査して直す関数}
 WRITABLE = {
-    "throttle": lambda v: float(min(max(float(v), 0.0), 1.0)),
-    "open": bool,
+    "throttle": lambda v: float(min(max(float(v), 0.0), 1.0)),    # 推進機：0 より大きいと点火（前の版との互換）
+    "ignite": bool,
+    "open": lambda v: float(min(max(float(v), 0.0), 1.0)),        # バルブの開き具合（True/False は 1/0）
     "enabled": bool,
     "running": bool,
 }
@@ -58,7 +59,7 @@ class Port:
         return dict(self._c.status)
 
     def storage(self):
-        return dict(self._c.storage)
+        return devices.storage_total(self._c)
 
     def cavities(self):
         return [{"cells": n, "pressure_kpa": p} for _, n, p in devices.cavity_report(self._c)]
@@ -136,8 +137,14 @@ class Port:
         v = WRITABLE[key](value)
         if dd and key not in devstate.fields(dd["type"]):
             return                        # その機器には無い項目（例：推進機の enabled）：何もしない
-        if key == "open" and v != d["state"].get("open", True):
-            self._c.dirty = True          # 配管のつながりが変わる
+        if key == "throttle":
+            if v > 0 and not d["state"].get("lit"):
+                d["state"]["ignite"] = True
+            return
+        if key == "ignite":
+            if v and not d["state"].get("lit"):
+                d["state"]["ignite"] = True
+            return
         d["state"][key] = v
 
     def device_cell(self, i):

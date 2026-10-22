@@ -73,6 +73,21 @@ def _write_json(path, data):
     tmp.replace(path)
 
 
+def _drop_fuel_generators(reg, cons):
+    """前の版の「燃料を使う発電機」（generator）を配管に置き換える（推進機が発電するようになったため）。"""
+    if reg.device("generator") is not None:
+        return 0
+    n = 0
+    for cd in cons:
+        for v in cd.get("voxels", []):
+            if len(v) > 4 and v[4] and v[4].get("def") == "generator":
+                v[4] = {"def": "pipe", "dir": int(v[4].get("dir", 2)), "name": "配管"}
+                n += 1
+    if n:
+        L.info("燃料の発電機 %d 個を配管に置き換えました", n)
+    return n
+
+
 def missing_references(reg, settings, cons, mods):
     """ワールドが使っているのに定義が無いもの（MOD を外した・MOD の ID が変わった など）。"""
     out = []
@@ -152,6 +167,7 @@ class World:
         self.settings["cleanup"] = {**DEFAULT_SETTINGS["cleanup"], **s.get("cleanup", {})}
         self.time = float(self.settings.get("time", 0.0))
         cons = _read_json(self.dir / "constructs.json", [])
+        n_gen = _drop_fuel_generators(self.registry, cons)
         errors += missing_references(self.registry, self.settings, cons, self.mods)
         if errors:
             raise modcode.ModLoadError(errors)
@@ -185,6 +201,8 @@ class World:
         L.info("ワールド '%s' を読み込み: 構築物 %d, 惑星 %d, MOD %s", self.name, len(self.constructs),
                len(self.planets), mods)
         self.message(f"ワールド「{self.name}」を読み込みました")
+        if n_gen:
+            self.message(f"燃料の発電機はなくなったので、{n_gen} 個を配管にしました（推進機が燃えている間に発電します）")
         return self
 
     def player_def(self, def_id):
