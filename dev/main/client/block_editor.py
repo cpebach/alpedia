@@ -30,6 +30,7 @@ class Row:
 
 
 class BlockEditor:
+    _outer_rgb = None   # 入れ子を描いている間の、外側の式ブロックの色
     def __init__(self, game, construct, index):
         from ursina import Entity, Text, Button, InputField, camera, color, mouse
         self.game = game
@@ -286,10 +287,12 @@ class BlockEditor:
         items = [(label, n) for cat, label, n in B.EXPR_PALETTE if cat == self.cat]
         if self.cat == "var":
             items += [(name, {"type": "var", "name": name}) for name in self.var_names()]
+        if self.cat == "vec":
+            items += [(name, {"type": "vvar", "name": name}) for name in self.var_names(vec=True)]
         if items:
-            U["Text"](parent=self.palette_root, text="値・条件のブロック（選んだ枠に入る）", position=(-0.87, y + 0.03),
+            U["Text"](parent=self.palette_root, text="値・条件のブロック（選んだ枠に入る）", position=(-0.87, y + 0.018),
                       origin=(-0.5, 0.5), scale=0.55, color=col.light_gray)
-            y -= 0.012
+            y -= 0.022
             x = -0.875
             for label, n in items:
                 w = 0.165 if len(label) <= 8 else 0.34
@@ -316,7 +319,7 @@ class BlockEditor:
         c = col.rgb(*rgb) if ok else col.rgb(*_dim(rgb, 0.4))
         b = U["Button"](parent=parent, text=_safe(label.replace("□", "○") if kind != "bool" else label),
                         position=(x, y), scale=(w, 0.034), color=c, text_size=0.58,
-                        model=_round_quad(w / 0.034, 0.18 if kind == "bool" else 0.5))
+                        model=_shape(w / 0.034, "arrow" if kind == "vec" else 0.18 if kind == "bool" else 0.5))
         b.on_click = (lambda nn=node: self.put_reporter(nn))
         return b
 
@@ -425,9 +428,9 @@ class BlockEditor:
         U = self.U
         col = U["color"]
         if outline:
-            U["Entity"](parent=self.rows_root, model=_round_quad((w + 0.008) / (h + 0.008), radius),
+            U["Entity"](parent=self.rows_root, model=_shape((w + 0.008) / (h + 0.008), radius),
                         position=(x + w / 2, y, z + 0.0015), scale=(w + 0.008, h + 0.008), color=col.rgb(1.0, 0.85, 0.1))
-        b = U["Button"](parent=self.rows_root, model=_round_quad(w / h, radius), position=(x + w / 2, y, z),
+        b = U["Button"](parent=self.rows_root, model=_shape(w / h, radius), position=(x + w / 2, y, z),
                         scale=(w, h), color=col.rgb(*rgb), highlight_color=col.rgb(*[min(1, v * 1.15) for v in rgb]),
                         pressed_color=col.rgb(*rgb))
         b.on_click = on_click
@@ -452,9 +455,10 @@ class BlockEditor:
         h, ts, z = self._metrics(depth)
         sel = self._is_sel(owner, key)
         click = (lambda: self.slot_click(owner, key, kind))
-        if base in ("var", "dev", "key", "choice"):
+        if base in ("var", "vvar", "dev", "key", "choice"):
             # 選ぶだけの欄（変数・機器・キー・選択）：▼ の付いた丸い札
-            rgb = {"var": B.CAT_COLOR["var"], "dev": B.CAT_COLOR["device"]}.get(base, (0.82, 0.85, 0.9))
+            rgb = {"var": B.CAT_COLOR["var"], "vvar": B.CAT_COLOR["vec"],
+                   "dev": B.CAT_COLOR["device"]}.get(base, (0.82, 0.85, 0.9))
             dark = base in ("key", "choice")
             txt = B.summary(val) + " ▼"
             tw = self._label(txt, x + 0.008, y, z - 0.003, ts, dark=dark)
@@ -470,6 +474,10 @@ class BlockEditor:
         t = node.get("type") if isinstance(node, dict) else None
         vk = B.value_kind(node)
         radius = 0.18 if (vk == "bool" or kind.split(":")[0] == "bool") else 0.5
+        arrow = vk == "vec" or kind.split(":")[0] == "vec"
+        if arrow:
+            radius = "arrow"
+        pad0, pad1 = (h * 0.32, h * 0.42) if arrow else (0.0, 0.0)      # 矢印の形：左のくぼみと右の先の分
         if t in (None, "num", "text", "bool") or depth >= 5:
             # 値（数値・文字・はい/いいえ）：白い入力欄。深すぎる入れ子はまとめて表示
             txt = B.summary(node) if t != "text" else str(node.get("v", ""))
@@ -480,13 +488,16 @@ class BlockEditor:
             self._box(x, y, w, h, (0.96, 0.96, 0.96), z, radius, click, outline=sel)
             return w
         rgb = _expr_rgb(node)
-        if t in ("var", "sensor", "bsensor", "radio_ok"):
-            tw = self._label(B.summary(node).strip("〈〉"), x + 0.008, y, z - 0.003, ts)
-            w = tw + 0.016
+        outer = self._outer_rgb
+        if outer is not None and tuple(outer) == tuple(rgb):
+            rgb = _shade(rgb)            # 同じ色の入れ子は少し明るく（境目が分かるように）
+        if t in ("var", "sensor", "bsensor", "radio_ok", "vsensor", "vvar"):
+            tw = self._label(B.summary(node).strip("〈〉"), x + 0.008 + pad0, y, z - 0.003, ts)
+            w = tw + 0.016 + pad0 + pad1
             self._box(x, y, w, h, rgb, z, radius, click, outline=sel)
             return w
         # 入れ物（演算・比較・機器の値など）：中の入力欄を順に並べる
-        cx = x + 0.007
+        cx = x + 0.007 + pad0
         for part in _expr_parts(node):
             if part[0] == "text":
                 cx += self._label(part[1], cx, y, z - 0.003, ts) + 0.005
@@ -500,8 +511,12 @@ class BlockEditor:
                 cx += mw + 0.005
             else:
                 _, ck, ckind = part
-                cx += self._draw_slot(node, ck, ckind, cx, y, depth + 1) + 0.005
-        w = cx - x + 0.002
+                keep, self._outer_rgb = self._outer_rgb, rgb
+                try:
+                    cx += self._draw_slot(node, ck, ckind, cx, y, depth + 1) + 0.005
+                finally:
+                    self._outer_rgb = keep
+        w = cx - x + 0.002 + pad1
         self._box(x, y, w, h, rgb, z, radius, click, outline=sel)
         return w
 
@@ -532,20 +547,20 @@ class BlockEditor:
             return
         owner, key, kind = ss
         base = kind.split(":")[0]
-        if base not in ("num", "bool", "text") or not B.fits(node, base):
-            need = {"num": "数値", "bool": "条件", "text": "文字"}.get(base, "選ぶだけ")
+        if base not in ("num", "bool", "text", "vec") or not B.fits(node, base):
+            need = {"num": "数値", "bool": "条件", "text": "文字", "vec": "矢印"}.get(base, "選ぶだけ")
             self._status(f"この欄（{need}）には入れられません")
             return
         nn = copy.deepcopy(node)
         cur = owner.get(key)
         children = B.expr_children(nn)
         nxt = None
-        if children and children[0][1] in ("num", "bool", "text") and B.value_kind(cur) is not None \
-                and B.fits(cur, children[0][1]):
+        if children and children[0][1] in ("num", "bool", "text", "vec") and B.value_kind(cur) is not None \
+                and B.fits(cur, children[0][1]) and not (children[0][1] == "text" and B.value_kind(cur) == "vec"):
             nn[children[0][0]] = copy.deepcopy(cur)      # 今の値を左側に
             if len(children) > 1:
                 nxt = (nn, children[1][0], children[1][1])
-        elif children and children[0][1] in ("num", "bool", "text"):
+        elif children and children[0][1] in ("num", "bool", "text", "vec"):
             nxt = (nn, children[0][0], children[0][1])
         owner[key] = nn
         self.slot_sel = nxt or (owner, key, kind)
@@ -669,14 +684,14 @@ class BlockEditor:
                     names.append(d["name"])
         return names
 
-    def var_names(self):
+    def var_names(self, vec=False):
         found = []
 
         def walk(x):
             if isinstance(x, dict):
-                if x.get("type") in ("set_var", "change_var"):
+                if x.get("type") in (("set_vvar",) if vec else ("set_var", "change_var")):
                     found.append(x.get("var"))
-                if x.get("type") == "var":
+                if x.get("type") == ("vvar" if vec else "var"):
                     found.append(x.get("name"))
                 for v in x.values():
                     walk(v)
@@ -685,7 +700,7 @@ class BlockEditor:
                     walk(v)
         walk(self.prog)
         out = []
-        for n in found + B.PRESET_VARS:
+        for n in found + (B.PRESET_VVARS if vec else B.PRESET_VARS):
             if n and n not in out:
                 out.append(n)
         return out
@@ -727,7 +742,8 @@ class BlockEditor:
                               highlight_color=col.rgba(0, 0, 0, 0.55), pressed_color=col.rgba(0, 0, 0, 0.55))
         blocker.on_click = lambda: None
         U["Entity"](parent=r, model="quad", position=(0, 0.0, 0.02), scale=(1.25, 0.9), color=col.rgb(0.1, 0.11, 0.15))
-        kind_name = {"num": "数値", "bool": "条件", "text": "文字", "key": "キー", "var": "変数"}.get(
+        kind_name = {"num": "数値", "bool": "条件", "text": "文字", "key": "キー", "var": "変数", "vec": "矢印",
+                     "vvar": "矢印の変数"}.get(
             kind.split(":")[0], "機器" if kind.startswith("dev") else "選択")
         U["Text"](parent=r, text=f"入力欄（{kind_name}）を設定", position=(-0.6, 0.42), origin=(-0.5, 0.5), scale=1.0)
         U["Text"](parent=r, text=f"今の値: {B.summary(cur)}", position=(-0.6, 0.37), origin=(-0.5, 0.5), scale=0.8,
@@ -773,6 +789,14 @@ class BlockEditor:
             ops, key = list(B.DEVPROPS), "prop"
         elif t == "devbool":
             ops, key = list(B.DEVBOOLS), "prop"
+        elif t == "vop":
+            ops, key = list(B.VOPS), "op"
+        elif t == "vscale":
+            ops, key = list(B.VSCALES), "op"
+        elif t == "vcomp":
+            ops, key = list(B.VCOMPS), "axis"
+        elif t == "vec":
+            ops, key = list(B.VFRAMES), "frame"
         else:
             return None
         if t in ("op", "cmp", "logic"):
@@ -820,11 +844,28 @@ class BlockEditor:
             U["Text"](parent=r, text="同じ名前の機器はまとめて動きます", position=(-0.6, y), origin=(-0.5, 0.5),
                       scale=0.65, color=col.light_gray)
             return y - 0.04
-        if base == "var":
-            items = [(n, (lambda nn=n: sv(node, key, nn)), var_c) for n in self.var_names()]
+        vec_c = col.rgb(*_dim(B.CAT_COLOR["vec"], 0.9))
+        if base in ("var", "vvar"):
+            items = [(n, (lambda nn=n: sv(node, key, nn)), vec_c if base == "vvar" else var_c)
+                     for n in self.var_names(vec=base == "vvar")]
             y = self._grid(r, items, y)
             return self._input_row(r, y, "新しい変数名（半角英数字）", "", NAME_CHARS,
                                    lambda s: sv(node, key, s) if s else None)
+        if base == "vec":
+            items = [(name, (lambda kk=k: sv(node, key, {"type": "vsensor", "name": kk})), vec_c)
+                     for k, (name, _) in B.VSENSORS.items()]
+            y = self._grid(r, items, y, cols=4, w=0.24)
+            ops = []
+            for _cat, label, n in B.EXPR_PALETTE:
+                if B.value_kind(n) == "vec" and n["type"] != "vsensor":
+                    nn = copy.deepcopy(n)
+                    if B.value_kind(cur) == "vec" and "a" in nn:
+                        nn["a"] = copy.deepcopy(cur)
+                    ops.append((label, (lambda x_=nn: sv(node, key, copy.deepcopy(x_), stay=True)), vec_c))
+            y = self._grid(r, ops, y, cols=3, w=0.33)
+            vitems = [(n, (lambda nn=n: sv(node, key, {"type": "vvar", "name": nn})), vec_c)
+                      for n in self.var_names(vec=True)]
+            return self._grid(r, vitems, y, cols=6, w=0.16)
         # 値（数値・条件・文字）
         if base in ("num", "text"):
             if base == "num":
@@ -844,6 +885,10 @@ class BlockEditor:
                           sens_c))
             items.append(("通信の受信値…", (lambda: sv(node, key, {"type": "radio_val", "ch": {"type": "text", "v": "ch1"}},
                                                           stay=True)), col.rgb(*_dim(B.CAT_COLOR["radio"], 0.9))))
+            for _cat, label, n in B.EXPR_PALETTE:
+                if n["type"] in ("vlen", "vcomp"):
+                    items.append((label.replace("→", "矢印"), (lambda x_=n: sv(node, key, copy.deepcopy(x_), stay=True)),
+                                  vec_c))
             y = self._grid(r, items, y, cols=5, w=0.2)
             ops = []
             for _cat, label, n in B.EXPR_PALETTE:
@@ -971,8 +1016,34 @@ def _round_quad(aspect, radius):
     return Quad(radius=radius, aspect=max(round(aspect, 2), 0.2), segments=3)
 
 
+def _shade(rgb):
+    lum = 0.3 * rgb[0] + 0.59 * rgb[1] + 0.11 * rgb[2]
+    return tuple(min(1.0, v * 1.22 + 0.06) for v in rgb) if lum < 0.55 else tuple(v * 0.8 for v in rgb)
+
+
+def _shape(aspect, radius):
+    return _arrow_mesh(aspect) if radius == "arrow" else _round_quad(aspect, radius)
+
+
+def _arrow_mesh(aspect):
+    """矢印の形（左にくぼみ、右がとがる）。幅 aspect・高さ 1 の形を、幅 1 に縮めて作る。"""
+    from ursina import Mesh
+    a = max(aspect, 0.8)
+    t = 0.42
+    pts = [(-a / 2, 0.5), (a / 2 - t, 0.5), (a / 2, 0.0), (a / 2 - t, -0.5), (-a / 2, -0.5), (-a / 2 + t * 0.75, 0.0)]
+    cx = (-a / 2 + t * 0.75 + a / 2 - t) / 2
+    vs = []
+    for k in range(len(pts)):
+        p, q = pts[k], pts[(k + 1) % len(pts)]
+        for tri in (((cx, 0.0), p, q), ((cx, 0.0), q, p)):      # 両面
+            vs += [(x / a, y_, 0) for x, y_ in tri]
+    return Mesh(vertices=vs, mode="triangle")
+
+
 def _expr_rgb(node):
     t = node.get("type") if isinstance(node, dict) else None
+    if t in B.VEC_TYPES or t in ("vlen", "vcomp", "vdot", "vangle"):
+        return B.CAT_COLOR["vec"]
     if t == "var":
         return B.CAT_COLOR["var"]
     if t in ("sensor", "bsensor", "devval", "devbool", "key"):
@@ -1010,6 +1081,34 @@ def _expr_parts(node):
         return [("text", "チャンネル"), ("child", "ch", "text"), ("text", "の受信値")]
     if t == "radio_has":
         return [("text", "チャンネル"), ("child", "ch", "text"), ("text", "に届いている")]
+    if t == "vec":
+        return [("menu", "frame", list(B.VFRAMES), node.get("frame", "ワールド")), ("text", "矢印"),
+                ("child", "x", "num"), ("child", "y", "num"), ("child", "z", "num")]
+    if t == "vto":
+        return [("text", "地点"), ("child", "x", "num"), ("child", "y", "num"), ("child", "z", "num"),
+                ("text", "への矢印")]
+    if t == "vop":
+        return [("child", "a", "vec"), ("menu", "op", list(B.VOPS), node.get("op", "+")), ("child", "b", "vec")]
+    if t == "vscale":
+        return [("child", "a", "vec"), ("menu", "op", list(B.VSCALES), node.get("op", "×")), ("child", "b", "num")]
+    if t == "vnorm":
+        return [("child", "a", "vec"), ("text", "の向き")]
+    if t == "vclamp":
+        return [("child", "a", "vec"), ("text", "の長さを"), ("child", "b", "num"), ("text", "までに")]
+    if t == "vperp":
+        return [("child", "a", "vec"), ("text", "の"), ("child", "b", "vec"), ("text", "に垂直な部分")]
+    if t == "vtilt":
+        return [("child", "a", "vec"), ("text", "を"), ("child", "b", "vec"), ("text", "から"), ("child", "n", "num"),
+                ("text", "度以内に")]
+    if t == "vlen":
+        return [("child", "a", "vec"), ("text", "の長さ")]
+    if t == "vcomp":
+        return [("child", "a", "vec"), ("text", "の"), ("menu", "axis", list(B.VCOMPS), node.get("axis", "前")),
+                ("text", "成分")]
+    if t == "vdot":
+        return [("child", "a", "vec"), ("text", "と"), ("child", "b", "vec"), ("text", "の内積")]
+    if t == "vangle":
+        return [("child", "a", "vec"), ("text", "と"), ("child", "b", "vec"), ("text", "の角度")]
     return [("text", B.summary(node))]
 
 

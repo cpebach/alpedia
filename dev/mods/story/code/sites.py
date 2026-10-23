@@ -494,13 +494,15 @@ def ship_voxels(broken=False):
                 st = {} if broken and (x, 1, z) in SHIP_EMPTY_TANKS else {"contents": {"fuel": 800.0}}
                 V.append(((x, 1, z), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク", "state": st}))
             elif (x, 1, z) in SHIP_VALVES:
-                V.append(((x, 1, z), "steel", {"def": "valve", "dir": 2, "name": "推進機のバルブ",
+                from .programs import SHIP_VALVE_NAMES
+                V.append(((x, 1, z), "steel", {"def": "valve", "dir": 2, "name": SHIP_VALVE_NAMES[(x, z)],
                                                "state": {"open": 0.0, "set": 1.0}}))
             else:
                 V.append(((x, 1, z), "steel", {"def": "pipe", "dir": 2}))
     deck = {(2, 2): {"def": "seat", "dir": 4, "name": "操縦席"},
             (2, 3): {"def": "computer", "dir": 5, "name": "航法コンピューター",
-                     "state": {"script": "" if broken else "moon.py"}},
+                     "state": {"script": ""} if broken else
+                     {"script": "moon.py", "blocks": "moon.blocks.json"}},
             (1, 1): {"def": "battery", "dir": 2, "name": "バッテリー"},
             (3, 1): {"def": "antenna", "dir": 2, "name": "アンテナ"}}
     for x in range(5):

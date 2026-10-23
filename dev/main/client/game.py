@@ -992,7 +992,70 @@ class Game:
                                        and npl.water_depth(origin[None])[0] > 0.02)
         # プレイヤーの体（自分は三人称のとき、ほかの参加者はいつも）
         self._render_players(origin, self.U["utime"].dt)
+        self._render_arrows(origin, far)
         self.origin = origin
+
+    def _render_arrows(self, origin, far):
+        """プログラムの「矢印を見せる」：構築物の重心から伸びる3Dの矢印（物の向こうでも見える）。"""
+        w = self.world
+        want = []
+        now = float(w.time)
+        for c in w.constructs.values():
+            com = None
+            for d in c.devs:
+                arr = d["state"].get("_arrows") if d else None
+                if not arr:
+                    continue
+                for key, a in list(arr.items()):
+                    if now - a[3] > 0.35 or now < a[3] - 1.0:
+                        arr.pop(key, None)
+                        continue
+                    if com is None:
+                        com = np.asarray(c.center_of_mass(), float)
+                        q = com - origin
+                        if float(q @ q) > min(far, 600.0) ** 2:
+                            break
+                    rgb = tuple(float(x) for x in key.split(","))
+                    want.append((com - origin, np.array(a[:3], float), rgb))
+        pool = getattr(self, "_arrow_pool", None)
+        if pool is None:
+            pool = self._arrow_pool = []
+        from ursina import Entity, Cone
+        while len(pool) < len(want):
+            shaft = Entity(parent=self.scene_root, model="cube", unlit=True)
+            head = Entity(parent=self.scene_root, model=Cone(8), unlit=True)
+            for e in (shaft, head):
+                e.setDepthTest(False)
+                e.setDepthWrite(False)
+                e.setBin("fixed", 60)
+                e.setLightOff()
+            pool.append((shaft, head))
+        for k, (shaft, head) in enumerate(pool):
+            if k >= len(want):
+                if shaft.enabled:
+                    shaft.enabled = head.enabled = False
+                continue
+            start, v, rgb = want[k]
+            L = float(np.linalg.norm(v))
+            if L < 0.02:
+                shaft.enabled = head.enabled = False
+                continue
+            L = min(L, 200.0)
+            d = v / np.linalg.norm(v)
+            s1 = np.cross(d, [0.0, 0.0, 1.0] if abs(d[2]) < 0.9 else [1.0, 0.0, 0.0])
+            s1 /= np.linalg.norm(s1)
+            s2 = np.cross(s1, d)
+            wd = min(0.06 + 0.012 * L, 0.3)
+            hl = min(L * 0.4, max(0.35, wd * 4.0))
+            ls = L - hl
+            axes = np.stack([s1, d, s2])
+            shaft.enabled = head.enabled = True
+            shaft.color = head.color = self.U["color"].rgb(*rgb)
+            if ls > 0.005:
+                self._set_box(shaft, start + d * (ls / 2), axes, (wd, ls, wd))
+            else:
+                shaft.enabled = False
+            self._set_box(head, start + d * (ls + hl / 2), axes, (wd * 3.2, hl, wd * 3.2))
 
     def _make_stars(self):
         """星空（カメラを中心にした遠い球面の点）。空が暗いほど見える。"""

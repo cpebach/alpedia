@@ -79,7 +79,6 @@ class StoryAddon(Addon):
         from main import tutorial_drone as drone
         from main import tutorial_rod as rod
         from main.content import SCRIPT_README
-        from . import autopilot
         st = self.st
         reg = world.registry
         self.terra.craters += sites.terra_craters(sites.terra_map(self.terra))
@@ -115,7 +114,6 @@ class StoryAddon(Addon):
         up = self.points["pad_up"]
         files = {
             "beacon.py": sites.BEACON_SCRIPT, "power.py": sites.POWER_SCRIPT,
-            "moon.py": autopilot.moon_script(pad, up, [(self.terra.center, self.terra.gm), (self.luna.center, self.luna.gm)]),
             "sway.py": rod.SWAY_SCRIPT,
             "README.txt": SCRIPT_README,
         }
@@ -124,6 +122,7 @@ class StoryAddon(Addon):
         from . import programs
         progs = [("kadai", rod.starter_program()), ("otehon", rod.solution_program())]
         progs += [(name, make()) for name, make in programs.PROGRAMS.items()]   # 乗り物（ブロックプログラム）
+        progs.append(("moon", programs.moon_program(pad, up)))                  # ルミナス号の航法
         for role, base in (("bike", "bike"), ("drone", "drone"), ("console", "drone_remote")):
             c, i = self.dev(role, "computer")
             if i is not None:
@@ -420,6 +419,7 @@ class StoryAddon(Addon):
         c, i = self.dev("ship", "computer")
         if i is not None:
             c.devs[i]["state"]["script"] = "moon.py"
+            c.devs[i]["state"]["blocks"] = "moon.blocks.json"
             c.devs[i]["state"].pop("error", None)
 
     def before_physics(self, world, dt):

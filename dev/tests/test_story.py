@@ -2,7 +2,7 @@
 
 - ワールドを作ると、舞台の構築物が地面・景色の箱にめり込まずに置かれ、動かしても壊れない
 - 序章から終章まで、各章の目標を（画面の操作の代わりに world の操作で）済ませると最後まで進む
-  （第7章は航法プログラム moon.py で本当に月まで飛んで着陸する）
+  （第7章は航法のブロックプログラム moon.blocks.json で本当に月まで飛んで着陸する）
 - 保存して読み込み直しても、進み具合はそのまま（構築物を作り直さない）
 - 章の一覧の「ここから」（jump）で、どの章からでも始められる
 移植・更新のときは、このテストが通ることと、docs/ストーリー台本.md の表を見比べる。
@@ -96,7 +96,7 @@ class StoryCase(unittest.TestCase):
         self.run_for(2.0)
         for role, cid in s.st["ids"].items():
             self.assertEqual(w.constructs[cid].n_vox, counts[role], f"{role} が壊れた")
-        for f in ("moon.py", "bike.py", "beacon.py", "power.py", "kadai.blocks.json", "otehon.py"):
+        for f in ("moon.py", "moon.blocks.json", "bike.py", "beacon.py", "power.py", "kadai.blocks.json", "otehon.py"):
             self.assertTrue((w.dir / "scripts" / f).exists(), f)
 
     def test_playthrough_to_the_moon(self):
@@ -187,11 +187,16 @@ class StoryCase(unittest.TestCase):
         self.assertEqual(self.ch(), "launch")
         c, i = s.dev("ship", "computer")
         self.assertEqual(c.devs[i]["state"]["script"], "moon.py")
+        self.assertEqual(c.devs[i]["state"]["blocks"], "moon.blocks.json")
         # 第7章：コンピューターを起動して座る → 月まで自動で飛んで着陸
         self.use("ship", "computer")
         self.run_for(1.0)
         self.assertLess(float(np.linalg.norm(s.con("ship").velocity())), 0.3, "座るまでは飛ばない")
         self.use("ship", "seat")
+        self.run_for(6.0, 1 / 30)
+        st = c.devs[i]["state"]
+        self.assertIsNone(st.get("error"))
+        self.assertEqual(len(st.get("_arrows", {})), 3, "飛んでいる間は矢印（行きたい速度・推力の向き・重力）を見せる")
         for _ in range(16):
             self.run_for(10.0, 1 / 30)
             if self.ch() != "launch":

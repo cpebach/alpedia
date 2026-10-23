@@ -87,6 +87,10 @@ class Port:
         pl = self._planet()
         return float(pl.sdf(self.pose()[0][None])[0]) if pl is not None else float("inf")
 
+    def gravity(self):
+        """重心の場所の重力加速度（すべての天体の分を足したもの）[3] m/s²。"""
+        return np.asarray(self._w.gravity(np.asarray(self.pose()[0], float)[None]), float).reshape(-1, 3)[0]
+
     def planet(self):
         pl = self._planet()
         if pl is None:

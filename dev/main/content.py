@@ -22,6 +22,7 @@ api.speed             速さ
 api.altitude          最寄り惑星の地表からの高度
 api.vertical_speed    上下方向の速度
 api.up                上方向ベクトル
+api.gravity           重心の場所の重力加速度 [x,y,z] m/s²（近くのすべての天体の分の合計）
 api.up_local          上方向（構築物ローカル座標。直立なら [0,1,0]）
 api.angular_velocity_local  角速度（ローカル座標）
 api.velocity_local    速度（ローカル座標）
@@ -42,6 +43,9 @@ api.display(text, face=None, width=None, color=None, background=None)
                       width: 表示板の幅 m（省略時はブロックの大きさ）
                       color / background: (r,g,b) 0〜1 または 0〜255
 api.clear_display()   表示を消す
+api.show_arrow(vec, color=(1,0.85,0.15), scale=1)
+                      矢印 vec [x,y,z]（ワールド座標）を、構築物の重心から伸びる3Dの矢印で見せる（約0.3秒で消える。
+                      毎回呼ぶ。色ごとに1本）
 api.stop()            このコンピューターを停止
 api.planet()          最寄り惑星 {"name","center","radius","mu","surface_gravity"}
 api.orbit()           軌道 {"altitude","apoapsis","periapsis","eccentricity","period",

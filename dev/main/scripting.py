@@ -248,6 +248,11 @@ class ScriptAPI:
         return _v(self._p.up())
 
     @property
+    def gravity(self):
+        """重心の場所の重力加速度 [x,y,z] m/s²（近くのすべての天体の分を足したもの）。"""
+        return _v(self._p.gravity())
+
+    @property
     def up_local(self):
         """惑星の上方向を構築物のローカル座標で表したもの（直立なら [0,1,0]）。"""
         R = self._p.pose()[1]
@@ -318,6 +323,21 @@ class ScriptAPI:
 
     def clear_display(self):
         self._p.set_display(self._ci, None)
+
+    def show_arrow(self, vec, color=(1.0, 0.85, 0.15), scale=1.0):
+        """矢印 vec（ワールド座標の [x,y,z]）を、構築物の重心から伸びる3Dの矢印で見せる（約0.3秒で消える）。
+        color：色 (r,g,b) 0〜1。同じ色の矢印は1本だけ（新しいものに置き換わる）。scale：長さの倍率。"""
+        try:
+            x, y, z = (float(a) for a in vec)
+            r, g, b = (float(a) for a in tuple(color)[:3])
+            k = float(scale)
+        except (TypeError, ValueError):
+            raise ValueError("show_arrow(vec, color, scale): vec は [x,y,z]、color は (r,g,b)")
+        st = self._p.comp_state(self._ci)
+        arrows = st.setdefault("_arrows", {})
+        arrows[f"{r:.3f},{g:.3f},{b:.3f}"] = [x * k, y * k, z * k, self._p.time]
+        if len(arrows) > 8:
+            arrows.pop(next(iter(arrows)))
 
     def stop(self):
         """このコンピューターを停止する（表示は残る）。"""

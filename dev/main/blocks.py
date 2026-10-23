@@ -25,6 +25,7 @@ CATEGORIES = [
     ("op", "演算", (0.30, 0.65, 0.35)),
     ("sensor", "センサー", (0.20, 0.62, 0.70)),
     ("radio", "通信", (0.80, 0.30, 0.55)),
+    ("vec", "矢印", (0.60, 0.30, 1.00)),
 ]
 CAT_COLOR = {k: c for k, _, c in CATEGORIES}
 
@@ -79,6 +80,10 @@ STATEMENTS = {
     "change_var": dict(cat="var", label="{var} を {value} ずつ変える", slots={"var": "var", "value": "num"}),
     # 通信（アンテナが必要）
     "radio_send": dict(cat="radio", label="チャンネル {ch} に {value} を送る", slots={"ch": "text", "value": "num"}),
+    # 矢印（ベクトル）
+    "set_vvar": dict(cat="vec", label="矢印の変数 {var} を {value} にする", slots={"var": "vvar", "value": "vec"}),
+    "show_vec": dict(cat="vec", label="矢印 {value} を {color} で見せる（{scale} 倍）",
+                     slots={"value": "vec", "color": "choice:黄|赤|緑|青|白|紫", "scale": "num"}),
 }
 
 STMT_DEFAULTS = {
@@ -104,6 +109,8 @@ STMT_DEFAULTS = {
     "set_var": {"var": "x", "value": {"type": "num", "v": 0}},
     "change_var": {"var": "x", "value": {"type": "num", "v": 1}},
     "radio_send": {"ch": {"type": "text", "v": "ch1"}, "value": {"type": "num", "v": 1}},
+    "set_vvar": {"var": "向き", "value": {"type": "vsensor", "name": "velocity"}},
+    "show_vec": {"value": {"type": "vsensor", "name": "velocity"}, "color": "黄", "scale": {"type": "num", "v": 1}},
 }
 
 # ---------------------------------------------------------------------------
@@ -139,10 +146,34 @@ BOOL_SENSORS = {
 }
 OPS = {"+": "+", "-": "-", "×": "*", "÷": "/", "余り": "%"}
 CMPS = {"<": "<", ">": ">", "=": "==", "≦": "<=", "≧": ">=", "≠": "!="}
-FUNCS = {"絶対値": "abs", "四捨五入": "_round", "平方根": "math.sqrt", "sin": "_sin", "cos": "_cos"}
+FUNCS = {"絶対値": "abs", "四捨五入": "_round", "平方根": "math.sqrt", "sin": "_sin", "cos": "_cos",
+         "マイナスなら0": "_pos"}
 DEVPROPS = {"角度": "angle", "出力の向き": "output_angle", "伸び": "extension", "出力": "throttle", "開き具合": "open",
             "燃料": "fuel", "蓄電": "charge"}
 DEVBOOLS = {"動作中": "busy", "結合している": "attached", "開いている": "open", "燃えている": "lit"}
+
+# 矢印（ベクトル）：向きと長さを持つ値。中身はワールド座標の [x, y, z]
+VSENSORS = {
+    "velocity": ("速度", "_V(api.velocity)"),
+    "gravity": ("重力", "_V(api.gravity)"),
+    "up": ("上向き", "_V(api.up)"),
+    "ship_fwd": ("船の前", "_V(api.orientation()[2])"),
+    "ship_right": ("船の右", "_V(api.orientation()[0])"),
+    "ship_up": ("船の上", "_V(api.orientation()[1])"),
+    "to_planet": ("惑星の中心への矢印", "_to_planet(api)"),
+    "position": ("位置", "_V(api.position)"),
+}
+VFRAMES = ["ワールド", "船から見た"]           # 矢印 (x, y, z)：船から見た＝(右, 上, 前)
+VOPS = {"+": "_vadd", "-": "_vsub"}
+VSCALES = {"×": "_vmul", "÷": "_vdiv"}
+VCOMPS = {"前": "f", "右": "r", "上": "u", "x": "x", "y": "y", "z": "z"}
+ARROW_COLORS = {"黄": (1.0, 0.85, 0.15), "赤": (1.0, 0.3, 0.25), "緑": (0.3, 0.95, 0.35), "青": (0.3, 0.6, 1.0),
+                "白": (1.0, 1.0, 1.0), "紫": (0.75, 0.45, 1.0)}
+PRESET_VVARS = ["向き", "行きたい速度", "ずれ"]
+
+
+def _vs(name):
+    return {"type": "vsensor", "name": name}
 
 # パレットに並べる式ブロック（種類, 表示名, 作るノード）
 EXPR_PALETTE = [
@@ -167,13 +198,33 @@ EXPR_PALETTE = [
     ("radio", "チャンネル □ の受信値", {"type": "radio_val", "ch": {"type": "text", "v": "ch1"}}),
     ("radio", "チャンネル □ に届いている", {"type": "radio_has", "ch": {"type": "text", "v": "ch1"}}),
     ("radio", "アンテナが使える", {"type": "radio_ok"}),
+    ("op", "マイナスなら0 □", {"type": "func", "fn": "マイナスなら0", "a": {"type": "num", "v": -1}}),
 ] + [("sensor", name, {"type": "sensor", "name": k}) for k, (name, _) in SENSORS.items()] \
-  + [("sensor", name, {"type": "bsensor", "name": k}) for k, (name, _) in BOOL_SENSORS.items()]
+  + [("sensor", name, {"type": "bsensor", "name": k}) for k, (name, _) in BOOL_SENSORS.items()] \
+  + [("vec", name, _vs(k)) for k, (name, _) in VSENSORS.items()] + [
+    ("vec", "矢印 (□, □, □)", {"type": "vec", "frame": "船から見た", "x": {"type": "num", "v": 0},
+                               "y": {"type": "num", "v": 1}, "z": {"type": "num", "v": 0}}),
+    ("vec", "地点 (□, □, □) への矢印", {"type": "vto", "x": {"type": "num", "v": 0}, "y": {"type": "num", "v": 0},
+                                     "z": {"type": "num", "v": 0}}),
+    ("vec", "→ + →", {"type": "vop", "op": "+", "a": _vs("velocity"), "b": _vs("gravity")}),
+    ("vec", "→ − →", {"type": "vop", "op": "-", "a": _vs("velocity"), "b": _vs("gravity")}),
+    ("vec", "→ × □", {"type": "vscale", "op": "×", "a": _vs("velocity"), "b": {"type": "num", "v": 2}}),
+    ("vec", "→ の向き", {"type": "vnorm", "a": _vs("velocity")}),
+    ("vec", "→ の長さを □ までに", {"type": "vclamp", "a": _vs("velocity"), "b": {"type": "num", "v": 5}}),
+    ("vec", "→ の → に垂直な部分", {"type": "vperp", "a": _vs("velocity"), "b": _vs("up")}),
+    ("vec", "→ を → から □ 度以内に", {"type": "vtilt", "a": _vs("ship_up"), "b": _vs("up"),
+                                   "n": {"type": "num", "v": 30}}),
+    ("vec", "→ の長さ", {"type": "vlen", "a": _vs("velocity")}),
+    ("vec", "→ の 前 成分", {"type": "vcomp", "axis": "前", "a": _vs("velocity")}),
+    ("vec", "→ と → の内積", {"type": "vdot", "a": _vs("velocity"), "b": _vs("up")}),
+    ("vec", "→ と → の角度", {"type": "vangle", "a": _vs("ship_up"), "b": _vs("up")}),
+]
 
-# 式ブロックの値の種類（入れられる入力欄）：num＝数値 / bool＝条件 / text＝文字
-NUM_TYPES = {"num", "op", "func", "random", "sensor", "var", "devval", "radio_val"}
+# 式ブロックの値の種類（入れられる入力欄）：num＝数値 / bool＝条件 / text＝文字 / vec＝矢印
+NUM_TYPES = {"num", "op", "func", "random", "sensor", "var", "devval", "radio_val", "vlen", "vcomp", "vdot", "vangle"}
 BOOL_TYPES = {"bool", "cmp", "logic", "not", "key", "devbool", "radio_has", "radio_ok", "bsensor"}
 TEXT_TYPES = {"text", "join"}
+VEC_TYPES = {"vsensor", "vvar", "vec", "vto", "vop", "vscale", "vnorm", "vclamp", "vperp", "vtilt"}
 
 
 def value_kind(node):
@@ -184,17 +235,22 @@ def value_kind(node):
         return "bool"
     if t in TEXT_TYPES:
         return "text"
+    if t in VEC_TYPES:
+        return "vec"
     return None
 
 
 def fits(node, slot):
     """式ブロック node を、種類 slot（num/bool/text）の入力欄に入れられるか。
-    条件は数値の欄にも入れられる（はい＝1、いいえ＝0 として計算）。文字の欄には何でも入る。"""
+    条件は数値の欄にも入れられる（はい＝1、いいえ＝0 として計算）。文字の欄には何でも入る。
+    矢印は矢印の欄にだけ入る（数にするには「長さ」「成分」などのブロックを使う）。"""
     k = value_kind(node)
     if k is None:
         return False
     if slot == "text":
         return True
+    if k == "vec" or slot == "vec":
+        return k == slot
     if slot == "num":
         return k in ("num", "bool")
     return k == slot
@@ -304,6 +360,33 @@ def summary(node):
         return "〈アンテナが使える〉"
     if t == "bsensor":
         return f"〈{BOOL_SENSORS.get(node.get('name'), ('?',))[0]}〉"
+    if t == "vsensor":
+        return VSENSORS.get(node.get("name"), ("?",))[0]
+    if t == "vvar":
+        return node.get("name", "向き")
+    if t == "vec":
+        pre = "船から見た" if node.get("frame") == "船から見た" else ""
+        return f"{pre}矢印({summary(node.get('x'))}, {summary(node.get('y'))}, {summary(node.get('z'))})"
+    if t == "vto":
+        return f"地点({summary(node.get('x'))}, {summary(node.get('y'))}, {summary(node.get('z'))})への矢印"
+    if t in ("vop", "vscale"):
+        return f"[{summary(node.get('a'))} {node.get('op')} {summary(node.get('b'))}]"
+    if t == "vnorm":
+        return f"[{summary(node.get('a'))} の向き]"
+    if t == "vclamp":
+        return f"[{summary(node.get('a'))} の長さを {summary(node.get('b'))} までに]"
+    if t == "vperp":
+        return f"[{summary(node.get('a'))} の {summary(node.get('b'))} に垂直な部分]"
+    if t == "vtilt":
+        return f"[{summary(node.get('a'))} を {summary(node.get('b'))} から {summary(node.get('n'))} 度以内に]"
+    if t == "vlen":
+        return f"({summary(node.get('a'))} の長さ)"
+    if t == "vcomp":
+        return f"({summary(node.get('a'))} の {node.get('axis')} 成分)"
+    if t == "vdot":
+        return f"({summary(node.get('a'))} と {summary(node.get('b'))} の内積)"
+    if t == "vangle":
+        return f"({summary(node.get('a'))} と {summary(node.get('b'))} の角度)"
     return "?"
 
 
@@ -328,6 +411,16 @@ def expr_children(node):
         return [("key", "key")]
     if t in ("radio_val", "radio_has"):
         return [("ch", "text")]
+    if t in ("vec", "vto"):
+        return [("x", "num"), ("y", "num"), ("z", "num")]
+    if t in ("vop", "vperp", "vdot", "vangle"):
+        return [("a", "vec"), ("b", "vec")]
+    if t in ("vscale", "vclamp"):
+        return [("a", "vec"), ("b", "num")]
+    if t in ("vnorm", "vlen", "vcomp"):
+        return [("a", "vec")]
+    if t == "vtilt":
+        return [("a", "vec"), ("b", "vec"), ("n", "num")]
     return []
 
 
@@ -396,6 +489,108 @@ def _gravity(api):
     return p["mu"] / max(r2, 1.0)
 
 
+def _pos(a):
+    return a if a > 0 else 0.0
+
+
+# --- 矢印（ベクトル）[x, y, z] ---
+def _V(a):
+    try:
+        return [float(a[0]), float(a[1]), float(a[2])]
+    except (TypeError, ValueError, IndexError, KeyError):
+        return [0.0, 0.0, 0.0]
+
+
+def _vadd(a, b):
+    return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+
+
+def _vsub(a, b):
+    return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+
+
+def _vmul(a, k):
+    return [a[0] * k, a[1] * k, a[2] * k]
+
+
+def _vdiv(a, k):
+    return [a[0] / k, a[1] / k, a[2] / k] if k else [0.0, 0.0, 0.0]
+
+
+def _vdot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _vlen(a):
+    return math.sqrt(_vdot(a, a))
+
+
+def _vunit(a):
+    n = _vlen(a)
+    return _vmul(a, 1.0 / n) if n > 1e-9 else [0.0, 0.0, 0.0]
+
+
+def _vclamp(a, n):
+    k = _vlen(a)
+    return _vmul(a, max(n, 0.0) / k) if k > max(n, 0.0) and k > 0 else list(a)
+
+
+def _vperp(a, b):
+    u = _vunit(b)
+    return _vsub(a, _vmul(u, _vdot(a, u)))
+
+
+def _vangle(a, b):
+    na, nb = _vlen(a), _vlen(b)
+    if na < 1e-9 or nb < 1e-9:
+        return 0.0
+    return math.degrees(math.acos(max(-1.0, min(1.0, _vdot(a, b) / (na * nb)))))
+
+
+def _vtilt(a, b, deg):
+    """矢印 a の向きを、b から deg 度以内にする（長さはそのまま）。"""
+    n, u = _vlen(a), _vunit(b)
+    if n < 1e-9 or _vlen(u) < 0.5:
+        return list(a)
+    d = _vmul(a, 1.0 / n)
+    c, cmax = _vdot(d, u), math.cos(math.radians(max(0.0, min(180.0, deg))))
+    if c >= cmax:
+        return list(a)
+    h = _vunit(_vsub(d, _vmul(u, c)))
+    if _vlen(h) < 0.5:
+        return _vmul(u, n) if deg < 90 else list(a)
+    return _vmul(_vadd(_vmul(u, cmax), _vmul(h, math.sin(math.radians(deg)))), n)
+
+
+def _vship(api, x, y, z):
+    """船から見た (右, 上, 前) → ワールドの矢印。"""
+    X, Y, Z = api.orientation()
+    return [X[i] * x + Y[i] * y + Z[i] * z for i in range(3)]
+
+
+def _vcomp(api, a, axis):
+    if axis in "xyz":
+        return a["xyz".index(axis)]
+    X, Y, Z = api.orientation()
+    return _vdot(a, {{"r": X, "u": Y, "f": Z}}[axis])
+
+
+def _vget(v, name):
+    x = v.get(name)
+    return list(x) if isinstance(x, list) and len(x) == 3 else [0.0, 0.0, 0.0]
+
+
+def _to_planet(api):
+    p = api.planet()
+    return _vsub(p["center"], api.position) if p else [0.0, 0.0, 0.0]
+
+
+def _txt(a):
+    if isinstance(a, list):
+        return "(" + ", ".join("%.1f" % x for x in a) + ")"
+    return str(a)
+
+
 def _radio(api, ch):
     v = api.latest(str(ch))
     if isinstance(v, bool):
@@ -447,7 +642,7 @@ def gen_expr(node, kind="num"):
     if t == "random":
         return f"random.uniform({gen_expr(node.get('a'))}, {gen_expr(node.get('b'))})"
     if t == "join":
-        return f"(str({gen_expr(node.get('a'), 'text')}) + str({gen_expr(node.get('b'), 'text')}))"
+        return f"(_txt({gen_expr(node.get('a'), 'text')}) + _txt({gen_expr(node.get('b'), 'text')}))"
     if t == "key":
         return f"({_q(node.get('key', 'space'))} in keys)"
     if t == "devval":
@@ -462,7 +657,38 @@ def gen_expr(node, kind="num"):
         return "api.antenna"
     if t == "bsensor":
         return f"bool({BOOL_SENSORS.get(node.get('name'), ('', 'False'))[1]})"
-    return "0"
+    # 矢印
+    g = gen_expr
+    if t == "vsensor":
+        return VSENSORS.get(node.get("name"), ("", "[0.0, 0.0, 0.0]"))[1]
+    if t == "vvar":
+        return f"_vget(v, {_q(node.get('name', '向き'))})"
+    if t == "vec":
+        xyz = f"{g(node.get('x'))}, {g(node.get('y'))}, {g(node.get('z'))}"
+        return f"_vship(api, {xyz})" if node.get("frame") == "船から見た" else f"[{xyz}]"
+    if t == "vto":
+        return f"_vsub([{g(node.get('x'))}, {g(node.get('y'))}, {g(node.get('z'))}], _V(api.position))"
+    if t == "vop":
+        return f"{VOPS.get(node.get('op'), '_vadd')}({g(node.get('a'), 'vec')}, {g(node.get('b'), 'vec')})"
+    if t == "vscale":
+        return f"{VSCALES.get(node.get('op'), '_vmul')}({g(node.get('a'), 'vec')}, {g(node.get('b'))})"
+    if t == "vnorm":
+        return f"_vunit({g(node.get('a'), 'vec')})"
+    if t == "vclamp":
+        return f"_vclamp({g(node.get('a'), 'vec')}, {g(node.get('b'))})"
+    if t == "vperp":
+        return f"_vperp({g(node.get('a'), 'vec')}, {g(node.get('b'), 'vec')})"
+    if t == "vtilt":
+        return f"_vtilt({g(node.get('a'), 'vec')}, {g(node.get('b'), 'vec')}, {g(node.get('n'))})"
+    if t == "vlen":
+        return f"_vlen({g(node.get('a'), 'vec')})"
+    if t == "vcomp":
+        return f"_vcomp(api, {g(node.get('a'), 'vec')}, {_q(VCOMPS.get(node.get('axis'), 'f'))})"
+    if t == "vdot":
+        return f"_vdot({g(node.get('a'), 'vec')}, {g(node.get('b'), 'vec')})"
+    if t == "vangle":
+        return f"_vangle({g(node.get('a'), 'vec')}, {g(node.get('b'), 'vec')})"
+    return "[0.0, 0.0, 0.0]" if kind == "vec" else "0"
 
 
 def _dev_loop(node, kind, line):
@@ -522,6 +748,11 @@ def gen_stmt(node):
         return [f"v[{name}] = _num(v.get({name}, 0)) + {g(node.get('value'))}"]
     if t == "radio_send":
         return [f"api.send(str({g(node.get('ch'), 'text')}), {g(node.get('value'))})"]
+    if t == "set_vvar":
+        return [f"v[{_q(node.get('var', '向き'))}] = {g(node.get('value'), 'vec')}"]
+    if t == "show_vec":
+        rgb = ARROW_COLORS.get(node.get("color"), ARROW_COLORS["黄"])
+        return [f"api.show_arrow({g(node.get('value'), 'vec')}, color={rgb!r}, scale={g(node.get('scale'))})"]
     return [f"pass  # 未対応のブロック {t}"]
 
 

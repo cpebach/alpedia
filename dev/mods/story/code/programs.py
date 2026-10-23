@@ -1,4 +1,4 @@
-"""ストーリーの乗り物のブロックプログラム（ホバーバイク・ドローン・ドローンの操縦台）。
+"""ストーリーの乗り物のブロックプログラム（ホバーバイク・ドローン・ドローンの操縦台・ルミナス号の航法）。
 
 ブロックの画面（コンピューターを P）で開いて、中身を見たり変えたりできる。
 どれも同じ考え方：
@@ -125,6 +125,80 @@ def show(text, width=1.1):
     return stmt("display", text=text, width=N(width))
 
 
+def say(text):
+    return stmt("print", text=T(text))
+
+
+def fn(name, a):
+    return {"type": "func", "fn": name, "a": a}
+
+
+# --- 矢印（ベクトル）のブロック ----------------------------------------------
+def VS(name):
+    return {"type": "vsensor", "name": name}
+
+
+def VV(name):
+    return {"type": "vvar", "name": name}
+
+
+def vec(x, y, z, frame="ワールド"):
+    return {"type": "vec", "frame": frame, "x": N(round(float(x), 3)), "y": N(round(float(y), 3)),
+            "z": N(round(float(z), 3))}
+
+
+def vto(p):
+    return {"type": "vto", "x": N(round(float(p[0]), 3)), "y": N(round(float(p[1]), 3)), "z": N(round(float(p[2]), 3))}
+
+
+def vadd(a, b):
+    return {"type": "vop", "op": "+", "a": a, "b": b}
+
+
+def vsub(a, b):
+    return {"type": "vop", "op": "-", "a": a, "b": b}
+
+
+def vmul(a, k):
+    return {"type": "vscale", "op": "×", "a": a, "b": k}
+
+
+def vnorm(a):
+    return {"type": "vnorm", "a": a}
+
+
+def vclamp(a, n):
+    return {"type": "vclamp", "a": a, "b": n}
+
+
+def vperp(a, b):
+    return {"type": "vperp", "a": a, "b": b}
+
+
+def vtilt(a, b, deg):
+    return {"type": "vtilt", "a": a, "b": b, "n": N(deg)}
+
+
+def vlen(a):
+    return {"type": "vlen", "a": a}
+
+
+def vcomp(a, axis):
+    return {"type": "vcomp", "axis": axis, "a": a}
+
+
+def vdot(a, b):
+    return {"type": "vdot", "a": a, "b": b}
+
+
+def setvv(name, value):
+    return stmt("set_vvar", var=name, value=value)
+
+
+def show_vec(value, color, scale=1.0):
+    return stmt("show_vec", value=value, color=color, scale=N(scale))
+
+
 # --- 浮いて進む乗り物の制御（バイクとドローンで共通） ----------------------
 def hover_control():
     """変数 前後目標・左右目標（m/秒）と 目標高さ（m）に向けて、4つのバルブの開き具合を決めて点火する。"""
@@ -235,6 +309,150 @@ def remote_program():
     land["key"] = "x"
     land["body"] = [setv("着陸", sub(N(1), V("着陸")))]
     p["scripts"] += [tick, land]
+    return p
+
+
+# --- ルミナス号の航法（月への自動飛行） ---------------------------------------
+# 5×5 の船の下の段：四隅と各辺の真ん中に推進機。それぞれの真上にバルブ（前 = +Z、右 = +X）
+SHIP_VALVE_NAMES = {(0, 0): "バルブ 後左", (2, 0): "バルブ 後", (4, 0): "バルブ 後右", (0, 2): "バルブ 左",
+                    (4, 2): "バルブ 右", (0, 4): "バルブ 前左", (2, 4): "バルブ 前", (4, 4): "バルブ 前右"}
+SHIP_THRUST = 150000.0 * 8   # 推進機8つの最大推力 (N)
+SHIP_KEEP = 0.01
+CRUISE = 70.0                # 巡航の速さ (m/s)
+BRAKE = 2.5                  # 減速の強さ (m/s²)
+HOVER_ALT = 90.0             # 降下を始める、発着場の上の高さ (m)
+LAND_H = 1.5                 # 着陸したとみなす、発着場の上面からの重心の高さ (m)
+# 段階
+WAIT, COUNT, ASCENT, CRUISING, DESCENT, LANDED = range(6)
+
+
+def phase_is(k):
+    return cmp("=", V("段階"), N(k))
+
+
+def moon_program(pad, pad_up):
+    """月の発着場 pad（ワールド座標）と、その上方向 pad_up に向けて飛ぶ。
+    「行きたい速度 − 今の速度」の矢印のぶん加速する（重力のぶんも足す）。推力の向きに船の上を合わせる。"""
+    pad = [float(x) for x in pad]
+    up = [float(x) for x in pad_up]
+    over = [p + u * HOVER_ALT for p, u in zip(pad, up)]
+    PADUP = vec(*up)
+    p = B.new_program()
+    start = B.new_stmt("on_start")
+    start["body"] = [setv("段階", N(WAIT)), setv("時刻0", S("time"))]
+    tick = B.new_stmt("on_tick")
+    body = [
+        # 誰も座っていなければ待つ
+        iff(both(cmp("<", V("段階"), N(ASCENT)), {"type": "not", "a": seated()}),
+            [setv("段階", N(WAIT)), setv("時刻0", S("time"))]),
+        setv("最大加速", div(N(SHIP_THRUST), S("mass"))),
+        setvv("発着場へ", vto(pad)),
+        setv("高さ", mul(vdot(VV("発着場へ"), PADUP), N(-1))),
+        setvv("行きたい速度", vec(0, 0, 0)),
+        iff(phase_is(WAIT), [iff(seated(), [setv("段階", N(COUNT))])]),
+        iff(phase_is(COUNT), [
+            setv("残り", sub(N(3), sub(S("time"), V("時刻0")))),
+            iff(cmp("<", V("残り"), N(0.001)), [setv("段階", N(ASCENT)), say("発進！")]),
+        ]),
+        iff(phase_is(ASCENT), [
+            # まっすぐ上へ 18 m/s
+            setvv("行きたい速度", vmul(VS("up"), N(18))),
+            iff(cmp(">", S("altitude"), N(35)), [setv("段階", N(CRUISING)), say("巡航：月へ")]),
+        ]),
+        iff(phase_is(CRUISING), [
+            # 降下を始める点（発着場の 90 m 上）へ。近づいたら止まれる速さ √(2×減速×距離) に落とす
+            setvv("ずれ", vto(over)),
+            setv("距離", vlen(VV("ずれ"))),
+            setv("巡航の速さ", fn("平方根", mul(N(2 * BRAKE), V("距離")))),
+            iff(cmp(">", V("巡航の速さ"), N(CRUISE)), [setv("巡航の速さ", N(CRUISE))]),
+            setvv("行きたい速度", vmul(vnorm(VV("ずれ")), V("巡航の速さ"))),
+            iff(both(cmp("<", V("距離"), N(6)), cmp("<", S("speed"), N(4))), [setv("段階", N(DESCENT)), say("降下")]),
+        ]),
+        iff(phase_is(DESCENT), [
+            # 発着場への矢印のうち、発着場の上向きに垂直な部分 ＝ 横のずれ
+            setvv("横のずれ", vperp(VV("発着場へ"), PADUP)),
+            setv("降りる速さ", mul(sub(V("高さ"), N(LAND_H)), N(0.2))),
+        ] + clamp("降りる速さ", 0.6, 4.0) + [
+            setv("許すずれ", mul(V("高さ"), N(0.15))),
+            iff(cmp("<", V("許すずれ"), N(1)), [setv("許すずれ", N(1))]),
+            # ずれているときは高さを保って、真上に来てから降りる
+            iff(cmp(">", vlen(VV("横のずれ")), V("許すずれ")), [setv("降りる速さ", N(0))]),
+            setvv("行きたい速度", vadd(vmul(PADUP, mul(V("降りる速さ"), N(-1))),
+                                     vclamp(vmul(VV("横のずれ"), N(0.35)), N(3)))),
+            iff(both(cmp("<", V("高さ"), N(LAND_H)), cmp("<", S("speed"), N(1.2))),
+                [setv("段階", N(LANDED)), say("着陸しました！ ようこそルナ・ポートへ")]),
+        ]),
+    ]
+    # --- 推進機：行きたい加速 → 推力の向きと出力 ---
+    fly = [
+        setvv("重力", VS("gravity")),
+        # 加速 ＝（行きたい速度 − 速度）× 0.8 − 重力（重力に負けないぶんも出す）
+        setvv("加速", vsub(vmul(vsub(VV("行きたい速度"), VS("velocity")), N(0.8)), VV("重力"))),
+        iff(phase_is(COUNT), [setvv("加速", vec(0, 0, 0))]),
+        setv("出力", div(vlen(VV("加速")), V("最大加速"))),
+        iff(cmp(">", V("出力"), N(1)), [setv("出力", N(1))]),
+        if_else(cmp(">", V("出力"), N(0.001)), [setvv("推力の向き", vnorm(VV("加速")))],
+                [setvv("推力の向き", VS("up"))]),
+        # 上昇・降下：重力の反対を「上」にして、傾きすぎないようにする
+        iff({"type": "logic", "op": "or", "a": phase_is(ASCENT), "b": phase_is(DESCENT)}, [
+            setvv("上", vnorm(vmul(VV("重力"), N(-1)))),
+            setv("上への加速", vdot(VV("加速"), VV("上"))),
+            if_else(cmp("<", V("上への加速"), N(0.05)), [
+                # 下へ速めたいときはほとんど噴かさない（重力で落ちる）。横のずれだけ直す
+                setvv("横の加速", vperp(VV("加速"), VV("上"))),
+                setvv("推力の向き", vtilt(vnorm(vadd(VV("横の加速"), VV("上"))), VV("上"), 25)),
+                setv("出力", div(vlen(VV("横の加速")), V("最大加速"))),
+                iff(cmp(">", V("出力"), N(0.02)), [setv("出力", N(0.02))]),
+            ], [
+                setvv("推力の向き", vtilt(VV("推力の向き"), VV("上"), 30)),
+                setv("出力", div(div(V("上への加速"), vdot(VV("推力の向き"), VV("上"))), V("最大加速"))),
+                iff(cmp(">", V("出力"), N(1)), [setv("出力", N(1))]),
+            ]),
+        ]),
+        # 姿勢：船の上を推力の向きに合わせる。推力の向きを船から見た 右・前 の成分に分ける
+        setv("右へ", vcomp(VV("推力の向き"), "右")),
+        setv("前へ", vcomp(VV("推力の向き"), "前")),
+        iff(cmp("<", vcomp(VV("推力の向き"), "上"), N(0.3)), [
+            # 大きくずれている時は、向きを変えるのを先に（横の向きだけ見て、出力を下げる）
+            setvv("横", vnorm(vperp(VV("推力の向き"), VS("ship_up")))),
+            setv("右へ", vcomp(VV("横"), "右")),
+            setv("前へ", vcomp(VV("横"), "前")),
+            iff(cmp(">", V("出力"), N(0.25)), [setv("出力", N(0.25))]),
+        ]),
+        # 前後・左右の出力の差（ずれ × 2 − 傾く速さ × 0.042）
+        setv("前後", sub(mul(V("前へ"), N(2)), mul(S("pitch_rate"), N(0.0419)))),
+        setv("左右", add(mul(V("右へ"), N(-2)), mul(S("roll_rate"), N(0.0419)))),
+    ]
+    for (x, z), name in SHIP_VALVE_NAMES.items():
+        ox, oz = (x - 2) * 0.5, (z - 2) * 0.5
+        terms = [V("出力")]
+        if oz:
+            terms.append(mul(V("前後"), N(-oz * 0.5)))
+        if ox:
+            terms.append(mul(V("左右"), N(ox * 0.5)))
+        fly.append(valve(name, add(fn("マイナスなら0", add(*terms)), N(SHIP_KEEP))))
+    fly += [
+        stmt("ignite", dev="*"),
+        # 矢印を見せる：緑＝行きたい速度、黄＝推力の向き、赤＝重力
+        show_vec(VV("行きたい速度"), "緑", 0.5),
+        show_vec(VV("推力の向き"), "黄", 6),
+        show_vec(VV("重力"), "赤", 1),
+    ]
+    body.append(if_else({"type": "logic", "op": "or", "a": phase_is(WAIT), "b": phase_is(LANDED)},
+                        close_valves(), fly))
+    msg = lambda text: show(join(T(f"ルミナス号 航法\n{text}"), T("\n速さ "), rnd(S("speed")), T(" m/s")), 1.3)  # noqa: E731
+    body += [
+        iff(phase_is(WAIT), [show(T("ルミナス号 航法\n操縦席に座ると発進します"), 1.3)]),
+        iff(phase_is(COUNT), [show(join(T("ルミナス号 航法\n発進まで "), rnd(V("残り"))), 1.3)]),
+        iff(phase_is(ASCENT), [msg("上昇")]),
+        iff(phase_is(CRUISING), [show(join(T("ルミナス号 航法\n巡航  月まで "), rnd(V("距離")), T(" m\n速さ "),
+                                           rnd(S("speed")), T(" m/s")), 1.3)]),
+        iff(phase_is(DESCENT), [show(join(T("ルミナス号 航法\n降下  高さ "), rnd(V("高さ")), T(" m\n速さ "),
+                                          rnd(S("speed")), T(" m/s")), 1.3)]),
+        iff(phase_is(LANDED), [msg("着陸")]),
+    ]
+    tick["body"] = body
+    p["scripts"] += [start, tick]
     return p
 
 

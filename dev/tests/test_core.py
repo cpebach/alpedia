@@ -178,6 +178,51 @@ class TestScripts(CoreCase):
         self.assertAlmostEqual(st["angle"], 90.0, places=3)
         self.assertEqual(len(w.constructs), 1)
 
+    def test_vector_blocks(self):
+        """矢印（ベクトル）のブロック：入る欄・Python への変換・実行（重力の矢印・船から見た成分・矢印を見せる）。"""
+        from main import blocks as B
+        vel = {"type": "vsensor", "name": "velocity"}
+        grav = {"type": "vsensor", "name": "gravity"}
+        self.assertTrue(B.fits(vel, "vec"))
+        self.assertFalse(B.fits(vel, "num"))                   # 数にするには「長さ」などを使う
+        self.assertFalse(B.fits({"type": "num", "v": 1}, "vec"))
+        self.assertTrue(B.fits({"type": "vlen", "a": vel}, "num"))
+        self.assertTrue(B.fits(vel, "text"))
+        N = lambda v: {"type": "num", "v": v}  # noqa: E731
+        prog = B.new_program()
+        tick = B.new_stmt("on_tick")
+        tick["body"] = [
+            {"type": "set_vvar", "var": "g", "value": grav},
+            {"type": "set_var", "var": "重力", "value": {"type": "vlen", "a": {"type": "vvar", "name": "g"}}},
+            {"type": "set_var", "var": "下", "value": {"type": "vcomp", "axis": "上", "a": {"type": "vvar", "name": "g"}}},
+            {"type": "set_vvar", "var": "斜め", "value": {"type": "vtilt", "a": {"type": "vec", "frame": "船から見た",
+                                                                              "x": N(1), "y": N(0), "z": N(0)},
+                                                       "b": {"type": "vsensor", "name": "up"}, "n": N(30)}},
+            {"type": "set_var", "var": "角度", "value": {"type": "vangle", "a": {"type": "vvar", "name": "斜め"},
+                                                       "b": {"type": "vsensor", "name": "up"}}},
+            {"type": "set_vvar", "var": "短く", "value": {"type": "vclamp", "a": {"type": "vscale", "op": "×",
+                                                                              "a": grav, "b": N(10)}, "b": N(2)}},
+            {"type": "show_vec", "value": {"type": "vvar", "name": "g"}, "color": "赤", "scale": N(0.5)},
+            {"type": "display", "text": {"type": "join", "a": {"type": "text", "v": "g="}, "b": grav}, "width": N(1)},
+        ]
+        prog["scripts"].append(tick)
+        self.script(w := self.world(), "v.py", B.to_python(prog))
+        c = self.put(w, [((0, 0, 0), "steel", {"def": "battery", "dir": 2}),
+                         ((1, 0, 0), "steel", {"def": "computer", "dir": 2, "state": {"script": "v.py", "running": True}})],
+                     extra=0.6)
+        self.run_for(w, 0.3)
+        st = next(d for d in c.devs if d and d["def"] == "computer")["state"]
+        self.assertIsNone(st.get("error"))
+        v = st["memory"]["vars"]
+        g = float(np.linalg.norm(w.gravity(c.center_of_mass()[None])[0]))
+        self.assertAlmostEqual(v["重力"], g, delta=0.01)
+        self.assertAlmostEqual(v["下"], -g, delta=0.05 * g)      # 立っているので、重力は船の下向き
+        self.assertAlmostEqual(v["角度"], 30.0, delta=1.0)
+        self.assertAlmostEqual(float(np.linalg.norm(v["短く"])), 2.0, places=4)
+        arrow = st["_arrows"]["1.000,0.300,0.250"]
+        self.assertAlmostEqual(arrow[1], -g * 0.5, delta=0.05 * g)
+        self.assertTrue(st["display"]["text"].startswith("g=("))
+
 
 class TestRadio(CoreCase):
     def _station(self, w, offset, script, antenna=True):
