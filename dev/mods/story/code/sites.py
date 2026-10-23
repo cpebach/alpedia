@@ -625,7 +625,8 @@ def gate_voxels():
 
 
 def bike_voxels():
-    """ホバーバイク（前 = +Z）。四隅が推進機で、その真上にバルブ（制御のプログラムが開き具合で推力を変える）。"""
+    """ホバーバイク（前 = +Z）。四隅が推進機で、その真上にバルブ（制御のブロックプログラム bike.blocks.json が
+    開き具合で推力を変える）。"""
     V = []
     corners = {(0, 0), (2, 0), (0, 4), (2, 4)}
     for x in range(3):
@@ -634,8 +635,10 @@ def bike_voxels():
                 V.append(((x, 0, z), "steel", {"def": "thruster", "dir": 2, "name": "推進機"}))
             else:
                 V.append(((x, 0, z), "hull_blue", None))
+    names = {(0, 0): "後左", (2, 0): "後右", (0, 4): "前左", (2, 4): "前右"}     # 前 = +Z、右 = +X
     for x, z in corners:
-        V.append(((x, 1, z), "steel", {"def": "valve", "dir": 2, "name": "推進機のバルブ", "state": {"open": 0.0}}))
+        V.append(((x, 1, z), "steel", {"def": "valve", "dir": 2, "name": "バルブ " + names[(x, z)],
+                                       "state": {"open": 0.0}}))
     V += [((1, 1, 0), "steel", {"def": "pipe", "dir": 2}),
           ((1, 1, 1), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}}),
           ((1, 1, 2), "steel", {"def": "seat", "dir": 4, "name": "バイクの座席"}),
@@ -643,7 +646,7 @@ def bike_voxels():
           ((1, 1, 4), "steel", {"def": "pipe", "dir": 2}),
           ((1, 2, 0), "steel", {"def": "battery", "dir": 2, "name": "バッテリー"}),
           ((1, 2, 4), "steel", {"def": "computer", "dir": 5, "name": "バイクの制御",
-                                "state": {"script": "bike.py", "running": True}}),
+                                "state": {"script": "bike.py", "blocks": "bike.blocks.json", "running": True}}),
           ((1, 2, 3), "glass", None)]
     return V
 

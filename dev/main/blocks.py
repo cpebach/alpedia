@@ -128,6 +128,14 @@ SENSORS = {
     "roll": ("右への傾き(度)", "math.degrees(math.atan2(-api.up_local[0], api.up_local[1]))"),
     "pitch_rate": ("前へ傾く速さ(度/秒)", "math.degrees(api.angular_velocity_local[0])"),
     "roll_rate": ("右へ傾く速さ(度/秒)", "-math.degrees(api.angular_velocity_local[2])"),
+    # 構築物から見た速さ（前＝ローカル +Z、右＝ローカル +X）と、その場所の重力
+    "fwd_speed": ("前への速さ", "api.velocity_local[2]"),
+    "right_speed": ("右への速さ", "api.velocity_local[0]"),
+    "gravity": ("重力(m/s²)", "_gravity(api)"),
+}
+# 条件（はい／いいえ）のセンサー
+BOOL_SENSORS = {
+    "seated": ("座っている", "api.seated"),
 }
 OPS = {"+": "+", "-": "-", "×": "*", "÷": "/", "余り": "%"}
 CMPS = {"<": "<", ">": ">", "=": "==", "≦": "<=", "≧": ">=", "≠": "!="}
@@ -159,7 +167,37 @@ EXPR_PALETTE = [
     ("radio", "チャンネル □ の受信値", {"type": "radio_val", "ch": {"type": "text", "v": "ch1"}}),
     ("radio", "チャンネル □ に届いている", {"type": "radio_has", "ch": {"type": "text", "v": "ch1"}}),
     ("radio", "アンテナが使える", {"type": "radio_ok"}),
-] + [("sensor", name, {"type": "sensor", "name": k}) for k, (name, _) in SENSORS.items()]
+] + [("sensor", name, {"type": "sensor", "name": k}) for k, (name, _) in SENSORS.items()] \
+  + [("sensor", name, {"type": "bsensor", "name": k}) for k, (name, _) in BOOL_SENSORS.items()]
+
+# 式ブロックの値の種類（入れられる入力欄）：num＝数値 / bool＝条件 / text＝文字
+NUM_TYPES = {"num", "op", "func", "random", "sensor", "var", "devval", "radio_val"}
+BOOL_TYPES = {"bool", "cmp", "logic", "not", "key", "devbool", "radio_has", "radio_ok", "bsensor"}
+TEXT_TYPES = {"text", "join"}
+
+
+def value_kind(node):
+    t = node.get("type") if isinstance(node, dict) else None
+    if t in NUM_TYPES:
+        return "num"
+    if t in BOOL_TYPES:
+        return "bool"
+    if t in TEXT_TYPES:
+        return "text"
+    return None
+
+
+def fits(node, slot):
+    """式ブロック node を、種類 slot（num/bool/text）の入力欄に入れられるか。
+    条件は数値の欄にも入れられる（はい＝1、いいえ＝0 として計算）。文字の欄には何でも入る。"""
+    k = value_kind(node)
+    if k is None:
+        return False
+    if slot == "text":
+        return True
+    if slot == "num":
+        return k in ("num", "bool")
+    return k == slot
 
 
 def new_stmt(kind):
@@ -264,6 +302,8 @@ def summary(node):
         return f"〈チャンネル {summary(node.get('ch'))} に届いている〉"
     if t == "radio_ok":
         return "〈アンテナが使える〉"
+    if t == "bsensor":
+        return f"〈{BOOL_SENSORS.get(node.get('name'), ('?',))[0]}〉"
     return "?"
 
 
@@ -348,6 +388,14 @@ def _num(a):
         return 0.0
 
 
+def _gravity(api):
+    p = api.planet()
+    if not p:
+        return 0.0
+    r2 = sum((api.position[i] - p["center"][i]) ** 2 for i in range(3))
+    return p["mu"] / max(r2, 1.0)
+
+
 def _radio(api, ch):
     v = api.latest(str(ch))
     if isinstance(v, bool):
@@ -412,6 +460,8 @@ def gen_expr(node, kind="num"):
         return f"(api.latest(str({gen_expr(node.get('ch'), 'text')})) is not None)"
     if t == "radio_ok":
         return "api.antenna"
+    if t == "bsensor":
+        return f"bool({BOOL_SENSORS.get(node.get('name'), ('', 'False'))[1]})"
     return "0"
 
 

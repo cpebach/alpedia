@@ -205,6 +205,56 @@ class StoryCase(unittest.TestCase):
         self.run_for(0.4)
         self.assertTrue(s.st["done"])
 
+    def test_vehicles_fly_with_block_programs(self):
+        """ドローン（操縦台から無線）とホバーバイクは、ブロックプログラムで飛ぶ。"""
+        s, w = self.s, self.w
+        for role in ("bike", "drone", "console"):
+            c, i = s.dev(role, "computer")
+            self.assertTrue(c.devs[i]["state"]["blocks"].endswith(".blocks.json"), role)
+            self.assertTrue((w.dir / "scripts" / c.devs[i]["state"]["blocks"]).exists())
+
+        def alt(c):
+            p = c.center_of_mass()
+            g, up = s.map.ground(*s.map_xz(p))
+            return float((p - g) @ up)
+
+        def run(sec, keys=()):
+            w.input_keys = set(keys)
+            self.run_for(sec)
+        s.jump(self.script.CHAPTER_IDS.index("drone"))
+        cc, ci = s.dev("console", "seat")
+        w.player.seated = (cc.id, cc.cells[ci])
+        d = s.con("drone")
+        z0 = s.map_xz(d.center_of_mass())[1]
+        run(1.0)
+        run(4.0, ["space"])
+        self.assertGreater(alt(d), 7.0, "Space で上がる")
+        run(3.0, ["w"])
+        self.assertGreater(s.map_xz(d.center_of_mass())[1], z0 + 4.0, "W で前（+Z）へ進む")
+        run(1.0, ["x"])
+        run(18.0)
+        self.assertLess(alt(d), 1.0, "X で着陸する")
+        self.assertFalse(any(dv["state"].get("lit") for dv in d.devs if dv and dv["def"] == "thruster"), "着陸したら火が消える")
+        w.player.seated = None
+        s.jump(self.script.CHAPTER_IDS.index("bike"))
+        self.use("gate", "actuator")                    # 遮断機を上げてから
+        run(3.0)
+        b = s.con("bike")
+        bc, bi = s.dev("bike", "seat")
+        w.player.seated = (bc.id, bc.cells[bi])
+        z0 = s.map_xz(b.center_of_mass())[1]
+        run(2.0)
+        self.assertGreater(alt(b), 1.5, "座ると浮く")
+        run(3.0, ["w"])
+        self.assertGreater(s.map_xz(b.center_of_mass())[1], z0 + 8.0, "W で前へ進む")
+        w.player.seated = None
+        run(9.0)
+        self.assertLess(alt(b), 1.0, "降りると止まって、ゆっくり着地する")
+        self.assertEqual(b.n_vox, len(self.sites.bike_voxels()))
+        for c in (b, d):
+            ci = [i for i, dv in enumerate(c.devs) if dv and dv["def"] == "computer"][0]
+            self.assertIsNone(c.devs[ci]["state"].get("error"))
+
     def test_save_and_reload_keeps_progress(self):
         s, w = self.s, self.w
         s.jump(3)

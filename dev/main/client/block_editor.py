@@ -44,6 +44,7 @@ class BlockEditor:
         self.cat = "event"
         self.scroll = 0
         self.sel = None          # (parent list, index, kind)
+        self.slot_sel = None     # 選んだ入力欄 (持ち主のノード, キー, 種類)
         self.dirty = False
         self.discard_armed = False
         self.dialogs = []
@@ -261,7 +262,7 @@ class BlockEditor:
             destroy(e)
         U = self.U
         col = U["color"]
-        cats = [c for c in B.CATEGORIES if c[0] not in ("op", "sensor")]
+        cats = list(B.CATEGORIES)
         for k, (cid, name, rgb) in enumerate(cats):
             x = -0.79 + (k % 2) * 0.17
             y = 0.42 - (k // 2) * 0.042
@@ -281,9 +282,43 @@ class BlockEditor:
             b.text_entity.origin = (-0.5, 0)
             b.text_entity.x = -0.47
             y -= 0.041
-        U["Text"](parent=self.palette_root, position=(-0.87, y - 0.01), origin=(-0.5, 0.5), scale=0.58,
-                  color=col.light_gray,
-                  text="数値・センサー・計算・比較は\nブロックの白い枠をクリック")
+        # 式ブロック（値・条件）：選んだ入力欄に入る
+        items = [(label, n) for cat, label, n in B.EXPR_PALETTE if cat == self.cat]
+        if self.cat == "var":
+            items += [(name, {"type": "var", "name": name}) for name in self.var_names()]
+        if items:
+            U["Text"](parent=self.palette_root, text="値・条件のブロック（選んだ枠に入る）", position=(-0.87, y + 0.03),
+                      origin=(-0.5, 0.5), scale=0.55, color=col.light_gray)
+            y -= 0.012
+            x = -0.875
+            for label, n in items:
+                w = 0.165 if len(label) <= 8 else 0.34
+                if x + w > -0.53:
+                    x = -0.875
+                    y -= 0.04
+                if y < -0.42:
+                    break
+                self._reporter_btn(self.palette_root, label, n, x + w / 2, y, w)
+                x += w + 0.01
+            y -= 0.03
+        if y > -0.36:
+            U["Text"](parent=self.palette_root, position=(-0.87, y - 0.01), origin=(-0.5, 0.5), scale=0.55,
+                      color=col.light_gray,
+                      text="入力欄を押して選んでから、値・条件のブロックを押す。\n入力欄をもう一度押すと数値などを入力")
+
+    def _reporter_btn(self, parent, label, node, x, y, w):
+        """パレットの式ブロック（丸い形。条件は角ばった形）。"""
+        U = self.U
+        col = U["color"]
+        kind = B.value_kind(node)
+        rgb = _expr_rgb(node)
+        ok = self.slot_sel is None or B.fits(node, self.slot_sel[2].split(":")[0])
+        c = col.rgb(*rgb) if ok else col.rgb(*_dim(rgb, 0.4))
+        b = U["Button"](parent=parent, text=_safe(label.replace("□", "○") if kind != "bool" else label),
+                        position=(x, y), scale=(w, 0.034), color=c, text_size=0.58,
+                        model=_round_quad(w / 0.034, 0.18 if kind == "bool" else 0.5))
+        b.on_click = (lambda nn=node: self.put_reporter(nn))
+        return b
 
     def _set_cat(self, cid):
         self.cat = cid
@@ -379,19 +414,145 @@ class BlockEditor:
         self._update_title()
 
     def _slot(self, node, key, kind, x, y):
+        """文ブロックの入力欄を描く（中の式ブロックも入れ子で）。幅を返す。"""
+        return self._draw_slot(node, key, kind, x, y, 0)
+
+    def _is_sel(self, owner, key):
+        ss = self.slot_sel
+        return ss is not None and ss[0] is owner and ss[1] == key
+
+    def _box(self, x, y, w, h, rgb, z, radius, on_click, outline=False):
         U = self.U
         col = U["color"]
-        txt = B.summary(node.get(key))
-        if len(txt) > 34:
-            txt = txt[:33] + "…"
-        t = U["Text"](parent=self.rows_root, text=txt, position=(x + 0.008, y), origin=(-0.5, 0), scale=0.68, z=-0.02,
-                      color=col.black)
-        w = t.width * 0.68 + 0.016
-        bg_col = col.rgb(0.95, 0.95, 0.95) if not kind.startswith(("dev", "key", "choice", "var")) \
-            else col.rgb(0.85, 0.9, 1.0)
-        b = U["Button"](parent=self.rows_root, position=(x + w / 2, y), scale=(w, ROW_H * 0.7), color=bg_col, z=-0.01)
-        b.on_click = (lambda: self.open_dialog(node, key, kind))
+        if outline:
+            U["Entity"](parent=self.rows_root, model=_round_quad((w + 0.008) / (h + 0.008), radius),
+                        position=(x + w / 2, y, z + 0.0015), scale=(w + 0.008, h + 0.008), color=col.rgb(1.0, 0.85, 0.1))
+        b = U["Button"](parent=self.rows_root, model=_round_quad(w / h, radius), position=(x + w / 2, y, z),
+                        scale=(w, h), color=col.rgb(*rgb), highlight_color=col.rgb(*[min(1, v * 1.15) for v in rgb]),
+                        pressed_color=col.rgb(*rgb))
+        b.on_click = on_click
+        return b
+
+    def _label(self, text, x, y, z, scale, dark=False):
+        U = self.U
+        col = U["color"]
+        t = U["Text"](parent=self.rows_root, text=text, position=(x, y, z), origin=(-0.5, 0), scale=scale,
+                      color=col.rgb(0.08, 0.08, 0.1) if dark else col.white)
+        return t.width * scale
+
+    def _metrics(self, depth):
+        h = ROW_H * max(0.84 - 0.13 * depth, 0.46)
+        ts = max(0.66 - 0.035 * depth, 0.52)
+        z = -0.012 - depth * 0.006
+        return h, ts, z
+
+    def _draw_slot(self, owner, key, kind, x, y, depth):
+        base = kind.split(":")[0]
+        val = owner.get(key)
+        h, ts, z = self._metrics(depth)
+        sel = self._is_sel(owner, key)
+        click = (lambda: self.slot_click(owner, key, kind))
+        if base in ("var", "dev", "key", "choice"):
+            # 選ぶだけの欄（変数・機器・キー・選択）：▼ の付いた丸い札
+            rgb = {"var": B.CAT_COLOR["var"], "dev": B.CAT_COLOR["device"]}.get(base, (0.82, 0.85, 0.9))
+            dark = base in ("key", "choice")
+            txt = B.summary(val) + " ▼"
+            tw = self._label(txt, x + 0.008, y, z - 0.003, ts, dark=dark)
+            w = tw + 0.016
+            self._box(x, y, w, h, rgb, z, 0.5, (lambda: self.open_dialog(owner, key, kind)), outline=sel)
+            return w
+        return self._draw_expr(val, owner, key, kind, x, y, depth)
+
+    def _draw_expr(self, node, owner, key, kind, x, y, depth):
+        h, ts, z = self._metrics(depth)
+        sel = self._is_sel(owner, key)
+        click = (lambda: self.slot_click(owner, key, kind))
+        t = node.get("type") if isinstance(node, dict) else None
+        vk = B.value_kind(node)
+        radius = 0.18 if (vk == "bool" or kind.split(":")[0] == "bool") else 0.5
+        if t in (None, "num", "text", "bool") or depth >= 5:
+            # 値（数値・文字・はい/いいえ）：白い入力欄。深すぎる入れ子はまとめて表示
+            txt = B.summary(node) if t != "text" else str(node.get("v", ""))
+            if len(txt) > 30:
+                txt = txt[:29] + "…"
+            tw = self._label(txt or " ", x + 0.008, y, z - 0.003, ts, dark=True)
+            w = max(tw + 0.016, 0.03)
+            self._box(x, y, w, h, (0.96, 0.96, 0.96), z, radius, click, outline=sel)
+            return w
+        rgb = _expr_rgb(node)
+        if t in ("var", "sensor", "bsensor", "radio_ok"):
+            tw = self._label(B.summary(node).strip("〈〉"), x + 0.008, y, z - 0.003, ts)
+            w = tw + 0.016
+            self._box(x, y, w, h, rgb, z, radius, click, outline=sel)
+            return w
+        # 入れ物（演算・比較・機器の値など）：中の入力欄を順に並べる
+        cx = x + 0.007
+        for part in _expr_parts(node):
+            if part[0] == "text":
+                cx += self._label(part[1], cx, y, z - 0.003, ts) + 0.005
+            elif part[0] == "menu":
+                _, mkey, opts, shown = part
+                hh, ts2, z2 = self._metrics(depth + 1)
+                tw = self._label(shown + " ▼", cx + 0.006, y, z2 - 0.003, ts2 * 0.92)
+                mw = tw + 0.012
+                self._box(cx, y, mw, hh, _dim(rgb, 0.75), z2, 0.5,
+                          (lambda mk=mkey, op=opts: self.menu_click(node, mk, op)))
+                cx += mw + 0.005
+            else:
+                _, ck, ckind = part
+                cx += self._draw_slot(node, ck, ckind, cx, y, depth + 1) + 0.005
+        w = cx - x + 0.002
+        self._box(x, y, w, h, rgb, z, radius, click, outline=sel)
         return w
+
+    def slot_click(self, owner, key, kind):
+        """入力欄を押した：1回目は選ぶ（パレットの式ブロックがここに入る）、選んである欄をもう一度押すと値の入力。"""
+        if self._is_sel(owner, key):
+            self.open_dialog(owner, key, kind)
+            return
+        self.slot_sel = (owner, key, kind)
+        self._status("左の「値・条件のブロック」を押すとここに入ります（もう一度押すと数値などを入力）")
+        self.build_palette()
+        self.render()
+
+    def menu_click(self, node, key, opts):
+        """演算の種類・機器の値の種類などの ▾：かつ／または は押すたびに切り替え、ほかは選ぶ画面。"""
+        if key == "op" and node.get("type") == "logic":
+            node["op"] = "or" if node.get("op") == "and" else "and"
+            self.dirty = True
+            self.render()
+            return
+        self.open_dialog(node, key, "choice:" + "|".join(opts))
+
+    def put_reporter(self, node):
+        """パレットの式ブロックを、選んだ入力欄に入れる（演算などは、今の値を左側に入れたまま包む）。"""
+        ss = self.slot_sel
+        if ss is None:
+            self._status("先に、入れたい入力欄（白い枠など）を押して選んでください")
+            return
+        owner, key, kind = ss
+        base = kind.split(":")[0]
+        if base not in ("num", "bool", "text") or not B.fits(node, base):
+            need = {"num": "数値", "bool": "条件", "text": "文字"}.get(base, "選ぶだけ")
+            self._status(f"この欄（{need}）には入れられません")
+            return
+        nn = copy.deepcopy(node)
+        cur = owner.get(key)
+        children = B.expr_children(nn)
+        nxt = None
+        if children and children[0][1] in ("num", "bool", "text") and B.value_kind(cur) is not None \
+                and B.fits(cur, children[0][1]):
+            nn[children[0][0]] = copy.deepcopy(cur)      # 今の値を左側に
+            if len(children) > 1:
+                nxt = (nn, children[1][0], children[1][1])
+        elif children and children[0][1] in ("num", "bool", "text"):
+            nxt = (nn, children[0][0], children[0][1])
+        owner[key] = nn
+        self.slot_sel = nxt or (owner, key, kind)
+        self.dirty = True
+        self.discard_armed = False
+        self.build_palette()
+        self.render()
 
     def select(self, row):
         self.sel = (row.parent, row.index, row.kind)
@@ -802,6 +963,54 @@ class BlockEditor:
         if int(time.time() * 2) != getattr(self, "_tt", 0):
             self._tt = int(time.time() * 2)
             self._update_title()
+
+
+def _round_quad(aspect, radius):
+    """角の丸い四角（大きさに合わせて作る。メッシュは1つの物にしか付けられないので、毎回作る）。"""
+    from ursina import Quad
+    return Quad(radius=radius, aspect=max(round(aspect, 2), 0.2), segments=3)
+
+
+def _expr_rgb(node):
+    t = node.get("type") if isinstance(node, dict) else None
+    if t == "var":
+        return B.CAT_COLOR["var"]
+    if t in ("sensor", "bsensor", "devval", "devbool", "key"):
+        return B.CAT_COLOR["sensor"]
+    if t in ("radio_val", "radio_has", "radio_ok"):
+        return B.CAT_COLOR["radio"]
+    return B.CAT_COLOR["op"]
+
+
+def _expr_parts(node):
+    """入れ物の式ブロックの並び：("text", 文字) / ("child", キー, 種類) / ("menu", キー, 選べる物, 表示)"""
+    t = node.get("type")
+    if t == "op":
+        return [("child", "a", "num"), ("menu", "op", list(B.OPS), node.get("op", "+")), ("child", "b", "num")]
+    if t == "cmp":
+        return [("child", "a", "num"), ("menu", "op", list(B.CMPS), node.get("op", "=")), ("child", "b", "num")]
+    if t == "logic":
+        return [("child", "a", "bool"), ("menu", "op", ["and", "or"], "かつ" if node.get("op") == "and" else "または"),
+                ("child", "b", "bool")]
+    if t == "not":
+        return [("child", "a", "bool"), ("text", "ではない")]
+    if t == "func":
+        return [("menu", "fn", list(B.FUNCS), node.get("fn", "絶対値")), ("child", "a", "num")]
+    if t == "random":
+        return [("child", "a", "num"), ("text", "から"), ("child", "b", "num"), ("text", "の乱数")]
+    if t == "join":
+        return [("child", "a", "text"), ("text", "と"), ("child", "b", "text")]
+    if t == "devval":
+        return [("child", "dev", "dev:*"), ("text", "の"), ("menu", "prop", list(B.DEVPROPS), node.get("prop", "角度"))]
+    if t == "devbool":
+        return [("child", "dev", "dev:*"), ("text", "が"), ("menu", "prop", list(B.DEVBOOLS), node.get("prop", "動作中"))]
+    if t == "key":
+        return [("text", "キー"), ("child", "key", "key"), ("text", "が押されている")]
+    if t == "radio_val":
+        return [("text", "チャンネル"), ("child", "ch", "text"), ("text", "の受信値")]
+    if t == "radio_has":
+        return [("text", "チャンネル"), ("child", "ch", "text"), ("text", "に届いている")]
+    return [("text", B.summary(node))]
 
 
 def _safe(s):

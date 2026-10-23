@@ -114,14 +114,21 @@ class StoryAddon(Addon):
         pad = self.points["pad"]
         up = self.points["pad_up"]
         files = {
-            "beacon.py": sites.BEACON_SCRIPT, "power.py": sites.POWER_SCRIPT, "bike.py": autopilot.BIKE_SCRIPT,
+            "beacon.py": sites.BEACON_SCRIPT, "power.py": sites.POWER_SCRIPT,
             "moon.py": autopilot.moon_script(pad, up, [(self.terra.center, self.terra.gm), (self.luna.center, self.luna.gm)]),
-            "sway.py": rod.SWAY_SCRIPT, "drone.py": drone.DRONE_SCRIPT, "drone_remote.py": drone.REMOTE_SCRIPT,
+            "sway.py": rod.SWAY_SCRIPT,
             "README.txt": SCRIPT_README,
         }
         for fname, text in files.items():
             (sd / fname).write_text(text, encoding="utf-8")
-        for base, prog in (("kadai", rod.starter_program()), ("otehon", rod.solution_program())):
+        from . import programs
+        progs = [("kadai", rod.starter_program()), ("otehon", rod.solution_program())]
+        progs += [(name, make()) for name, make in programs.PROGRAMS.items()]   # 乗り物（ブロックプログラム）
+        for role, base in (("bike", "bike"), ("drone", "drone"), ("console", "drone_remote")):
+            c, i = self.dev(role, "computer")
+            if i is not None:
+                c.devs[i]["state"].update(script=f"{base}.py", blocks=f"{base}.blocks.json")
+        for base, prog in progs:
             B.save(sd / f"{base}.blocks.json", prog)
             (sd / f"{base}.py").write_text(B.to_python(prog, f"{base}.blocks.json"), encoding="utf-8")
         # プレイヤー：ポッドの手前、奥（+Z）を向いて
