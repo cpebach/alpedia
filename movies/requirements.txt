@@ -1,0 +1,2 @@
+# ムービーを作る道具に必要なもの（ゲームの requirements.txt に加えて）
+imageio-ffmpeg>=0.4
