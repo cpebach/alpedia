@@ -37,6 +37,7 @@ def mio_yaw(t):
 class FILM(Film):
     name = "pilot_drama"
     duration = 17.5
+    vertical_fov = False          # このころは画角を横で決めていた
     near, far = 0.05, 60000.0
     sun = (-0.6, 0.5, 0.35)
     ambient = 0.32

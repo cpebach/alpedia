@@ -528,3 +528,125 @@ class Stars:
 
     def update(self, t, origin):
         self.e.setPos(0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# 地上の場面：地面（高さの網）と空（色の段階のついた丸天井）
+# ---------------------------------------------------------------------------
+GROUND_STYLES = {
+    # 低い所・高い所・雪（または明るい所）の色、起伏の高さ、細かさ
+    "tundra": dict(low=(0.42, 0.42, 0.38), high=(0.5, 0.47, 0.44), snow=(0.9, 0.92, 0.96), amp=9.0, freq=1 / 70,
+                   snow_h=-3.0),
+    "moon": dict(low=(0.4, 0.4, 0.42), high=(0.55, 0.55, 0.57), snow=(0.66, 0.66, 0.68), amp=5.0, freq=1 / 90,
+                 snow_h=99.0),
+    "plain": dict(low=(0.3, 0.42, 0.22), high=(0.42, 0.45, 0.3), snow=(0.9, 0.9, 0.9), amp=4.0, freq=1 / 80,
+                  snow_h=99.0),
+}
+
+
+class Ground:
+    """地面：center のまわり size m 四方を n×n の網で。flat=[(x, z, 半径, 高さ)] の所は平らにする。
+    遠くほど fog の色に近づける（空となじむ）。"""
+
+    def __init__(self, stage, center=(0, 0, 0), size=1200.0, n=220, style="tundra", seed=1, flat=(), fog=None,
+                 craters=()):
+        st = GROUND_STYLES[style]
+        c = np.asarray(center, float)
+        g = np.linspace(-size / 2, size / 2, n + 1)
+        X, Z = np.meshgrid(g, g, indexing="ij")
+        P = np.stack([X.ravel(), np.zeros(X.size), Z.ravel()], 1)
+        q = P * st["freq"]
+        h = wave_noise(q, seed, 5, 1.0) * st["amp"] + wave_noise(q * 6, seed + 3, 3, 1.0) * st["amp"] * 0.15
+        for (cx, cz, r, d) in craters:             # くぼみ（月のクレーター）
+            rr = np.hypot(P[:, 0] - cx, P[:, 2] - cz) / r
+            h += np.where(rr < 1, -d * (1 - rr ** 2), d * 0.35 * np.exp(-((rr - 1.05) / 0.15) ** 2))
+        for (fx_, fz, r, h0) in flat:
+            rr = np.hypot(P[:, 0] - fx_, P[:, 2] - fz)
+            k = np.clip((rr - r) / (r * 0.6 + 4), 0, 1)
+            k = k * k * (3 - 2 * k)
+            h = h0 + (h - h0) * k
+        P[:, 1] = h
+        P += c
+        idx = np.arange(n * n).reshape(n, n)
+        a = (idx + (idx // n)).ravel()
+        i0 = (np.arange(n)[:, None] * (n + 1) + np.arange(n)[None, :]).ravel()
+        T = np.concatenate([np.stack([i0, i0 + 1, i0 + n + 2], 1), np.stack([i0, i0 + n + 2, i0 + n + 1], 1)])
+        del a
+        # 法線
+        V = P
+        fn = np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]])
+        fn *= np.sign(fn[:, 1:2] + 1e-12)
+        N = np.zeros_like(V)
+        for k in range(3):
+            np.add.at(N, T[:, k], fn)
+        N /= np.linalg.norm(N, axis=1, keepdims=True) + 1e-12
+        hn = (h - h.min()) / (np.ptp(h) + 1e-9)
+        tex = wave_noise(q * 9, seed + 9, 2, 1.0)[:, None] * 0.08
+        col = np.asarray(st["low"]) * (1 - hn[:, None]) + np.asarray(st["high"]) * hn[:, None] + tex
+        slope = 1 - N[:, 1]
+        col = col * (1 - np.clip(slope * 2.5, 0, 0.5)[:, None]) + np.array([0.3, 0.29, 0.28]) * np.clip(slope * 2.5, 0, 0.5)[:, None]
+        sn = np.clip((h - st["snow_h"]) / 2.0 + wave_noise(q * 3, seed + 5, 2, 1.0) * 0.8, 0, 1)[:, None] * (N[:, 1:2] > 0.8)
+        col = col * (1 - sn) + np.asarray(st["snow"]) * sn
+        sun = stage.render.SUN
+        k = np.clip(N @ sun, 0, 1) * 0.6 + 0.45
+        col = col * k[:, None]
+        if fog is not None:
+            d = np.hypot(P[:, 0] - c[0], P[:, 2] - c[2]) / (size / 2)
+            f = np.clip((d - 0.35) / 0.65, 0, 1)[:, None] ** 1.3
+            col = col * (1 - f) + np.asarray(fog) * f
+        v = np.zeros((len(V), 12), np.float32)
+        v[:, 0:3] = V - c
+        v[:, 3:6] = N
+        v[:, 6:9] = col
+        v[:, 9] = 1.0
+        self.mesh = stage.render.DynamicMesh(stage.root, "ground")
+        self.mesh.set(v, T)
+        self.c = c
+        self.size, self.n = size, n
+        self.H = h.reshape(n + 1, n + 1)
+        self.g = g
+        stage.add(self)
+
+    def height(self, x, z):
+        """その場所の地面の高さ（ワールド）。"""
+        i = np.interp(x - self.c[0], self.g, np.arange(len(self.g)))
+        j = np.interp(z - self.c[2], self.g, np.arange(len(self.g)))
+        i0, j0 = int(min(i, len(self.g) - 2)), int(min(j, len(self.g) - 2))
+        fi, fj = i - i0, j - j0
+        H = self.H
+        return float(self.c[1] + H[i0, j0] * (1 - fi) * (1 - fj) + H[i0 + 1, j0] * fi * (1 - fj)
+                     + H[i0, j0 + 1] * (1 - fi) * fj + H[i0 + 1, j0 + 1] * fi * fj)
+
+    def update(self, t, origin):
+        from panda3d.core import LMatrix4f
+        c = self.c - origin
+        self.mesh.np.setMat(LMatrix4f(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, *c, 1))
+
+
+class Sky:
+    """空の丸天井（上の色 → 地平線の色 → 下の色）。カメラといっしょに動く。sun_glow で太陽のまわりを明るく。"""
+
+    def __init__(self, stage, top=(0.22, 0.42, 0.75), horizon=(0.72, 0.8, 0.88), below=(0.5, 0.52, 0.55),
+                 sun_glow=0.35, radius=None):
+        dirs, tris = _cube_sphere(32)
+        R = radius or stage.far * 0.7
+        y = dirs[:, 1]
+        k_up = np.clip(y, 0, 1) ** 0.55
+        col = np.where(y[:, None] >= 0, np.asarray(horizon) * (1 - k_up[:, None]) + np.asarray(top) * k_up[:, None],
+                       np.asarray(horizon) * (1 - np.clip(-y * 4, 0, 1))[:, None]
+                       + np.asarray(below) * np.clip(-y * 4, 0, 1)[:, None])
+        s = np.clip(dirs @ stage.render.SUN, 0, 1)
+        col = col + np.array([1.0, 0.9, 0.7]) * (s ** 24 * 0.9 + s ** 4 * sun_glow * 0.5)[:, None]
+        v = np.zeros((len(dirs), 12), np.float32)
+        v[:, 0:3] = dirs * R
+        v[:, 3:6] = -dirs
+        v[:, 6:9] = col
+        v[:, 9] = 1.0
+        self.mesh = stage.render.DynamicMesh(stage.root, "sky")
+        self.mesh.set(v, tris)
+        self.mesh.np.setBin("background", 1)
+        self.mesh.np.setDepthWrite(False)
+        stage.add(self)
+
+    def update(self, t, origin):
+        self.mesh.np.setPos(0, 0, 0)

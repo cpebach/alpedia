@@ -16,22 +16,41 @@ python render.py pilot_fleet --from 9 --to 13  # その間だけ
 python render.py pilot_drama --no-audio
 ```
 
-画面は出ません（オフスクリーンで描く）。1 本 2〜10 分ほど（GPU があればもっと速い）。
+画面は出ません（オフスクリーンで描く）。本編は 1 本 15〜40 分ほど（CPU 2 つのとき。GPU があればもっと速い）。
 
 ### 必要なもの
 
 ゲーム（dev/）と同じ Python 環境に、`pip install -r movies/requirements.txt`（ffmpeg の入った imageio-ffmpeg）。
 ゲームの requirements（ursina・numpy・scipy・pillow）も使います。
 
-## できているもの（パイロット版）
+## 本編のムービー（章の区切りに入れるもの）
+
+`docs/キャラクター・勢力設定 ブラッシュアップ版.pdf` の章立てどおり、全 11 本。役者は `dev/mods/skinmodel(dummy)/` の登場人物の VRM
+（towa・mikaga・nemuri・sakura・siyama・sirotsu・kensu・kingi・donachi・nekosa・dabai・rutero・omiku）です。
+
+| ファイル | 章 | 中身 |
+|---|---|---|
+| `output/01_prologue.mp4` | 序章 | 脱出ポッドが荒れ地へ落ちる。ミカガの無線、ポッドの中で目を開けるトワ（紫の目）、題名 |
+| `output/02_naming.mp4` | 1章 | 墜落現場に来たサクラが、識別名「三号」の少女に「トワ」と名付ける |
+| `output/03_watch.mp4` | 5章 | キンギのドローンが基地を見張る。月の総統府でネムリが「目を離すな」と命じる |
+| `output/04_launch.mp4` | 8章 | 直したルミナス号で発進。サクラが手を振って見送り、ミカガの無線 |
+| `output/05_declaration.mp4` | 10章 | ルナ・ポートでミカガと出会う（紫の目）。ネムリの宣戦の立体映像で記憶が戻る |
+| `output/06_interlude.mp4` | 幕間 | ヤマシナの誘い。旧資料室でサクラがアマツの落下の証拠をつかむ |
+| `output/07_fleet.mp4` | 11章 | 艦隊戦。ケンスとシロツ、キンギのミサイルの雨をルミナス号がすり抜ける |
+| `output/08_duel.mp4` | 12章 | アマツの外壁でロボットどうしの決闘。キンギのミサイルをかわして組み合う |
+| `output/09_dialogue.mp4` | 終章A | 落ちていくアマツの中心でネムリと対話。撃たない・落とさない、三つ目を探す |
+| `output/10_reaccel.mp4` | 終章B | 撃ち合いが止まり、両艦隊とモジュール 24 基でアマツを押し上げる。キンギが倒れドナチが引き継ぐ |
+| `output/11_epilogue.mp4` | エピローグ | 法廷のネムリ、N財団の残党、みんなでトワのロケットを見送る。ALPEDIA ／ それでも |
+
+場面のファイルは `scenes/m01_prologue.py` 〜 `scenes/m11_epilogue.py`。共通の配役・ポーズ・部屋・船・ロボット・ロケットは
+`scenes/lib.py`、セリフ（字幕と口の動き）は `scenes/base.py` の `Movie.say()` です。
+
+## パイロット版
 
 | ファイル | 中身 |
 |---|---|
-| `output/pilot_drama.mp4` | ドラマ「通信」約 17 秒：旗艦の外観 → 艦橋のミオ → 警報 → ピント送り → 肩越しに黒鉄艦隊の総督ヴァルガの立体映像 → 決意の寄り |
-| `output/pilot_fleet.mp4` | 艦隊戦「黒鉄の艦隊」約 16 秒：防衛線 → 敵艦の一斉発射 → ミサイルを追うカメラと迎撃 → 命中 → 主砲 → 敵艦が折れて沈む → 題名 |
-
-役者はどちらも今ある VRM（`dev/mods/skinmodel(dummy)/alpedia_player1.vrm`、作者 omicron / ©Nukers、再配布・改変可・クレジット表記が必要）を
-代役に使っています。ヴァルガは赤い立体映像として描いています。本番の VRM をもらったら、`scenes/sets.py` の `vrm()` に名前を渡すだけで差し替わります。
+| `output/pilot_drama.mp4` | ドラマ「通信」約 17 秒（ためしの VRM で） |
+| `output/pilot_fleet.mp4` | 艦隊戦「黒鉄の艦隊」約 16 秒 |
 
 ## 仕組み
 

@@ -405,7 +405,14 @@ class Actor:
                 if base is not None:              # ポーズの顔の向きに少し足す
                     hd = tuple(anim.unit(np.asarray(hd) + (np.asarray(anim.unit(base)) - np.array([0, 0, 1.0])) * 0.6))
                 pose["head"] = hd
-        st = {"speed": 0.0, "vup": 0.0, "tang": np.zeros(3), "on_ground": True, "flying": False, "water": 0.0,
+        # 歩く・走る：足元の動きから速さを求める（ゲームのモーションの歩き方になる）
+        p_prev = np.asarray(self.place(t - dt)[0], float)
+        vel = (pos - p_prev) / dt
+        tang = vel - up * float(vel @ up)
+        speed = float(np.linalg.norm(tang))
+        if speed > 12:          # 瞬間移動（カットの切り替え）は歩きにしない
+            speed, tang = 0.0, np.zeros(3)
+        st = {"speed": speed, "vup": 0.0, "tang": tang, "on_ground": True, "flying": False, "water": 0.0,
               "seated": bool(pose.pop("seated", False)), "pitch": 0.0}
         p = dict(pose)
         rot, hips, _blink, seat, face_off = mo.update(st, dt, (lambda _t, pp=p: pp), 10.0)
@@ -417,15 +424,60 @@ class Actor:
         rows = (Bm.T @ W) * self.scale
         place = pos - up * ((mo.hips_h * self.scale - 0.08) * seat)
         M = self.v.pose(rot, hips, (self.spring, rows.T, place, dt))
+        # 頭の骨の実際の位置（カメラの狙いに使う）
+        hj = getattr(self, "_head_joint", None)
+        if hj is None:
+            hn = self.v.human["head"]
+            idx = np.nonzero(self.v.joint_node == hn)[0]
+            self._head_joint = hj = (int(idx[0]) if len(idx) else -1)
+            self._head_off = np.linalg.inv(self.v.ibm[hj]) if hj >= 0 else None
+        if hj >= 0:
+            G = np.vstack([M[hj], [0, 0, 0, 1]]) @ self._head_off
+            local = G[:3, 3] + G[:3, :3] @ np.array([0.0, 0.07, 0.0])      # 目の高さ（頭の骨の少し上）
+            self._head_world = (t, local @ rows + place)
+        self._last = (t, M, rows, place)
         if write:
             self.bones.setRamImage(np.ascontiguousarray(M, np.float32).tobytes())
             c = place - origin
             self.root.setMat(LMatrix4f(*rows[0], 0, *rows[1], 0, *rows[2], 0, *[float(x) for x in c], 1))
 
+    def bone_world(self, name, t=None):
+        """骨（VRM の名前：rightHand など）の、直前に描いた姿勢でのワールド位置。"""
+        last = getattr(self, "_last", None)
+        if last is None:
+            return None
+        t0, M, rows, place = last
+        cache = self.__dict__.setdefault("_bone_idx", {})
+        if name not in cache:
+            hn = self.v.human[name]
+            idx = np.nonzero(self.v.joint_node == hn)[0]
+            j = int(idx[0])
+            cache[name] = (j, np.linalg.inv(self.v.ibm[j]))
+        j, off = cache[name]
+        G = np.vstack([M[j], [0, 0, 0, 1]]) @ off
+        p = G[:3, 3] @ rows + place
+        if t is not None:
+            p = p + (np.asarray(self.place(t)[0], float) - np.asarray(self.place(t0)[0], float))
+        return p
+
+    def face_dir(self, t):
+        yaw = self.place(t)[1]
+        return np.array([math.sin(math.radians(yaw)), 0.0, math.cos(math.radians(yaw))])
+
+    def mouth_pos(self, t):
+        return self.head_pos(t=t) + self.face_dir(t) * 0.11 * self.scale - np.array([0, 0.09 * self.scale, 0])
+
     def head_pos(self, pos=None, yaw=None, t=None):
-        """頭（目の高さ）のワールド位置のめやす。"""
+        """頭（目の高さ）のワールド位置。直前に描いた姿勢があればその骨の位置、なければめやす。"""
+        hw = getattr(self, "_head_world", None)
+        if pos is None and hw is not None and t is not None and abs(hw[0] - t) < 0.2:
+            p_now = np.asarray(self.place(t)[0], float)
+            p_then = np.asarray(self.place(hw[0])[0], float)
+            return hw[1] + (p_now - p_then)
         if pos is None:
             pos, yaw = self.place(t)
         v = self.v
         h = float((v.bone_pos("head") - v.bounds()[0]) @ self.motion.U) * self.scale + 0.08 * self.scale
+        seat = float(self.motion.p.get("seat", 0.0))
+        h -= (self.motion.hips_h * self.scale - 0.08) * seat + 0.12 * seat
         return np.asarray(pos, float) + np.array([0.0, h, 0.0])

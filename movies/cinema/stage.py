@@ -3,6 +3,7 @@
 位置はすべてワールド座標（m）で書く。描くときはゲームと同じ「浮動原点」で、カメラの位置を原点にしてから
 GPU に渡す（遠くても精度が落ちない）。
 """
+import math
 import sys
 from pathlib import Path
 
@@ -21,7 +22,7 @@ MOVIE_MATERIALS = {
     "m_black": [0.12, 0.125, 0.145], "m_red": [0.82, 0.16, 0.14], "m_navy": [0.13, 0.2, 0.42],
     "m_blue": [0.22, 0.45, 0.88], "m_gold": [0.86, 0.66, 0.25], "m_orange": [0.95, 0.48, 0.12],
     "m_floor": [0.3, 0.33, 0.38], "m_panel": [0.42, 0.46, 0.52], "m_wine": [0.42, 0.06, 0.08],
-    "m_glass": [0.35, 0.5, 0.62], "m_screen": [0.25, 0.62, 0.8],
+    "m_wood": [0.5, 0.33, 0.2], "m_cream": [0.86, 0.82, 0.74], "m_glass": [0.35, 0.5, 0.62], "m_screen": [0.25, 0.62, 0.8],
     # 光る（ブルームで光ってにじむ）
     "g_cyan": [0.9, 2.4, 2.8], "g_blue": [0.7, 1.4, 3.2], "g_red": [3.0, 0.45, 0.35], "g_amber": [3.0, 1.8, 0.5],
     "g_white": [2.6, 2.6, 2.7], "g_green": [0.6, 2.6, 1.0], "g_screen": [0.3, 1.0, 1.35], "g_dim": [0.3, 0.75, 0.95],
@@ -43,6 +44,7 @@ class Stage:
         camera.clip_plane_near = near
         camera.clip_plane_far = far
         self.near, self.far = near, far
+        self.vertical_fov = True
         self.loader = application.base.loader
         # ゲームの定義（素材・機器）と描画の設定
         from main import log
@@ -87,7 +89,9 @@ class Stage:
         self.cam_basis = B
         cam.lookAt(LPoint3f(*B[2].astype(np.float32)), LVector3f(*B[1].astype(np.float32)))
         if fov is not None:
-            cam.fov = fov
+            # fov は縦の画角（度）。Ursina の camera.fov は横の画角なので直す
+            asp = self.w / self.h
+            cam.fov = math.degrees(2 * math.atan(math.tan(math.radians(fov) / 2) * asp)) if self.vertical_fov else fov
         f = float(np.linalg.norm(np.asarray(target, float) - pos)) if focus is None else float(focus)
         self.dof.set(f, aperture, max_blur)
 
@@ -95,6 +99,13 @@ class Stage:
         """時刻 t の場面を描いて、画（高さ×幅×3 の uint8）を返す。"""
         o = self.cam_pos
         for it in self.items:
+            w = getattr(it, "when", None)
+            if w is not None:
+                shown = bool(w(t))
+                for n in _nodes(it):
+                    (n.show if shown else n.hide)()
+                if not shown:
+                    continue
             it.update(t, o)
         self.app.step()
         return self.grab()
@@ -155,6 +166,20 @@ class Stage:
         t.setMagfilter(SamplerState.FT_linear)
         self._sprite_tex[kind] = t
         return t
+
+
+def _nodes(it):
+    """物の描画ノード（when で出し入れするため）。"""
+    out = []
+    for name in ("mesh", "clouds", "atmo", "e", "root"):
+        x = getattr(it, name, None)
+        if x is None:
+            continue
+        out.append(getattr(x, "np", x))
+    v = getattr(it, "view", None)
+    if v is not None:
+        out.append(getattr(v, "root", v))
+    return out
 
 
 class Ship:

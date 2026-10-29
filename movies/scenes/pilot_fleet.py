@@ -67,6 +67,7 @@ class Missile:
 class FILM(Film):
     name = "pilot_fleet"
     duration = 16.5
+    vertical_fov = False          # このころは画角を横で決めていた
     near, far = 0.5, 80000.0
     sun = (-0.35, 0.85, -0.4)
     ambient = 0.28

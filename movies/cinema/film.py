@@ -104,8 +104,8 @@ def render_size(film, scale=1.0):
 def make_stage(film, scale=1.0):
     from .stage import Stage
     ow, oh, w, h = render_size(film, scale)
-    first = film.shots[0].cam(film.shots[0].t0, 0.0) if film.shots else Cam((0, 0, 0), (0, 0, 1))
-    st = Stage(w, h, film.fps, film.near, film.far, first.fov, film.sun, film.ambient)
+    st = Stage(w, h, film.fps, film.near, film.far, 35.0, film.sun, film.ambient)
+    st.vertical_fov = getattr(film, "vertical_fov", True)
     return st
 
 
