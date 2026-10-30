@@ -679,7 +679,8 @@ class BlockEditor:
             if not d:
                 continue
             dd = self.c.reg.device(d["def"]) or {}
-            if kind in ("*", None) or dd.get("type") == kind:
+            from ..extensions import behavior_of
+            if kind in ("*", None) or dd.get("type") == kind or behavior_of(dd) == kind:
                 if d["name"] not in names:
                     names.append(d["name"])
         return names

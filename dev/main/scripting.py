@@ -91,6 +91,28 @@ class DeviceHandle:
     def state(self):
         return self._p.device_state(self._i)
 
+    # MOD の機器（extensions.py）の口
+    port = property(lambda s: s._p)
+    index = property(lambda s: s._i)
+
+    @property
+    def data(self):
+        """MOD の機器の state["data"]（MOD が自由に使う辞書）。"""
+        return self._p.custom_data(self._i)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        from . import extensions as ext
+        beh = self.__dict__.get("_type")
+        m = ext.DEVICE_METHODS.get(beh, {}).get(name)
+        if m is not None:
+            return lambda *a, **k: m(self, *a, **k)
+        pr = ext.DEVICE_PROPS.get(beh, {}).get(name)
+        if pr is not None:
+            return pr(self)
+        raise AttributeError(f"{self.__dict__.get('_name', '機器')}（{beh}）に '{name}' はありません")
+
     def display(self, text, face=None, width=None, color=None, background=None):
         """このブロックの表面に文字を表示（コンピューターのみ）。"""
         if self.type != "computer":
@@ -382,6 +404,16 @@ class ScriptAPI:
         """チャンネル channel に届いている一番新しい情報（max_age 秒より古いものや、無いときは default）。
         何度呼んでも同じものが返る（受け取っても消えない）。"""
         return self._p.radio_latest(channel, default, max_age)
+
+    def __getattr__(self, name):
+        """MOD が足した api の口（extensions.register_api）。"""
+        if name.startswith("_"):
+            raise AttributeError(name)
+        from . import extensions as ext
+        fn = ext.API_FUNCS.get(name)
+        if fn is None:
+            raise AttributeError(f"api に '{name}' はありません")
+        return lambda *a, **k: fn(self, *a, **k)
 
     def log(self, *msg):
         text = " ".join(str(m) for m in msg)

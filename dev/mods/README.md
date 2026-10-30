@@ -17,7 +17,33 @@ mods/<MOD名>/
 
 ワールドで使うには、メニューの新規作成／ワールド設定の MOD 選択で選びます（`saves/<ワールド>/mods.json` の `"enabled"`）。
 本体に入っている MOD：`survival`（サバイバル＝資源のルール。入れないとクリエイティブ）、`city`（サイバーパンクの街）、
-`story`（物語のチュートリアル。チュートリアルのワールドで使う。台本は `docs/ストーリー台本.md`）、`cute_motions`（かわいいモーション）。
+`story`（シナリオモード「それでも」。新しいワールドを作るときに選ぶとシナリオのワールドになる。台本は `docs/ストーリー台本.md`）、
+`scenario_blocks`（シナリオ再現ブロック）、`soredemo_cast`（登場人物）、`lunaport`・`amatsu`（場所）、`cute_motions`（かわいいモーション）。
+
+## mod.json
+
+```json
+{"id": "story", "name": "シナリオモード（それでも）", "version": "2.0", "category": "シナリオ",
+ "requires": ["scenario_blocks", "soredemo_cast", "lunaport", "amatsu"],
+ "description": "…",
+ "world": {"note": "…", "main": "terra", "main_override": {"noise_amp": 1.5}, "settings": {"story": {"built": false}}}}
+```
+
+| 項目 | 意味 |
+|---|---|
+| requires | 一緒に読み込む必要がある MOD。MOD の画面で入れると一緒に入り、読み込みのときに足りなければ足す（依存する方が先に読み込まれる） |
+| world | 新しいワールドを作るときにこの MOD を選ぶと、ワールドをこの形で作る（惑星 `planets` か `main`・`main_override`、world.json に足す `settings`） |
+| category | MOD の画面での分類の表示 |
+
+設計図（F8 の読み込みメニューに最初から並ぶ構築物）は、本体の `sauce/blueprints/*.alp.json` と、MOD の `blueprints/` に置けます
+（`.alp.json` に `"requires": [MOD]` を書くと、その MOD が入っていないワールドでは置けない）。
+
+## MOD の機器（"type": "custom"）
+
+推進機・タンクなど決まった種類のほかに、`"type": "custom", "behavior": "<名前>"` の機器を作り、ふるまいを MOD のプログラムで書けます。
+コアは電力（`power_use`、`state["active"]`）と保存（`state["enabled"]`・`state["data"]`）だけ受け持ちます。
+スクリプト・ブロックプログラムの口は `main/extensions.py`（`register_device` / `register_api`）と `main/blocks.py` の `register_ext`
+（ブロックの文・センサー・矢印のセンサーを足す）で登録します。例は `mods/scenario_blocks/code/blocks.py`（迎撃砲塔・レーダー・ミサイル発射機）。
 読み込み結果やエラーは `logs/latest.log` に出ます。
 
 ## 読み込みのタイミングとエラー（大事）

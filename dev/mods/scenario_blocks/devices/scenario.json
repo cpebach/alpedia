@@ -1,0 +1,19 @@
+[
+  {"id": "turret", "name": "迎撃砲塔", "type": "custom", "behavior": "turret", "mark": "turret", "material": "steel",
+   "color": [0.3, 0.75, 0.95], "power": "electric", "power_use": 3000, "directional": true,
+   "params": {"range": 450.0, "cooldown": 0.3, "hit_radius": 3.0, "damage": 0.0},
+   "cost": {"iron": 60, "parts": 8}},
+  {"id": "radar", "name": "レーダー", "type": "custom", "behavior": "radar", "mark": "radar", "material": "aluminum",
+   "color": [0.85, 0.88, 0.92], "power": "electric", "power_use": 500,
+   "params": {"range": 1500.0}, "cost": {"iron": 20, "parts": 6}},
+  {"id": "missile_launcher", "name": "ミサイル発射機", "type": "custom", "behavior": "launcher", "mark": "launcher",
+   "material": "steel", "color": [0.55, 0.2, 0.2], "power": "electric", "power_use": 200, "directional": true,
+   "params": {"speed": 55.0, "turn": 1.5, "cooldown": 1.2, "blast": 1.2, "life": 25.0},
+   "cost": {"iron": 50, "parts": 10, "fuel": 20}},
+  {"id": "maneuver_thruster", "extends": "thruster", "name": "姿勢用推進機", "color": [0.75, 0.78, 0.85],
+   "params": {"thrust": 40000, "fuel_rate": 1.5, "ignite_energy": 5000, "power_output": 3000},
+   "cost": {"iron": 30, "parts": 3}},
+  {"id": "rocket_module", "extends": "thruster", "name": "推進モジュール", "color": [0.92, 0.93, 0.95],
+   "params": {"thrust": 600000, "fuel_rate": 18.0, "ignite_energy": 40000, "power_output": 60000},
+   "cost": {"iron": 300, "parts": 20}}
+]

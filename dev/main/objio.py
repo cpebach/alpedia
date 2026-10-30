@@ -189,7 +189,9 @@ def inspect(registry, path: Path):
     kind: "voxels"（ゲーム内で作ったボクセルデータ）/ "obj"（外部の OBJ をボクセル化）"""
     meta, obj_path, meta_path = _resolve(path)
     name = meta.get("name", (obj_path or meta_path).stem)
-    info = {"name": name, "meta": meta, "obj_path": obj_path, "meta_path": meta_path}
+    info = {"name": name, "meta": meta, "obj_path": obj_path, "meta_path": meta_path,
+            "requires": [r for r in meta.get("requires", []) if isinstance(r, str)],
+            "description": meta.get("description", "")}
     if meta.get("voxels"):
         info["kind"] = "voxels"
         info["voxel_size"] = float(meta.get("voxel_size", 0.5))
@@ -253,16 +255,31 @@ def import_construct(registry, obj_or_json: Path, voxel_size=None, scale=None, d
     return {"name": name, "size": size, "voxels": vox, "links": None, "storage": {}}
 
 
-def list_sources(world_dir: Path, saves_dir: Path):
+def blueprint_dirs(mods=()):
+    """設計図（最初から入っている構築物）の置き場：[(グループ名, フォルダ)]。
+    本体の sauce/blueprints と、入っている MOD の blueprints/。"""
+    from . import modmeta, paths
+    out = [("設計図", paths.SAUCE / "blueprints")]
+    for m in mods:
+        d = paths.MODS / m / "blueprints"
+        if d.is_dir():
+            out.append((f"設計図（{modmeta.name_of(m)}）", d))
+    return out
+
+
+def list_sources(world_dir: Path, saves_dir: Path, mods=()):
     """読み込めるファイルの一覧: [(グループ名, Path)]
-    このワールドの imports・exports と、マルチプレイで出力したもの、ほかのワールドの exports。"""
+    設計図（本体・MOD）、このワールドの imports・exports と、マルチプレイで出力したもの、ほかのワールドの exports。"""
     def scan(d):
         if not d.exists():
             return []
         objs = list(d.glob("*.obj"))
         js = [p for p in d.glob("*.alp.json") if not (d / (p.name[:-9] + ".obj")).exists()]
         return sorted(objs + js, key=lambda p: p.name.lower())
-    out = [("imports", p) for p in scan(world_dir / "imports")]
+    out = []
+    for group, d in blueprint_dirs(mods):
+        out += [(group, p) for p in scan(d)]
+    out += [("imports", p) for p in scan(world_dir / "imports")]
     out += [("exports", p) for p in scan(world_dir / "exports")]
     mp = saves_dir / ".net" / "exports"         # マルチプレイで参加中に F9 で出力したもの（自分の PC）
     out += [("マルチプレイで出力", p) for p in scan(mp)]

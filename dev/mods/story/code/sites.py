@@ -8,183 +8,12 @@
 """
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# 色（景色の箱）
-# ---------------------------------------------------------------------------
-ROCK = (0.46, 0.42, 0.38)
-ROCK2 = (0.40, 0.37, 0.34)
-ROCK3 = (0.52, 0.47, 0.41)
-CONC = (0.62, 0.62, 0.60)
-DARK = (0.22, 0.23, 0.26)
-METAL = (0.55, 0.58, 0.62)
-WHITE = (0.88, 0.89, 0.90)
-ORANGE = (0.95, 0.45, 0.12)
-RED = (0.80, 0.16, 0.14)
-NAVY = (0.12, 0.18, 0.35)
-MOON_G = (0.50, 0.50, 0.53)
-GLASS = (0.55, 0.78, 0.92)
-
-WARM = (1.0, 0.82, 0.45)      # 明かり（窓・街灯）
-CYAN = (0.25, 0.95, 1.0)
-PINK = (1.0, 0.3, 0.78)
-GREEN = (0.35, 1.0, 0.5)
-LIME = (0.6, 1.0, 0.3)
-REDL = (1.0, 0.2, 0.15)
-OFF = (0.16, 0.16, 0.18)      # 消えている明かり
-
-LUNA_DIST = 4000.0            # 月の中心（ワールド (0, 0, 4000)）
-
-
-def _unit(v):
-    v = np.asarray(v, dtype=np.float64)
-    return v / np.linalg.norm(v)
-
-
-class Map:
-    """惑星の表面の地図。原点の向き up0 と、その点での前 fwd0。"""
-
-    def __init__(self, planet, up0, fwd0, craters=()):
-        self.pl = planet
-        self.craters = np.asarray(craters, float).reshape(-1, 4)    # ストーリーの不時着の跡（惑星の中心から）
-        self.up0 = _unit(up0)
-        f = np.asarray(fwd0, float) - self.up0 * np.dot(fwd0, self.up0)
-        self.fwd0 = _unit(f)
-        self.right0 = np.cross(self.up0, self.fwd0)
-
-    def dir(self, x, z):
-        return _unit(self.up0 * self.pl.radius + self.right0 * x + self.fwd0 * z)
-
-    def radius_at(self, dirs):
-        """方向 (N,3) の地表の半径。元の地形から、不時着の跡（球）を削ったもの（プレイヤーが掘った所は含まない）。"""
-        r = self.pl.surface_radius(dirs)
-        for c in self.craters:
-            dc = dirs @ c[:3]
-            disc = dc * dc - c[:3] @ c[:3] + c[3] * c[3]
-            ok = disc > 0
-            lo = dc - np.sqrt(np.maximum(disc, 0))
-            hi = dc + np.sqrt(np.maximum(disc, 0))
-            cut = ok & (r > lo) & (r <= hi)
-            r = np.where(cut, lo, r)
-        return r
-
-    def ground(self, x, z, lift=0.0):
-        """地表の点と、その点の上方向。"""
-        d = self.dir(x, z)
-        r = float(self.radius_at(d[None])[0])
-        return self.pl.center + d * (r + lift), d
-
-    def frame(self, x, z, yaw=0.0):
-        """(x, z) に立てた向き（列が 右・上・前 のワールド方向）。yaw は左回り（度）。"""
-        up = self.dir(x, z)
-        f = _unit(self.fwd0 - up * np.dot(self.fwd0, up))
-        r = np.cross(up, f)
-        a = np.radians(yaw)
-        f2 = f * np.cos(a) - r * np.sin(a)
-        r2 = np.cross(up, f2)
-        return np.stack([r2, up, f2], axis=1)
-
-    def height(self, P, up, base):
-        """点 P (N,3) の地表の、base から up 方向の高さ。"""
-        d = P - self.pl.center
-        d /= np.linalg.norm(d, axis=1)[:, None]
-        r = self.radius_at(d)
-        S = self.pl.center + d * r[:, None]
-        return (S - base) @ up
+from main.scenery import (CONC, CYAN, DARK, GLASS, GREEN, LIME, METAL, MOON_G, NAVY, OFF, ORANGE, PINK,  # noqa: F401
+                          RED, REDL, ROCK, ROCK2, ROCK3, WARM, WHITE, Map, Scenery, unit as _unit)
 
 
 def terra_map(planet, craters=()):
     return Map(planet, (0, 1, 0), (0, 0, 1), craters)
-
-
-PAD_TILT = 70.0               # 月の発着場：テラの真下の点から、月の北へこの角度（テラが地平線の上に低く見える）
-
-
-def luna_pad_dir(terra_center, luna_center):
-    """月の発着場の向き。テラ（ルミナス号の墜落地点の方）の真下の点から、月の北（ワールドの +Y）へ PAD_TILT 度。
-    街からは南の空の低い所にテラが見える。"""
-    p = np.asarray(terra_center, float) + np.array([0.0, 600.0, 150.0])
-    u0 = _unit(p - np.asarray(luna_center, float))
-    n = _unit(np.array([0.0, 1.0, 0.0]) - u0 * u0[1])
-    a = np.radians(PAD_TILT)
-    return _unit(u0 * np.cos(a) + n * np.sin(a))
-
-
-def luna_map(planet, terra_center):
-    u = luna_pad_dir(terra_center, planet.center)
-    return Map(planet, u, (0, 1, 0))
-
-
-# ---------------------------------------------------------------------------
-# 景色の箱
-# ---------------------------------------------------------------------------
-class Scenery:
-    """景色の箱の集まり（1つの惑星の1か所）。世界座標の箱 C (中心)・A (行が軸)・E (半分の大きさ)。"""
-
-    def __init__(self, sid, map_):
-        self.id = sid
-        self.map = map_
-        self.parts = []
-        self.points = {}
-
-    def box(self, x, z, w, h, d, y0=0.0, yaw=0.0, color=CONC, glow=None, group=None, collide=True,
-            blink=None, tag=None, ground=True, pitch=0.0, roll=0.0, sink=0.4):
-        """地図の (x, z) に、幅 w・高さ h・奥行き d の箱。y0 は地面からの高さ（ground=False なら地図の原点の高さから）。
-        glow：光る色（影をつけない）。group：同じ group の明かりはまとめて点けたり消したりできる。
-        blink：点滅の周期（秒）。tag：触れる物の名前（E・近づくとボタン）。"""
-        R = self.map.frame(x, z, yaw)
-        up = R[:, 1]
-        base = self.map.pl.center + up * self.map.pl.radius
-        if ground:
-            hw, hd = w / 2, d / 2
-            pts = np.array([[0, 0], [-hw, -hd], [hw, -hd], [-hw, hd], [hw, hd], [-hw, 0], [hw, 0], [0, -hd], [0, hd]])
-            P = base + np.outer(pts[:, 0], R[:, 0]) + np.outer(pts[:, 1], R[:, 2])
-            hs = self.map.height(P, up, base)
-            hc = float(hs[0])
-            bottom = hc + y0 if y0 > 0.05 else min(float(hs.min()), hc + y0) - sink
-            top = hc + y0 + h
-        else:
-            g0 = float(self.map.height(base[None], up, base)[0])
-            bottom, top = g0 + y0, g0 + y0 + h
-        if pitch or roll:
-            p, r_ = np.radians(pitch), np.radians(roll)
-            Rx = np.array([[1, 0, 0], [0, np.cos(p), -np.sin(p)], [0, np.sin(p), np.cos(p)]])
-            Rz = np.array([[np.cos(r_), -np.sin(r_), 0], [np.sin(r_), np.cos(r_), 0], [0, 0, 1]])
-            R = R @ Rx @ Rz
-        c = base + up * ((bottom + top) / 2)
-        self.parts.append({"c": c, "A": R.T.copy(), "e": np.array([w / 2, (top - bottom) / 2, d / 2]),
-                           "color": np.array(color, float), "glow": None if glow is None else np.array(glow, float),
-                           "group": group, "collide": collide, "blink": blink, "tag": tag})
-        return len(self.parts) - 1
-
-    def raw(self, c, R, e, color=CONC, glow=None, group=None, collide=True, blink=None, tag=None):
-        """世界座標の中心 c・向き R（列が 右・上・前）・半分の大きさ e の箱。"""
-        self.parts.append({"c": np.asarray(c, float), "A": np.asarray(R, float).T.copy(), "e": np.asarray(e, float),
-                           "color": np.array(color, float), "glow": None if glow is None else np.array(glow, float),
-                           "group": group, "collide": collide, "blink": blink, "tag": tag})
-        return len(self.parts) - 1
-
-    def point(self, name, x, z, y=0.0):
-        p, up = self.map.ground(x, z)
-        self.points[name] = p + up * y
-        return self.points[name]
-
-    def finish(self):
-        P = self.parts
-        self.C = np.array([p["c"] for p in P])
-        self.A = np.array([p["A"] for p in P])
-        self.E = np.array([p["e"] for p in P])
-        self.col = np.array([p["collide"] for p in P], bool)
-        self.center = self.C.mean(0)
-        self.radius = float(np.max(np.linalg.norm(self.C - self.center, axis=1) + np.linalg.norm(self.E, axis=1))) + 1.0
-        self.tags = {p["tag"]: k for k, p in enumerate(P) if p["tag"]}
-        return self
-
-    # 動かない物（当たり判定の持ち主として）
-    def is_moving(self):
-        return False
-
-    def point_velocity(self, p):
-        return np.zeros_like(np.asarray(p, float))
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +41,15 @@ PLACES = {
     "bike": (-13.0, 85.0, 0.0, 0.05),
     "ship": (SHIP[0], SHIP[1], 0.0, 0.05),
     "sign_base": (4.0, 47.0, 180.0, 0.05),
+    "crane": (20.0, 56.0, 0.0, 0.05),
+    "factory": (-31.0, 69.0, 90.0, 0.05),
 }
+PAD_HALF = 6.0                # 月の発着場の半分の幅（場所の MOD「lunaport」と同じ）
+CRANE = (20.0, 56.0)          # 搬入クレーン（第3章）
+FACTORY = (-31.0, 69.0)       # 工場（第6章）
+QUARRY_ORE = (-42.0, 60.0)    # 採掘場：灰色の鉱石
+QUARRY_SULFUR = (-42.0, 79.0) # 採掘場：黄色い硫黄鉱石
+QUARRY_R = 6.5
 RING = (16.0, 76.0, 15.0)     # ドローンでくぐる輪（x, z, 高さ）
 RING_R = 2.4
 
@@ -338,6 +175,40 @@ def build_terra(planet):
         s.box(-22.0, 48.0 + k * 4.0, 3.0, 0.1, 2.0, y0=1.0, color=NAVY, pitch=-25)
         s.box(-22.0, 48.0 + k * 4.0, 0.15, 1.0, 0.15, color=METAL)
     s.point("ring_view", 12.0, 66.0, 1.6)
+    # 本館の古い端末（第2章：ミカガの声がする）と、壁の「N」の印（N 財団の旧施設）
+    s.box(13.6, 48.3, 1.2, 1.4, 0.5, color=(0.25, 0.3, 0.28), glow=(0.35, 1.0, 0.45), group="base", tag="terminal")
+    s.point("terminal", 13.6, 47.0, 1.0)
+    for k, (dx, dy) in enumerate(((0.0, 0.0), (0.0, 0.6), (0.0, 1.2), (0.0, 1.8), (0.35, 1.5), (0.7, 1.0), (1.05, 0.5),
+                                  (1.4, 0.0), (1.4, 0.6), (1.4, 1.2), (1.4, 1.8))):
+        s.box(14.6 - dx, 55.55, 0.3, 0.6, 0.06, y0=1.4 + dy, color=(0.3, 0.3, 0.32))
+    # 搬入クレーンの置き場（第3章）：倉庫と荷台
+    cx, cz = CRANE
+    s.box(cx, cz, 9.0, 0.18, 9.0, color=CONC, sink=0.25)
+    s.box(cx + 6.5, cz + 2.0, 3.0, 3.0, 4.0, color=(0.62, 0.55, 0.42))                       # 倉庫
+    s.box(cx + 6.5, cz - 1.0, 2.6, 0.2, 0.1, y0=2.6, color=OFF, glow=WARM, group="base", collide=False)
+    s.box(cx - 3.0, cz + 5.0, 3.0, 0.9, 2.0, color=(0.30, 0.42, 0.58))                       # 荷台
+    s.box(cx - 3.0, cz + 5.0, 3.2, 0.12, 2.2, y0=0.9, color=OFF, glow=CYAN, group="base", collide=False)
+    s.point("crane", cx, cz - 4.0, 1.0)
+    # 工場（第6章）の屋根と、採掘場の露頭
+    fx, fz = FACTORY
+    s.box(fx, fz, 7.0, 0.3, 9.0, y0=3.6, color=(0.32, 0.30, 0.28))
+    for x, z in ((fx - 3.3, fz - 4.3), (fx + 3.3, fz - 4.3), (fx - 3.3, fz + 4.3), (fx + 3.3, fz + 4.3)):
+        s.box(x, z, 0.3, 3.6, 0.3, color=METAL)
+    s.box(fx + 3.7, fz, 0.15, 1.2, 1.6, y0=1.2, color=(0.3, 0.32, 0.3), glow=(0.95, 0.85, 0.6), tag="photo")
+    s.point("photo", fx + 4.6, fz, 1.0)
+    s.box(-10.0 - 9.0, 69.0, 18.0, 0.16, 2.6, color=CONC, sink=0.25)                         # 工場への道
+    for (qx, qz), col, tag in ((QUARRY_ORE, (0.42, 0.40, 0.40), "quarry_ore"),
+                               (QUARRY_SULFUR, (0.86, 0.78, 0.2), "quarry_sulfur")):
+        for k in range(7):
+            a = 2 * np.pi * k / 7 + rng.uniform(-0.3, 0.3)
+            r = QUARRY_R + rng.uniform(0.0, 1.5)
+            sz = rng.uniform(1.0, 2.2)
+            s.box(qx + np.cos(a) * r, qz + np.sin(a) * r, sz, sz * 0.8, sz * 1.2, yaw=rng.uniform(0, 90), color=col,
+                  pitch=rng.uniform(-10, 10))
+        s.box(qx, qz - QUARRY_R - 2.0, 0.2, 2.0, 0.2, color=METAL)
+        s.box(qx, qz - QUARRY_R - 2.0, 1.4, 0.7, 0.1, y0=1.6, color=col, glow=tuple(min(1.0, c * 1.2) for c in col),
+              collide=False)
+        s.point(tag, qx, qz, 0.5)
     # --- ルミナス号の墜落地点：飛び散った破片と、焦げた跡 ---
     sx, sz = SHIP
     for k in range(9):
@@ -349,121 +220,6 @@ def build_terra(planet):
               color=col, sink=0.15)
     s.box(sx + 7.5, sz - 3.0, 0.2, 2.0, 0.2, color=METAL)                             # 目印の旗
     s.box(sx + 7.5, sz - 3.0, 0.05, 0.6, 1.0, y0=1.4, color=ORANGE)
-    return s.finish()
-
-
-# ---------------------------------------------------------------------------
-# 月：ルナ・ポート（発着場・管制塔・ドーム・住居・温室）
-# ---------------------------------------------------------------------------
-PAD_HALF = 6.0
-
-
-def _dome(s, x, z, r, color, glow, n=6, tag=None):
-    for k in range(n):
-        y = r * k / n
-        hw = r * np.sqrt(max(1 - (k / n) ** 2, 0.02))
-        s.box(x, z, hw * 2, r / n + 0.05, hw * 2, y0=y if k else 0.0, yaw=22.5 * (k % 2), color=color)
-    s.box(x, z, r * 2 + 0.3, 0.25, 0.3, y0=r * 0.25, color=OFF, glow=glow, collide=False)
-    s.box(x, z, 0.3, 0.25, r * 2 + 0.3, y0=r * 0.25, color=OFF, glow=glow, collide=False)
-    if tag:
-        s.box(x, z - r - 0.1, 2.0, 2.2, 0.4, color=DARK, glow=(glow[0] * 0.8, glow[1] * 0.8, glow[2] * 0.8),
-              tag=tag)
-
-
-def pad_frame(luna, terra, top_point, fwd0):
-    """発着場の向き：上の面が、月とテラの重力を合わせた向きに垂直（テラに引かれて船がすべらないように）。"""
-    def g(pl):
-        d = pl.center - top_point
-        return d * pl.gm / float(np.linalg.norm(d)) ** 3
-    up = _unit(-(g(luna) + g(terra)))
-    f = _unit(fwd0 - up * np.dot(fwd0, up))
-    return np.stack([np.cross(up, f), up, f], axis=1)
-
-
-def build_luna(planet, terra):
-    m = luna_map(planet, terra.center)
-    s = Scenery("luna", m)
-    rng = _rng(23)
-    # 発着場（平らな台。上の面は、下の地面のいちばん高い所より少し上）
-    g = np.linspace(-PAD_HALF, PAD_HALF, 7)
-    P = np.array([m.ground(x, z)[0] for x in g for z in g])
-    base = m.pl.center + m.up0 * m.pl.radius
-    hs = m.height(P, m.up0, base)
-    g0 = float(m.height(base[None], m.up0, base)[0])
-    top = float(hs.max()) - g0 + 0.6
-    T = base + m.up0 * (g0 + top)
-    R = pad_frame(planet, terra, T, m.fwd0)
-    up = R[:, 1]
-    depth = top + 4.0
-    s.raw(T - up * depth / 2, R, (PAD_HALF, depth / 2, PAD_HALF), color=(0.30, 0.31, 0.34))
-    s.raw(T + up * 0.03, R, (3.0, 0.03, 0.25), color=OFF, glow=(1.0, 0.85, 0.2), collide=False)
-    s.raw(T + up * 0.03, R, (0.25, 0.03, 3.0), color=OFF, glow=(1.0, 0.85, 0.2), collide=False)
-    for k in range(12):
-        a = 2 * np.pi * k / 12
-        c = T + up * 0.06 + R[:, 0] * np.cos(a) * (PAD_HALF - 0.6) + R[:, 2] * np.sin(a) * (PAD_HALF - 0.6)
-        s.raw(c, R, (0.18, 0.06, 0.18), color=OFF, glow=CYAN, blink=1.6, collide=False)
-    s.points["pad"] = T
-    s.points["pad_up"] = up
-    # 発着場までの誘導灯
-    for k in range(6):
-        s.box(0.0, -PAD_HALF - 2.0 - k * 2.5, 0.4, 0.3, 0.4, color=OFF, glow=REDL, blink=0.8, collide=False)
-    # 管制塔（ミオがいる）
-    tx, tz = -15.0, 2.0
-    s.box(tx, tz, 6.0, 4.0, 6.0, color=(0.80, 0.82, 0.85))
-    s.box(tx, tz, 3.0, 12.0, 3.0, y0=4.0, color=(0.75, 0.77, 0.80))
-    s.box(tx, tz, 7.0, 3.0, 7.0, y0=16.0, color=(0.25, 0.27, 0.32))
-    s.box(tx, tz, 7.2, 1.4, 7.2, y0=16.8, color=OFF, glow=CYAN, collide=False)
-    s.box(tx, tz, 7.6, 0.4, 7.6, y0=19.0, color=WHITE)
-    s.box(tx, tz, 0.4, 3.0, 0.4, y0=19.4, color=METAL)
-    s.box(tx, tz, 0.6, 0.6, 0.6, y0=22.4, color=OFF, glow=REDL, blink=1.0)
-    s.box(tx + 3.05, tz, 0.15, 2.4, 2.0, color=DARK, glow=(0.95, 0.8, 0.5))          # 入口
-    s.box(tx + 3.3, tz + 2.0, 0.6, 1.1, 0.8, color=(0.25, 0.3, 0.4), glow=(0.5, 0.95, 1.0), tag="mio")  # 受付
-    s.point("mio", tx + 4.2, tz + 2.0, 0.0)
-    s.box(tx + 3.1, tz, 0.1, 0.6, 5.0, y0=3.0, color=OFF, glow=PINK)                  # 看板の光
-    # ドーム（居住・温室・研究）
-    _dome(s, 14.0, 8.0, 7.0, (0.70, 0.84, 0.92), CYAN)
-    _dome(s, 4.0, 22.0, 9.0, (0.62, 0.86, 0.66), GREEN)
-    _dome(s, -14.0, 20.0, 5.5, (0.88, 0.80, 0.92), PINK)
-    # 温室の中が見えるように、ドームの前に光る畑
-    for k in range(4):
-        s.box(-1.0 + k * 3.3, 12.4, 2.6, 0.25, 1.0, color=(0.2, 0.35, 0.18), glow=(0.35, 0.9, 0.35), collide=False)
-    # 住居ブロックと通路
-    for k, (x, z) in enumerate(((20.0, -6.0), (26.0, 2.0), (22.0, 16.0))):
-        s.box(x, z, 5.0, 3.0, 4.0, color=(0.78, 0.79, 0.80))
-        s.box(x, z - 2.05, 3.6, 0.6, 0.1, y0=1.5, color=OFF, glow=(WARM, CYAN, PINK)[k])
-        s.box(x, z, 5.4, 0.3, 4.4, y0=3.0, color=DARK)
-    for (x0, z0), (x1, z1) in (((14.0, 1.0), (20.0, -4.0)), ((21.0, 8.0), (26.0, 4.0)), ((18.0, 12.0), (21.0, 14.0)),
-                               ((8.0, 14.0), (8.5, 10.0)), ((-9.0, 18.0), (-3.0, 18.0)), ((-12.0, 5.0), (-13.0, 15.0))):
-        cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
-        L_ = float(np.hypot(x1 - x0, z1 - z0))
-        yaw = -np.degrees(np.arctan2(x1 - x0, z1 - z0))
-        s.box(cx, cz, 1.6, 1.8, L_, yaw=yaw, color=(0.85, 0.86, 0.88))
-        s.box(cx, cz, 0.2, 0.15, L_, y0=1.8, yaw=yaw, color=OFF, glow=CYAN, collide=False)
-    # ソーラーパネルと電波の皿
-    for k in range(5):
-        s.box(-26.0, -10.0 + k * 4.2, 3.4, 0.1, 2.2, y0=1.2, color=NAVY, pitch=30)
-        s.box(-26.0, -10.0 + k * 4.2, 0.15, 1.2, 0.15, color=METAL)
-    s.box(10.0, -16.0, 0.4, 4.0, 0.4, color=METAL)
-    s.box(10.0, -16.0, 4.0, 0.3, 4.0, y0=4.0, pitch=35, color=WHITE)
-    s.box(10.0, -16.0, 0.3, 0.3, 0.3, y0=5.4, color=OFF, glow=REDL, blink=1.4)
-    # 止めてある探査車（ローバー）
-    for k, (x, z, yaw) in enumerate(((6.0, -10.0, 30.0), (-6.0, -11.0, -20.0))):
-        R = m.frame(x, z, yaw)
-        s.box(x, z, 2.0, 0.8, 3.0, y0=0.55, yaw=yaw, color=(ORANGE, WHITE)[k])
-        s.box(x, z, 1.6, 0.6, 1.2, y0=1.35, yaw=yaw, color=GLASS)
-        for dx, dz in ((-1.1, -1.0), (1.1, -1.0), (-1.1, 1.0), (1.1, 1.0)):
-            off = R[:, 0] * dx + R[:, 2] * dz
-            wx = x + float(off @ m.right0)
-            wz = z + float(off @ m.fwd0)
-            s.box(wx, wz, 0.35, 0.9, 0.9, yaw=yaw, color=(0.1, 0.1, 0.1))
-        s.box(x, z, 0.3, 0.15, 0.1, y0=1.2, yaw=yaw, color=OFF, glow=WARM)
-    # 岩
-    for k in range(14):
-        a = rng.uniform(0, 2 * np.pi)
-        r = rng.uniform(32, 55)
-        sz = rng.uniform(1.0, 3.0)
-        s.box(np.cos(a) * r, np.sin(a) * r, sz, sz * 0.7, sz * 1.2, yaw=rng.uniform(0, 90), color=MOON_G,
-              pitch=rng.uniform(-10, 10))
     return s.finish()
 
 
@@ -660,3 +416,89 @@ def sign_voxels(text, width=3.0, height=3, color=(1, 1, 1), bg=(0.05, 0.07, 0.12
         "def": "computer", "dir": 5, "name": "看板",
         "state": {"display": {"text": text, "face": 5, "width": width, "color": list(color), "background": list(bg)}}}))
     return v
+
+
+# ---------------------------------------------------------------------------
+# 第3章：搬入クレーン（扉と旋回クレーンと、決まった手順のコンピューター）
+# ---------------------------------------------------------------------------
+CRANE_CRATE = [(4, 4, 1), (4, 4, 2), (5, 4, 1), (5, 4, 2)]      # クレーンの先の荷物（風で落ちる）
+
+
+def crane_voxels():
+    """台（7×7）・扉（モーターで回る板）・旋回クレーン（モーターの上に柱と腕、腕の先に荷物）・コンピューター。
+    前 = +Z。扉のモーターは (7, 1, -2)、クレーンのモーターは (1, 1, 1)。"""
+    V = [((x, 0, z), "steel" if (x + z) % 2 else "rock", None) for x in range(-1, 9) for z in range(-2, 5)]
+    V += [((0, 1, 3), "steel", {"def": "battery", "dir": 2, "name": "バッテリー"}),
+          ((0, 1, 4), "steel", {"def": "battery", "dir": 2, "name": "バッテリー"}),
+          ((-1, 1, 4), "glass", {"def": "solar_panel", "dir": 2, "name": "太陽光パネル"}),
+          ((0, 2, 4), "steel", {"def": "computer", "dir": 5, "name": "搬入の制御",
+                                "state": {"script": "crane.py", "blocks": "crane.blocks.json"}})]
+    # 旋回クレーン：モーター（出力は上）→ 柱 → 腕（+X へ）→ 荷物
+    V.append(((1, 1, 1), "steel", {"def": "actuator", "dir": 2, "name": "クレーンの旋回",
+                                   "state": {"rot_speed": 45.0}}))
+    V += [((1, y, 1), "hull_orange", None) for y in (2, 3, 4)]
+    V += [((x, 5, 1), "hull_orange" if x % 2 else "bar_white", None) for x in range(1, 6)]
+    V += [((5, y, 1), "steel", None) for y in (4,)]
+    V += [(c, "wood", None) for c in CRANE_CRATE if c != (5, 4, 1)]
+    # 扉：モーター（出力は上）→ 板（+Z へ 3 ブロック・高さ 3）
+    V.append(((7, 1, -2), "steel", {"def": "actuator", "dir": 2, "name": "扉のモーター",
+                                    "state": {"rot_speed": 60.0}}))
+    V += [((7, y, z), "hull_red" if y == 2 else "hull_white", None) for y in (2, 3, 4) for z in (-2, -1, 0)]
+    return V
+
+
+# ---------------------------------------------------------------------------
+# 第6章：工場（精錬機・加工機・燃料のバルブ・配管・タンク）
+# ---------------------------------------------------------------------------
+FACTORY_CUT = (6, 1, 2)       # キンギのドローンが切る配管
+
+
+def factory_voxels():
+    """前 = +Z。精錬機 (2,1,2) → 配管 (2,1,1) → 加工機 (2,1,0)。精錬機 → 配管 (3,1,2) → バルブ (4,1,2)（閉）
+    → 配管 (5〜7,1,2) → タンク (8,1,2)。バッテリーと太陽光パネルで動く。"""
+    V = [((x, 0, z), "rock" if (x + z) % 3 else "steel", None) for x in range(-1, 10) for z in range(-1, 5)]
+    V += [((2, 1, 2), "steel", {"def": "refiner", "dir": 4, "name": "精錬機"}),
+          ((2, 1, 1), "steel", {"def": "pipe", "dir": 2, "name": "配管"}),
+          ((2, 1, 0), "steel", {"def": "fabricator", "dir": 4, "name": "加工機"}),
+          ((3, 1, 2), "steel", {"def": "pipe", "dir": 2, "name": "配管"}),
+          ((4, 1, 2), "steel", {"def": "valve", "dir": 2, "name": "燃料のバルブ", "state": {"open": 0.0}}),
+          ((5, 1, 2), "steel", {"def": "pipe", "dir": 2, "name": "配管"}),
+          ((6, 1, 2), "steel", {"def": "pipe", "dir": 2, "name": "配管"}),
+          ((7, 1, 2), "steel", {"def": "pipe", "dir": 2, "name": "配管"}),
+          ((8, 1, 2), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {}}}),
+          ((0, 1, 0), "steel", {"def": "battery", "dir": 2, "name": "バッテリー"}),
+          ((0, 1, 1), "steel", {"def": "battery", "dir": 2, "name": "バッテリー"}),
+          ((0, 1, 4), "steel", {"def": "computer", "dir": 4, "name": "工場の表示", "state": {"script": "factory.py",
+                                                                                         "running": True}})]
+    V += [((x, 1, 4), "glass", {"def": "solar_panel", "dir": 2, "name": "太陽光パネル"}) for x in (2, 3, 4, 5, 6)]
+    return V
+
+
+FACTORY_SCRIPT = '''"""工場の状態の表示（精錬機・加工機の中身、燃料タンク）。"""
+
+
+def tick(api):
+    st = {}
+    for d in api.devices("processor"):
+        st[d.name] = d.state.get("store", {})
+    tank = sum(t.contents.get("fuel", 0) for t in api.devices("tank"))
+    r = st.get("精錬機", {})
+    f = st.get("加工機", {})
+    names = {"ore": "鉱石", "sulfur": "硫黄鉱石", "iron": "鉄", "silica": "ケイ砂", "fuel": "燃料", "parts": "機械部品"}
+    def fmt(s):
+        return "、".join(f"{names.get(k, k)} {v:.0f}" for k, v in s.items() if v >= 0.5) or "空"
+    api.display(f"工場\\n精錬機：{fmt(r)}\\n加工機：{fmt(f)}\\n燃料タンク：{tank:.0f}", width=2.4,
+                color=(1.0, 0.92, 0.6))
+'''
+
+
+# ---------------------------------------------------------------------------
+# キンギの偵察ドローン（黒と赤。シナリオが動かす：物理では動かない）
+# ---------------------------------------------------------------------------
+def kdrone_voxels():
+    V = [((x, 0, z), "steel", None) for x in range(-1, 2) for z in range(-1, 2)]
+    V[4] = ((0, 0, 0), "steel", {"def": "battery", "dir": 2, "name": "バッテリー"})
+    V += [((0, 1, 0), "hull_red", None), ((0, 0, 2), "glass", None)]
+    for dx, dz in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+        V.append(((dx * 2, 0, dz * 2), "steel", None))
+    return V

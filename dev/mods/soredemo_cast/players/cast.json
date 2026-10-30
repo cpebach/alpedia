@@ -1,0 +1,15 @@
+[
+  {"id": "towa", "extends": "default", "name": "トワ（主人公）", "model": "../skinmodel(dummy)/towa.vrm", "height": 1.58, "radius": 0.3, "model_scale": 1.0},
+  {"id": "mikaga", "extends": "default", "name": "ミカガ", "model": "../skinmodel(dummy)/mikaga.vrm", "height": 1.62, "radius": 0.3, "model_scale": 1.0},
+  {"id": "nemuri", "extends": "default", "name": "ネムリ", "model": "../skinmodel(dummy)/nemuri.vrm", "height": 1.46, "radius": 0.3, "model_scale": 1.0},
+  {"id": "sakura", "extends": "default", "name": "サクラ", "model": "../skinmodel(dummy)/sakura.vrm", "height": 1.85, "radius": 0.3, "model_scale": 1.0},
+  {"id": "siyama", "extends": "default", "name": "ヤマシナ（シヤマ）", "model": "../skinmodel(dummy)/siyama.vrm", "height": 1.59, "radius": 0.3, "model_scale": 1.0},
+  {"id": "sirotsu", "extends": "default", "name": "シロツ", "model": "../skinmodel(dummy)/sirotsu.vrm", "height": 1.57, "radius": 0.3, "model_scale": 1.0},
+  {"id": "kensu", "extends": "default", "name": "ケンス", "model": "../skinmodel(dummy)/kensu.vrm", "height": 1.38, "radius": 0.3, "model_scale": 1.0},
+  {"id": "kingi", "extends": "default", "name": "キンギ", "model": "../skinmodel(dummy)/kingi.vrm", "height": 1.78, "radius": 0.3, "model_scale": 1.0},
+  {"id": "donachi", "extends": "default", "name": "ドナチ", "model": "../skinmodel(dummy)/donachi.vrm", "height": 1.72, "radius": 0.3, "model_scale": 1.0},
+  {"id": "nekosa", "extends": "default", "name": "先生（ネコサ）", "model": "../skinmodel(dummy)/nekosa.vrm", "height": 1.65, "radius": 0.3, "model_scale": 1.0},
+  {"id": "dabai", "extends": "default", "name": "ダバイ", "model": "../skinmodel(dummy)/dabai.vrm", "height": 1.71, "radius": 0.3, "model_scale": 1.0},
+  {"id": "rutero", "extends": "default", "name": "ルテロ", "model": "../skinmodel(dummy)/rutero.vrm", "height": 1.65, "radius": 0.3, "model_scale": 1.0},
+  {"id": "omiku", "extends": "default", "name": "オミク", "model": "../skinmodel(dummy)/omiku.vrm", "height": 1.58, "radius": 0.3, "model_scale": 1.0}
+]

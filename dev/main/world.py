@@ -125,6 +125,7 @@ class World:
         self.planets = []
         self.msgs = deque(maxlen=8)
         self.input_keys = set()
+        self.time_scale = 1.0       # 時間の進む速さ（MOD がスローモーションに使う。画面の固定ステップに掛ける）
         self.runner = ScriptRunner(self)
         from .radio import RadioBus
         self.radio = RadioBus(self)
@@ -152,11 +153,21 @@ class World:
         s, mods, upgraded = savefmt.upgrade_world(s, mods)
         if upgraded:
             L.info("古い形式のワールド：クリエイティブ／街の設定を MOD に読み替えました: %s", mods)
+        # 依存する MOD（mod.json の requires）を足す（前の版のワールドに、あとから分かれた MOD など）
+        from . import modcode, modmeta
+        mods, added, missing = modmeta.resolve(mods)
+        if added and self._given_addons is None:
+            L.info("依存する MOD を足しました: %s", added)
+            try:
+                _write_json(self.dir / "mods.json", {"enabled": list(mods)})
+            except OSError:
+                pass
         self.mods = list(mods)
         # MOD はここで一括で読み込む（定義・プログラムの全ファイル）。エラーがあればワールドを始めない
-        from . import modcode
         self.registry = Registry().load(mods)
         errors = self.registry.errors
+        for mid, parent in missing:
+            errors.append(f"MOD '{modmeta.name_of(parent)}' に必要な MOD '{mid}' が mods/ にありません")
         if self._given_addons is None:
             modcode.load(self.registry.loaded_mods, errors)
             self.addons = modcode.world_addons(self.registry.loaded_mods, errors)
@@ -201,6 +212,8 @@ class World:
         L.info("ワールド '%s' を読み込み: 構築物 %d, 惑星 %d, MOD %s", self.name, len(self.constructs),
                len(self.planets), mods)
         self.message(f"ワールド「{self.name}」を読み込みました")
+        if added and self._given_addons is None:
+            self.message("必要な MOD を足しました: " + "、".join(modmeta.name_of(m) for m in added))
         if n_gen:
             self.message(f"燃料の発電機はなくなったので、{n_gen} 個を配管にしました（推進機が燃えている間に発電します）")
         return self
@@ -421,7 +434,8 @@ class World:
         for c in self.constructs.values():
             if c.mode == "rails" and not c.asleep and c.id not in anchored_ids:
                 c.rails_step(dt, self.gravity)
-        cons = [c for c in self.constructs.values() if c.n_vox and not c.asleep and c.mode != "rails"]
+        cons = [c for c in self.constructs.values() if c.n_vox and not c.asleep and c.mode != "rails"
+                and c.id not in anchored_ids]
         sleeping = [c for c in self.constructs.values() if c.n_vox and (c.asleep or c.id in anchored_ids)]
         for c in cons:
             self._prep_ext(c, dt)

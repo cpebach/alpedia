@@ -12,6 +12,7 @@ import numpy as np
 
 from . import actuator, devices, devstate
 from .construct import DIR_NAMES
+from .extensions import behavior_of
 
 # スクリプトから書き換えてよい機器の状態：{項目: 値を検査して直す関数}
 WRITABLE = {
@@ -118,7 +119,7 @@ class Port:
         for i, d in enumerate(self._c.devs):
             if d:
                 dd = self._c.reg.device(d["def"])
-                out.append((i, d["def"], dd["type"] if dd else "?", d["name"], DIR_NAMES[d["dir"]]))
+                out.append((i, d["def"], behavior_of(dd), d["name"], DIR_NAMES[d["dir"]]))
         return out
 
     def devices_name(self, i):
@@ -150,6 +151,19 @@ class Port:
                 d["state"]["ignite"] = True
             return
         d["state"][key] = v
+
+    def custom_data(self, i):
+        """MOD の機器（type custom）の state["data"]（そのまま。MOD が書き換えてよい）。"""
+        d = self._dev(i)
+        return d["state"].setdefault("data", {})
+
+    @property
+    def world(self):
+        return self._w
+
+    @property
+    def construct(self):
+        return self._c
 
     def device_cell(self, i):
         self._dev(i)

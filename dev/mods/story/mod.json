@@ -1,2 +1,6 @@
-{"id": "story", "name": "ストーリー（墜落した技術者）", "version": "1.0", "builtin": true,
- "description": "チュートリアルの物語：脱出ポッドで惑星テラに不時着した技術者が、観測基地の設備を動かし、壊れた宇宙船ルミナス号を直して、月の街ルナ・ポートへ帰る。チュートリアルのワールドで使う（ほかのワールドに入れても何もしない）。"}
+{"id": "story", "name": "シナリオモード（それでも）", "version": "2.0", "builtin": true, "category": "シナリオ",
+ "requires": ["scenario_blocks", "soredemo_cast", "lunaport", "amatsu"],
+ "description": "物語のチュートリアル「それでも」（約90分）：惑星テラに落ちたトワが、観測基地の設備を動かし、船を直して月へ。艦隊戦・ロボット・落ちていく軌道都市へ。章の区切りにムービー。J で章の一覧。",
+ "world": {"note": "シナリオの舞台（惑星テラ・月ルナ・小惑星）で作ります。最初に読み込んだときに舞台ができます",
+           "main": "terra", "main_override": {"noise_amp": 1.5},
+           "settings": {"cleanup": {"enabled": false}, "player": "towa", "story": {"built": false}}}}

@@ -200,8 +200,10 @@ def show_vec(value, color, scale=1.0):
 
 
 # --- 浮いて進む乗り物の制御（バイクとドローンで共通） ----------------------
-def hover_control():
+def hover_control(thrust4=None, valves=None):
     """変数 前後目標・左右目標（m/秒）と 目標高さ（m）に向けて、4つのバルブの開き具合を決めて点火する。"""
+    thrust4 = THRUST4 if thrust4 is None else thrust4
+    valves = VALVES if valves is None else valves
     out = [
         # 進みたい速さとのずれ → 傾けたい角度（度）
         setv("前傾き目標", mul(sub(V("前後目標"), S("fwd_speed")), N(6))),
@@ -218,11 +220,11 @@ def hover_control():
     out += clamp("加速", -4, 4)
     out += [
         # 重さを支える出力 ＝ 質量 ×（重力 ＋ 加速）÷ 推進機4つの推力（火を消さないために足す分を引いておく）
-        setv("出力", sub(div(mul(S("mass"), add(S("gravity"), V("加速"))), N(THRUST4)), N(KEEP))),
-        valve(VALVES[0], add(V("出力"), V("前後"), V("左右"), N(KEEP))),
-        valve(VALVES[1], add(sub(add(V("出力"), V("前後")), V("左右")), N(KEEP))),
-        valve(VALVES[2], add(sub(V("出力"), V("前後")), V("左右"), N(KEEP))),
-        valve(VALVES[3], add(sub(sub(V("出力"), V("前後")), V("左右")), N(KEEP))),
+        setv("出力", sub(div(mul(S("mass"), add(S("gravity"), V("加速"))), N(thrust4)), N(KEEP))),
+        valve(valves[0], add(V("出力"), V("前後"), V("左右"), N(KEEP))),
+        valve(valves[1], add(sub(add(V("出力"), V("前後")), V("左右")), N(KEEP))),
+        valve(valves[2], add(sub(V("出力"), V("前後")), V("左右"), N(KEEP))),
+        valve(valves[3], add(sub(sub(V("出力"), V("前後")), V("左右")), N(KEEP))),
         stmt("ignite", dev="*"),
     ]
     return out
@@ -456,4 +458,116 @@ def moon_program(pad, pad_up):
     return p
 
 
-PROGRAMS = {"bike": bike_program, "drone": drone_program, "drone_remote": remote_program}
+# --- 第3章：搬入の手順（見本：扉の開け閉めだけ。クレーンの手順はプレイヤーが足す） -------------
+def crane_starter():
+    p = B.new_program()
+    start = B.new_stmt("on_start")
+    start["body"] = [show(T("搬入の制御\n手順を動かしています"), 1.6)]
+    tick = B.new_stmt("on_tick")
+    tick["body"] = [
+        stmt("act_rotate_to", dev="扉のモーター", angle=N(90), speed=N(60)),
+        stmt("wait", n=N(2)),
+        stmt("act_rotate_to", dev="扉のモーター", angle=N(0), speed=N(60)),
+        stmt("wait", n=N(2)),
+    ]
+    p["scripts"] += [start, tick]
+    return p
+
+
+def crane_solution():
+    """クレーンの手順を足したもの（テストと、ヒントの見本）。"""
+    p = crane_starter()
+    tick = p["scripts"][1]
+    tick["body"] = [
+        stmt("act_rotate_to", dev="扉のモーター", angle=N(90), speed=N(60)),
+        stmt("wait", n=N(1.5)),
+        stmt("act_rotate_to", dev="クレーンの旋回", angle=N(180), speed=N(60)),
+        stmt("wait", n=N(3.5)),
+        stmt("act_rotate_to", dev="クレーンの旋回", angle=N(0), speed=N(60)),
+        stmt("wait", n=N(3.5)),
+        stmt("act_rotate_to", dev="扉のモーター", angle=N(0), speed=N(60)),
+        stmt("wait", n=N(1.5)),
+    ]
+    return p
+
+
+# --- 第11章：迎撃（見本は砲塔を上に向けるだけ。ミサイルへの矢印と「撃つ」をプレイヤーが足す） --------
+def intercept_starter():
+    p = B.new_program()
+    tick = B.new_stmt("on_tick")
+    tick["body"] = [
+        stmt("turret_aim", dev="*", vec=vec(0, 1, 0, "船から見た")),
+        if_else(cmp(">", S("missile_count"), N(0)), [
+            show(join(T("迎撃の制御\nミサイル "), S("missile_count"), T(" 発")), 1.6),
+        ], [
+            show(T("迎撃の制御\nミサイルなし"), 1.6),
+        ]),
+    ]
+    p["scripts"].append(tick)
+    return p
+
+
+def intercept_solution():
+    p = intercept_starter()
+    tick = p["scripts"][0]
+    tick["body"][0] = stmt("turret_aim", dev="*", vec=VS("nearest_missile"))
+    tick["body"][1]["body"].insert(0, stmt("turret_fire", dev="*"))
+    return p
+
+
+# --- 第12章：ロボット（ホバーバイクと同じ浮き方。動いている間は腕を振る） -------------------------
+ROBOT_THRUST4 = 160000.0
+ROBOT_VALVES = ("バルブ 後左", "バルブ 後右", "バルブ 前左", "バルブ 前右")
+
+
+def robot_program():
+    p = B.new_program()
+    start = B.new_stmt("on_start")
+    start["body"] = [setv("地面", S("altitude")), setv("浮く高さ", N(0.8))]
+    tick = B.new_stmt("on_tick")
+    tick["body"] = [
+        if_else(seated(), [
+            setv("前後目標", mul(sub(key("w"), key("s")), N(9))),
+            setv("左右目標", mul(sub(key("d"), key("a")), N(9))),
+            iff(key("space"), [chg("浮く高さ", N(0.12))]),
+            iff(key("left shift"), [chg("浮く高さ", N(-0.12))]),
+            iff(cmp("<", V("浮く高さ"), N(0.4)), [setv("浮く高さ", N(0.8))]),
+        ], [
+            setv("前後目標", N(0)), setv("左右目標", N(0)),
+            iff(cmp("<", S("speed"), N(1.0)), [chg("浮く高さ", N(-0.04))]),
+        ]),
+        iff(cmp(">", V("浮く高さ"), N(6)), [setv("浮く高さ", N(6))]),
+        iff(cmp("<", V("浮く高さ"), N(0)), [setv("浮く高さ", N(0))]),
+        setv("目標高さ", add(V("地面"), V("浮く高さ"))),
+        # 腕：進んでいる間は前後に振る
+        if_else(cmp(">", S("speed"), N(1.5)), [
+            stmt("act_rotate_to", dev="左腕", angle=mul(fn("sin", mul(S("time"), N(360))), N(35)), speed=N(240)),
+            stmt("act_rotate_to", dev="右腕", angle=mul(fn("sin", mul(S("time"), N(360))), N(35)), speed=N(240)),
+        ], [
+            stmt("act_rotate_to", dev="左腕", angle=N(0), speed=N(90)),
+            stmt("act_rotate_to", dev="右腕", angle=N(0), speed=N(90)),
+        ]),
+        if_else(both(cmp("<", V("浮く高さ"), N(0.3)), cmp("<", S("altitude"), add(V("地面"), N(0.3)))),
+                close_valves() + [show(T("ロボット\n座ると動きます"), 1.0)],
+                hover_control(ROBOT_THRUST4, ROBOT_VALVES)
+                + [show(join(T("ロボット\n速さ "), rnd(S("speed")), T(" m/s")), 1.0)]),
+    ]
+    p["scripts"] += [start, tick]
+    return p
+
+
+# --- 終章：再加速の航法（看板の地点への矢印を入れる） ------------------------------------------
+def reaccel_starter():
+    p = B.new_program()
+    tick = B.new_stmt("on_tick")
+    tick["body"] = [
+        setvv("向き", vto([0.0, 0.0, 0.0])),
+        show_vec(VV("向き"), "緑", 0.05),
+        show(join(T("再加速の航法\n目標までの距離 "), rnd(vlen(VV("向き"))), T(" m")), 1.8),
+    ]
+    p["scripts"].append(tick)
+    return p
+
+
+PROGRAMS = {"bike": bike_program, "drone": drone_program, "drone_remote": remote_program, "crane": crane_starter,
+            "intercept": intercept_starter, "robot": robot_program, "reaccel": reaccel_starter}

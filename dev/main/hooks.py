@@ -52,6 +52,15 @@ class Addon:
     def on_placed(self, world, hit, c):
         """hit（この拡張の raycast の結果）の上に新しい構築物 c を置いた。"""
 
+    def on_scenery_talk(self, world, place, tag):
+        """景色の箱の触れる物（場所の MOD の受付など）を E で触った。place は場所の MOD の名前。
+        メッセージを返したら、そこで処理済み（シナリオが会話にするなど）。"""
+        return None
+
+    def on_npc_talk(self, world, key):
+        """人物（登場人物の MOD などが立たせた NPC）に E で話しかけた。メッセージを返したら、そこで処理済み。"""
+        return None
+
     def interact_device(self, world, c, i, d, dd):
         """E で機器を触った（コアの操作より先に呼ばれる）。メッセージを返したら、そこで処理済み。"""
         return None

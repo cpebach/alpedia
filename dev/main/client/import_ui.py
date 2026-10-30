@@ -1,4 +1,4 @@
-"""読み込みメニュー（F8）：OBJ・構築物データを選んで、大きさや必要な資源を確かめてから置く。
+"""読み込みメニュー（F8）：設計図（最初から入っている乗り物・艦・ロボット）・OBJ・構築物データを選んで、大きさや必要な資源を確かめてから置く。
 
 左：読み込めるファイルの一覧（このワールドの imports・exports、ほかのワールドの exports）
 右：選んだものの情報。外部の OBJ は大きさ（いちばん長い辺）・細かさ（ボクセルの大きさ）・素材を指定できる。
@@ -47,7 +47,7 @@ class ImportPanel:
         bg.on_click = lambda: None
         Entity(parent=self.root, model="quad", scale=(1.56, 0.92), position=(0, 0, 0.05),
                color=color.rgb(0.07, 0.08, 0.11))
-        Text(parent=self.root, text="読み込み（OBJ・構築物）", position=(-0.75, 0.425), origin=(-0.5, 0.5), scale=1.3)
+        Text(parent=self.root, text="読み込み（設計図・OBJ・構築物）", position=(-0.75, 0.425), origin=(-0.5, 0.5), scale=1.3)
         self.list_root = Entity(parent=self.root)
         self.ctrl_root = Entity(parent=self.root)
         self.detail = Text(parent=self.root, text="", position=(-0.17, 0.36), origin=(-0.5, 0.5), scale=0.72,
@@ -91,7 +91,7 @@ class ImportPanel:
 
     # --- 一覧 -----------------------------------------------------------
     def rescan(self):
-        self.sources = objio.list_sources(self.world.dir, paths.SAVES)
+        self.sources = objio.list_sources(self.world.dir, paths.SAVES, self.world.mods)
         cur = self.sources[self.sel][1] if self.sel is not None and self.sel < len(self.sources) else None
         self.sel = None
         if cur is not None:
@@ -127,6 +127,8 @@ class ImportPanel:
             group, p = self.sources[k]
             y = y0 - row * 0.05
             label = p.name if len(p.name) <= 30 else p.name[:28] + "…"
+            if group.startswith("設計図"):
+                label = self._bp_name(p)
             if group != last_group:
                 label = f"[{group}] " + label
                 last_group = group
@@ -142,6 +144,17 @@ class ImportPanel:
             self._btn("▲", (-0.66, yb), lambda: self.set_page(self.page - 1), w=0.06, parent=self.list_root)
             self._text(f"{self.page + 1}/{n_pages}", (-0.6, yb), self.list_root)
             self._btn("▼", (-0.34, yb), lambda: self.set_page(self.page + 1), w=0.06, parent=self.list_root)
+
+    def _bp_name(self, p):
+        """設計図の表示名（.alp.json の name）。"""
+        cache = self.__dict__.setdefault("_bp_names", {})
+        if p not in cache:
+            try:
+                import json
+                cache[p] = json.loads(p.read_text(encoding="utf-8")).get("name") or p.name
+            except Exception:  # noqa: BLE001
+                cache[p] = p.name
+        return cache[p]
 
     def select(self, k):
         self.sel = k
@@ -258,6 +271,13 @@ class ImportPanel:
             data = self._prepare()
             lines.append(f"名前: {inf['name']}")
             lines.append(f"場所: {group}/{p.name}")
+            if inf.get("description"):
+                lines.append(inf["description"])
+            need = [r for r in inf.get("requires", []) if r not in self.world.mods]
+            if inf.get("requires"):
+                from .. import modmeta
+                lines.append("必要な MOD: " + "、".join(modmeta.name_of(r) for r in inf["requires"])
+                             + ("" if not need else "（このワールドに入っていません。ワールド設定の「MOD を選ぶ」で入れてください）"))
             if inf["kind"] == "voxels":
                 lines.append("種類: ゲーム内で作った構築物（ボクセル・機器をそのまま再現）")
                 n_sc = len((data or {}).get("scripts") or {})
@@ -295,7 +315,7 @@ class ImportPanel:
                         lines.append("素材: " + "、".join(f"{self.reg.material(m)['name']} {n}" for m, n in top))
                     if len(vox) > WARN_VOXELS:
                         lines.append(f"※ ボクセルが多いので動きが重くなります（{WARN_VOXELS} 個までがおすすめ）")
-                    self.can_place = True
+                    self.can_place = not need
                     if not self.world.creative:
                         cost = self.world.voxels_cost(vox)
                         inv = self.world.player.inventory

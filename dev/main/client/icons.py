@@ -137,6 +137,18 @@ def _mark(img, kind, col=(255, 255, 255, 230)):
         for r in (0.16, 0.27):
             d.arc([P(-r, 0.16 + r), P(r, 0.16 - r)], start=200, end=340, fill=col, width=max(1, w // 2 + 1))
             d.arc([P(-r, 0.16 + r), P(r, 0.16 - r)], start=20, end=160, fill=col, width=max(1, w // 2 + 1))
+    elif kind == "turret":                     # 砲塔：台と砲身
+        d.ellipse([P(-0.22, 0.04), P(0.22, -0.3)], fill=dark)
+        d.rectangle([P(-0.05, 0.36), P(0.05, -0.1)], fill=col)
+    elif kind == "radar":                      # レーダー：皿と電波
+        d.pieslice([P(-0.3, 0.3), P(0.3, -0.3)], start=200, end=340, fill=col)
+        d.line([P(0.0, -0.06), P(0.0, -0.32)], fill=col, width=w)
+        for r in (0.16, 0.28):
+            d.arc([P(-r, 0.22 + r), P(r, 0.22 - r)], start=220, end=320, fill=(120, 255, 160, 230), width=max(1, w // 2))
+    elif kind == "launcher":                   # ミサイル発射機：ミサイルの形
+        d.polygon([P(-0.07, -0.26), P(0.07, -0.26), P(0.07, 0.18), P(0.0, 0.34), P(-0.07, 0.18)], fill=col)
+        d.polygon([P(-0.07, -0.26), P(-0.18, -0.34), P(-0.07, -0.12)], fill=(255, 90, 60, 240))
+        d.polygon([P(0.07, -0.26), P(0.18, -0.34), P(0.07, -0.12)], fill=(255, 90, 60, 240))
     else:
         d.polygon([P(0, 0.22), P(0.22, 0), P(0, -0.22), P(-0.22, 0)], fill=col)
     return img
@@ -198,7 +210,7 @@ def item_name(reg, item):
 # 機器ブロックの表面に貼る記号（デカール）
 # ---------------------------------------------------------------------------
 DECAL_TYPES = ["thruster", "tank", "pipe", "valve", "battery", "generator", "solar", "crank", "computer", "actuator",
-               "processor", "seat", "air_vent", "antenna", "other"]
+               "processor", "seat", "air_vent", "antenna", "turret", "radar", "launcher", "other"]
 DECAL_VARIANTS = ["plain", "side", "front", "back"]
 DECAL_CELL = 128
 _atlas = None

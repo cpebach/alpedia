@@ -48,6 +48,8 @@ STATEMENTS = {
     "if": dict(cat="control", label="もし {cond} なら", slots={"cond": "bool"}, body=True),
     "if_else": dict(cat="control", label="もし {cond} なら", slots={"cond": "bool"}, body=True, orelse=True),
     "repeat": dict(cat="control", label="{n} 回くり返す", slots={"n": "num"}, body=True),
+    "wait": dict(cat="control", label="{n} 秒待つ", slots={"n": "num"}),
+    "wait_until": dict(cat="control", label="{cond} になるまで待つ", slots={"cond": "bool"}),
     "reset_timer": dict(cat="control", label="タイマーをリセット"),
     "stop": dict(cat="control", label="プログラムを止める"),
     # 機器
@@ -94,6 +96,9 @@ STMT_DEFAULTS = {
                     "b": {"type": "num", "v": 10}}},
     "if_else": {"cond": {"type": "key", "key": "space"}},
     "repeat": {"n": {"type": "num", "v": 3}},
+    "wait": {"n": {"type": "num", "v": 1}},
+    "wait_until": {"cond": {"type": "cmp", "op": ">", "a": {"type": "sensor", "name": "timer"},
+                            "b": {"type": "num", "v": 3}}},
     "throttle": {"dev": "*", "value": {"type": "num", "v": 1.0}},
     "ignite": {"dev": "*"},
     "valve_flow": {"dev": "*", "value": {"type": "num", "v": 0.5}},
@@ -425,6 +430,61 @@ def expr_children(node):
 
 
 # ---------------------------------------------------------------------------
+# MOD が足すブロック（extensions.reset で元に戻す）
+#   statements の "code"：Python の行のリスト。{入力欄の名前} にその欄の式が入る（機器は名前の文字列）
+#   sensors / vsensors / bool_sensors：{ID: (表示名, Python の式)}　palette：[(カテゴリ, 表示名, ノード)]
+# ---------------------------------------------------------------------------
+_BASE = None
+
+
+def _tables():
+    return (STATEMENTS, STMT_DEFAULTS, SENSORS, BOOL_SENSORS, VSENSORS, DEVPROPS, DEVBOOLS)
+
+
+def _keep_base():
+    global _BASE
+    if _BASE is None:
+        import copy
+        _BASE = ([copy.deepcopy(t) for t in _tables()], list(EXPR_PALETTE), [c for c in CATEGORIES])
+
+
+def reset_ext():
+    if _BASE is None:
+        return
+    tables, pal, cats = _BASE
+    for t, base in zip(_tables(), tables):
+        t.clear()
+        t.update(base)
+    EXPR_PALETTE[:] = pal
+    CATEGORIES[:] = cats
+    CAT_COLOR.clear()
+    CAT_COLOR.update({k: c for k, _, c in CATEGORIES})
+
+
+def register_ext(statements=None, defaults=None, sensors=None, bool_sensors=None, vsensors=None, palette=None,
+                 devprops=None, devbools=None, categories=None):
+    _keep_base()
+    for cat in categories or []:
+        if cat[0] not in CAT_COLOR:
+            CATEGORIES.append(tuple(cat))
+            CAT_COLOR[cat[0]] = cat[2]
+    STATEMENTS.update(statements or {})
+    STMT_DEFAULTS.update(defaults or {})
+    SENSORS.update(sensors or {})
+    BOOL_SENSORS.update(bool_sensors or {})
+    VSENSORS.update(vsensors or {})
+    DEVPROPS.update(devprops or {})
+    DEVBOOLS.update(devbools or {})
+    for k, (name, _) in (sensors or {}).items():
+        EXPR_PALETTE.append(("sensor", name, {"type": "sensor", "name": k}))
+    for k, (name, _) in (bool_sensors or {}).items():
+        EXPR_PALETTE.append(("sensor", name, {"type": "bsensor", "name": k}))
+    for k, (name, _) in (vsensors or {}).items():
+        EXPR_PALETTE.append(("vec", name, {"type": "vsensor", "name": k}))
+    EXPR_PALETTE.extend(palette or [])
+
+
+# ---------------------------------------------------------------------------
 # Python への変換
 # ---------------------------------------------------------------------------
 HEADER = '''"""このファイルはブロックプログラム {src} から自動生成されました。
@@ -699,6 +759,18 @@ def gen_stmt(node):
     """文 → Python の行のリスト（インデントなし）"""
     t = node.get("type")
     g = gen_expr
+    spec = STATEMENTS.get(t) or {}
+    if spec.get("code"):                      # MOD が足したブロック（register_ext）
+        vals = {}
+        for sname, kind in spec.get("slots", {}).items():
+            v = node.get(sname)
+            if kind.startswith("dev:") or kind.startswith("choice:") or kind in ("var", "vvar", "key"):
+                vals[sname] = _q(v if v is not None else "*")
+            else:
+                vals[sname] = g(v, kind if kind in ("num", "bool", "text", "vec") else "num")
+        return [ln.format(**vals) for ln in spec["code"]]
+    if t in ("wait", "wait_until"):
+        return ["pass  # 待つブロックは、イベントのすぐ下（または「くり返す」の中）で使います"]
     if t in ("if", "if_else"):
         out = [f"if {g(node.get('cond'), 'bool')}:"] + _indent(gen_body(node.get("body", [])))
         if t == "if_else":
@@ -767,6 +839,81 @@ def gen_body(body):
     return out or ["pass"]
 
 
+# ---------------------------------------------------------------------------
+# 待つブロック（順番に動かす）：イベントの下に「待つ」があると、上から順に1つずつ進める
+#   ずっと：最後まで行ったら最初から（くり返す）　起動したとき：1回だけ
+#   キーを押したとき・〜になったとき：そのたびに最初から（動いている間は始め直さない）
+# ---------------------------------------------------------------------------
+def has_wait(body):
+    for n in body or []:
+        t = n.get("type")
+        if t in ("wait", "wait_until"):
+            return True
+        if t == "repeat" and has_wait(n.get("body")):
+            return True
+    return False
+
+
+def _flatten(body, ops):
+    buf = []
+
+    def flush():
+        if buf:
+            ops.append(("do", gen_body(list(buf))))
+            buf.clear()
+    for n in body or []:
+        t = n.get("type")
+        if t == "wait":
+            flush()
+            ops.append(("wait", gen_expr(n.get("n"))))
+        elif t == "wait_until":
+            flush()
+            ops.append(("until", gen_expr(n.get("cond"), "bool")))
+        elif t == "repeat" and has_wait(n.get("body")):
+            flush()
+            k = len(ops)
+            ops.append(("loop", gen_expr(n.get("n")), k))
+            _flatten(n.get("body"), ops)
+            ops.append(("end", k))
+        else:
+            buf.append(n)
+    flush()
+    return ops
+
+
+def gen_sequence(body, k, restart):
+    """順番に動かすプログラム（インデントなし）。restart：最後まで行ったら最初から。"""
+    ops = _flatten(body, [])
+    n = len(ops)
+    key = _q(f"_sq{k}")
+    out = [f"sq = m.setdefault({key}, {{'i': 0, 't': api.time, 'c': {{}}}})",
+           "for _g in range(200):",
+           "    _s = sq['i']"]
+    for j, op in enumerate(ops):
+        out.append(f"    if _s == {j}:")
+        if op[0] == "do":
+            out += ["        " + ln for ln in op[1]]
+            out.append(f"        sq['i'] = {j + 1}; sq['t'] = api.time; continue")
+        elif op[0] == "wait":
+            out.append(f"        if api.time - sq['t'] < {op[1]}: break")
+            out.append(f"        sq['i'] = {j + 1}; sq['t'] = api.time; continue")
+        elif op[0] == "until":
+            out.append(f"        if not ({op[1]}): break")
+            out.append(f"        sq['i'] = {j + 1}; sq['t'] = api.time; continue")
+        elif op[0] == "loop":
+            out.append(f"        sq['c']['{op[2]}'] = int(max(0, {op[1]}))")
+            end = next(i for i, x in enumerate(ops) if x[0] == "end" and x[1] == op[2])
+            out.append(f"        sq['i'] = {j + 1} if sq['c']['{op[2]}'] > 0 else {end + 1}; sq['t'] = api.time; continue")
+        elif op[0] == "end":
+            start = next(i for i, x in enumerate(ops) if x[0] == "loop" and x[2] == op[1])
+            out.append(f"        sq['c']['{op[1]}'] = sq['c'].get('{op[1]}', 1) - 1")
+            out.append(f"        sq['i'] = {start + 1} if sq['c']['{op[1]}'] > 0 else {j + 1}; sq['t'] = api.time; continue")
+    if restart:
+        out.append("    sq['i'] = 0; sq['t'] = api.time")
+    out.append("    break")
+    return out, n
+
+
 def to_python(prog, src_name="(ブロック)"):
     lines = [HEADER.format(src=src_name), "def tick(api):",
              "    m = api.memory",
@@ -789,6 +936,30 @@ def to_python(prog, src_name="(ブロック)"):
         spec = STATEMENTS.get(t, {})
         lines.append(f"    # --- {spec.get('label', t).format(**{k2: summary(s.get(k2)) for k2 in spec.get('slots', {})})} ---")
         body = gen_body(s.get("body", []))
+        if has_wait(s.get("body")):
+            seq, n = gen_sequence(s.get("body"), k, restart=(t == "on_tick"))
+            sk = _q(f"_sq{k}")
+            if t in ("on_start", "on_tick"):
+                lines += _indent(seq)
+            elif t == "on_key":
+                lines += [f"    if {_q(s.get('key', 'space'))} in keys:"] + _indent(_indent(seq))
+            else:
+                if t == "on_key_down":
+                    key = _q(s.get("key", "x"))
+                    trig = f"{key} in keys and {key} not in prev"
+                else:
+                    flag = _q(f"_w{k}")
+                    lines += [f"    _c = {gen_expr(s.get('cond'), 'bool')}"]
+                    trig = f"_c and not m.get({flag})"
+                lines += [f"    if {sk} not in m:",
+                          f"        m[{sk}] = {{'i': {n}, 't': api.time, 'c': {{}}}}",
+                          f"    if {trig} and m[{sk}]['i'] >= {n}:",
+                          f"        m[{sk}]['i'] = 0",
+                          f"        m[{sk}]['t'] = api.time"]
+                if t == "on_when":
+                    lines += [f"    m[{flag}] = bool(_c)"]
+                lines += _indent(seq)
+            continue
         if t == "on_start":
             lines += ["    if first:"] + _indent(_indent(body))
         elif t == "on_tick":

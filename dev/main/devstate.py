@@ -70,6 +70,8 @@ SCHEMA = {
     "air_vent": {"mode": F("str", _p("mode", "fill")), "enabled": F("bool", True),
                  "cavity": F("bool", optional=True, saved=False)},
     "antenna": {"enabled": F("bool", True)},
+    # MOD の機器（extensions.py）：data は MOD が自由に使う（保存される）
+    "custom": {"enabled": F("bool", True), "data": F("dict", {})},
 }
 
 

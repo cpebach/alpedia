@@ -29,7 +29,7 @@ DEFAULTS = {
                 "threads": 0,
                 # 物理コア："auto"（Rust の alpedia_core があれば使う）/ "rust"（必須）/ "python"（numba）
                 "backend": "auto"},
-    "game": {"default_world": "tutorial", "language": "ja",
+    "game": {"default_world": "scenario", "language": "ja",
              # スクリプトを開くエディタのコマンド（空なら自動：VS Code があればそれ、無ければメモ帳）。例 "notepad++.exe"
              "editor": ""},
     # マルチプレイ（LAN）：自分の名前（空ならパソコンのユーザー名）、公開するポート

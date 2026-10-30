@@ -48,22 +48,8 @@ def list_worlds():
 
 def list_mods():
     """[(MOD名, 表示名)]。本体に入っている MOD（サバイバル・街）を先に並べる。"""
-    out = []
-    if not paths.MODS.exists():
-        return out
-    for d in sorted(paths.MODS.iterdir()):
-        if d.is_dir() and not d.name.startswith("."):
-            name, builtin = d.name, False
-            mj = d / "mod.json"
-            if mj.exists():
-                try:
-                    meta = json.loads(mj.read_text(encoding="utf-8"))
-                    name, builtin = meta.get("name", d.name), bool(meta.get("builtin"))
-                except Exception:  # noqa: BLE001
-                    pass
-            out.append((d.name, name, builtin))
-    out.sort(key=lambda x: (not x[2], x[0] != "survival", x[0]))
-    return [(m, n) for m, n, _ in out]
+    from .. import modmeta
+    return [(m["id"], m.get("name", m["id"])) for m in modmeta.list_all()]
 
 
 def read_world_settings(name):
@@ -123,31 +109,10 @@ def _setup_window_icon():
         pass
 
 
-def create_world(name, template, settings_patch, mods, planet="terra"):
-    from ..app import create_empty_world
-    if paths.world_dir(name).exists():
-        raise FileExistsError(f"ワールド「{name}」は既にあります")
-    if template == "tutorial":
-        from ..tutorial import create_tutorial
-        create_tutorial(name)
-    else:
-        create_empty_world(name)
-        s, _ = read_world_settings(name)
-        from ..world import default_bodies
-        s["planets"] = default_bodies(planet)
-        write_world_settings(name, s, read_world_settings(name)[1])
-    s, current_mods = read_world_settings(name)
-    if mods is None:
-        mods = current_mods
-    elif template == "tutorial":
-        from ..tutorial import STORY_MOD
-        mods = [STORY_MOD] + [m for m in mods if m != STORY_MOD]     # 物語の MOD は必ず入れる
-    s.update({k: v for k, v in settings_patch.items() if k != "cleanup"})
-    if "cleanup" in settings_patch:
-        s["cleanup"].update(settings_patch["cleanup"])
-    s["name"] = name
-    write_world_settings(name, s, mods)
-    L.info("ワールド作成: %s（%s）", name, template)
+def create_world(name, settings_patch, mods, planet="terra"):
+    """ワールドを作る（選んだ MOD に依存する MOD も入れる。シナリオなどワールドの形を決める MOD があればその形で）。"""
+    from ..tutorial import create_world as _create
+    _create(name, mods, settings_patch, planet)
 
 
 TRASH = ".trash"   # 消しきれなかったワールドの置き場（一覧には出ない。次回起動時に片付ける）
@@ -246,6 +211,8 @@ class MainMenu:
         self.selected = None
         self.page_index = 0
         self.status = ""
+        self._new = None            # 新規作成の入力（MOD の画面へ行って戻っても残す）
+        self._ws = None             # ワールド設定の入力（同上）
         window.color = color.rgb(0.07, 0.09, 0.13)
         mouse.locked = False
         self.root = Entity(parent=camera.ui)
@@ -350,10 +317,11 @@ class MainMenu:
         self._button("ワールド設定", (x, 0.04), lambda: self.show_world_settings(self.selected), enabled=has)
         self._button("削除", (x, -0.03), lambda: self.show_delete(self.selected), col=U["color"].rgb(0.5, 0.2, 0.2),
                      enabled=has)
-        self._button("チュートリアル（物語）", (x, -0.1), self._tutorial, col=U["color"].rgb(0.55, 0.38, 0.15))
-        self._button("マルチプレイ（LAN）", (x, -0.17), self.show_multiplayer, col=U["color"].rgb(0.25, 0.35, 0.55))
-        self._button("ゲーム設定", (x, -0.24), self.show_game_settings)
-        self._button("終了", (x, -0.31), self.on_quit, col=U["color"].rgb(0.3, 0.3, 0.33))
+        self._button("マルチプレイ（LAN）", (x, -0.1), self.show_multiplayer, col=U["color"].rgb(0.25, 0.35, 0.55))
+        self._button("ゲーム設定", (x, -0.17), self.show_game_settings)
+        self._button("終了", (x, -0.24), self.on_quit, col=U["color"].rgb(0.3, 0.3, 0.33))
+        self._text("シナリオ（物語）は「新規作成」→「MOD を選ぶ」で\n「シナリオモード」を入れて作ります", (x, -0.315), 0.6,
+                   col=U["color"].light_gray)
         if has:
             self._text(f"選択中: {self.selected}", (-0.2, -0.33), 0.85, col=U["color"].light_gray)
         self._status_line()
@@ -480,24 +448,6 @@ class MainMenu:
         if self.selected:
             self.on_play(self.selected)
 
-    def _tutorial(self):
-        """物語のチュートリアルを遊ぶ（無ければ作る。前の版のチュートリアルが残っていれば、新しい名前で作る）。"""
-        from ..tutorial import create_tutorial, is_story_world
-        name = "tutorial"
-        k = 2
-        while paths.world_dir(name).exists() and not is_story_world(name):
-            name = f"tutorial{k}"
-            k += 1
-        if not paths.world_dir(name).exists():
-            try:
-                create_tutorial(name)
-            except Exception as e:  # noqa: BLE001
-                L.exception("チュートリアルを作れません")
-                self.error(f"チュートリアルを作れません: {e}")
-                return
-        self.selected = name
-        self.on_play(name)
-
     def error(self, msg):
         self.status = msg
         self.show_main()
@@ -521,54 +471,68 @@ class MainMenu:
         self._button("戻る", (0, -0.42), self.show_main, size=(0.25, 0.055), col=U["color"].rgb(0.3, 0.3, 0.33))
 
     # --- 新規作成 -------------------------------------------------------
-    def show_new(self):
+    def show_new(self, keep=False):
         self._clear()
         U = self.U
-        names = {w["name"] for w in list_worlds()}
-        k = 1
-        while f"world{k}" in names:
-            k += 1
-        opts = {"template": "empty", "planet": "terra", "voxel_size": 0.5, "gravity_scale": 1.0,
-                "cleanup": True, "mods": set()}
+        if not keep or getattr(self, "_new", None) is None:
+            names = {w["name"] for w in list_worlds()}
+            k = 1
+            while f"world{k}" in names:
+                k += 1
+            self._new = {"name": f"world{k}", "planet": "terra", "voxel_size": 0.5, "gravity_scale": 1.0,
+                         "cleanup": True, "mods": set()}
+        opts = self._new
         self._text("新しいワールド", (0, 0.42), 1.8)
         self._text("名前（半角英数字・- _）", (-0.38, 0.3), 0.85, origin=(-0.5, 0))
-        field = U["InputField"](parent=self.root, default_value=f"world{k}", position=(0.2, 0.3),
+        field = U["InputField"](parent=self.root, default_value=opts["name"], position=(0.2, 0.3),
                                 scale=(0.34, 0.05), character_limit=32, active=True)
         field.limit_content_to = NAME_CHARS
+
+        def name_now():
+            return (field.text_field.text if hasattr(field, "text_field") else field.text).strip()
+        from .. import modmeta
+        pre_id, preset = modmeta.world_preset(sorted(opts["mods"]))
         y = 0.21
-        self._stepper("テンプレート", y, ["empty", "tutorial"], "empty",
-                      lambda v: {"empty": "空のワールド",
-                                 "tutorial": "チュートリアル（物語：墜落から月の街へ）"}[v],
-                      lambda v: opts.__setitem__("template", v))
-        self._stepper("惑星", y - 0.07, list(PLANETS), "terra",
-                      lambda v: PLANETS[v], lambda v: opts.__setitem__("planet", v))
-        self._text("地球型：山・洞窟・海・池がある（チュートリアルは常に球体）", (0.2, y - 0.105), 0.6,
-                   col=U["color"].light_gray)
-        y -= 0.07
-        self._stepper("ボクセルサイズ", y - 0.07, [0.25, 0.5, 1.0, 2.0], 0.5, lambda v: f"{v} m",
-                      lambda v: opts.__setitem__("voxel_size", v))
-        self._stepper("重力倍率", y - 0.14, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], 1.0, lambda v: f"×{v}",
-                      lambda v: opts.__setitem__("gravity_scale", v))
-        self._toggle("構築物の自動削除", y - 0.21, True, lambda v: opts.__setitem__("cleanup", v))
-        self._mod_toggles(y - 0.30, opts["mods"])
+        if preset:
+            self._text(f"ワールドの形：{modmeta.name_of(pre_id)}", (-0.38, y), 0.85, origin=(-0.5, 0),
+                       col=U["color"].rgb(1.0, 0.85, 0.45))
+            self._text(preset.get("note", "惑星・大きさは MOD が決めます"), (-0.38, y - 0.045), 0.62, origin=(-0.5, 0),
+                       col=U["color"].light_gray)
+            y -= 0.07
+        else:
+            self._stepper("惑星", y, list(PLANETS), opts["planet"],
+                          lambda v: PLANETS[v], lambda v: opts.__setitem__("planet", v))
+            self._text("地球型：山・洞窟・海・池がある", (0.2, y - 0.035), 0.6, col=U["color"].light_gray)
+            self._stepper("ボクセルサイズ", y - 0.07, [0.25, 0.5, 1.0, 2.0], opts["voxel_size"], lambda v: f"{v} m",
+                          lambda v: opts.__setitem__("voxel_size", v))
+            self._stepper("重力倍率", y - 0.14, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], opts["gravity_scale"],
+                          lambda v: f"×{v}", lambda v: opts.__setitem__("gravity_scale", v))
+            self._toggle("構築物の自動削除", y - 0.21, opts["cleanup"], lambda v: opts.__setitem__("cleanup", v))
+            y -= 0.21
+        y -= 0.09
+
+        def open_mods():
+            opts["name"] = name_now() or opts["name"]
+            self.show_mods(opts["mods"], lambda: self.show_new(keep=True), "新しいワールドの MOD")
+        self._mod_summary(y, opts["mods"], open_mods)
 
         def create(play):
-            name = field.text_field.text.strip()
+            name = name_now()
             if not name:
                 self.status = "名前を入力してください"
-                self.show_new()
+                opts["name"] = ""
+                self.show_new(keep=True)
                 return
             try:
-                create_world(name, opts["template"],
-                             {"voxel_size": opts["voxel_size"],
-                              "gravity_scale": opts["gravity_scale"], "cleanup": {"enabled": opts["cleanup"]}},
-                             sorted(opts["mods"]) if (opts["template"] == "empty" or opts["mods"]) else None,
-                             opts["planet"])
+                create_world(name, {"voxel_size": opts["voxel_size"], "gravity_scale": opts["gravity_scale"],
+                                    "cleanup": {"enabled": opts["cleanup"]}}, sorted(opts["mods"]), opts["planet"])
             except Exception as e:  # noqa: BLE001
                 L.exception("ワールド作成失敗")
                 self.status = f"作成できません: {e}"
-                self.show_new()
+                opts["name"] = name
+                self.show_new(keep=True)
                 return
+            self._new = None
             self.selected = name
             self.status = f"「{name}」を作成しました"
             if play:
@@ -580,38 +544,96 @@ class MainMenu:
         self._button("戻る", (0.46, -0.36), self._back, size=(0.2, 0.055), col=U["color"].rgb(0.3, 0.3, 0.33))
         self._status_line()
 
-    def _mod_toggles(self, y, selected: set):
+    def _mod_summary(self, y, selected, open_mods):
+        """MOD の行：選んでいる MOD の名前と「MOD を選ぶ…」ボタン（MOD の画面へ）。"""
         U = self.U
-        mods = list_mods()
-        btns = {}
+        from .. import modmeta
+        self._text("MOD", (-0.38, y), 0.85, origin=(-0.5, 0))
+        order, _, _ = modmeta.resolve(sorted(selected))
+        names = [modmeta.name_of(m) for m in order] or ["なし（クリエイティブ）"]
+        txt = "、".join(names)
+        if len(txt) > 40:
+            txt = txt[:38] + "…"
+        self._text(txt, (-0.25, y), 0.7, origin=(-0.5, 0), col=U["color"].light_gray)
+        self._text(f"{len(order)} 個（サバイバル無し＝クリエイティブ）", (-0.25, y - 0.035), 0.58, origin=(-0.5, 0),
+                   col=U["color"].gray)
+        self._button("MOD を選ぶ…", (0.55, y - 0.012), open_mods, size=(0.22, 0.055), col=U["color"].rgb(0.3, 0.38, 0.55))
+
+    # --- MOD の選択（新規作成・ワールド設定から） --------------------------------
+    MOD_ROWS = 6
+
+    def show_mods(self, selected: set, done, title="MOD", page=0, note=""):
+        """MOD の一覧（説明・必要な MOD）。押すと入れる／外す。入れると必要な MOD も一緒に入る。"""
+        self._clear()
+        U = self.U
+        from .. import modmeta
+        mods = modmeta.list_all()
         on_col = U["color"].rgb(0.25, 0.5, 0.35)
         off_col = U["color"].rgb(0.2, 0.2, 0.24)
-        self._text("MOD（押して切替）", (-0.38, y), 0.85, origin=(-0.5, 0))
-        self._text("サバイバル無し＝クリエイティブ", (-0.38, y - 0.04), 0.58, origin=(-0.5, 0),
-                   col=U["color"].light_gray)
-        if not mods:
-            self._text("（mods フォルダに MOD がありません）", (0.12, y), 0.75, col=U["color"].light_gray)
-            return lambda: None
-        for k, (mid, mname) in enumerate(mods[:6]):
-            x = -0.02 + (k % 3) * 0.24
-            yy = y - (k // 3) * 0.06
+        self._text(title, (0, 0.44), 1.6)
+        self._text("押すと入れる・外す。ほかの MOD が必要な MOD を入れると、必要な MOD も一緒に入ります（★＝必要として入った）",
+                   (0, 0.385), 0.62, col=U["color"].light_gray)
+        order, _, _ = modmeta.resolve(sorted(selected))
+        auto = [m for m in order if m not in selected]
+        pages = max(1, (len(mods) + self.MOD_ROWS - 1) // self.MOD_ROWS)
+        page = max(0, min(page, pages - 1))
+        names = {m["id"]: m.get("name", m["id"]) for m in mods}
 
-            def flip(m=mid):
-                if m in selected:
-                    selected.discard(m)
-                else:
-                    selected.add(m)
-                btns[m].color = on_col if m in selected else off_col
-            btns[mid] = self._button(mname, (x + 0.1, yy), flip, size=(0.22, 0.05),
-                                     col=on_col if mid in selected else off_col)
-
-        def refresh():
-            for m, b in btns.items():
-                b.color = on_col if m in selected else off_col
-        return refresh
+        def flip(mid):
+            msg = ""
+            if mid in order:
+                need = [m for m in modmeta.dependents(mid, order) if m in order]
+                selected.discard(mid)
+                if need:
+                    for m in need:
+                        selected.discard(m)
+                    msg = f"「{names.get(mid, mid)}」を使う " + "、".join(names.get(m, m) for m in need) + " も外しました"
+            else:
+                selected.add(mid)
+                o2, _, miss = modmeta.resolve(sorted(selected))
+                add = [m for m in o2 if m not in order and m != mid]
+                if add:
+                    msg = f"「{names.get(mid, mid)}」に必要な " + "、".join(names.get(m, m) for m in add) + " も入れました"
+                if miss:
+                    msg += "（見つからない MOD：" + "、".join(m for m, _ in miss) + "）"
+            self.show_mods(selected, done, title, page, msg)
+        for k, m in enumerate(mods[page * self.MOD_ROWS:(page + 1) * self.MOD_ROWS]):
+            y = 0.30 - k * 0.11
+            mid = m["id"]
+            on = mid in order
+            mark = ("★ " if mid in auto else "") + ("ON" if on else "OFF")
+            self._panel((0.0, y - 0.018), (1.62, 0.1), col=U["color"].rgba(1, 1, 1, 0.05 if not on else 0.09))
+            self._button(mark, (-0.72, y - 0.012), (lambda mid=mid: flip(mid)), size=(0.12, 0.05),
+                         col=on_col if on else off_col)
+            cat = f"［{m['category']}］ " if m.get("category") else ""
+            self._text(f"{cat}{m.get('name', mid)}", (-0.64, y + 0.012), 0.85, origin=(-0.5, 0))
+            desc = (m.get("description") or "").replace("\n", " ")
+            if len(desc) > 92:
+                desc = desc[:90] + "…"
+            self._text(desc, (-0.64, y - 0.022), 0.58, origin=(-0.5, 0), col=U["color"].light_gray)
+            extra = []
+            if m["requires"]:
+                extra.append("必要な MOD：" + "、".join(names.get(r, r + "（見つかりません）") for r in m["requires"]))
+            if isinstance(m.get("world"), dict):
+                extra.append("新しいワールドを作るときに入れると、このワールドの形になります")
+            if m.get("error"):
+                extra.append(m["error"])
+            if extra:
+                self._text("　".join(extra), (-0.64, y - 0.05), 0.56, origin=(-0.5, 0),
+                           col=U["color"].rgb(1.0, 0.82, 0.45))
+        if pages > 1:
+            self._button("◀ 前", (-0.2, -0.36), lambda: self.show_mods(selected, done, title, page - 1), size=(0.14, 0.05))
+            self._text(f"{page + 1}/{pages}", (0, -0.36), 0.8)
+            self._button("次 ▶", (0.2, -0.36), lambda: self.show_mods(selected, done, title, page + 1), size=(0.14, 0.05))
+        if note:
+            self._text(note, (0, -0.30), 0.7, col=U["color"].orange)
+        self._text(f"入る MOD：{len(order)} 個", (-0.72, -0.42), 0.7, origin=(-0.5, 0), col=U["color"].light_gray)
+        self._button("決定", (0.62, -0.42), done, size=(0.2, 0.055), col=U["color"].rgb(0.2, 0.5, 0.3))
 
     def _back(self):
         self.status = ""
+        self._new = None
+        self._ws = None
         self.show_main()
 
     # --- 削除 -----------------------------------------------------------
@@ -638,13 +660,16 @@ class MainMenu:
         self._button("やめる", (0.18, -0.08), self._back)
 
     # --- ワールド設定 ---------------------------------------------------
-    def show_world_settings(self, name):
+    def show_world_settings(self, name, keep=False):
         if not name:
             return
         self._clear()
         U = self.U
-        s, mods = read_world_settings(name)
-        sel = set(mods)
+        if keep and getattr(self, "_ws", None) and self._ws[0] == name:
+            _, s, sel = self._ws
+        else:
+            s, mods = read_world_settings(name)
+            sel = set(mods)
         cl = s["cleanup"]
         self._text(f"ワールド設定: {name}", (0, 0.42), 1.6)
         y = 0.31
@@ -662,7 +687,10 @@ class MainMenu:
                       float(cl.get("seconds", 60)), lambda v: f"{v:.0f} 秒", lambda v: cl.__setitem__("seconds", v))
         self._stepper("　対象の最大頂点数", y - 0.42, [80, 200, 400, 800, 1600, 4000],
                       int(cl.get("max_vertices", 400)), lambda v: f"{v}", lambda v: cl.__setitem__("max_vertices", v))
-        self._mod_toggles(y - 0.50, sel)
+        def open_mods():
+            self._ws = (name, s, sel)
+            self.show_mods(sel, lambda: self.show_world_settings(name, keep=True), f"ワールド「{name}」の MOD")
+        self._mod_summary(y - 0.50, sel, open_mods)
         planets = ", ".join(p.get("def", "?") for p in s.get("planets", []))
         self._text(f"惑星: {planets}（world.json で編集）", (0, y - 0.64), 0.7, col=U["color"].light_gray)
         self._text("MOD を入れる・外す前に、ワールド（saves/ のフォルダ）をコピーしておくことをすすめます。"
@@ -671,7 +699,9 @@ class MainMenu:
 
         def save():
             try:
-                write_world_settings(name, s, sorted(sel))
+                from .. import modmeta
+                write_world_settings(name, s, modmeta.resolve(sorted(sel))[0])
+                self._ws = None
                 self.status = "ワールド設定を保存しました"
             except Exception as e:  # noqa: BLE001
                 self.status = f"保存できません: {e}"

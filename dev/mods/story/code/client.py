@@ -1,37 +1,14 @@
-"""ストーリー MOD（画面側）：景色の箱を描く、目標の欄、無線のセリフ、目標の目印、修理の場所の光る枠、章の一覧（J）。"""
+"""シナリオモード（画面側）：景色の箱を描く、目標の欄、セリフ（無線）、目標の目印、置く場所の光る枠、章の一覧（J）、
+ムービーを流す。"""
 import time as _time
 
 import numpy as np
 
 from main.client.addon_hooks import ClientAddon
-from main.client.render import DynamicMesh, quad_tris, shade
+from main.client.render import DynamicMesh, quad_tris
+from main.client.scenery_view import SceneView, box_quads
 
 from . import script, sites
-
-_FACES = [(0, 1), (0, -1), (1, 1), (1, -1), (2, 1), (2, -1)]
-
-
-def box_quads(C, A, E):
-    """箱 (B) → 各面の4頂点 (B,6,4,3)・法線 (B,6,3)。外から見て表になる回り順。"""
-    B = len(C)
-    V = np.zeros((B, 6, 4, 3))
-    N = np.zeros((B, 6, 3))
-    for f, (ax, sg) in enumerate(_FACES):
-        a1, a2 = (ax + 1) % 3, (ax + 2) % 3
-        n = A[:, ax] * sg
-        u = A[:, a1] * E[:, a1:a1 + 1]
-        v = A[:, a2] * E[:, a2:a2 + 1]
-        c = C + n * E[:, ax:ax + 1]
-        V[:, f, 0] = c - u - v
-        V[:, f, 1] = c + u - v
-        V[:, f, 2] = c + u + v
-        V[:, f, 3] = c - u + v
-        cr = np.cross(V[:, f, 1] - V[:, f, 0], V[:, f, 2] - V[:, f, 0])
-        flip = ~(np.einsum("ij,ij->i", cr, n) < 0)
-        V[flip, f] = V[flip, f, ::-1]
-        N[:, f] = n
-    return V, N
-
 
 def wrap(text, n=34):
     """日本語の文を n 文字くらいで折り返す（句読点の後ろで切りやすく）。"""
@@ -48,134 +25,9 @@ def wrap(text, n=34):
     return "\n".join(out)
 
 
-TEXTURES = {"rock": ("rock.png", 3.0), "metal": ("metal.png", 2.0), "ground": ("ground.png", 2.5)}
-_tex_cache = {}
-
-
-def _texture(kind):
-    if kind not in _tex_cache:
-        from panda3d.core import Filename, SamplerState
-        from ursina import application
-        from main import paths
-        t = application.base.loader.loadTexture(Filename.fromOsSpecific(str(paths.SAUCE / "textures" / TEXTURES[kind][0])))
-        t.setMinfilter(SamplerState.FT_linear_mipmap_linear)
-        _tex_cache[kind] = t
-    return _tex_cache[kind]
-
-
-def tex_kind(p):
-    """景色の箱の見た目の種類：岩・地面（道）・金属（建物など）・なし（光る物）。"""
-    if p["glow"] is not None:
-        return "plain"
-    c = tuple(np.round(p["color"], 2))
-    if c in {tuple(np.round(x, 2)) for x in (sites.ROCK, sites.ROCK2, sites.ROCK3, sites.MOON_G)}:
-        return "rock"
-    if c in {tuple(np.round(x, 2)) for x in (sites.CONC, (0.40, 0.42, 0.45))}:
-        return "ground"
-    return "metal"
-
-
-class SceneView:
-    """景色の箱1か所の描画。ふつうの箱（影つき・模様つき）・明かり（点く／消える）・点滅のメッシュ。"""
-
-    def __init__(self, parent, scene):
-        self.s = scene
-        self.meshes = {}
-        P = scene.parts
-        groups = {}
-        for k, p in enumerate(P):
-            if p["blink"] is not None:
-                key = "blink"
-            elif p["group"] is not None:
-                key = "lights"
-            else:
-                key = "static:" + tex_kind(p)
-            groups.setdefault(key, []).append(k)
-        self.state = {}
-        for name, idx in groups.items():
-            m = DynamicMesh(parent, f"story_{scene.id}_{name}")
-            m.node.clearBounds()
-            m.node.setFinal(False)
-            m.np.setTwoSided(False)
-            kind = name.split(":")[1] if ":" in name else "plain"
-            tile = 1.0
-            if kind in TEXTURES:
-                m.np.setTexture(_texture(kind), 1)
-                tile = TEXTURES[kind][1]
-            idx = np.array(idx)
-            C, A, E = scene.C[idx] - scene.center, scene.A[idx], scene.E[idx]
-            V, N = box_quads(C, A, E)
-            keep = [0, 1, 2, 4, 5]                          # 下の面は見えない
-            V, N = V[:, keep], N[:, keep]
-            nb, nf = len(idx), len(keep)
-            # 模様の座標：面の中の2つの軸に沿った長さ（m）÷ 1枚の大きさ
-            UV = np.zeros((nb, nf, 4, 2))
-            for j, f in enumerate(keep):
-                ax = _FACES[f][0]
-                a1, a2 = (ax + 1) % 3, (ax + 2) % 3
-                if ax != 1:
-                    a1, a2 = (2 if ax == 0 else 0), 1
-                rel = V[:, j] - C[:, None, :]
-                UV[:, j, :, 0] = np.einsum("bvk,bk->bv", rel, A[:, a1]) / tile
-                UV[:, j, :, 1] = np.einsum("bvk,bk->bv", rel, A[:, a2]) / tile
-            v = np.empty((nb * nf * 4, 12), np.float32)
-            v[:, 0:3] = V.reshape(-1, 3)
-            v[:, 3:6] = np.repeat(N.reshape(-1, 3), 4, axis=0)
-            v[:, 9] = 1.0
-            v[:, 10:12] = UV.reshape(-1, 2)
-            self.meshes[name] = {"mesh": m, "idx": idx, "v": v, "nf": nf, "tris": quad_tris(nb * nf), "new": True,
-                                 "bright": 1.35 if kind in TEXTURES else 1.15}
-        for name in self.meshes:
-            if name.startswith("static"):
-                self._colors(name, None)
-
-    def _colors(self, name, on):
-        """色を入れる。光る部品は（static なら いつも、lights なら on のとき）光の色で影なし、ほかは影つき。"""
-        it = self.meshes.get(name)
-        if it is None:
-            return
-        P = self.s.parts
-        per = it["nf"] * 4
-        static = name.startswith("static")
-        glowing = np.array([P[k]["glow"] is not None and (static or bool(on)) for k in it["idx"]])
-        base = np.array([P[k]["glow"] if g else P[k]["color"] for k, g in zip(it["idx"], glowing)], float)
-        col = np.repeat(base, per, axis=0)
-        lit = np.repeat(~glowing, per)
-        col[lit] = shade(it["v"][lit, 3:6].astype(np.float64), col[lit]) * it["bright"]
-        it["v"][:, 6:9] = np.clip(col, 0, 1)
-        if it["new"]:
-            it["mesh"].set(it["v"], it["tris"])
-            it["new"] = False
-        else:
-            it["mesh"].set(it["v"])
-
-    def update(self, origin, lights_on, t):
-        pos = self.s.center - origin
-        for it in self.meshes.values():
-            it["mesh"].np.setPos(float(pos[0]), float(pos[1]), float(pos[2]))
-        if self.state.get("lights") != lights_on:
-            self.state["lights"] = lights_on
-            self._colors("lights", lights_on)
-        it = self.meshes.get("blink")
-        if it is not None and t - self.state.get("blink_t", -1) > 0.08:
-            self.state["blink_t"] = t
-            P = self.s.parts
-            nf = it["nf"]
-            k_on = np.array([0.5 + 0.5 * np.sin(t * 2 * np.pi / P[k]["blink"] + k * 0.7) for k in it["idx"]])
-            cols = np.concatenate([np.tile(P[k]["color"] + (np.asarray(P[k]["glow"]) - P[k]["color"]) * (0.25 + 0.75 * a),
-                                           (nf * 4, 1)) for k, a in zip(it["idx"], k_on)])
-            it["v"][:, 6:9] = np.clip(cols, 0, 1)
-            it["mesh"].set(it["v"], it["tris"] if it["new"] else None)
-            it["new"] = False
-
-    def remove(self):
-        for it in self.meshes.values():
-            it["mesh"].remove()
-
-
 class StoryClient(ClientAddon):
     name = "story"
-    help_text = "J ストーリー（章の一覧・やり直し）"
+    help_text = "J シナリオ（章の一覧・ムービー・やり直し）"
 
     def __init__(self, game):
         super().__init__(game)
@@ -228,6 +80,7 @@ class StoryClient(ClientAddon):
         self._ghost_n = -1
         self._goal_key = None
         self._goal_t = 0.0
+        self._movie = None
 
     def destroy(self):
         for v in self.views:
@@ -255,11 +108,14 @@ class StoryClient(ClientAddon):
         from .panel import StoryPanel
         self.game._open_panel(lambda: StoryPanel(self.game))
 
+    TAGS = {"terminal": ("古い端末（E で触れる）", "古い端末に触れる"), "photo": ("古い記録写真（E で見る）", "記録写真を見る")}
+
     def aim(self, hit):
         if not self.active or not hit or hit.get("kind") != "story":
             return None
-        if hit.get("tag") == "mio":
-            return ("管制塔の受付（E でミオと話す）", False)
+        t = self.TAGS.get(hit.get("tag"))
+        if t:
+            return (t[0], False)
         return ("", True)
 
     def interact(self, hit):
@@ -273,14 +129,16 @@ class StoryClient(ClientAddon):
     def nearby(self, pos, radius):
         if not self.active:
             return []
-        p = self.pack.points.get("mio")
-        if p is None:
-            return []
-        d = float(np.linalg.norm(np.asarray(pos) - p))
-        if d > max(radius, 4.0):
-            return []
-        return [{"label": "ミオと話す", "hit": {"kind": "story", "tag": "mio"}, "kind": "e", "dist": d,
-                 "icon": "interact"}]
+        out = []
+        for tag, (_, label) in self.TAGS.items():
+            p = self.pack.points.get(tag)
+            if p is None:
+                continue
+            d = float(np.linalg.norm(np.asarray(pos) - p))
+            if d <= max(radius, 3.0):
+                out.append({"label": label, "hit": {"kind": "story", "tag": tag}, "kind": "e", "dist": d,
+                            "icon": "interact"})
+        return out
 
     # ------------------------------------------------------------------
     def update(self, origin, far):
@@ -290,10 +148,31 @@ class StoryClient(ClientAddon):
         t = self.world.time
         for v in self.views:
             v.update(origin, bool(st.get("lights")), _time.time())
+        self._update_movies(st)
         self._update_goals(st)
         self._update_say(st, t)
         self._update_marker(st, origin)
         self._update_ghost(st, origin)
+
+    def _update_movies(self, st):
+        """まだ流していないムービーがあれば流す（ほかの画面を開いていない時）。"""
+        g = self.game
+        if self._movie is not None or not st.get("movies") or g.editor is not None or g.paused \
+                or g.cam_mode is not None:
+            return
+        name = st["movies"][0]
+        from .movie import MoviePlayer
+
+        def done(n):
+            self._movie = None
+            g.hold = False
+            g.editor_closed()
+            self.world.addon_call("story", "movie_done", n)
+        g.hold = True
+        self._movie = name
+        g._open_panel(lambda: MoviePlayer(g, name, done))
+        if g.editor is None:              # 開けなかった
+            done(name)
 
     def _chapter(self, st):
         ch = st.get("ch", 0)
@@ -308,7 +187,7 @@ class StoryClient(ClientAddon):
         self._goal_t = now
         c = self._chapter(st)
         if c is None:
-            self.goal_title.text = "ストーリー クリア！"
+            self.goal_title.text = "シナリオ クリア！"
             lines = script.FREE_PLAY[1:]
         else:
             self.goal_title.text = c["title"]
@@ -341,7 +220,7 @@ class StoryClient(ClientAddon):
             return
         self.say_root.enabled = True
         n = int(age * 40) + 1                              # 1文字ずつ出す
-        self.say_name.text = "【無線】" + who if who == script.MIO else who
+        self.say_name.text = "【無線】" + who if who in script.RADIO else who
         self.say_text.text = wrap(text[:n], 34)
 
     def _target(self, st):
@@ -391,27 +270,48 @@ class StoryClient(ClientAddon):
         self.marker.position = (x, y, -0.05)
         self.marker_text.text = f"{arrow}{label}\n{dtxt}"
 
-    def _update_ghost(self, st, origin):
-        """修理の章：なくなった外壁（水色）・推進機（橙）の場所に、光る枠。"""
+    def _ghost_cells(self, st):
+        """光る枠を出す (構築物, [(セル, 色)])：修理の場所・切られた配管・推進モジュールの置き場。"""
         c = self._chapter(st)
-        ship = self.pack.con("ship") if c is not None and c["id"] in ("reach", "repair", "bike") else None
-        if ship is None:
+        if c is None:
+            return None, []
+        cid = c["id"]
+        if cid in ("bike", "repair"):
+            ship = self.pack.con("ship")
+            if ship is None:
+                return None, []
+            cells = [(h, (0.3, 0.95, 1.0)) for h in sites.SHIP_HOLES if tuple(h) not in ship.index]
+            for h in sites.SHIP_THRUSTERS:
+                i = ship.index.get(tuple(h))
+                if i is None or not ship.devs[i] or ship.devs[i]["def"] != "thruster":
+                    cells.append((h, (1.0, 0.6, 0.15)))
+            return ship, cells
+        if cid == "factory" and st.get("flags", {}).get("pipe_cut"):
+            fac = self.pack.con("factory")
+            if fac is not None and tuple(sites.FACTORY_CUT) not in fac.index:
+                return fac, [(sites.FACTORY_CUT, (1.0, 0.75, 0.25))]
+        if cid == "reaccel":
+            from . import space
+            unit = self.pack.con("unit")
+            if unit is not None:
+                cells = []
+                for h in space.UNIT_SLOTS:
+                    i = unit.index.get(tuple(h))
+                    if i is None or not unit.devs[i] or unit.devs[i]["def"] != "rocket_module":
+                        cells.append((h, (0.4, 1.0, 0.7)))
+                return unit, cells
+        return None, []
+
+    def _update_ghost(self, st, origin):
+        """光る枠：なくなった外壁（水色）・推進機（橙）・切られた配管（黄）・推進モジュール（緑）の場所。"""
+        con, cells = self._ghost_cells(st)
+        if con is None or not cells:
             if self._ghost_n != 0:
                 self.ghost.set(np.zeros((0, 12), np.float32))
                 self._ghost_n = 0
             return
-        R, t0 = ship.rigid_fit()
-        size = ship.size
-        cells = [(h, (0.3, 0.95, 1.0)) for h in sites.SHIP_HOLES if tuple(h) not in ship.index]
-        for h in sites.SHIP_THRUSTERS:
-            i = ship.index.get(tuple(h))
-            if i is None or not ship.devs[i] or ship.devs[i]["def"] != "thruster":
-                cells.append((h, (1.0, 0.6, 0.15)))
-        if not cells:
-            if self._ghost_n != 0:
-                self.ghost.set(np.zeros((0, 12), np.float32))
-                self._ghost_n = 0
-            return
+        R, t0 = con.rigid_fit()
+        size = con.size
         C = np.array([R @ ((np.asarray(h, float) + 0.5) * size) + t0 for h, _ in cells]) - origin
         A = np.repeat(R.T[None], len(cells), axis=0)
         E = np.full((len(cells), 3), size * 0.5)

@@ -398,7 +398,7 @@ def update(c, dt, input_keys=frozenset(), seated=False, ambient_kpa=0.0):
 
     # ---- 電力の配分 ----
     consumers = []
-    for t in ("computer", "actuator", "processor", "air_vent", "antenna"):
+    for t in ("computer", "actuator", "processor", "air_vent", "antenna", "custom"):
         for i, d, dd in by_type.get(t, []):
             if dd.get("power") == "electric" and _wants_power(c, i, d, dd, t):
                 consumers.append((i, d, dd))
@@ -415,6 +415,10 @@ def update(c, dt, input_keys=frozenset(), seated=False, ambient_kpa=0.0):
     # アンテナ：電力が来ていて ON のときだけ電波を出せる・受けられる（コンピューターの通信に必要）
     for i, d, dd in by_type.get("antenna", []):
         d["state"]["active"] = i in powered
+    # MOD の機器：電気が要らないものは ON なら動く（ふるまいは MOD のプログラムが書く）
+    for i, d, dd in by_type.get("custom", []):
+        on = bool(d["state"].get("enabled", True))
+        d["state"]["active"] = on and (i in powered or dd.get("power") != "electric")
 
     # ---- アクチュエータ ----
     for i, d, dd in by_type.get("actuator", []):
@@ -536,7 +540,7 @@ def _wants_power(c, i, d, dd, t):
         return st.get("enabled", True) and _ready_recipe(c, dd, st) is not None
     if t == "air_vent":
         return st.get("enabled", True) and _adjacent_cavity(c, i) is not None
-    if t == "antenna":
+    if t in ("antenna", "custom"):
         return st.get("enabled", True)
     return False
 
@@ -636,7 +640,7 @@ def interact(c, i, player=None):
         st["running"] = not st.get("running", False)
         st.pop("error", None)
         return f"{d['name']}: {'起動' if st['running'] else '停止'}（{st.get('script') or 'スクリプト未設定'}）"
-    if t in ("generator", "processor", "air_vent", "antenna"):
+    if t in ("generator", "processor", "air_vent", "antenna", "custom"):
         if t == "air_vent" and st.get("enabled", True):
             st["mode"] = "drain" if st.get("mode", "fill") == "fill" else "fill"
             return f"{d['name']}: モード {st['mode']}"

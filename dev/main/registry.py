@@ -54,7 +54,7 @@ DEFAULTS = {
 
 REQUIRED_TYPES = {
     "thruster", "tank", "pipe", "valve", "battery", "generator", "crank", "computer",
-    "actuator", "processor", "seat", "air_vent", "antenna",
+    "actuator", "processor", "seat", "air_vent", "antenna", "custom",
 }
 
 

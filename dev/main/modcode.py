@@ -38,6 +38,8 @@ def reset():
     """読み込み済みの MOD のプログラムを捨てる（次のワールドを始めるときに読み直すため）。"""
     for name in [n for n in sys.modules if n == PREFIX or n.startswith(PREFIX + ".")]:
         del sys.modules[name]
+    from . import extensions
+    extensions.reset()          # MOD が足した機器のふるまい・ブロック（読み込むときにもう一度登録される）
 
 
 def _where(e, root):

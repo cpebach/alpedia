@@ -163,6 +163,7 @@ class Game:
         self.pitch = 0.0
         self.third_person = False
         self.paused = False
+        self.hold = False           # MOD が世界の時間を止める（ムービーを流している間など）
         self.leaving = False
         self.editor = None
         self._esc_block = 0.0
@@ -831,7 +832,7 @@ class Game:
         def H(k):
             return 1 if (held[k] or vk.get(k)) else 0
         online = net is not None        # LAN に公開中・参加中は、一時停止しても世界と通信を止めない（参加の受け付けも）
-        if self.paused and not online:
+        if (self.paused or self.hold) and not online:
             return                  # マルチプレイ中は一時停止しても世界は止めない（ほかの人がいるので）
         if cam_mode is not None:
             cam_mode.update(dt, held, vk, np.zeros(2))     # カメラを動かす（自分は動かない）
@@ -879,7 +880,7 @@ class Game:
             w.input_keys = set()
         # 固定ステップでシミュレーション
         tick = 1.0 / float(self.cfg["physics"].get("tick_rate", 60))
-        self.acc += dt
+        self.acc += dt * float(getattr(w, "time_scale", 1.0) or 1.0)
         n = 0
         pf = self._perf
         t_phys = _time.perf_counter()

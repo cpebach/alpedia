@@ -1,35 +1,21 @@
 """起動処理。"""
-import json
 import time
 
 import numpy as np
 
-from . import paths, log, config, content
+from . import paths, log, config
 
 
 def create_empty_world(name):
-    wdir = paths.world_dir(name)
-    for sub in ("scripts", "exports", "imports"):
-        (wdir / sub).mkdir(parents=True, exist_ok=True)
-    from .world import DEFAULT_SETTINGS, default_bodies
-    from .savefmt import FORMAT
-    s = dict(DEFAULT_SETTINGS)
-    s["name"] = name
-    s["format"] = FORMAT
-    s["planets"] = default_bodies()
-    (wdir / "world.json").write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
-    (wdir / "constructs.json").write_text("[]", encoding="utf-8")
-    (wdir / "spawn.json").write_text("{}", encoding="utf-8")
-    (wdir / "mods.json").write_text(json.dumps({"enabled": []}), encoding="utf-8")
-    (wdir / "scripts" / "README.txt").write_text(content.SCRIPT_README, encoding="utf-8")
-    return wdir
+    from .tutorial import create_world
+    return create_world(name, [])
 
 
 def prepare_world(name, new=False):
     wdir = paths.world_dir(name)
     if not wdir.exists():
-        if name == "tutorial" and not new:
-            from .tutorial import create_tutorial
+        from .tutorial import SCENARIO_WORLD, create_tutorial
+        if name in ("tutorial", SCENARIO_WORLD) and not new:
             create_tutorial(name)
         else:
             create_empty_world(name)
@@ -63,11 +49,11 @@ def main(args):
         if args.world:
             prepare_world(args.world, getattr(args, "new", False))
         elif not any((d / "world.json").exists() for d in paths.SAVES.iterdir() if d.is_dir()):
-            from .tutorial import create_tutorial  # 初回はチュートリアルを用意
-            create_tutorial("tutorial")
+            from .tutorial import SCENARIO_WORLD, create_tutorial  # 初回はシナリオのワールドを用意
+            create_tutorial(SCENARIO_WORLD)
         run_client(cfg, args.world)
         return
-    name = args.world or cfg["game"].get("default_world", "tutorial")
+    name = args.world or cfg["game"].get("default_world", "scenario")
     L.info("Alpedia 起動: ワールド '%s'（ヘッドレス）", name)
     try:
         World = prepare_world(name, getattr(args, "new", False))
