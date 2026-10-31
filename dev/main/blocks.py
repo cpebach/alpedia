@@ -430,6 +430,119 @@ def expr_children(node):
 
 
 # ---------------------------------------------------------------------------
+# ヒント：見本（MOD が渡す完成形）と比べて、次にすること（置くブロック・入れる式・入力する値）を1つ探す
+# ---------------------------------------------------------------------------
+_MENU_FIELDS = ("op", "fn", "frame", "axis", "prop")
+
+
+def _slot_keys(stmt_type):
+    spec = STATEMENTS.get(stmt_type, {})
+    return [s for k, s in label_parts(spec.get("label", "")) if k == "slot"]
+
+
+def _num_eq(a, b):
+    try:
+        a, b = float(a), float(b)
+    except (TypeError, ValueError):
+        return a == b
+    return abs(a - b) <= 1e-6 + 1e-4 * max(abs(a), abs(b))
+
+
+def _hint_expr(owner, key, kind, cv, sv):
+    """入力欄 owner[key] の今の値 cv を見本 sv と比べる。違えば {"kind": "expr"/"value", ...}。"""
+    if not isinstance(sv, dict):
+        if cv != sv:
+            return {"kind": "value", "owner": owner, "key": key, "slot": kind, "value": sv}
+        return None
+    st = sv.get("type")
+    ct = cv.get("type") if isinstance(cv, dict) else None
+    if st in ("num", "text", "bool"):
+        same = ct == st and (_num_eq(cv.get("v"), sv.get("v")) if st == "num" else cv.get("v") == sv.get("v"))
+        if not same:
+            return {"kind": "value", "owner": owner, "key": key, "slot": kind, "value": sv.get("v"), "type": st}
+        return None
+    if ct != st or cv.get("name") != sv.get("name"):
+        return {"kind": "expr", "owner": owner, "key": key, "slot": kind, "node": sv}
+    for f in _MENU_FIELDS:                       # ▼ で選ぶ所（演算の種類・機器の値の種類など）
+        if f in sv and cv.get(f) != sv.get(f):
+            return {"kind": "value", "owner": cv, "key": f, "slot": "menu", "value": sv[f], "menu": True}
+    for ck, ckind in expr_children(sv):
+        h = _hint_expr(cv, ck, ckind, cv.get(ck), sv.get(ck))
+        if h:
+            return h
+    return None
+
+
+def _hint_stmt(cn, sn):
+    for key in _slot_keys(sn["type"]):
+        h = _hint_expr(cn, key, slot_kind(sn["type"], key), cn.get(key), sn.get(key))
+        if h:
+            return h
+    spec = STATEMENTS.get(sn["type"], {})
+    if spec.get("body") or spec.get("hat"):
+        h = _hint_list(cn.setdefault("body", []), sn.get("body", []), cn)
+        if h:
+            return h
+        if spec.get("orelse"):
+            return _hint_list(cn.setdefault("else", []), sn.get("else", []), cn)
+    return None
+
+
+def _hint_list(cl, sl, owner):
+    for k, sn in enumerate(sl):
+        if k >= len(cl) or cl[k].get("type") != sn.get("type"):
+            return {"kind": "insert", "list": cl, "index": k, "owner": owner, "type": sn["type"], "node": sn}
+        h = _hint_stmt(cl[k], sn)
+        if h:
+            return h
+    return None
+
+
+def find_hint(cur, sol):
+    """今のプログラム cur（エディタが編集中の物そのもの）を、見本 sol と比べて、最初の違いを返す（同じなら None）。
+    {"kind": "insert", "list", "index", "type"}：list の index に type のブロックを置く
+    {"kind": "expr", "owner", "key", "node"}：owner[key] の欄に node の形の式ブロックを入れる
+    {"kind": "value", "owner", "key", "value"}：owner[key] の欄に value を入れる（数値・文字・機器の名前など）
+    見本より多いブロックは気にしない。"""
+    scripts = cur.setdefault("scripts", [])
+    used = set()
+    for s in sol.get("scripts", []):
+        cands = [k for k, c in enumerate(scripts) if k not in used and c.get("type") == s.get("type")]
+        same = [k for k in cands if all(json.dumps(scripts[k].get(key), sort_keys=True)
+                                        == json.dumps(s.get(key), sort_keys=True) for key in _slot_keys(s["type"]))]
+        match = (same or cands or [None])[0]
+        if match is None:
+            return {"kind": "insert", "list": scripts, "index": len(scripts), "owner": None, "type": s["type"],
+                    "node": s}
+        used.add(match)
+        h = _hint_stmt(scripts[match], s)
+        if h:
+            return h
+    return None
+
+
+def hint_text(h):
+    """ヒントの説明（画面の下に出す文）。"""
+    if h is None:
+        return ""
+    if h["kind"] == "insert":
+        spec = STATEMENTS.get(h["type"], {})
+        label = "".join(("□" if t == "slot" else s) for t, s in label_parts(spec.get("label", h["type"])))
+        return f"ヒント：光っているブロック「{label}」を、光っている所に置こう"
+    if h["kind"] == "expr":
+        return f"ヒント：光っている欄に「{summary(h['node'])}」を入れよう（欄を押してから、光っている値のブロックを押す）"
+    v = h["value"]
+    if h.get("type") == "num":
+        return f"ヒント：光っている欄の数を {_fmt_num(v)} にしよう（欄を2回押すと入力できる）"
+    if h.get("menu"):
+        shown = {"and": "かつ", "or": "または"}.get(v, v)
+        return f"ヒント：光っている ▼ を押して「{shown}」を選ぼう"
+    if h.get("type") == "bool":
+        return f"ヒント：光っている欄を「{'はい' if v else 'いいえ'}」にしよう"
+    return f"ヒント：光っている欄を「{v}」にしよう"
+
+
+# ---------------------------------------------------------------------------
 # MOD が足すブロック（extensions.reset で元に戻す）
 #   statements の "code"：Python の行のリスト。{入力欄の名前} にその欄の式が入る（機器は名前の文字列）
 #   sensors / vsensors / bool_sensors：{ID: (表示名, Python の式)}　palette：[(カテゴリ, 表示名, ノード)]

@@ -480,7 +480,7 @@ class MainMenu:
             while f"world{k}" in names:
                 k += 1
             self._new = {"name": f"world{k}", "planet": "terra", "voxel_size": 0.5, "gravity_scale": 1.0,
-                         "cleanup": True, "mods": set()}
+                         "cleanup": True, "full_rigid": True, "mods": set()}
         opts = self._new
         self._text("新しいワールド", (0, 0.42), 1.8)
         self._text("名前（半角英数字・- _）", (-0.38, 0.3), 0.85, origin=(-0.5, 0))
@@ -499,6 +499,8 @@ class MainMenu:
             self._text(preset.get("note", "惑星・大きさは MOD が決めます"), (-0.38, y - 0.045), 0.62, origin=(-0.5, 0),
                        col=U["color"].light_gray)
             y -= 0.07
+            self._toggle("完全剛体モード", y - 0.02, opts["full_rigid"], lambda v: opts.__setitem__("full_rigid", v))
+            y -= 0.07
         else:
             self._stepper("惑星", y, list(PLANETS), opts["planet"],
                           lambda v: PLANETS[v], lambda v: opts.__setitem__("planet", v))
@@ -508,7 +510,10 @@ class MainMenu:
             self._stepper("重力倍率", y - 0.14, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], opts["gravity_scale"],
                           lambda v: f"×{v}", lambda v: opts.__setitem__("gravity_scale", v))
             self._toggle("構築物の自動削除", y - 0.21, opts["cleanup"], lambda v: opts.__setitem__("cleanup", v))
-            y -= 0.21
+            self._toggle("完全剛体モード", y - 0.28, opts["full_rigid"], lambda v: opts.__setitem__("full_rigid", v))
+            self._text("構築物は丸ごと1つの剛体（曲がらない・壊れない。軽い）", (0.2, y - 0.315), 0.58,
+                       col=U["color"].light_gray)
+            y -= 0.30
         y -= 0.09
 
         def open_mods():
@@ -525,7 +530,8 @@ class MainMenu:
                 return
             try:
                 create_world(name, {"voxel_size": opts["voxel_size"], "gravity_scale": opts["gravity_scale"],
-                                    "cleanup": {"enabled": opts["cleanup"]}}, sorted(opts["mods"]), opts["planet"])
+                                    "cleanup": {"enabled": opts["cleanup"]}, "full_rigid": bool(opts.get("full_rigid", True))},
+                             sorted(opts["mods"]), opts["planet"])
             except Exception as e:  # noqa: BLE001
                 L.exception("ワールド作成失敗")
                 self.status = f"作成できません: {e}"
@@ -873,6 +879,9 @@ def run_client(cfg, world_name=None, on_ready=None):
                 state["game"] = None
             if action == "quit":
                 quit_app()
+            elif action.startswith("play:"):         # 読み込み直す（シナリオの章のオートセーブに戻すなど）
+                open_menu(status)
+                play(action[5:])
             else:
                 open_menu(status)
         invoke(later, delay=0.01)

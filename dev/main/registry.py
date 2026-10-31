@@ -19,6 +19,7 @@ DEFAULTS = {
     "resources": {"name": "", "density": 1000.0, "fluid": False, "color": [0.8, 0.8, 0.8]},
     "materials": {
         "name": "", "color": [0.7, 0.7, 0.7], "texture": None,
+        "opacity": 1.0,           # 0-1 1 未満なら半透明に描く（ガラスなど）
         "density": 1000.0,        # kg/m^3
         "stiffness": 0.8,         # 0-1 ボクセルの形状保持（硬度）
         "joint_stiffness": 0.8,   # 0-1 頂点同士の結合の強さ（動きにくさ）

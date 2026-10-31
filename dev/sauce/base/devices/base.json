@@ -18,7 +18,7 @@
   {"id": "computer", "name": "コンピューター", "type": "computer", "material": "steel", "color": [0.2, 0.25, 0.35],
    "power": "electric", "power_use": 200, "directional": true, "params": {"script": "", "interval": 0.05}, "cost": {"parts": 10}},
   {"id": "actuator", "name": "アクチュエーター", "type": "actuator", "material": "steel", "color": [0.3, 0.5, 0.85],
-   "power": "electric", "power_use": 2000, "directional": true,
+   "pipe_port": true, "power": "electric", "power_use": 2000, "directional": true,
    "params": {"stroke": 1.0, "speed": 0.5, "rot_speed": 90, "key": "x"}, "cost": {"iron": 30, "parts": 5}},
   {"id": "refiner", "name": "精錬機", "type": "processor", "material": "steel", "color": [0.55, 0.3, 0.2],
    "power": "electric", "power_use": 5000, "pipe_port": true,

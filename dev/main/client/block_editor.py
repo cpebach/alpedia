@@ -14,6 +14,8 @@ L = log.get("blocks")
 
 ROW_H = 0.037
 VISIBLE = 22
+HINT_AFTER = 60.0          # 見本のあるプログラムを、この秒数（開いている時間の合計）作っても完成しなければヒントを出す
+HINT_RGB = (0.35, 1.0, 0.55)
 AREA_X0, AREA_X1 = -0.50, 0.44
 AREA_TOP = 0.42
 NAME_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
@@ -31,6 +33,7 @@ class Row:
 
 class BlockEditor:
     _outer_rgb = None   # 入れ子を描いている間の、外側の式ブロックの色
+    _hint_time = {}     # (ワールドのフォルダ, ファイル) → 見本のあるプログラムを開いていた秒数の合計
     def __init__(self, game, construct, index):
         from ursina import Entity, Text, Button, InputField, camera, color, mouse
         self.game = game
@@ -49,6 +52,11 @@ class BlockEditor:
         self.dirty = False
         self.discard_armed = False
         self.dialogs = []
+        self.hint = None         # ヒント（blocks.find_hint の結果）
+        self._hint_sig = None
+        self._hint_sol = None
+        self._hint_poll = 0.0
+        self._last_t = time.time()
         self.root = Entity(parent=camera.ui)
         Entity(parent=self.root, model="quad", scale=(3, 2), color=color.rgba(0.03, 0.035, 0.05, 0.95), z=0.5)
         Entity(parent=self.root, model="quad", position=((AREA_X0 + AREA_X1) / 2, 0.02, 0.4),
@@ -58,7 +66,10 @@ class BlockEditor:
         self.rows_root = Entity(parent=self.root)
         self.dialog_root = Entity(parent=self.root, z=-0.2)
         self._build_right_panel()
+        self.hint_text = Text(parent=self.root, text="", position=(AREA_X0, -0.398), origin=(-0.5, 0.5), scale=0.62,
+                              color=color.rgb(*HINT_RGB))
         self._load()
+        self._poll_solution()
 
         class Keys(Entity):
             def input(self_, key):
@@ -264,10 +275,13 @@ class BlockEditor:
         U = self.U
         col = U["color"]
         cats = list(B.CATEGORIES)
+        want_cat, want_kind, want_node = self._hint_palette()
         for k, (cid, name, rgb) in enumerate(cats):
             x = -0.79 + (k % 2) * 0.17
             y = 0.42 - (k // 2) * 0.042
             c = col.rgb(*rgb) if cid == self.cat else col.rgb(*_dim(rgb, 0.45))
+            if want_cat == cid and cid != self.cat:
+                self._glow(self.palette_root, x, y, 0.165, 0.036)
             self._btn(self.palette_root, name, (x, y), (lambda cc=cid: self._set_cat(cc)), w=0.165, h=0.036,
                       col=c, ts=0.65)
         y = 0.42 - ((len(cats) + 1) // 2) * 0.042 - 0.024
@@ -278,6 +292,8 @@ class BlockEditor:
             label = "".join(("□" if t == "slot" else s) for t, s in B.label_parts(spec["label"]))
             if spec.get("hat"):
                 label = "▶ " + label
+            if kind == want_kind:
+                self._glow(self.palette_root, -0.705, y, 0.34, 0.036)
             b = self._btn(self.palette_root, label, (-0.705, y), (lambda kk=kind: self.insert(kk)), w=0.34, h=0.036,
                           col=col.rgb(*rgb), ts=0.6)
             b.text_entity.origin = (-0.5, 0)
@@ -289,6 +305,12 @@ class BlockEditor:
             items += [(name, {"type": "var", "name": name}) for name in self.var_names()]
         if self.cat == "vec":
             items += [(name, {"type": "vvar", "name": name}) for name in self.var_names(vec=True)]
+        best = None
+        if want_node is not None:
+            same = [n for _, n in items if n.get("type") == want_node.get("type")
+                    and n.get("name") == want_node.get("name")]
+            exact = [n for n in same if all(n.get(f) == want_node.get(f) for f in B._MENU_FIELDS if f in want_node)]
+            best = (exact or same or [None])[0]
         if items:
             U["Text"](parent=self.palette_root, text="値・条件のブロック（選んだ枠に入る）", position=(-0.87, y + 0.018),
                       origin=(-0.5, 0.5), scale=0.55, color=col.light_gray)
@@ -301,6 +323,8 @@ class BlockEditor:
                     y -= 0.04
                 if y < -0.42:
                     break
+                if n is best:
+                    self._glow(self.palette_root, x + w / 2, y, w, 0.034)
                 self._reporter_btn(self.palette_root, label, n, x + w / 2, y, w)
                 x += w + 0.01
             y -= 0.03
@@ -362,9 +386,16 @@ class BlockEditor:
         self.rows = rows
         self.scroll = max(0, min(self.scroll, max(0, len(rows) - VISIBLE)))
         y = AREA_TOP
+        h_ = self.hint if self.hint and self.hint["kind"] == "insert" else None
         for r in rows[self.scroll:self.scroll + VISIBLE]:
             x0 = AREA_X0 + r.depth * 0.035
             w = AREA_X1 - x0
+            if h_ is not None and r.kind in ("block", "end") and r.parent is h_["list"] and r.index == h_["index"]:
+                # ここに入れる：行の上に光る線と印
+                U["Entity"](parent=self.rows_root, model="quad", position=(x0 + w / 2, y + ROW_H * 0.5, -0.03),
+                            scale=(w, 0.005), color=col.rgb(*HINT_RGB))
+                U["Text"](parent=self.rows_root, text="◀ ここに入れる", position=(AREA_X1 - 0.005, y + ROW_H * 0.5, -0.04),
+                          origin=(0.5, 0), scale=0.55, color=col.rgb(*HINT_RGB))
             selected = self.sel is not None and r.parent is self.sel[0] and r.index == self.sel[1] \
                 and r.kind == self.sel[2]
             if r.kind == "gap":
@@ -424,9 +455,12 @@ class BlockEditor:
         ss = self.slot_sel
         return ss is not None and ss[0] is owner and ss[1] == key
 
-    def _box(self, x, y, w, h, rgb, z, radius, on_click, outline=False):
+    def _box(self, x, y, w, h, rgb, z, radius, on_click, outline=False, glow=False):
         U = self.U
         col = U["color"]
+        if glow:
+            U["Entity"](parent=self.rows_root, model=_shape((w + 0.016) / (h + 0.016), radius),
+                        position=(x + w / 2, y, z + 0.002), scale=(w + 0.016, h + 0.016), color=col.rgb(*HINT_RGB))
         if outline:
             U["Entity"](parent=self.rows_root, model=_shape((w + 0.008) / (h + 0.008), radius),
                         position=(x + w / 2, y, z + 0.0015), scale=(w + 0.008, h + 0.008), color=col.rgb(1.0, 0.85, 0.1))
@@ -463,7 +497,8 @@ class BlockEditor:
             txt = B.summary(val) + " ▼"
             tw = self._label(txt, x + 0.008, y, z - 0.003, ts, dark=dark)
             w = tw + 0.016
-            self._box(x, y, w, h, rgb, z, 0.5, (lambda: self.open_dialog(owner, key, kind)), outline=sel)
+            self._box(x, y, w, h, rgb, z, 0.5, (lambda: self.open_dialog(owner, key, kind)), outline=sel,
+                      glow=self._hinted(owner, key))
             return w
         return self._draw_expr(val, owner, key, kind, x, y, depth)
 
@@ -485,7 +520,7 @@ class BlockEditor:
                 txt = txt[:29] + "…"
             tw = self._label(txt or " ", x + 0.008, y, z - 0.003, ts, dark=True)
             w = max(tw + 0.016, 0.03)
-            self._box(x, y, w, h, (0.96, 0.96, 0.96), z, radius, click, outline=sel)
+            self._box(x, y, w, h, (0.96, 0.96, 0.96), z, radius, click, outline=sel, glow=self._hinted(owner, key))
             return w
         rgb = _expr_rgb(node)
         outer = self._outer_rgb
@@ -494,7 +529,7 @@ class BlockEditor:
         if t in ("var", "sensor", "bsensor", "radio_ok", "vsensor", "vvar"):
             tw = self._label(B.summary(node).strip("〈〉"), x + 0.008 + pad0, y, z - 0.003, ts)
             w = tw + 0.016 + pad0 + pad1
-            self._box(x, y, w, h, rgb, z, radius, click, outline=sel)
+            self._box(x, y, w, h, rgb, z, radius, click, outline=sel, glow=self._hinted(owner, key))
             return w
         # 入れ物（演算・比較・機器の値など）：中の入力欄を順に並べる
         cx = x + 0.007 + pad0
@@ -507,7 +542,7 @@ class BlockEditor:
                 tw = self._label(shown + " ▼", cx + 0.006, y, z2 - 0.003, ts2 * 0.92)
                 mw = tw + 0.012
                 self._box(cx, y, mw, hh, _dim(rgb, 0.75), z2, 0.5,
-                          (lambda mk=mkey, op=opts: self.menu_click(node, mk, op)))
+                          (lambda mk=mkey, op=opts: self.menu_click(node, mk, op)), glow=self._hinted(node, mkey))
                 cx += mw + 0.005
             else:
                 _, ck, ckind = part
@@ -517,7 +552,7 @@ class BlockEditor:
                 finally:
                     self._outer_rgb = keep
         w = cx - x + 0.002 + pad1
-        self._box(x, y, w, h, rgb, z, radius, click, outline=sel)
+        self._box(x, y, w, h, rgb, z, radius, click, outline=sel, glow=self._hinted(owner, key))
         return w
 
     def slot_click(self, owner, key, kind):
@@ -542,6 +577,10 @@ class BlockEditor:
     def put_reporter(self, node):
         """パレットの式ブロックを、選んだ入力欄に入れる（演算などは、今の値を左側に入れたまま包む）。"""
         ss = self.slot_sel
+        h = self.hint
+        if h is not None and h["kind"] == "expr" and node.get("type") == h["node"].get("type") \
+                and node.get("name") == h["node"].get("name"):
+            ss = (h["owner"], h["key"], h["slot"])       # ヒントの欄に入れる
         if ss is None:
             self._status("先に、入れたい入力欄（白い枠など）を押して選んでください")
             return
@@ -589,6 +628,7 @@ class BlockEditor:
     def changed(self):
         self.dirty = True
         self.discard_armed = False
+        self._refresh_hint(force=True)
         self.render()
 
     def insert(self, kind):
@@ -602,9 +642,13 @@ class BlockEditor:
                 if len(names) == 1:
                     node[s] = names[0]
         scripts = self.prog["scripts"]
+        h = self.hint
         if spec.get("hat"):
             scripts.append(node)
             self.sel = (scripts, len(scripts) - 1, "block")
+        elif h is not None and h["kind"] == "insert" and h["type"] == kind:
+            h["list"].insert(h["index"], node)          # ヒントの所に入れる
+            self.sel = (h["list"], h["index"], "block")
         else:
             target, idx = None, None
             if self.sel:
@@ -992,7 +1036,79 @@ class BlockEditor:
         elif key == "delete":
             self.delete()
 
+    # ------------------------------------------------------------------
+    # ヒント（MOD の見本と比べる）
+    # ------------------------------------------------------------------
+    def _hint_key(self):
+        return (str(self.world.dir), f"{self.base}.blocks.json")
+
+    def _poll_solution(self):
+        """MOD に見本を聞く（シナリオの課題など。目標が済んだら MOD は None を返す）。"""
+        sol = None
+        for a in self.world.addons:
+            try:
+                sol = a.block_hint(self.world, f"{self.base}.blocks.json")
+            except Exception:  # noqa: BLE001
+                L.exception("ヒントの見本を作れません")
+                sol = None
+            if sol:
+                break
+        self._hint_sol = sol
+
+    def _refresh_hint(self, force=False):
+        h = None
+        sol = self._hint_sol
+        if sol and self._hint_time.get(self._hint_key(), 0.0) >= HINT_AFTER:
+            try:
+                h = B.find_hint(self.prog, sol)
+            except Exception:  # noqa: BLE001
+                L.exception("ヒントを探せません")
+        sig = None if h is None else (h["kind"], id(h.get("list")), h.get("index"), id(h.get("owner")), h.get("key"),
+                                      h.get("type"), str(h.get("value")))
+        self.hint = h
+        self.hint_text.text = _safe(B.hint_text(h))
+        if sig != self._hint_sig:
+            self._hint_sig = sig
+            self.build_palette()
+            if not force:
+                self.render()
+
+    def _hinted(self, owner, key):
+        h = self.hint
+        return h is not None and h["kind"] in ("expr", "value") and h["owner"] is owner and h["key"] == key
+
+    def _hint_palette(self):
+        """ヒントで光らせるパレット：(カテゴリ, 文のブロックの種類, 式ブロックのノード)"""
+        h = self.hint
+        if h is None:
+            return None, None, None
+        if h["kind"] == "insert":
+            return B.STATEMENTS.get(h["type"], {}).get("cat"), h["type"], None
+        if h["kind"] == "expr":
+            n = h["node"]
+            cat = next((c for c, _, x in B.EXPR_PALETTE if x.get("type") == n.get("type")
+                        and x.get("name") == n.get("name")), None)
+            if cat is None:
+                cat = "vec" if n.get("type") == "vvar" else "var" if n.get("type") == "var" else None
+            return cat, None, n
+        return None, None, None
+
+    def _glow(self, parent, x, y, w, h):
+        U = self.U
+        U["Entity"](parent=parent, model=_shape((w + 0.014) / (h + 0.014), 0.3), position=(x, y, 0.01),
+                    scale=(w + 0.014, h + 0.014), color=U["color"].rgb(*HINT_RGB))
+
     def update(self):
+        now = time.time()
+        dt, self._last_t = min(now - self._last_t, 0.5), now
+        if self._hint_sol:
+            k = self._hint_key()
+            self._hint_time[k] = self._hint_time.get(k, 0.0) + dt
+        self._hint_poll -= dt
+        if self._hint_poll <= 0:
+            self._hint_poll = 1.0
+            self._poll_solution()
+            self._refresh_hint()
         d = self.device()
         if d is None:
             return

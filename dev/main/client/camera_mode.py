@@ -1,4 +1,4 @@
-"""カメラモード（自撮り・建造物の撮影用）。画像の保存はしない（OS のスクリーンショットで撮る）。
+"""カメラモード（自撮り・建造物の撮影用）。「写真を保存」で、パネルを隠した画面を photos/ に PNG で保存する。
 
 - 自分の体を三人称で映し、カメラは自分のまわりを回る（ドラッグ・なぞる）、ホイール／ピンチで距離、
   WASD・スティックで注目する所を動かす、Space・Ctrl で上下
@@ -93,7 +93,8 @@ class CameraMode:
         row("height", "高さ", lambda: self.lift(-1), lambda: self.lift(1))
         row("fov", "視野角", lambda: self.set_fov(-5), lambda: self.set_fov(5))
         row("roll", "傾き", lambda: self.set_roll(-1), lambda: self.set_roll(1))
-        for text, fn, col in (("パネルを隠す", self.hide_panel, color.rgb(0.25, 0.35, 0.45)),
+        for text, fn, col in (("写真を保存", self.take_photo, color.rgb(0.25, 0.5, 0.35)),
+                              ("パネルを隠す", self.hide_panel, color.rgb(0.25, 0.35, 0.45)),
                               ("カメラを元に戻す", self.reset, color.rgb(0.3, 0.3, 0.33)),
                               ("カメラモードを終わる", self.game.exit_camera, color.rgb(0.5, 0.25, 0.2))):
             b = Button(parent=self.panel, text=text, position=(x0, y - 0.01), scale=(0.3, 0.048), color=col,
@@ -102,7 +103,7 @@ class CameraMode:
             y -= 0.06
         Text(parent=self.panel, position=(x0, y - 0.005), origin=(0, 0.5), scale=0.55, color=color.light_gray,
              text="ドラッグ・なぞる：カメラが回る\nホイール・2本指：距離\nWASD・スティック：注目する所を動かす\n"
-                  "Space / Ctrl：上下　H：パネル\n画像は OS のスクリーンショットで")
+                  "Space / Ctrl：上下　H：パネル\nP：写真を保存（photos フォルダ）")
         self.hint = Text(parent=self.root, text="画面をタップ（クリック）するとパネルが出ます", origin=(0, 0),
                          position=(0, -0.45), scale=0.7, color=color.rgba(1, 1, 1, 0.0), enabled=False)
         self._hint_t = 0.0
@@ -177,6 +178,42 @@ class CameraMode:
         self.panel.enabled = True
         self.hint.enabled = False
 
+    def take_photo(self):
+        """パネルを隠して1コマ描いてから、画面を photos/<ワールド>_<日時>.png に保存する。"""
+        from ursina import invoke
+        from .. import paths
+        if getattr(self, "_shooting", False):
+            return
+        self._shooting = True
+        was = self.panel_on
+        self.panel.enabled = False
+        self.hint.enabled = False
+
+        def shoot():
+            try:
+                from panda3d.core import Filename
+                d = paths.ROOT / "photos"
+                d.mkdir(parents=True, exist_ok=True)
+                name = f"{self.game.world.name}_{_time.strftime('%Y%m%d_%H%M%S')}.png"
+                path = d / name
+                ok = self.game.U["application"].base.win.saveScreenshot(Filename.fromOsSpecific(str(path)))
+                if ok:
+                    self.game.world.message(f"写真を保存しました：photos/{name}")
+                    for a in self.game.addons:
+                        try:
+                            a.on_photo(path)
+                        except Exception:  # noqa: BLE001
+                            L.exception("写真の知らせでエラー（%s）", a.name)
+                else:
+                    self.game.world.message("写真を保存できませんでした")
+            except Exception:  # noqa: BLE001
+                L.exception("写真を保存できません")
+            finally:
+                self._shooting = False
+                if was:
+                    self.show_panel()
+        invoke(shoot, delay=0.12)
+
     def reset(self):
         self.yaw, self.pitch, self.dist, self.height = math.pi, 0.12, 3.2, 0.62
         self.pan[:] = 0
@@ -196,6 +233,9 @@ class CameraMode:
             return True
         if key == "h":
             self.show_panel() if not self.panel_on else self.hide_panel()
+            return True
+        if key == "p":
+            self.take_photo()
             return True
         if key == "scroll up":
             self.zoom(0.9)

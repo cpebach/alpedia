@@ -24,7 +24,8 @@ COND = {
     "pipe": "切られた所に配管がある", "fuel": "工場のタンクに燃料 80 以上", "parts": "加工機に機械部品 4 つ以上",
     "gate": "遮断機のモーターが 90° 前後", "ride": "ホバーバイクに座っている（黒いドローンが追ってくる）",
     "reach": "ルミナス号から 14 m 以内", "hull": "外壁の穴が全部ふさがっている", "thrusters": "下の四隅に推進機",
-    "fuel_ship": "燃料タンクが全部 790 以上", "launch": "航法コンピューターが moon.py で動いている",
+    "hose": "給油車の配管の口から給油口まで、光る枠 2 つに配管", "couple": "給油口（アクチュエーター）が結合している",
+    "fuel_ship": "船の燃料タンク 9 つが全部 790 以上（給油車の燃料ポンプで送る。給油口を通る）", "launch": "航法コンピューターが moon.py で動いている",
     "seat": "ルミナス号の操縦席に座っている", "land": "月の発着場の上 2 m 以内・速さ 0.4 m/s 未満",
     "mikaga": "ミカガに話しかけた", "kensu": "ケンスに話しかけた（ミサイルが来はじめる）",
     "intercept_prog": "迎撃の制御が「いちばん近いミサイルへの矢印」に向けて撃つプログラムで動いている",
@@ -33,6 +34,9 @@ COND = {
     "clash": "キンギのロボットから 9 m 以内に合わせて 2 秒", "modules": "作業台の四隅に推進モジュール",
     "thrust": "4 基が燃えていて、バルブがどれも 0.6 以上・差 0.05 以内",
     "navi": "再加速の航法が、看板の地点から 10 m 以内の「地点への矢印」で動いている", "rise": "上の 3 つが済んでから 12 秒（途中でキンギが倒れ、ドナチが代わる）",
+    "talk3": "広場のみんなのうち 3 人に話しかけた", "photo": "カメラモードで「写真を保存」した（みんなはカメラの方を向いて手をふる）",
+    "embark": "発射台の乗り口を E（話して写真を撮るまでは乗れない）。座ると 5 秒のカウントダウン",
+    "orbit": "まっすぐ上へ 4 秒 → 24 秒で水平に倒しながら軌道の速さへ（13 秒でブースター分離）→ 高さ 150 m の円い軌道",
 }
 
 
@@ -40,12 +44,12 @@ def lines(xs):
     return "\n".join(f"- {w}「{t}」" if w != S.SYS else f"- （{t}）" for w, t in xs)
 
 
-out = ["# シナリオ台本：それでも", "",
+out = ["# シナリオ台本：ストーリー vol.1", "",
        "シナリオモード（MOD「story」）の物語と、章ごとの目標・判定・セリフ・ムービーの一覧。",
        "ゲームの中身は `dev/mods/story`（台本は `code/script.py`、判定は `code/addon.py`）にあり、この文書は",
        "`python tools/make_story_doc.py` で script.py から作っている。**移植・更新のときは `dev/tests/test_story.py` と見比べる。**",
        "", "## 始め方", "",
-       "新規作成 →「MOD を選ぶ…」で「シナリオモード（それでも）」を入れて作る（必要な MOD は一緒に入る）。初めて起動したときは `scenario` ができる。",
+       "新規作成 →「MOD を選ぶ…」で「シナリオモード（ストーリー vol.1）」を入れて作る（必要な MOD は一緒に入る）。初めて起動したときは `scenario` ができる。",
        "", "## あらすじ", "", S.__doc__.split("\n\n")[1].strip(), "", "## ムービー", "",
        "| 名前（mods/story/movies/） | 章 |", "|---|---|"]
 out += [f"| `{k}.mp4` | {v} |" for k, v in S.MOVIES.items()]
@@ -66,6 +70,12 @@ for c in S.CHAPTERS:
     if c.get("movie_out"):
         out += ["", "終わりのムービー：" + "、".join(S.MOVIES[m] for m in c["movie_out"])]
     out.append("")
-out += ["## クリアのあと", "", lines(S.ENDING), "", "目標の欄：", ""] + [f"- {x}" for x in S.FREE_PLAY] + [""]
+out += ["## エピローグで話しかけたとき", ""] + [f"- {v}" for v in S.DEPART_LINES.values()] + [""]
+out += ["## エンドロール（低い軌道に乗ったら）", "", "それから："] + [f"- {w}：{t}" for w, t in S.CREDITS_AFTER]
+out += ["", "制作："] + [f"- {r}：{n}" for r, n in S.CREDITS_STAFF]
+out += ["", "お世話になったもの（`mods/story/credits/<名前>.png` があればロゴの絵を出す）："]
+out += [f"- {n}（`{k}.png`）：{t}" for k, n, t in S.CREDITS_THANKS]
+out += ["", "最後にタイトル（Alpedia・ストーリー vol.1）を出して、ワールドの選択（メニュー）へ戻る。", ""]
+out += ["## クリアのあと", "", "目標の欄：", ""] + [f"- {x}" for x in S.FREE_PLAY] + [""]
 (ROOT.parent / "docs" / "ストーリー台本.md").write_text("\n".join(out), encoding="utf-8")
 print("書き出し: docs/ストーリー台本.md")

@@ -17,13 +17,13 @@ mods/<MOD名>/
 
 ワールドで使うには、メニューの新規作成／ワールド設定の MOD 選択で選びます（`saves/<ワールド>/mods.json` の `"enabled"`）。
 本体に入っている MOD：`survival`（サバイバル＝資源のルール。入れないとクリエイティブ）、`city`（サイバーパンクの街）、
-`story`（シナリオモード「それでも」。新しいワールドを作るときに選ぶとシナリオのワールドになる。台本は `docs/ストーリー台本.md`）、
+`story`（シナリオモード「ストーリー vol.1」。新しいワールドを作るときに選ぶとシナリオのワールドになる。台本は `docs/ストーリー台本.md`）、
 `scenario_blocks`（シナリオ再現ブロック）、`soredemo_cast`（登場人物）、`lunaport`・`amatsu`（場所）、`cute_motions`（かわいいモーション）。
 
 ## mod.json
 
 ```json
-{"id": "story", "name": "シナリオモード（それでも）", "version": "2.0", "category": "シナリオ",
+{"id": "story", "name": "シナリオモード（ストーリー vol.1）", "version": "2.0", "category": "シナリオ",
  "requires": ["scenario_blocks", "soredemo_cast", "lunaport", "amatsu"],
  "description": "…",
  "world": {"note": "…", "main": "terra", "main_override": {"noise_amp": 1.5}, "settings": {"story": {"built": false}}}}
@@ -43,7 +43,9 @@ mods/<MOD名>/
 推進機・タンクなど決まった種類のほかに、`"type": "custom", "behavior": "<名前>"` の機器を作り、ふるまいを MOD のプログラムで書けます。
 コアは電力（`power_use`、`state["active"]`）と保存（`state["enabled"]`・`state["data"]`）だけ受け持ちます。
 スクリプト・ブロックプログラムの口は `main/extensions.py`（`register_device` / `register_api`）と `main/blocks.py` の `register_ext`
-（ブロックの文・センサー・矢印のセンサーを足す）で登録します。例は `mods/scenario_blocks/code/blocks.py`（迎撃砲塔・レーダー・ミサイル発射機）。
+（ブロックの文・センサー・矢印のセンサーを足す）で登録します。例は `mods/scenario_blocks/code/blocks.py`（迎撃砲塔・レーダー・ミサイル発射機）と、
+`mods/scenario_blocks/code/addon.py` の燃料ポンプ（`fuel_pump`：ON の間、後ろの面の配管の区画のタンクから、向きの面の区画のタンクへ
+燃料などを送る。E で ON/OFF）。
 読み込み結果やエラーは `logs/latest.log` に出ます。
 
 ## 読み込みのタイミングとエラー（大事）
@@ -84,6 +86,7 @@ mods/<MOD名>/
 | friction | 地面との摩擦 0〜1 |
 | rebond / rebond_distance | 離れた頂点が近づくと再結合する（液体・粘土向け） |
 | color / texture | 見た目 |
+| opacity | 0〜1。1 未満なら半透明に描く（ガラスは 0.32。宇宙船の窓から外・中が見える） |
 | cost | サバイバル時の設置コスト {資源ID: 量} |
 
 液体は「stiffness と joint_stiffness が低い・break_distance が大きい・rebond が true」、
@@ -95,7 +98,8 @@ mods/<MOD名>/
 
 thruster（推進機：thrust・fuel_rate・ignite_energy＝点火の電気 J・power_output＝燃えている間の発電 W）, tank,
 pipe, valve（max_flow＝最大流量 kg/秒）, battery, generator（太陽光パネルなど燃料を使わない発電。output W）, crank（手回し発電機）, computer,
-actuator, processor（精錬機・加工機。recipes で入出力、capacity で中にためられる量。pipe_port で配管につながる）, seat, air_vent
+actuator（配管と同じく燃料・物資を通す。結合している出力面の先へも通り、分離すると止まる）, processor（精錬機・加工機。
+recipes で入出力、capacity で中にためられる量。pipe_port で配管につながる）, seat, air_vent
 
 共通: `material`（外装素材）, `power`（none / manual / electric）, `power_use`（W）,
 `pipe_port`（配管に繋がるか）, `directional`（向きを持つか）, `cost`
@@ -133,7 +137,11 @@ def client_addon(game):     # 画面側（任意）：main.client.addon_hooks.Cl
   - 物理：`before_physics`（物理で動かさない構築物の ID を返す）/ `colliders`（当たり判定の箱）/ `after_physics`
   - 視線・プレイヤー・操作：`raycast` / `push_sphere` / `interact`（機器以外）/ `interact_device`（機器。コアより先）/ `on_placed`
   - 資源のルール：`resource_rules = True` にするとクリエイティブでなくなる。`pay` / `refund` / `on_device_placed` / `on_dig` / `on_water` / `jetpack`
+  - 人物・景色：`on_npc_talk`（NPC に話しかけた）/ `on_scenery_talk`（場所の MOD の触れる物）
+  - プログラム編集のヒント：`block_hint(world, ファイル名)` で見本（完成形のブロックプログラム）を返すと、1 分たっても完成しないとき、
+    次に置くブロック・入れる式・入力する数字を光らせる（シナリオの課題が使う。済んだら None を返す）
 - 画面側 `ClientAddon` の口：`on_key` / `interact` / `aim`（視線の先の説明）/ `update`（毎フレームの描画）/ `destroy` と `help_text`、
+  `on_camera(on)`（カメラモードに入った・出た）/ `on_photo(path)`（カメラモードで写真を保存した）、
   `player_body(player)`（プレイヤーの体の見た目を引き受けるとき。自分にもマルチプレイのほかの人にも呼ばれる。例は `skinmodel(dummy)`）。
 
 ## マルチプレイ（LAN）で動くようにする

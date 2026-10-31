@@ -1,4 +1,4 @@
-"""ミサイル・砲塔のビーム・爆発（ワールド側）。
+"""ミサイル・砲塔のビーム・爆発、燃料ポンプ（ワールド側）。
 
 ミサイルは構築物ではなく軽い「飛ぶ物」（位置・速度だけ）。目標（構築物か地点）へ曲がりながら飛び、
 構築物・地面・目標の地点に近づくと爆発する。爆発は近くのブロックを壊す（protected に入れた構築物は壊さない）。
@@ -118,10 +118,82 @@ class WeaponsAddon(Addon):
         if world.net is not None and getattr(world.net, "role", "") == "client":
             return set()
         self._turrets(world)
+        self._pumps(world, dt)
         self._fly(world, dt)
         t = world.time
         self.effects = [e for e in self.effects if t - e[3] < EFFECT_LIFE]
         return set()
+
+    def _pumps(self, world, dt):
+        """燃料ポンプ（ON の間）：後ろの面の配管の区画のタンクから、前（向き）の面の区画のタンクへ流体を送る。"""
+        from main import devices
+        from main.construct import DIR_TUPLES, link_key
+        for c in list(world.constructs.values()):
+            if getattr(c, "_pump_ver", None) != c.version:
+                c._pump_ver = c.version
+                c._pumps = [i for i, d in enumerate(c.devs)
+                            if d and (c.reg.device(d["def"]) or {}).get("behavior") == "pump"]
+            if not c._pumps:
+                continue
+            if c.dirty or not hasattr(c, "_net"):
+                devices.rebuild_networks(c)
+            net = c._net
+            for i in c._pumps:
+                d = c.devs[i]
+                if not d or not d["state"].get("enabled", True):
+                    continue
+                cell, dv = c.cells[i], DIR_TUPLES[d["dir"]]
+                segs = []
+                for sgn in (-1, 1):
+                    nb = (cell[0] + sgn * dv[0], cell[1] + sgn * dv[1], cell[2] + sgn * dv[2])
+                    j = c.index.get(nb)
+                    ok = j is not None and (link_key(cell, nb) in c.links)
+                    segs.append(net.pipe_of.get(j) if ok else None)
+                src, dst = segs
+                data = d["state"].setdefault("data", {})
+                if src is None or dst is None or src == dst:
+                    data["flow"] = 0.0
+                    continue
+                rate = float((c.reg.device(d["def"]) or {}).get("params", {}).get("rate", 60.0))
+                moved = self._pump_move(c, net.pipes[src], net.pipes[dst], rate * dt)
+                data["flow"] = moved / max(dt, 1e-6)
+                data["total"] = float(data.get("total", 0.0)) + moved
+
+    @staticmethod
+    def _pump_move(c, src_ids, dst_ids, amount):
+        from main import devices
+
+        def tanks(ids):
+            out = []
+            for k in ids:
+                dd = devices.dev_def(c, k)
+                if dd and dd["type"] == "tank":
+                    out.append((c.devs[k]["state"].setdefault("contents", {}), float(dd["params"].get("capacity", 0))))
+            return out
+        src, dst = tanks(src_ids), tanks(dst_ids)
+        have = {}
+        for cont, _ in src:
+            for r, v in cont.items():
+                if v > 1e-9 and devices.is_fluid(c.reg, r):
+                    have[r] = have.get(r, 0.0) + v
+        if not have:
+            return 0.0
+        res = "fuel" if "fuel" in have else max(have, key=have.get)
+        free = sum(max(cap - sum(cont.values()), 0.0) for cont, cap in dst)
+        n = min(amount, have[res], free)
+        if n <= 1e-9:
+            return 0.0
+        left = n
+        for cont, _ in src:
+            t = min(cont.get(res, 0.0), left)
+            cont[res] = cont.get(res, 0.0) - t
+            left -= t
+        left = n
+        for cont, cap in dst:
+            t = min(max(cap - sum(cont.values()), 0.0), left)
+            cont[res] = cont.get(res, 0.0) + t
+            left -= t
+        return n
 
     def _turrets(self, world):
         t = world.time

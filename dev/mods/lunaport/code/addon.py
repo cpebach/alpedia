@@ -25,7 +25,7 @@ class LunaPortAddon(SceneryHost, Addon):
     def on_load(self, world):
         self.world = world
         luna = next((p for p in world.planets if p.defn["id"] == "luna"), None)
-        main = next((p for p in world.planets if p.defn["id"] == "terra"), None) or \
+        main = next((p for p in world.planets if p.defn["id"] in ("gaia", "terra")), None) or \
             next((p for p in world.planets if p is not luna), None)
         if luna is None or main is None:
             L.info("月ルナと主な惑星が無いので、ルナ・ポートは作りません")

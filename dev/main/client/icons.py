@@ -149,6 +149,12 @@ def _mark(img, kind, col=(255, 255, 255, 230)):
         d.polygon([P(-0.07, -0.26), P(0.07, -0.26), P(0.07, 0.18), P(0.0, 0.34), P(-0.07, 0.18)], fill=col)
         d.polygon([P(-0.07, -0.26), P(-0.18, -0.34), P(-0.07, -0.12)], fill=(255, 90, 60, 240))
         d.polygon([P(0.07, -0.26), P(0.18, -0.34), P(0.07, -0.12)], fill=(255, 90, 60, 240))
+    elif kind == "pump":                       # ポンプ：羽根車と、流す向きの矢印
+        d.ellipse([P(-0.22, 0.22), P(0.22, -0.22)], outline=col, width=w)
+        for k in range(3):
+            a = k * 2 * math.pi / 3
+            d.line([P(0, 0), P(0.17 * math.cos(a), 0.17 * math.sin(a))], fill=col, width=w)
+        d.polygon([P(0.26, 0.1), P(0.4, 0.0), P(0.26, -0.1)], fill=(120, 255, 200, 240))
     else:
         d.polygon([P(0, 0.22), P(0.22, 0), P(0, -0.22), P(-0.22, 0)], fill=col)
     return img
@@ -210,7 +216,7 @@ def item_name(reg, item):
 # 機器ブロックの表面に貼る記号（デカール）
 # ---------------------------------------------------------------------------
 DECAL_TYPES = ["thruster", "tank", "pipe", "valve", "battery", "generator", "solar", "crank", "computer", "actuator",
-               "processor", "seat", "air_vent", "antenna", "turret", "radar", "launcher", "other"]
+               "processor", "seat", "air_vent", "antenna", "turret", "radar", "launcher", "pump", "other"]
 DECAL_VARIANTS = ["plain", "side", "front", "back"]
 DECAL_CELL = 128
 _atlas = None

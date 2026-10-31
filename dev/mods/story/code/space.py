@@ -89,7 +89,8 @@ def interceptor_voxels():
                     continue
                 if (x, y, z) == INTERCEPTOR_PC:
                     continue
-                mat = "glass" if (y == 3 and z == 18 and x in (4, 5, 6, 7)) else ("hull_blue" if y == 1 else "hull_white")
+                window = y in (2, 3) and ((z == 18 and x in (4, 5, 6, 7)) or (x in (3, 8) and z in (19, 20, 21)))
+                mat = "glass" if window else ("hull_blue" if y == 1 else "hull_white")
                 V.append(((x, y, z), mat, None))
     V.append((INTERCEPTOR_PC, "steel", {"def": "computer", "dir": 5, "name": "迎撃の制御",
                                        "state": {"script": "intercept.py", "blocks": "intercept.blocks.json"}}))
@@ -111,8 +112,36 @@ def interceptor_voxels():
 ROBOT_VALVES = ("バルブ 後左", "バルブ 後右", "バルブ 前左", "バルブ 前右")
 
 
-def robot_voxels(body="hull_white", trim="hull_blue", pilot=True):
-    """前 = +Z、右 = +X。下の段の四隅が姿勢用推進機（上向き）、その上にバルブ、まん中にタンク。"""
+HATCH_ACT = (3, 6, 3)              # コックピットの扉のアクチュエーター（-X 向き。出力の先が扉の上の段）
+HATCH_OPEN = 0.0                   # 扉の角度：開（ブロックの並びは開いた形。扉は前に水平に張り出す）
+HATCH_CLOSED = -90.0               # 閉（前に下ろして胴の前の面になる）
+
+
+def hatch_cells():
+    """コックピットの扉（開いた形）：胴の上の段 (x,6,3) から前へ (x,6,4)・(x,6,5)。"""
+    return {(x, 6, z) for x in range(3) for z in (3, 4, 5)}
+
+
+def robot_links(V):
+    """ロボットの結合：となりどうしを全部つなぎ、扉は胴とつながず、アクチュエーターの出力面でだけつなぐ。"""
+    from main.construct import DIR_TUPLES, link_key
+    cells = {v[0] for v in V}
+    hatch = hatch_cells() & cells
+    out = set()
+    for cell in cells:
+        for d in (0, 2, 4):
+            nb = (cell[0] + DIR_TUPLES[d][0], cell[1] + DIR_TUPLES[d][1], cell[2] + DIR_TUPLES[d][2])
+            if nb in cells and ((cell in hatch) == (nb in hatch)):
+                out.add(link_key(cell, nb))
+    if hatch and HATCH_ACT in cells:
+        out.add(link_key(HATCH_ACT, (HATCH_ACT[0] - 1, HATCH_ACT[1], HATCH_ACT[2])))
+    return out
+
+
+def robot_voxels(body="hull_white", trim="hull_blue", pilot=True, running=False):
+    """前 = +Z、右 = +X。下の段の四隅が姿勢用推進機（上向き）、その上にバルブ、まん中にタンク（満タン）。
+    pilot：トワの乗る物（胴の中に操縦席。前の面は開け閉めできる扉＝アクチュエーターで上へはね上げる。
+    ブロックの並びは開いた形で、結合は robot_links で作る）。running：制御のコンピューターを最初から動かすか。"""
     V = []
     corners = {(0, 0): "後左", (2, 0): "後右", (0, 4): "前左", (2, 4): "前右"}
     for x in range(3):
@@ -136,6 +165,8 @@ def robot_voxels(body="hull_white", trim="hull_blue", pilot=True):
             for z in range(1, 4):
                 if (x, y, z) == (1, 4, 2):
                     continue
+                if pilot and z == 3:
+                    continue                                # 前の面は扉（下で足す）
                 mat = body
                 if (x, y, z) == (1, 5, 3):
                     mat = "glass"
@@ -145,13 +176,20 @@ def robot_voxels(body="hull_white", trim="hull_blue", pilot=True):
                 elif (x, y, z) == (1, 6, 1):
                     V.append(((x, y, z), "steel", {"def": "computer", "dir": 5, "name": "ロボットの制御",
                                                    "state": {"script": "robot.py", "blocks": "robot.blocks.json",
-                                                             "running": True}}))
+                                                             "running": bool(running)}}))
                     continue
                 elif y == 4:
                     mat = trim
                 V.append(((x, y, z), mat, None))
     if pilot:
         V.append(((1, 4, 2), "steel", {"def": "seat", "dir": 4, "name": "ロボットの操縦席"}))
+        # 扉（開いた形）：上の段は胴の前の上、その前に窓の段・下の段が水平に並ぶ
+        for x in range(3):
+            V += [((x, 6, 3), body, None), ((x, 6, 4), "glass" if x == 1 else body, None), ((x, 6, 5), trim, None)]
+        V.append(((3, 6, 2), body, None))                  # 扉のアクチュエーターの台
+        V.append((HATCH_ACT, "steel", {"def": "actuator", "dir": 1, "name": "コックピット",
+                                       "state": {"rot_speed": 120.0,
+                                                 "preset": {"action": "rotate", "amount": HATCH_CLOSED, "speed": 120.0}}}))
     else:
         V.append(((1, 4, 2), body, None))
     V += [((1, 7, 2), "glass", None), ((1, 7, 3), "hull_red" if pilot else "hull_orange", None)]     # 頭と目
@@ -179,6 +217,27 @@ UNIT_SLOTS = [(1, 2, 1), (6, 2, 1), (1, 2, 6), (6, 2, 6)]
 UNIT_VALVE_OPEN = [0.9, 0.35, 0.7, 0.5]          # 最初はばらばら（そろえるのが課題）
 UNIT_PC = (3, 1, 0)
 UNIT_SIGN = (5, 1, 0)
+
+
+BOOTH_AT = (9.0, -3.0)         # 作業台の管制室（甲板の x, z）。キンギとドナチはこの中（宇宙なので、人は外に出ない）
+BOOTH_KINGI = (2, 1, 2)
+BOOTH_DONACHI = (5, 1, 3)
+
+
+def booth_voxels():
+    """ガラス張りの管制室（中 6×4×4 ブロック）。外から窓ごしに中の人と話せる（E）。"""
+    V = []
+    for x in range(8):
+        for z in range(6):
+            V.append(((x, 0, z), "hull_white", None))
+            V.append(((x, 5, z), "glass" if 2 <= x <= 5 and 2 <= z <= 3 else "hull_white", None))
+            if x in (0, 7) or z in (0, 5):
+                for y in range(1, 5):
+                    corner = x in (0, 7) and z in (0, 5)
+                    mat = "hull_blue" if (y == 1 or corner) else ("glass" if y in (2, 3) else "hull_white")
+                    V.append(((x, y, z), mat, None))
+    V.append(((6, 1, 4), "steel", {"def": "battery", "dir": 2, "name": "バッテリー"}))
+    return V
 
 
 def unit_voxels():

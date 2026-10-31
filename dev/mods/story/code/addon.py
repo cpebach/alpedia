@@ -1,18 +1,20 @@
 """シナリオモード（ワールド側）：舞台を最初に作る、章と目標の進み方、無線のセリフ、人物の立ち位置、ムービーの順番。
 
 状態は world.settings["story"] に入れてセーブする：
-    v      状態の版（2：「それでも」。前の版「墜落した技術者」のセーブは読み込みのときに読み替える）
+    v      状態の版（2：「ストーリー vol.1」。前の版「墜落した技術者」のセーブは読み込みのときに読み替える）
     built  構築物・地面の跡・スクリプトを作ったか
     ch     いまの章（script.CHAPTERS の番号）　goals  済んだ目標 {ID: True}
     ids    構築物の ID {役: ID}　log  セリフ [[番号, 話す人, 文, 出す時刻]]　n  セリフの通し番号
     movies まだ流していないムービーの名前のリスト（画面側が流して movie_done を呼ぶ）
     seen   流したムービー　events  一度だけのセリフ（済んだもの）　cnt  数える物 {名前: 数}
     flags  章の中の出来事 {名前: 値}　lights  基地の明かり　done  クリア
-舞台：テラの基地（sites.py）・月のルナ・ポート（場所の MOD「lunaport」）・軌道都市アマツ（場所の MOD「amatsu」）と
+舞台：ガイアの基地（sites.py）・月のルナ・ポート（場所の MOD「lunaport」）・軌道都市アマツ（場所の MOD「amatsu」）と
 そのまわりの艦隊（space.py）。人物は登場人物の MOD（「cast」）、ミサイル・砲塔はシナリオ再現ブロックの MOD（「weapons」）。
 マルチプレイでは、ホストが進み方を決めて参加者へ送る（net_state）。
 """
 import json
+import shutil
+import time
 
 import numpy as np
 
@@ -29,7 +31,14 @@ L = log.get("story")
 CHECK_EVERY = 0.2          # 目標を調べる間隔（秒・ワールド時刻）
 HINT_AFTER = 75.0          # 目標が済まないとき、この秒数でヒントのセリフ
 VERSION = 2
-ANCHORED = ("interceptor", "krobot", "unit", "kdrone")    # シナリオが位置を決める（物理で動かさない）構築物
+ANCHORED = ("interceptor", "krobot", "unit", "kdrone", "cart", "booth", "rocket")
+# 旅立ちのロケットの打ち上げ（エピローグ。シナリオが位置を決める）
+COUNTDOWN = 5.0
+LIFT_T1 = 4.0                # まっすぐ上へ（加速 LIFT_A）
+LIFT_A = 3.0
+TURN_T = 24.0                # そのあと、この秒数で水平に倒しながら軌道の速さへ
+ORBIT_H = 150.0              # 軌道の高さ（発射台から）
+SEP_T = LIFT_T1 + 9.0        # ブースター分離    # シナリオが位置を決める（物理で動かさない）構築物
 
 IDX = {cid: k for k, cid in enumerate(script.CHAPTER_IDS)}
 
@@ -62,14 +71,15 @@ class StoryAddon(SceneryHost, Addon):
         st = world.settings.get("story")
         if not isinstance(st, dict):
             return                       # シナリオのワールドではない（MOD だけ入れた）
-        self.terra = next((p for p in world.planets if p.defn["id"] == "terra"), None)
+        # 主な惑星：ガイア（前の版のセーブはテラ）。self.terra という名前のまま使う
+        self.terra = next((p for p in world.planets if p.defn["id"] in ("gaia", "terra")), None)
         self.luna = next((p for p in world.planets if p.defn["id"] == "luna"), None)
         self.port = world.addon("lunaport")
         self.amatsu = world.addon("amatsu")
         self.cast = world.addon("cast")
         self.weapons = world.addon("weapons")
         if self.terra is None or self.luna is None or self.port is None or not self.port.active:
-            L.warning("シナリオにはテラと月ルナ（とルナ・ポートの MOD）が必要です")
+            L.warning("シナリオにはガイアと月ルナ（とルナ・ポートの MOD）が必要です")
             return
         self.active = True
         self.map = sites.terra_map(self.terra, sites.terra_craters(sites.terra_map(self.terra)))
@@ -94,6 +104,11 @@ class StoryAddon(SceneryHost, Addon):
             self.build_world(world)
         elif host:
             self.ensure_constructs()
+        if host and self._cid() == "robot":
+            self._prepare_robot()
+        if host and self._cid() == "repair" and self.con("cart") is None and not self.port_attached():
+            self._ensure_fuel_port()
+            self._place_cart()
         if self.weapons is not None:
             self.weapons.listeners.append(self._on_weapon)
             for role in ("interceptor", "robot", "unit"):
@@ -121,7 +136,7 @@ class StoryAddon(SceneryHost, Addon):
             if new == "port":
                 st["flags"]["landed"] = True
             L.info("前の版のシナリオのセーブを読み替えました（%s → %s）", old, new)
-            self.world.message("シナリオが新しくなりました（「それでも」）。続きから遊べます（J で章の一覧）")
+            self.world.message("シナリオが新しくなりました（ストーリー vol.1）。続きから遊べます（J で章の一覧）")
         st["v"] = VERSION
 
     # ------------------------------------------------------------------
@@ -186,26 +201,30 @@ class StoryAddon(SceneryHost, Addon):
             self._put_space("interceptor", "連盟の迎撃艦", space.interceptor_voxels(),
                             space.fleet_origin(d), d.frame(0.0), (6.0, 0.0, 12.0))
             rx, rz = space.ROBOT_START
-            self._put_space("robot", "トワのロボット", space.robot_voxels(), d.point(rx, rz, 0.3), d.frame(0.0),
-                            (1.5, 0.0, 2.5))
+            rv = space.robot_voxels()
+            self._put_space("robot", "トワのロボット", rv, d.point(rx, rz, 0.3), d.frame(0.0), (1.5, 0.0, 2.5),
+                            links=space.robot_links(rv))
             kx, kz = space.KROBOT_START
             self._put_space("krobot", "キンギのロボット", space.krobot_voxels(), d.point(kx, kz, 0.6), d.frame(180.0),
                             (1.5, 0.0, 2.5))
             ux, uz = space.UNIT_AT
             self._put_space("unit", "再加速の作業台", space.unit_voxels(), d.point(ux, uz, 0.05), d.frame(0.0),
                             (4.0, 0.0, 4.0))
+            bx, bz = space.BOOTH_AT
+            self._put_space("booth", "作業台の管制室", space.booth_voxels(), d.point(bx, bz, 0.05), d.frame(0.0),
+                            (4.0, 0.0, 3.0))
         if made:
             self._write_scripts(only_missing=True)
             L.info("構築物を作りました: %s", made)
 
-    def _put_space(self, role, name, vox, pos, R, pivot):
+    def _put_space(self, role, name, vox, pos, R, pivot, links=None):
         """宇宙の構築物：ボクセルの (pivot) が pos に来るように置く。"""
         ids = self.st["ids"]
         if ids.get(role) in self.world.constructs:
             return None
         size = float(self.world.settings.get("voxel_size", 0.5))
         origin = np.asarray(pos, float) - R @ (np.asarray(pivot, float) * size)
-        c = Construct.from_voxels(self.world.registry, vox, origin, R, size=size, name=name)
+        c = Construct.from_voxels(self.world.registry, vox, origin, R, size=size, name=name, links=links)
         self.world.add_construct(c)
         ids[role] = c.id
         return c
@@ -289,7 +308,13 @@ class StoryAddon(SceneryHost, Addon):
                    "engine": ("power", "thruster", None), "gate": ("gate", "actuator", None),
                    "refiner": ("factory", "refiner", None), "fabricator": ("factory", "fabricator", None),
                    "fuel_valve": ("factory", "valve", None), "turret_pc": ("interceptor", "computer", None),
-                   "unit_pc": ("unit", "computer", "再加速の航法")}
+                   "unit_pc": ("unit", "computer", "再加速の航法"), "fuel_port": ("ship", "actuator", "給油口"),
+                   "pump": ("cart", "fuel_pump", None)}
+        if key == "rocket_c":
+            c = self.con("rocket")
+            return c.center_of_mass() if c is not None else None
+        if key == "pump" and self.con("cart") is None:
+            return self._devpos("ship", "fuel_pump")          # 給油口で結合したあとは船の一部
         if key in special:
             return self._devpos(*special[key])
         if key == "pipe":
@@ -309,7 +334,7 @@ class StoryAddon(SceneryHost, Addon):
         return R @ ((np.asarray(cell, float) + 0.5) * c.size) + t0
 
     def map_xz(self, p):
-        """テラの地図の座標 (x, z)。"""
+        """ガイアの地図の座標 (x, z)。"""
         d = np.asarray(p, float) - self.terra.center
         d /= np.linalg.norm(d)
         m = self.map
@@ -548,6 +573,8 @@ class StoryAddon(SceneryHost, Addon):
             if i is not None and c.devs[i] and c.devs[i]["def"] == "thruster":
                 thr += 1
         tanks = [d for d in c.devs if d and d["def"] == "tank"]
+        tanks = [c.devs[i] for i in (c.index.get(t) for t in sites.SHIP_TANK_CELLS)
+                 if i is not None and c.devs[i] and c.devs[i]["def"] == "tank"]      # 船のタンク（給油車のは数えない）
         full = sum(d["state"].get("contents", {}).get("fuel", 0) >= 790 for d in tanks)
         return holes, thr, (full, len(tanks))
 
@@ -556,6 +583,39 @@ class StoryAddon(SceneryHost, Addon):
 
     def check_thrusters(self):
         return self._ship_progress()[1] >= len(sites.SHIP_THRUSTERS)
+
+    def check_hose(self):
+        return self._hose_count() >= len(sites.HOSE)
+
+    def _hose_count(self):
+        n = 0
+        for cell in sites.HOSE:
+            for role in ("cart", "ship"):
+                c = self.con(role)
+                i = c.index.get(tuple(cell)) if c is not None else None
+                if i is not None and c.devs[i] and (c.reg.device(c.devs[i]["def"]) or {}).get("pipe_port"):
+                    n += 1
+                    break
+        return n
+
+    def _port(self):
+        c = self.con("ship")
+        i = c.index.get(tuple(sites.FUEL_PORT)) if c is not None else None
+        if i is None or not c.devs[i] or c.devs[i]["def"] != "actuator":
+            return None, None
+        return c, i
+
+    def port_attached(self):
+        from main.actuator import output_cell
+        from main.construct import link_key
+        c, i = self._port()
+        if c is None:
+            return False
+        key = link_key(c.cells[i], output_cell(c, i))
+        return key in c.links or any(c.cells[i] in k for k in c.extras)
+
+    def check_couple(self):
+        return self.port_attached()
 
     def check_fuel_ship(self):
         f = self._ship_progress()[2]
@@ -682,6 +742,19 @@ class StoryAddon(SceneryHost, Addon):
         walk(prog)
         return any(float(np.linalg.norm(np.asarray(f) - tgt)) <= 10.0 for f in found)
 
+    # エピローグ
+    def check_talk3(self):
+        return len(self._flag("talked", [])) >= 3
+
+    def check_photo(self):
+        return bool(self._flag("photo"))
+
+    def check_embark(self):
+        return self._seated("rocket") or bool(self.st.get("flight"))
+
+    def check_orbit(self):
+        return bool((self.st.get("flight") or {}).get("orbit"))
+
     def check_rise(self):
         return float(self.st["flags"].get("rise_t", 0.0)) >= 12.0
 
@@ -695,7 +768,16 @@ class StoryAddon(SceneryHost, Addon):
             return f"{self._ship_progress()[1]}/{len(sites.SHIP_THRUSTERS)}"
         if gid == "fuel_ship":
             f = self._ship_progress()[2]
-            return f"{f[0]}/{f[1]}" if f else ""
+            c = self.con("ship")
+            fuel = 0.0
+            if c is not None:
+                for t in sites.SHIP_TANK_CELLS:
+                    i = c.index.get(t)
+                    if i is not None and c.devs[i] and c.devs[i]["def"] == "tank":
+                        fuel += c.devs[i]["state"].get("contents", {}).get("fuel", 0.0)
+            return f"満タン {f[0]}/{f[1]}・燃料 {fuel:.0f}/{len(sites.SHIP_TANK_CELLS) * 800}" if f else ""
+        if gid == "hose":
+            return f"{self._hose_count()}/{len(sites.HOSE)}"
         if gid == "engine":
             return f"{self._engines_lit()}/2"
         if gid == "dig":
@@ -733,6 +815,15 @@ class StoryAddon(SceneryHost, Addon):
         if gid == "navi":
             t = self.target_point()
             return "" if t is None else f"目標 ({t[0]:.0f}, {t[1]:.0f}, {t[2]:.0f})"
+        if gid == "talk3":
+            return f"{min(len(self._flag('talked', [])), 3)}/3"
+        if gid == "orbit":
+            fl = self.st.get("flight") or {}
+            if not fl:
+                return ""
+            if fl["t"] < 0:
+                return f"発射まで {-fl['t']:.0f} 秒"
+            return f"高さ {fl.get('alt', 0.0):.0f} m・速さ {fl.get('speed', 0.0):.0f} m/s"
         if gid == "rise":
             return f"{min(float(st['flags'].get('rise_t', 0.0)), 12.0):.0f}/12 秒"
         return ""
@@ -802,6 +893,7 @@ class StoryAddon(SceneryHost, Addon):
                 self.say(who, text)
         self._setup_chapter(c["id"])
         self._stage()
+        st["autosave_due"] = ch                # 次のティックで、この章の始めを保存する（オートセーブ）
 
     def _finish_chapter(self):
         st = self.st
@@ -816,14 +908,12 @@ class StoryAddon(SceneryHost, Addon):
             self._give_program()
         if cid in ("bike", "factory"):
             self._remove_role("kdrone")
-        if cid == "reaccel":
-            if self.amatsu is not None:
-                self.amatsu.alert = False
+        if cid == "reaccel" and self.amatsu is not None:
+            self.amatsu.alert = False
+        if cid == "depart":                # 軌道に乗った：エンドロール（画面側が流して credits_done を呼ぶ）
             st["done"] = True
             st["ch"] = len(script.CHAPTERS)
-            self._teleport("end")
-            for who, text in script.ENDING:
-                self.say(who, text)
+            st["credits"] = True
             self._stage()
             return
         self._enter(st["ch"] + 1)
@@ -842,11 +932,82 @@ class StoryAddon(SceneryHost, Addon):
             if i is not None:
                 c.devs[i]["state"]["running"] = False
         if cid == "robot":
+            self._prepare_robot()
             c = self.con("robot")
             if c is not None:
                 self.st["flags"]["robot_start"] = c.center_of_mass().tolist()
         if cid == "reaccel":
             self._sign_target()
+        if cid == "repair":
+            self._ensure_fuel_port()
+            self._place_cart()
+        if cid == "depart":
+            self.st.pop("flight", None)
+            self.st["credits"] = False
+            self._place_rocket()
+            self._teleport("depart")
+
+    # --- ロボット（第12章） -------------------------------------------------
+    def _prepare_robot(self):
+        """トワのロボット：前の版の物（扉が無い）は作り直す。燃料を満タンにして、制御のコンピューターを動かす。"""
+        d = self.deck
+        c = self.con("robot")
+        if d is not None and (c is None or not any(x and x["name"] == "コックピット" for x in c.devs)) \
+                and not self._seated("robot"):
+            self._remove_role("robot")
+            rx, rz = space.ROBOT_START
+            rv = space.robot_voxels()
+            self._put_space("robot", "トワのロボット", rv, d.point(rx, rz, 0.3), d.frame(0.0), (1.5, 0.0, 2.5),
+                            links=space.robot_links(rv))
+            c = self.con("robot")
+            if c is not None and self.weapons is not None:
+                self.weapons.protected.add(c.id)
+        if c is None:
+            return
+        for x in c.devs:
+            if not x:
+                continue
+            dd = c.reg.device(x["def"]) or {}
+            if dd.get("type") == "tank":
+                x["state"]["contents"] = {"fuel": float(dd.get("params", {}).get("capacity", 800))}
+            if x["def"] == "computer" and x["name"] == "ロボットの制御":
+                x["state"]["running"] = True
+                x["state"].pop("error", None)
+
+    # --- 給油（第8章） -------------------------------------------------------
+    def _ensure_fuel_port(self):
+        """前の版のルミナス号には給油口が無い：給油管と給油口を足す。"""
+        c = self.con("ship")
+        if c is None or tuple(sites.FUEL_PORT) in c.index:
+            return
+        try:
+            i = c.index.get(tuple(sites.FUEL_PIPE))
+            if i is not None and not c.devs[i]:
+                c.remove_voxels([i])
+            if tuple(sites.FUEL_PIPE) not in c.index:
+                _add_cell(c, sites.FUEL_PIPE, "steel", {"def": "pipe", "dir": 2, "name": "給油管"})
+            _add_cell(c, sites.FUEL_PORT, "steel", sites.fuel_port_dev())
+            for part in c.split():
+                self.world.add_construct(part)
+        except Exception:  # noqa: BLE001
+            L.exception("給油口を足せません")
+
+    def _place_cart(self):
+        """給油車を、ルミナス号の今の位置・向きに合わせて（同じ格子で）置く。給油が済むまで動かさない（ANCHORED）。"""
+        ship = self.con("ship")
+        if ship is None or self.port_attached():
+            return
+        self._remove_role("cart")
+        R, t0 = ship.rigid_fit()
+        size = ship.size
+        legs = {}
+        for x, z in sites.CART_LEGS:
+            p = t0 + R @ (np.array([x + 0.5, 0.0, z + 0.5]) * size)
+            h = float(self.map.height(p[None], R[:, 1], t0)[0]) / size        # 地面の高さ（船の格子の段）
+            legs[(x, z)] = int(np.ceil(h - 0.05))
+        c = Construct.from_voxels(self.world.registry, sites.cart_voxels(legs), t0, R, size=size, name="給油車")
+        self.world.add_construct(c)
+        self.st["ids"]["cart"] = c.id
 
     def _give_program(self):
         c, i = self.dev("ship", "computer")
@@ -893,6 +1054,8 @@ class StoryAddon(SceneryHost, Addon):
         self._watch_rod(dt)
         self._watch_crane()
         world.time_scale = 1.0
+        if self.st.get("autosave_due") is not None:
+            self._autosave(int(self.st.pop("autosave_due")))
         try:
             self._chapter_tick(world, dt)
         except Exception:  # noqa: BLE001
@@ -948,6 +1111,8 @@ class StoryAddon(SceneryHost, Addon):
         if gid == "robot_walk":
             st["flags"]["volley_t"] = self.world.time + 1.0
             self._event("volley")
+        if gid == "couple":
+            self._event("coupled")
 
     def _chapter_tick(self, world, dt):
         cid = self._cid()
@@ -964,6 +1129,8 @@ class StoryAddon(SceneryHost, Addon):
             self._duel(t, dt)
         elif cid == "reaccel":
             self._rise(dt)
+        if cid == "depart" or st.get("flight"):
+            self._rocket_tick(dt)
 
     # --- 第6章・第7章：キンギのドローン ------------------------------------
     def _ensure_kdrone(self, pos):
@@ -1088,15 +1255,17 @@ class StoryAddon(SceneryHost, Addon):
         rp = rb.center_of_mass() - d.top
         rx_, rz_ = float(rp @ d.R[:, 0]), float(rp @ d.R[:, 2])
         kx, kz = space.KROBOT_START
-        if clash <= 0:
-            if self.st["goals"].get("dodge"):            # ミサイルを撃ち尽くした：組み合いに来る
+        if clash <= 0 or self.st["goals"].get("dodge"):     # 組みついている間も、ついて来る
+            y = 3.6
+            if self.st["goals"].get("dodge"):            # ミサイルを撃ち尽くした：組み合いに来る（同じ高さで、すぐ前へ）
                 x, z = float(np.clip(rx_, -28.0, 28.0)), float(np.clip(rz_ + 4.0, -90.0, 90.0))
+                y = float(np.clip(rp @ d.R[:, 1], 1.0, 8.0))
             elif self.st["goals"].get("robot_walk"):     # 立ちはだかる：トワのロボットの前に回りこむ
                 x = float(np.clip(rx_, -24.0, 24.0)) + 6.0 * np.sin(t * 0.8)
                 z = float(np.clip(rz_ + 30.0, kz - 10.0, kz + 35.0))
             else:
                 x, z = 14.0 * np.sin(t * 0.35), kz
-            self._move_to(kr, d.point(x, z, 3.6), 7.0, dt)
+            self._move_to(kr, d.point(x, z, y), 7.0, dt)
         dist = float(np.linalg.norm(rb.center_of_mass() - kr.center_of_mass()))
         if self.st["goals"].get("robot_walk"):
             if dist < 9.0:
@@ -1135,10 +1304,135 @@ class StoryAddon(SceneryHost, Addon):
         if r > 5.0 and self._event("donachi"):
             if self.cast is not None and "kingi" in self.cast.npcs:
                 k = self.cast.npcs["kingi"]
-                self.cast.walk_to("donachi", k.feet() + self.deck.R[:, 0] * 1.2, speed=1.6)
+                self.cast.walk_to("donachi", k.feet() + self.deck.R[:, 0] * 0.8, speed=1.2)
         if r > 8.0 and self._event("rising"):
             if self.amatsu is not None:
                 self.amatsu.alert = False
+
+    # --- エピローグ：旅立ちのロケット ----------------------------------------
+    def _place_rocket(self):
+        """発射台にロケットを置く（打ち上げたあと・壊れたときは作り直す）。"""
+        c = self.con("rocket")
+        if c is not None and len(c.cells) == len(sites.rocket_voxels()):
+            p, _ = self.map.ground(*sites.LAUNCH)
+            if float(np.linalg.norm(c.center_of_mass() - p)) < 12.0:
+                return
+        self._remove_role("rocket")
+        x, z = sites.LAUNCH
+        c = self._spawn(sites.rocket_voxels(), (x - 0.75, z - 0.75, 0.0, 0.35), self.map, "旅立ちのロケット")
+        self.st["ids"]["rocket"] = c.id
+
+    def _rocket_tick(self, dt):
+        """座ったらカウントダウン → まっすぐ上へ → 倒しながら軌道の速さへ（途中でブースター分離）→ 円い軌道を回り続ける。
+        ロケットは物理で動かさず、決まった道を進める（ANCHORED）。"""
+        st = self.st
+        c = self.con("rocket")
+        fl = st.get("flight")
+        if c is None:
+            return
+        if not fl:
+            if self._cid() == "depart" and self._seated("rocket"):
+                pad, up = self.map.ground(*sites.LAUNCH)
+                R0 = self.map.frame(*sites.LAUNCH, 0.0)
+                st["flight"] = {"t": -COUNTDOWN, "theta": 0.0, "sep": False, "orbit": False,
+                                "C": self.terra.center.tolist(), "u": up.tolist(), "e": R0[:, 0].tolist(),
+                                "n": R0[:, 2].tolist(), "r0": float(np.linalg.norm(pad - self.terra.center))}
+                self._event("count")
+            return
+        fl["t"] += dt
+        t = fl["t"]
+        if t < 0:
+            return
+        self._event("lift")
+        if t > 2.0:
+            self._event("lift2")
+        C, u, e, n = (np.asarray(fl[k], float) for k in ("C", "u", "e", "n"))
+        r0 = fl["r0"]
+        rr = r0 + ORBIT_H
+        v_orb = float(np.sqrt(self.terra.gm * float(self.world.settings.get("gravity_scale", 1.0)) / rr))
+        if t < LIFT_T1:
+            r, vr, vt = r0 + 0.5 * LIFT_A * t * t, LIFT_A * t, 0.0
+        elif t < LIFT_T1 + TURN_T:
+            sgm = (t - LIFT_T1) / TURN_T
+            p0, m0, p1 = r0 + 0.5 * LIFT_A * LIFT_T1 ** 2, LIFT_A * LIFT_T1 * TURN_T, rr
+            h00, h10, h01 = 2 * sgm ** 3 - 3 * sgm ** 2 + 1, sgm ** 3 - 2 * sgm ** 2 + sgm, -2 * sgm ** 3 + 3 * sgm ** 2
+            r = h00 * p0 + h10 * m0 + h01 * p1
+            vr = ((6 * sgm ** 2 - 6 * sgm) * p0 + (3 * sgm ** 2 - 4 * sgm + 1) * m0 + (-6 * sgm ** 2 + 6 * sgm) * p1) / TURN_T
+            vt = v_orb * (3 * sgm ** 2 - 2 * sgm ** 3)
+            if sgm > 0.15:
+                self._event("turn")
+        else:
+            r, vr, vt = rr, 0.0, v_orb
+            fl["orbit"] = True
+        fl["theta"] += vt / r * dt
+        th = fl["theta"]
+        radial = u * np.cos(th) + e * np.sin(th)
+        tang = -u * np.sin(th) + e * np.cos(th)
+        P = C + radial * r
+        vel = radial * vr + tang * vt
+        sp = float(np.linalg.norm(vel))
+        yax = vel / sp if sp > 0.5 else radial
+        zax = n - yax * float(n @ yax)
+        zax /= max(np.linalg.norm(zax), 1e-9)
+        Rn = np.stack([np.cross(yax, zax), yax, zax], axis=1)
+        Rc, tc = c.rigid_fit()
+        local = (c.pos - tc) @ Rc
+        piv = np.asarray(sites.ROCKET_PIVOT, float) * c.size
+        c.pos = local @ Rn.T + (P - Rn @ piv)
+        c.vel[:] = 0.0
+        if getattr(c, "_prev", None) is not None:
+            c._prev = c.pos.copy()
+        fl["alt"], fl["speed"] = r - r0, sp
+        fl["vel"] = vel.tolist()
+        for d in c.devs:                           # 炎の見た目
+            if d and d["def"] == "thruster":
+                d["state"]["firing"] = 1.0 if not fl["orbit"] else 0.0
+        if t >= SEP_T and not fl["sep"]:
+            fl["sep"] = True
+            self._separate_boosters(c, vel, radial)
+
+    def _separate_boosters(self, c, vel, radial):
+        w = self.world
+        for cell in sites.BOOSTER_ACTS:
+            i = c.index.get(tuple(cell))
+            if i is None:
+                continue
+            before = set(w.constructs)
+            w.actuator_detach(c, i)
+            for cid in set(w.constructs) - before:
+                part = w.constructs[cid]
+                part.name = "ブースター"
+                side = part.center_of_mass() - c.center_of_mass()
+                side -= radial * float(side @ radial)
+                side /= max(np.linalg.norm(side), 1e-9)
+                part.vel[:] = vel * 0.97 + side * 3.0
+                for d in part.devs:
+                    if d and d["def"] == "thruster":
+                        d["state"]["firing"] = 0.0
+        self._event("sep")
+
+    def credits_done(self):
+        """エンドロールが終わった：発射台の広場に戻して、ロケットを置き直す（画面側はこのあとメニューへ）。"""
+        if not self.active:
+            return
+        st = self.st
+        st["credits"] = False
+        st.pop("flight", None)
+        self._teleport("end")
+        self._place_rocket()
+        self._stage()
+
+    def photo_taken(self):
+        """カメラモードで写真を保存した（画面側から）。"""
+        if self.active and self._cid() == "depart":
+            self.st["flags"]["photo"] = True
+
+    def posing(self, on):
+        """カメラモードに入った・出た：エピローグの広場のみんなが、カメラ（プレイヤー）の方を向いて手をふる。"""
+        if not self.active or self.cast is None or not (self._cid() == "depart" or self.st.get("done")):
+            return
+        self.st["flags"]["posing"] = bool(on)
+        self._stage()
 
     # --- 月へ（第9章） ------------------------------------------------------
     def _flight_events(self):
@@ -1149,6 +1443,11 @@ class StoryAddon(SceneryHost, Addon):
         dt_ = float(np.linalg.norm(p - self.terra.center)) - self.terra.radius
         dl = float(np.linalg.norm(p - self.luna.center))
         dp = float(np.linalg.norm(p - self.points["pad"]))
+        if not self._flag("cart_named"):                 # 切り離した給油車（「ルミナス号の破片」）の名前を戻す
+            for c in self.world.constructs.values():
+                if c is not ship and any(d and d["def"] == "fuel_pump" for d in c.devs):
+                    c.name = "給油車"
+                    self.st["flags"]["cart_named"] = True
         conds = {"lift": dt_ > 25 and self.check_launch(), "space": dt_ > 400, "rutero": dt_ > 700,
                  "half": dl < 2300, "near": dp < 350}
         for k in ("lift", "space", "rutero", "half", "near"):
@@ -1233,33 +1532,38 @@ class StoryAddon(SceneryHost, Addon):
                 cast.place("mikaga", p, up, self.points["pad"] - p, owner="story")
         if cid == "fleet":
             ship = self.con("interceptor")
-            if ship is not None:
-                p = self._cell_world(ship, (5, 1, 15)) - ship.voxel_frames()[0][1] * ship.size * 0.5
+            if ship is not None:                  # 艦橋の中（窓ごしに話す）
                 R, _ = ship.rigid_fit()
+                p = self._cell_world(ship, (5, 1, 19)) - R[:, 1] * ship.size * 0.5 + R[:, 0] * ship.size * 0.5
                 cast.place("kensu", p, R[:, 1], -R[:, 2], pose="crossed", owner="story")
         if cid == "reaccel" and self.deck is not None:
-            d = self.deck
-            ux, uz = space.UNIT_AT
-            cast.place("kingi", d.point(ux - 4.0, uz + 6.0), d.R[:, 1], -d.R[:, 0],
-                       pose="slump" if "collapse" in st["events"] else "smoke", owner="story")
-            cast.place("donachi", d.point(ux - 9.0, uz + 9.0), d.R[:, 1], d.R[:, 0], pose="crossed", owner="story")
-        if st["done"]:
+            booth = self.con("booth")
+            if booth is not None:                 # 管制室の中（窓ごしに話す）
+                R, _ = booth.rigid_fit()
+                pk = self._cell_world(booth, space.BOOTH_KINGI) - R[:, 1] * booth.size * 0.5
+                pd = self._cell_world(booth, space.BOOTH_DONACHI) - R[:, 1] * booth.size * 0.5
+                cast.place("kingi", pk, R[:, 1], R[:, 0], pose="slump" if "collapse" in st["events"] else "smoke",
+                           owner="story")
+                cast.place("donachi", pd, R[:, 1], -R[:, 0], pose="crossed", owner="story")
+        if st["done"] or cid == "depart":
             self._stage_ending()
 
     def _stage_ending(self):
+        """エピローグ・クリアのあと：ガイアの発射台の広場に、みんなが半円に並ぶ（カメラモードの間は手をふる）。"""
         cast = self.cast
-        p0 = self.points.get("plaza")
-        if p0 is None:
-            return
-        lm = self.lmap
-        x0, z0 = 6.0, -2.0
-        crew = [("mikaga", None), ("sakura", "wave"), ("kingi", "smoke"), ("kensu", None), ("sirotsu", "crossed"),
+        m = self.map
+        x0, z0 = sites.LPLAZA
+        posing = bool(self.st["flags"].get("posing"))
+        pl = self.world.player
+        crew = [("mikaga", None), ("sakura", "wave"), ("kingi", "crossed"), ("kensu", None), ("sirotsu", "crossed"),
                 ("nekosa", None), ("dabai", None), ("rutero", "wave"), ("siyama", "think"), ("donachi", "crossed")]
         for k, (key, pose) in enumerate(crew):
             a = np.radians(-70 + 140 * k / (len(crew) - 1))
-            x, z = x0 + np.sin(a) * 6.0, z0 + 4.0 + np.cos(a) * 6.0
-            p, up = lm.ground(x, z)
-            tgt, _ = lm.ground(x0, z0)
+            x, z = x0 + np.sin(a) * 4.5, z0 + 1.0 + np.cos(a) * 3.0
+            p, up = m.ground(x, z)
+            tgt, _ = m.ground(x0, z0 - 4.0)
+            if posing:
+                tgt, pose = pl.pos, ("wave" if k % 2 == 0 else "cheer")
             cast.place(key, p + up * 0.02, up, tgt - p, pose=pose, owner="story")
 
     # ------------------------------------------------------------------
@@ -1287,7 +1591,9 @@ class StoryAddon(SceneryHost, Addon):
                  "openloop": (self.map, 16.0, 50.0), "control": (self.map, -12.5, 59.0),
                  "drone": (self.map, 6.0, 63.0), "factory": (self.map, -24.0, 69.0), "bike": (self.map, -9.0, 99.0),
                  "repair": (self.map, 0.0, 141.0), "launch": (self.map, -2.0, 144.0),
-                 "port": (self.lmap, 0.0, -PADM), "end": (self.lmap, 6.0, -6.0)}
+                 "port": (self.lmap, 0.0, -PADM),
+                 "depart": (self.map, sites.LPLAZA[0] - 1.0, sites.LPLAZA[1] - 6.0),
+                 "end": (self.map, sites.LPLAZA[0] - 1.0, sites.LPLAZA[1] - 6.0)}
         m, x, z = spots[cid]
         p, up = m.ground(x, z, 1.2)
         pl.pos, pl.vel, pl.up = p, np.zeros(3), up
@@ -1318,6 +1624,7 @@ class StoryAddon(SceneryHost, Addon):
             self._remove_role("kdrone")
         if ch >= IDX["launch"]:
             self._rebuild_ship(on_pad=ch >= IDX["port"])
+            self._remove_role("cart")
         st["done"] = False
         st["events"] = []
         st["log"] = []
@@ -1325,6 +1632,20 @@ class StoryAddon(SceneryHost, Addon):
         self._teleport(ids[ch])
         self._enter(ch)
         w.message(f"「{script.CHAPTERS[ch]['title']}」から始めます")
+
+    # ------------------------------------------------------------------
+    # 章ごとのオートセーブ（ワールドのフォルダの chapters/<章の番号>/）
+    # ------------------------------------------------------------------
+    def _autosave(self, ch):
+        w = self.world
+        if w.net is not None and getattr(w.net, "role", "") == "client":
+            return
+        if not getattr(w, "dir", None) or not w.dir.exists():
+            return
+        try:
+            save_chapter(w, ch)
+        except Exception:  # noqa: BLE001
+            L.exception("章のオートセーブに失敗")
 
     def replay(self, name):
         """章の一覧から、ムービーをもう一度見る。"""
@@ -1338,7 +1659,7 @@ class StoryAddon(SceneryHost, Addon):
         cell = tuple(sites.FACTORY_CUT)
         if cell not in fac.index:
             try:
-                fac.add_voxel(cell, "steel", {"def": "pipe", "dir": 2, "name": "配管"})
+                _add_cell(fac, cell, "steel", {"def": "pipe", "dir": 2, "name": "配管"})
             except Exception:  # noqa: BLE001
                 L.exception("配管を直せません")
 
@@ -1376,6 +1697,8 @@ class StoryAddon(SceneryHost, Addon):
             else:
                 self.say(script.MIKAGA, "その端末、まだ動くんだね。……懐かしいな。")
             return "古い端末が光った"
+        if tag == "rocket":
+            return self._board_rocket()
         if tag == "photo":
             self.st["events"].append("photo")
             line = (script.CHAPTERS[IDX["factory"]].get("events") or {}).get("photo")
@@ -1383,6 +1706,40 @@ class StoryAddon(SceneryHost, Addon):
                 self.say(*line)
             return "古い記録写真を見た"
         return None
+
+    def block_hint(self, world, blocks_file):
+        """プログラム編集のヒントの見本（その章の課題で、まだ済んでいないときだけ）。"""
+        if not self.active:
+            return None
+        from main import tutorial_rod as rod
+        from . import programs
+        cid = self._cid()
+        g = self.st["goals"]
+        if blocks_file == "kadai.blocks.json" and cid == "control" and not g.get("rod"):
+            sol, ref = rod.starter_program(), rod.solution_program()
+            sol["scripts"][1]["body"][0:0] = ref["scripts"][1]["body"][:2]     # 表示（「課題」）はそのまま
+            return sol
+        if blocks_file == "crane.blocks.json" and cid == "openloop" and g.get("door") and not g.get("trips"):
+            return programs.crane_solution()
+        if blocks_file == "intercept.blocks.json" and cid == "fleet" and not g.get("intercept_prog"):
+            return programs.intercept_solution()
+        if blocks_file == "reaccel.blocks.json" and cid == "reaccel" and not g.get("navi"):
+            t = self.target_point()
+            return None if t is None else programs.reaccel_solution(t)
+        return None
+
+    def _board_rocket(self):
+        cid = self._cid()
+        g = self.st["goals"]
+        if cid != "depart":
+            return "発射台の乗り口：" + ("次の旅を待っている" if self.st.get("done") else "まだ使えない")
+        if not (g.get("talk3") and g.get("photo")):
+            return "サクラ「まだだよ！ みんなと話して、記念写真を撮ってから！」"
+        c, i = self.dev("rocket", "seat")
+        if i is None:
+            return "ロケットが見つからない"
+        self.world.player.seated = (c.id, c.cells[i])
+        return "ロケットの操縦席に乗りました（座ると発射のカウントダウン）"
 
     def on_scenery_talk(self, world, place, tag):
         if not self.active or place != "lunaport" or tag != "desk":
@@ -1398,6 +1755,11 @@ class StoryAddon(SceneryHost, Addon):
         st = self.st
         f = st["flags"]
         S = script
+        if cid == "depart":
+            talked = f.setdefault("talked", [])
+            if key not in talked:
+                talked.append(key)
+            return script.DEPART_LINES.get(key)
         if key == "sakura":
             if cid == "valley" and not f.get("sakura_named"):
                 f["sakura_named"] = True
@@ -1527,3 +1889,70 @@ class StoryAddon(SceneryHost, Addon):
 
 
 PADM = sites.PAD_HALF + 4.0
+
+
+def _add_cell(c, cell, mat, dev):
+    """構築物の格子のセルにブロックを足す（今の位置・向きに合わせて）。"""
+    from main.construct import CORNER_BITS
+    R, t0 = c.rigid_fit()
+    P = (np.asarray(cell, float)[None] + CORNER_BITS) * c.size
+    return c.add_voxel(tuple(cell), mat, dev, P @ R.T + t0)
+
+# ---------------------------------------------------------------------------
+# 章のオートセーブ：章の始めのワールド（world.json など）と scripts/ を chapters/<番号>/ にとっておき、
+# 章の一覧（J）の「保存から」で戻す（ワールドを読み込み直す）。
+# ---------------------------------------------------------------------------
+CHAPTER_DIR = "chapters"
+SAVE_FILES = ("world.json", "constructs.json", "spawn.json", "player.json", "mods.json")
+
+
+def save_chapter(world, ch):
+    d = world.dir / CHAPTER_DIR / f"{ch:02d}"
+    tmp = d.with_name(d.name + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    snap = world.snapshot()
+    for fname, data in snap.items():
+        (tmp / fname).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    sd = world.dir / "scripts"
+    if sd.exists():
+        shutil.copytree(sd, tmp / "scripts")
+    (tmp / "info.json").write_text(json.dumps({"ch": ch, "id": script.CHAPTERS[ch]["id"], "saved": time.time()},
+                                              ensure_ascii=False), encoding="utf-8")
+    shutil.rmtree(d, ignore_errors=True)
+    tmp.replace(d)
+    L.info("章のオートセーブ: %s", d)
+
+
+def chapter_saves(world_dir):
+    """{章の番号: 保存した時刻}"""
+    out = {}
+    base = world_dir / CHAPTER_DIR
+    if not base.exists():
+        return out
+    for d in base.iterdir():
+        if d.is_dir() and d.name.isdigit() and (d / "info.json").exists():
+            try:
+                out[int(d.name)] = float(json.loads((d / "info.json").read_text(encoding="utf-8")).get("saved", 0))
+            except Exception:  # noqa: BLE001
+                pass
+    return out
+
+
+def restore_chapter(world_dir, ch):
+    """章のオートセーブをワールドのフォルダに戻す（読み込み直すのは画面側）。戻す前のファイルは chapters/_before/ に。"""
+    src = world_dir / CHAPTER_DIR / f"{ch:02d}"
+    if not (src / "info.json").exists():
+        raise FileNotFoundError(f"章 {ch} のオートセーブがありません")
+    bak = world_dir / CHAPTER_DIR / "_before"
+    shutil.rmtree(bak, ignore_errors=True)
+    bak.mkdir(parents=True)
+    for fname in SAVE_FILES:
+        if (world_dir / fname).exists():
+            shutil.copy2(world_dir / fname, bak / fname)
+    for fname in SAVE_FILES:
+        if (src / fname).exists():
+            shutil.copy2(src / fname, world_dir / fname)
+    if (src / "scripts").exists():
+        shutil.copytree(src / "scripts", world_dir / "scripts", dirs_exist_ok=True)
+    L.info("章 %d のオートセーブに戻しました: %s", ch, world_dir)

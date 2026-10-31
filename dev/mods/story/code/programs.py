@@ -354,7 +354,8 @@ def moon_program(pad, pad_up):
         iff(phase_is(WAIT), [iff(seated(), [setv("段階", N(COUNT))])]),
         iff(phase_is(COUNT), [
             setv("残り", sub(N(3), sub(S("time"), V("時刻0")))),
-            iff(cmp("<", V("残り"), N(0.001)), [setv("段階", N(ASCENT)), say("発進！")]),
+            iff(cmp("<", V("残り"), N(0.001)), [setv("段階", N(ASCENT)), stmt("act_detach", dev="給油口"),
+                                                say("給油口を切り離しました。発進！")]),
         ]),
         iff(phase_is(ASCENT), [
             # まっすぐ上へ 18 m/s
@@ -526,6 +527,9 @@ def robot_program():
     start["body"] = [setv("地面", S("altitude")), setv("浮く高さ", N(0.8))]
     tick = B.new_stmt("on_tick")
     tick["body"] = [
+        # コックピットの扉：座ると閉じる・降りると開く
+        if_else(seated(), [stmt("act_rotate_to", dev="コックピット", angle=N(-90), speed=N(120))],
+                [stmt("act_rotate_to", dev="コックピット", angle=N(0), speed=N(120))]),
         if_else(seated(), [
             setv("前後目標", mul(sub(key("w"), key("s")), N(9))),
             setv("左右目標", mul(sub(key("d"), key("a")), N(9))),
@@ -566,6 +570,13 @@ def reaccel_starter():
         show(join(T("再加速の航法\n目標までの距離 "), rnd(vlen(VV("向き"))), T(" m")), 1.8),
     ]
     p["scripts"].append(tick)
+    return p
+
+
+def reaccel_solution(target):
+    """看板の「目標の地点」を入れたもの（ヒントの見本）。"""
+    p = reaccel_starter()
+    p["scripts"][0]["body"][0] = setvv("向き", vto([float(x) for x in target]))
     return p
 
 

@@ -30,6 +30,12 @@ class ClientAddon:
         辞書の書き方は mods/README.md の「モーション」。体の見た目の MOD（VRM の見た目など）が使う。"""
         return {}
 
+    def on_photo(self, path):
+        """カメラモードで写真を保存した（path：保存した画像）。"""
+
+    def on_camera(self, on):
+        """カメラモードに入った（on=True）・終わった（False）。"""
+
     def nearby(self, pos, radius):
         """プレイヤーの近く（pos から radius m 以内）にある、この拡張の触れるもの（お店・NPC など）。
         画面右にボタンが出て、押す（または E）と interact(hit) が呼ばれる。

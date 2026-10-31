@@ -1,5 +1,6 @@
 """シナリオの章の一覧（J）：章ごとの状態、その章の始めからやり直す、見たムービーをもう一度見る、セリフの記録。"""
 from . import script
+from .addon import chapter_saves, restore_chapter
 from .client import wrap
 
 
@@ -16,22 +17,29 @@ class StoryPanel:
                     highlight_color=color.rgba(0, 0, 0, 0.55), pressed_color=color.rgba(0, 0, 0, 0.55), z=0.1)
         bg.on_click = lambda: None
         Entity(parent=self.root, model="quad", scale=(1.6, 0.94), position=(0, 0, 0.05), color=color.rgb(0.07, 0.08, 0.11))
-        Text(parent=self.root, text="シナリオ「それでも」", position=(-0.77, 0.44), origin=(-0.5, 0.5), scale=1.25)
-        Text(parent=self.root, text="「ここから」で、その章の始めからやり直せます（前の章で済ませることは済んだ状態になります）",
-             position=(-0.77, 0.385), origin=(-0.5, 0.5), scale=0.6, color=color.light_gray)
+        Text(parent=self.root, text="ストーリー vol.1", position=(-0.77, 0.44), origin=(-0.5, 0.5), scale=1.25)
+        Text(parent=self.root, text="「保存から」：章の始めに自動で保存した所に戻ります（読み込み直し）。"
+                                    "「ここから」：その章の始めを作り直します（前の章で済ませることは済んだ状態に）",
+             position=(-0.77, 0.385), origin=(-0.5, 0.5), scale=0.55, color=color.light_gray)
         st = self.pack.st
+        net = self.world.net
+        self.saves = {} if net is not None else chapter_saves(self.world.dir)
         cur = len(script.CHAPTERS) if st.get("done") else st.get("ch", 0)
         for k, c in enumerate(script.CHAPTERS):
-            y = 0.33 - k * 0.047
+            y = 0.33 - k * 0.045
             mark = "■" if k < cur else ("▶" if k == cur else "・")
             col = color.rgb(0.5, 0.9, 0.6) if k < cur else (color.rgb(1.0, 0.9, 0.4) if k == cur else color.light_gray)
             Text(parent=self.root, text=f"{mark} {c['title']}", position=(-0.77, y + 0.006), origin=(-0.5, 0), scale=0.7,
                  color=col)
             Text(parent=self.root, text=c["place"], position=(-0.77, y - 0.015), origin=(-0.5, 0), scale=0.5,
                  color=color.gray)
-            b = Button(parent=self.root, text="ここから", position=(-0.25, y - 0.004), scale=(0.1, 0.034),
-                       color=color.rgb(0.22, 0.32, 0.45), text_size=0.58)
+            b = Button(parent=self.root, text="ここから", position=(-0.22, y - 0.004), scale=(0.085, 0.032),
+                       color=color.rgb(0.22, 0.32, 0.45), text_size=0.55)
             b.on_click = (lambda i=k: self.jump(i))
+            if k in self.saves:
+                b = Button(parent=self.root, text="保存から", position=(-0.315, y - 0.004), scale=(0.085, 0.032),
+                           color=color.rgb(0.25, 0.42, 0.3), text_size=0.55)
+                b.on_click = (lambda i=k: self.restore(i))
         # ムービー（見たものだけ、もう一度見られる）
         Text(parent=self.root, text="ムービー（見たもの）", position=(-0.13, 0.33), origin=(-0.5, 0), scale=0.75,
              color=color.rgb(1.0, 0.85, 0.5))
@@ -66,6 +74,18 @@ class StoryPanel:
     def jump(self, k):
         self.world.addon_call("story", "jump", k)
         self.close()
+
+    def restore(self, k):
+        """章のオートセーブに戻す：ファイルを戻して、保存せずに読み込み直す。"""
+        w = self.world
+        try:
+            restore_chapter(w.dir, k)
+        except Exception as e:  # noqa: BLE001
+            w.message(f"戻せません: {e}")
+            return
+        self.close()
+        self.game._leave("play:" + w.name, save=False,
+                         status=f"「{script.CHAPTERS[k]['title']}」の始めに戻しました")
 
     def replay(self, name):
         self.world.addon_call("story", "replay", name)

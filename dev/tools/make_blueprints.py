@@ -30,6 +30,9 @@ ITEMS = [
     ("robot", "robot_towa", "トワのロボット", "ホバーバイクと同じ浮き方の人型ロボット。腕はアクチュエーター"),
     ("krobot", "robot_kingi", "キンギのロボット", "黒と赤のロボット。肩にミサイル発射機"),
     ("unit", "reaccel_unit", "再加速の作業台", "推進モジュール4基の架台（モジュール入り）。バルブで推力をそろえる"),
+    ("cart", "fuel_cart", "給油車", "燃料タンク4つと燃料ポンプ。配管でつないで E でポンプを動かすと、つながったタンクへ燃料を送る"),
+    ("booth", "glass_booth", "ガラスの管制室", "ガラス張りの小部屋（宇宙で人が入る所）"),
+    ("rocket", "depart_rocket", "旅立ちのロケット", "カプセルつきのロケット。左右のブースターはアクチュエーターで分離できる"),
 ]
 NEEDS = {"scenario_blocks"}
 
@@ -44,6 +47,8 @@ def main():
         w = World("bp", json.loads(json.dumps(config.DEFAULTS))).load()
         s = w.addon("story")
         s._rebuild_ship()
+        s._place_cart()
+        s._place_rocket()
         import importlib
         space = importlib.import_module("alpedia_mods.story.space")
         out = paths.SAUCE / "blueprints"
@@ -73,6 +78,11 @@ def main():
             meta = {"format": "alpedia-construct", "version": 1, "name": name, "description": desc,
                     "requires": req, "voxel_size": c.size, "scale": 1.0, "default_material": "steel",
                     "voxels": vox, "links": None, "storage": {}, "scripts": scripts}
+            if role == "robot":             # コックピットの扉は胴とつながず、アクチュエーターでだけつなぐ
+                meta["links"] = [[list(a), list(b)] for a, b in sorted(c.links)]
+                for v in vox:
+                    if v[4] and v[4]["def"] == "computer":
+                        v[4].setdefault("state", {})["running"] = True
             if meta["links"] is None:
                 del meta["links"]
             (out / f"{fname}.alp.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")

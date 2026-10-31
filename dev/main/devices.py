@@ -1,4 +1,5 @@
 """機器の動作：電力（配線不要・同一構築物で共有）、配管（連続したボクセルが必要）とバルブ、
+アクチュエーターも配管と同じく燃料・物資を通す（結合している出力面の先へも。分離すると通らない）、
 推進機（点火・燃焼・発電）・アクチュエータ・精錬/加工機（物資の受け渡し）・通気口・気密。
 
 推進機：点火のときだけ電気を使い（ignite_energy）、燃えている間は燃料を使って推力と電気（power_output）を出す。
@@ -51,7 +52,8 @@ def rebuild_networks(c):
             x = parent[x]
         return x
     pairs = []
-    for a, b in c.links:
+    # 結合（アクチュエーターで格子がずれてつないだ所 extras も含む）：配管の機器どうしなら流れる
+    for a, b in list(c.links) + list(getattr(c, "extras", {}).keys()):
         ia, ib = c.index.get(a), c.index.get(b)
         if ia is None or ib is None or kind[ia] is None or kind[ib] is None:
             continue

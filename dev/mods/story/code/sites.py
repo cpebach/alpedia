@@ -1,6 +1,6 @@
 """ストーリーの舞台：地図の座標、景色の箱（建物・崖・街）、構築物（ボクセル）の置き場所。
 
-- 地図の座標 (x, z) [m]：テラは北極（ワールドの +Y）が原点で、+X が右、+Z が前（奥）。
+- 地図の座標 (x, z) [m]：ガイアは北極（ワールドの +Y）が原点で、+X が右、+Z が前（奥）。
   月ルナは発着場が原点で、+Z が「月の北」（ワールドの +Y の方）。
 - 景色の箱は惑星の地形（掘った跡は含まない）から毎回同じ形に作る（セーブには入らない）。
   ボクセルではないので軽い。プレイヤー・構築物は当たって上に乗れる（街 MOD の建物と同じ仕組み）。
@@ -17,13 +17,15 @@ def terra_map(planet, craters=()):
 
 
 # ---------------------------------------------------------------------------
-# テラ：ポッドの不時着地点 → 尾根の谷 → 観測基地 → ルミナス号の墜落地点
+# ガイア：ポッドの不時着地点 → 尾根の谷 → 観測基地 → ルミナス号の墜落地点
 # ---------------------------------------------------------------------------
 Z_RIDGE = (20.0, 38.0)        # 尾根（谷）の奥行き
 NOTCH = 3.5                   # 谷の半分の幅
 Z_LEDGE = 37.0                # 谷の出口の段差
 OUTPOST = 70.0                # 観測基地の中心
 SHIP = (2.0, 150.0)           # ルミナス号の墜落地点
+LAUNCH = (26.0, 176.0)        # エピローグ：旅立ちのロケットの発射台
+LPLAZA = (14.0, 168.0)        # 　　　　　 みんなが集まる所（発射台の手前）
 
 # 構築物の置き場所（地図の x, z, 向き（度）, 地面からの高さ）
 PLACES = {
@@ -220,6 +222,31 @@ def build_terra(planet):
               color=col, sink=0.15)
     s.box(sx + 7.5, sz - 3.0, 0.2, 2.0, 0.2, color=METAL)                             # 目印の旗
     s.box(sx + 7.5, sz - 3.0, 0.05, 0.6, 1.0, y0=1.4, color=ORANGE)
+    # --- エピローグ：発射台と、みんなが集まる広場 ---
+    lx, lz = LAUNCH
+    s.box(lx, lz, 9.0, 0.3, 9.0, color=CONC, sink=0.3)                               # 発射台
+    for k in range(4):
+        a = np.pi / 4 + k * np.pi / 2
+        s.box(lx + np.cos(a) * 4.0, lz + np.sin(a) * 4.0, 0.6, 0.12, 0.6, y0=0.3, color=OFF, glow=REDL,
+              collide=False, blink=1.2)
+    gx = lx + 3.4                                                                         # 整備塔（エレベーター）
+    for dz in (-0.8, 0.8):
+        for dx in (-0.8, 0.8):
+            s.box(gx + dx, lz + dz, 0.18, 8.2, 0.18, color=RED)
+    for y in (2.0, 4.0, 6.0, 8.0):
+        s.box(gx, lz, 1.8, 0.14, 1.8, y0=y, color=RED)
+    s.box(gx - 1.15, lz, 0.5, 0.12, 0.6, y0=5.4, color=METAL)                              # 乗り口への橋
+    s.box(gx, lz - 1.25, 1.0, 1.3, 0.12, y0=0.4, color=DARK, glow=LIME, tag="rocket")    # 乗り口の操作盤
+    s.point("rocket", gx, lz - 1.6, 1.0)
+    px, pz = LPLAZA
+    s.box(px, pz, 12.0, 0.16, 9.0, color=(0.55, 0.52, 0.46), sink=0.25)                  # 広場
+    for k, col in enumerate((ORANGE, CYAN, PINK, LIME, WARM)):                           # 旗
+        x = px - 5.0 + k * 2.5
+        s.box(x, pz + 5.2, 0.12, 3.0, 0.12, color=METAL)
+        s.box(x + 0.4, pz + 5.2, 0.7, 0.45, 0.04, y0=2.4, color=col)
+    s.box(px - 4.5, pz - 2.5, 2.4, 0.8, 1.0, color=(0.6, 0.45, 0.3))                        # 机と荷物
+    s.box(px - 4.5, pz - 2.5, 0.4, 0.3, 0.3, y0=0.8, color=ORANGE)
+    s.point("lplaza", px, pz, 1.0)
     return s.finish()
 
 
@@ -235,6 +262,12 @@ SHIP_HOLES = [(0, 3, 2), (4, 3, 1), (1, 2, 0), (4, 2, 3), (3, 3, 0), (-1, 1, 2)]
 SHIP_EMPTY_TANKS = [(1, 1, 1), (3, 1, 2), (2, 1, 3)]
 SHIP_SEAT = (2, 2, 2)
 SHIP_NAVI = (2, 2, 3)
+# 給油：船の右の外の給油口（アクチュエーター。結合すると配管と同じく燃料が通る。発進のときに航法プログラムが切り離す）
+FUEL_PIPE = (4, 2, 1)           # 燃料の輪（下の段の配管）から給油口までの配管
+FUEL_PORT = (5, 2, 1)           # 給油口（+X 向き）
+HOSE = [(6, 2, 1), (7, 2, 1)]   # 給油車から給油口までの配管（プレイヤーが置く。光る枠）
+CART_PUMP = (9, 2, 1)
+SHIP_TANK_CELLS = [(x, 1, z) for x in (1, 2, 3) for z in (1, 2, 3)]
 
 
 def ship_voxels(broken=False):
@@ -256,6 +289,7 @@ def ship_voxels(broken=False):
             else:
                 V.append(((x, 1, z), "steel", {"def": "pipe", "dir": 2}))
     deck = {(2, 2): {"def": "seat", "dir": 4, "name": "操縦席"},
+            FUEL_PIPE[::2]: {"def": "pipe", "dir": 2, "name": "給油管"},
             (2, 3): {"def": "computer", "dir": 5, "name": "航法コンピューター",
                      "state": {"script": ""} if broken else
                      {"script": "moon.py", "blocks": "moon.blocks.json"}},
@@ -265,6 +299,7 @@ def ship_voxels(broken=False):
         for z in range(5):
             d = deck.get((x, z))
             V.append(((x, 2, z), "steel" if d else ("hull_red" if z in (0, 4) else "hull_white"), d))
+    V.append((FUEL_PORT, "steel", fuel_port_dev()))
     # 風よけ（前はガラス）と、後ろ・横の囲い
     V += [((x, 3, 4), "glass", None) for x in (1, 2, 3)]
     V += [((0, 3, 4), "hull_red", None), ((4, 3, 4), "hull_red", None)]
@@ -276,6 +311,69 @@ def ship_voxels(broken=False):
           ((2, 0, 5), "hull_red", None), ((-1, 1, 2), "hull_white", None), ((5, 1, 2), "hull_white", None)]
     if broken:
         V = [v for v in V if v[0] not in SHIP_HOLES and v[0] not in SHIP_THRUSTERS]
+    return V
+
+
+def fuel_port_dev():
+    return {"def": "actuator", "dir": 0, "name": "給油口",
+            "state": {"preset": {"action": "attach", "amount": 0.0, "speed": 0.5}}}
+
+
+def cart_voxels(legs):
+    """給油車（船と同じ格子で作る：セルはルミナス号の座標）。配管の口 (8,2,1) → 燃料ポンプ (9,2,1)（-X 向きに送る）→
+    燃料タンク4つ（満タン）。下は台と脚（legs：脚の (x, z) → いちばん下の段 y）。"""
+    V = [((8, 2, 1), "steel", {"def": "pipe", "dir": 2, "name": "給油車の配管"}),
+         (CART_PUMP, "steel", {"def": "fuel_pump", "dir": 1, "name": "燃料ポンプ", "state": {"enabled": False}})]
+    for cell in ((10, 2, 0), (10, 2, 1), (10, 2, 2), (10, 3, 1)):
+        V.append((cell, "steel", {"def": "tank", "dir": 2, "name": "給油車のタンク",
+                                  "state": {"contents": {"fuel": 800.0}}}))
+    for x in range(8, 12):
+        for z in range(0, 3):
+            V.append(((x, 1, z), "hull_orange", None))
+    V += [((11, 2, z), "hull_orange", None) for z in (0, 2)] + [((8, 2, z), "hull_orange", None) for z in (0, 2)]
+    for (x, z), y0 in legs.items():
+        for y in range(min(y0, 0), 1):
+            V.append(((x, y, z), "rubber" if y == min(y0, 0) else "steel", None))
+    return V
+
+
+CART_LEGS = [(8, 0), (11, 0), (8, 2), (11, 2)]
+
+# 旅立ちのロケット（エピローグ）：3×3 の胴、上に操縦席のカプセル（窓はガラス）、左右にブースター（アクチュエーターで分離）
+ROCKET_SEAT = (1, 10, 1)
+ROCKET_PIVOT = (1.5, 0.0, 1.5)           # 胴の底の真ん中（打ち上げの軌道の基準）
+BOOSTER_ACTS = [(-1, 3, 1), (3, 3, 1)]
+
+
+def rocket_voxels():
+    V = []
+    for x in range(3):
+        for z in range(3):
+            edge = (x == 1) != (z == 1)
+            center = x == 1 and z == 1
+            V.append(((x, 0, z), "steel", {"def": "thruster", "dir": 2, "name": "主エンジン"}) if edge or center
+                     else ((x, 0, z), "steel", None))
+            for y in (1, 2, 3):
+                V.append(((x, y, z), "steel", {"def": "tank", "dir": 2, "name": "燃料タンク",
+                                               "state": {"contents": {"fuel": 800.0}}}))
+            for y in range(4, 10):
+                V.append(((x, y, z), "hull_red" if y == 6 else "hull_white", None))
+            for y in (10, 11):
+                if (x, y, z) == ROCKET_SEAT:
+                    V.append((ROCKET_SEAT, "steel", {"def": "seat", "dir": 4, "name": "ロケットの操縦席"}))
+                elif center:
+                    continue                                   # 頭の上はあけておく
+                elif edge:
+                    V.append(((x, y, z), "glass", None))       # 窓
+                else:
+                    V.append(((x, y, z), "hull_white", None))
+            V.append(((x, 12, z), "hull_white", None))
+    V.append(((1, 13, 1), "hull_red", None))
+    for (ax, ay, az), bx, d in ((BOOSTER_ACTS[0], -2, 1), (BOOSTER_ACTS[1], 4, 0)):
+        V.append(((ax, ay, az), "steel", {"def": "actuator", "dir": d, "name": "ブースターの分離"}))
+        V.append(((bx, 0, 1), "steel", {"def": "thruster", "dir": 2, "name": "ブースター"}))
+        V += [((bx, y, 1), "hull_white", None) for y in range(1, 7)]
+        V.append(((bx, 7, 1), "hull_red", None))
     return V
 
 
@@ -294,7 +392,7 @@ def pod_voxels():
                     continue
                 V.append(((x, y, z), mat, None))
     V.append(((1, 2, 0), "steel", {"def": "computer", "dir": 5, "name": "ポッドの記録", "state": {"display": {
-        "text": "脱出ポッド 3号\n記録：ルミナス号から緊急分離\n着地：惑星テラ", "face": 5, "width": 1.8,
+        "text": "脱出ポッド 3号\n記録：ルミナス号から緊急分離\n着地：惑星ガイア", "face": 5, "width": 1.8,
         "color": [1.0, 0.8, 0.5], "background": [0.12, 0.05, 0.02, 0.92]}}}))
     return V
 

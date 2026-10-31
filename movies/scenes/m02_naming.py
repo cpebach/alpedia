@@ -24,7 +24,7 @@ class FILM(Movie):
 
     def __init__(self):
         super().__init__()
-        self.captions = [(0.6, 3.6, "惑星テラ　北の荒れ地　墜落現場")]
+        self.captions = [(0.6, 3.6, "惑星ガイア　北の荒れ地　墜落現場")]
         self.shots = [
             Shot(0.0, 5.0, self.cam_wide, "サクラが来る"),
             Shot(5.0, 8.5, self.cam_pod, "立ち上がる"),

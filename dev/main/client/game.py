@@ -355,12 +355,21 @@ class Game:
         from .camera_mode import CameraMode
         self.touch_hud._release_all()
         self.cam_mode = CameraMode(self)
+        self._camera_hook(True)
+
+    def _camera_hook(self, on):
+        for a in self.addons:
+            try:
+                a.on_camera(on)
+            except Exception:  # noqa: BLE001
+                L.exception("カメラモードの知らせでエラー（%s）", a.name)
 
     def exit_camera(self):
         if self.cam_mode is None:
             return
         self.cam_mode.destroy()
         self.cam_mode = None
+        self._camera_hook(False)
         self._esc_block = _time.time() + 0.2
         self.set_mouse_capture(self._want_capture())
 
@@ -418,6 +427,14 @@ class Game:
             self.open_editor(t["hit"])
         else:
             self.do_interact(t["hit"])
+
+    def _see_through(self, hit):
+        """視線の先が半透明のブロック（ガラスなど）か。"""
+        if not hit or hit.get("kind") != "voxel":
+            return False
+        c, i = hit["construct"], hit["index"]
+        mt = c.reg.material(c.mats[i]) or {}
+        return float(mt.get("opacity", 1.0)) < 0.999
 
     def _usable(self, hit):
         """視線の先が E で使える物か（機器・お店・NPC など）。"""
@@ -761,7 +778,10 @@ class Game:
         elif key == c["interact"]:
             hit = self.hit
             if not self._usable(hit):          # 見ている物が使えなければ、近くにある物（画面右のボタンの一番上）
-                near = next((t for t in self.nearby_targets() if t["kind"] == "e"), None)
+                targets = [t for t in self.nearby_targets() if t["kind"] == "e"]
+                if self._see_through(hit):     # ガラスごしに見ている：向こうの人物（MOD の物）を先に
+                    targets.sort(key=lambda t: (t["hit"].get("kind") == "voxel", t["dist"]))
+                near = next(iter(targets), None)
                 if near is not None:
                     hit = near["hit"]
             self.do_interact(hit)

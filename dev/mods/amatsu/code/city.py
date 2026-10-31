@@ -7,7 +7,7 @@ import numpy as np
 
 from main.scenery import CYAN, DARK, METAL, OFF, REDL, WARM, WHITE, Scenery, unit
 
-DIR = (-0.6, 0.55, -0.58)        # 主な惑星の中心から見たアマツの向き（テラの北の基地から、振り返った空に見える）
+DIR = (-0.6, 0.55, -0.58)        # 主な惑星の中心から見たアマツの向き（ガイアの北の基地から、振り返った空に見える）
 DIST = 1550.0                    # 主な惑星の中心からの距離 m
 LENGTH = 240.0                   # 円筒の長さ
 RADIUS = 40.0                    # 円筒の半径

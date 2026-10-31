@@ -278,11 +278,12 @@ class ConstructView:
             if d:
                 dd = reg.device(d["def"]) or {}
                 col_v.append(dd.get("color", [1, 0, 1]))
-                tex_v.append(dd.get("texture") or DEVICE_TEXTURE)
+                tex_v.append((dd.get("texture") or DEVICE_TEXTURE, 1.0))
             else:
                 mt = reg.material(c.mats[i])
                 col_v.append(mt["color"])
-                tex_v.append(mt.get("texture"))
+                # 半透明の素材（ガラス：opacity）は別のメッシュにして、透かして描く
+                tex_v.append((mt.get("texture"), float(mt.get("opacity", 1.0))))
         col_v = np.asarray(col_v, dtype=np.float64)
         owner = m["owner"]
         faces = m["faces"]
@@ -302,13 +303,18 @@ class ConstructView:
         for f, t in enumerate(face_tex):
             groups.setdefault(t, []).append(f)
         edges = load_texture(self.loader, EDGE_TEXTURE) if STYLE.get("edges", True) else None
-        for tex, fl in groups.items():
+        for (tex, alpha), fl in groups.items():
             fl = np.asarray(fl, dtype=np.int64)
             sub = faces[fl]
             keys = sub * 3 + fax[fl][:, None]
             ukeys, inv = np.unique(keys.ravel(), return_inverse=True)
             verts, axv = ukeys // 3, ukeys % 3
             mesh = DynamicMesh(self.root, f"c{c.id}")
+            if alpha < 0.999:
+                from panda3d.core import TransparencyAttrib
+                mesh.np.setTransparency(TransparencyAttrib.MAlpha)
+                mesh.np.setDepthWrite(False)
+                mesh.np.setBin("transparent", 4)
             t = load_texture(self.loader, tex)
             if t:
                 mesh.np.setTexture(t, 1)
@@ -318,7 +324,8 @@ class ConstructView:
                                 "tris": inv.reshape(-1, 3),
                                 "cols": np.ascontiguousarray(col_v[owner[verts]] * ao[verts][:, None]),
                                 "uv": np.ascontiguousarray(project_uv(rest[verts], axv), dtype=np.float32),
-                                "owner": np.ascontiguousarray(owner[verts], dtype=np.int64), "new": True})
+                                "owner": np.ascontiguousarray(owner[verts], dtype=np.int64), "new": True,
+                                "alpha": float(alpha)})
         return True
 
     def _set_mesh(self, g, v):
@@ -364,7 +371,7 @@ class ConstructView:
                 v[:, 0:3] = b["local"][vs]
                 v[:, 3:6] = b["nl"][vs]
                 v[:, 6:9] = col
-                v[:, 9] = 1.0
+                v[:, 9] = g["alpha"]
                 v[:, 10:12] = g["uv"]
                 self._set_mesh(g, v)
 
@@ -380,6 +387,9 @@ class ConstructView:
                                   [(g["verts"], g["cols"], g["uv"], g["owner"]) for g in self.groups],
                                   [float(x) for x in SUN], float(AMBIENT), firing)
             for g, v in zip(self.groups, outs):
+                if g["alpha"] < 0.999:
+                    v = np.array(v, dtype=np.float32, copy=True)
+                    v[:, 9] = g["alpha"]
                 self._set_mesh(g, v)
             return
         V = shape.skin(c, m) - origin
@@ -395,7 +405,7 @@ class ConstructView:
             v[:, 0:3] = V[vs]
             v[:, 3:6] = n
             v[:, 6:9] = col
-            v[:, 9] = 1.0
+            v[:, 9] = g["alpha"]
             v[:, 10:12] = g["uv"]
             self._set_mesh(g, v)
 

@@ -25,7 +25,7 @@ class AmatsuAddon(SceneryHost, Addon):
 
     def on_load(self, world):
         self.world = world
-        main = next((p for p in world.planets if p.defn["id"] == "terra"), None) or \
+        main = next((p for p in world.planets if p.defn["id"] in ("gaia", "terra")), None) or \
             (world.planets[0] if world.planets else None)
         if main is None:
             return

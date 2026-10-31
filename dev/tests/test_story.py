@@ -241,13 +241,57 @@ class StoryCase(unittest.TestCase):
             self.assertTrue(self.place_on("ship", t, ("device", "thruster")), t)
         sh = s.con("ship")
         self.assertEqual([sh.devs[sh.index[t]]["dir"] for t in sites.SHIP_THRUSTERS], [2] * len(sites.SHIP_THRUSTERS))
-        for i, dv in enumerate(sh.devs):
-            if dv and dv["def"] == "tank" and dv["state"].get("contents", {}).get("fuel", 0) < 790:
-                w.interact({"kind": "voxel", "construct": sh, "index": i, "face": 2})
-        self.run_for(0.6)
+        self.fuel_up()
         self.assertEqual(self.ch(), "launch")
         c, i = s.dev("ship", "computer")
         self.assertEqual(c.devs[i]["state"]["script"], "moon.py")
+
+    def fuel_up(self):
+        """第8章の給油：給油車から配管を2つ → 給油口を E で結合 → 燃料ポンプを E → 満タン。"""
+        s, sites = self.s, self.sites
+        cart = s.con("cart")
+        self.assertIsNotNone(cart, "給油車がある")
+        self.assertIn(cart.id, s._anchored(), "給油が済むまで給油車は動かない")
+        for h in reversed(sites.HOSE):
+            self.assertTrue(self.place_on("cart", h, ("device", "pipe")), h)
+        self.run_for(0.4)
+        self.assertTrue(s.st["goals"].get("hose"))
+        self.use("ship", "actuator", "給油口")
+        self.run_for(0.4)
+        self.assertTrue(s.st["goals"].get("couple"), "給油口で結合")
+        self.assertIsNone(s.con("cart"), "給油車は船とひとつになる")
+        self.use("ship", "fuel_pump")
+        for _ in range(80):
+            self.run_for(1.0, 1 / 30)
+            if self.ch() != "repair":
+                break
+        self.assertNotEqual(self.ch(), "repair", "ポンプで船のタンクが満タンになる")
+
+    def test_fueling_and_liftoff(self):
+        """第8章の給油（ポンプ・アクチュエーターを通る燃料）→ 第9章の発進で給油口を切り離す。"""
+        s, w, sites = self.s, self.w, self.sites
+        s.jump(self.idx("repair"))
+        self.run_for(0.5)
+        for h in sites.SHIP_HOLES:
+            if tuple(h) not in s.con("ship").index:
+                self.assertTrue(self.place_on("ship", h, ("material", "steel")), h)
+        for t in sites.SHIP_THRUSTERS:
+            if tuple(t) not in s.con("ship").index:
+                self.assertTrue(self.place_on("ship", t, ("device", "thruster")), t)
+        self.fuel_up()
+        self.assertEqual(self.ch(), "launch")
+        n_ship = len(sites.ship_voxels())
+        self.assertGreater(s.con("ship").n_vox, n_ship, "給油車がついたまま")
+        self.use("ship", "computer")
+        self.sit("ship")
+        self.run_for(8.0, 1 / 30)
+        ship = s.con("ship")
+        self.assertEqual(ship.n_vox, n_ship, "発進で給油口を切り離す")
+        self.assertFalse(s.port_attached())
+        self.assertGreater(float(ship.velocity() @ s.terra.up(ship.center_of_mass())), 3.0, "上がっていく")
+        cart = [c for c in w.constructs.values() if any(d and d["def"] == "fuel_pump" for d in c.devs)]
+        self.assertEqual(len(cart), 1)
+        self.assertLess(float(np.linalg.norm(cart[0].velocity())), 2.0, "給油車は地上に残る")
 
     def test_flight_to_the_moon_and_port(self):
         """第9章（月への自動飛行）→ 第10章（ミカガに会う → ムービー2本）。"""
@@ -276,7 +320,7 @@ class StoryCase(unittest.TestCase):
         self.run_for(0.4)
         self.assertEqual(self.ch(), "fleet")
         self.assertTrue({"05_declaration", "06_interlude"} <= set(s.st["movies"]))
-        self.assertEqual(w.nearest_planet(w.player.pos).defn["id"], "terra", "迎撃艦（アマツの宙域）へ")
+        self.assertEqual(w.nearest_planet(w.player.pos).defn["id"], "gaia", "迎撃艦（アマツの宙域）へ")
 
     def test_space_chapters(self):
         """第11章（迎撃のプログラム）→ 第12章（ロボット）→ 終章（再加速）→ クリア。"""
@@ -336,14 +380,62 @@ class StoryCase(unittest.TestCase):
         self.save_prog("reaccel", prog)
         self.use("unit", "computer", "再加速の航法")
         self.assertTrue(self.until("reaccel", 20))
-        self.assertTrue(s.st["done"])
-        self.assertEqual(s.cast.npcs["kingi"].emote, "smoke")
+        self.assertEqual(self.ch(), "depart")
         self.assertTrue({"10_reaccel", "11_epilogue"} <= set(s.st["movies"]))
-        self.assertEqual(w.nearest_planet(w.player.pos).defn["id"], "luna", "クリアしたらルナ・ポートへ")
-        self.assertGreaterEqual(len(s.cast.npcs), 8, "みんながルナ・ポートにいる")
+        self.assertEqual(w.nearest_planet(w.player.pos).defn["id"], "gaia", "エピローグはガイアの発射台へ")
+        self.assertGreaterEqual(len(s.cast.npcs), 8, "みんなが発射台の広場にいる")
+        self.assertIsNotNone(s.con("rocket"))
         for name in list(s.st["movies"]):
             w.addon_call("story", "movie_done", name)
         self.assertEqual(s.st["movies"], [])
+
+    def test_epilogue_launch_and_credits(self):
+        """エピローグ：みんなと話す・記念写真 → ロケットに乗る → 打ち上げ・ブースター分離・軌道 → エンドロール。"""
+        s, w, sites = self.s, self.w, self.sites
+        s.jump(self.idx("depart"))
+        self.run_for(0.5)
+        rocket = s.con("rocket")
+        self.assertIsNotNone(rocket)
+        self.assertIn(rocket.id, s._anchored())
+        msg = w.addon_call("story", "talk", "rocket")
+        self.assertIn("まだ", msg, "話して写真を撮るまでは乗れない")
+        for key in ("sakura", "mikaga", "kingi"):
+            self.assertIn(key, s.cast.npcs)
+            w.addon_call("cast", "talk", key)
+        w.addon_call("story", "posing", True)
+        self.assertIn(s.cast.npcs["sakura"].emote, ("wave", "cheer"), "カメラを向けると手をふる")
+        w.addon_call("story", "photo_taken")
+        w.addon_call("story", "posing", False)
+        self.run_for(0.4)
+        self.assertTrue(s.st["goals"].get("talk3") and s.st["goals"].get("photo"))
+        w.addon_call("story", "talk", "rocket")
+        self.run_for(0.4)
+        self.assertTrue(s.st["goals"].get("embark"))
+        pad = rocket.center_of_mass()
+        n0 = len(w.constructs)
+        self.run_for(10.0, 1 / 30)
+        self.assertGreater(s.st["flight"]["alt"], 30.0, "上がっていく")
+        self.assertEqual(w.player.seated[0], rocket.id, "乗ったまま")
+        self.run_for(9.0, 1 / 30)
+        self.assertTrue(s.st["flight"]["sep"])
+        self.assertEqual(len(w.constructs), n0 + 2, "ブースター2本が分かれる")
+        boosters = [c for c in w.constructs.values() if c.name == "ブースター"]
+        self.assertEqual(len(boosters), 2)
+        self.assertTrue(self.until("depart", 40, 1 / 30))
+        self.assertTrue(s.st["done"] and s.st["credits"], "軌道に乗るとエンドロール")
+        alt = float(np.linalg.norm(rocket.center_of_mass() - s.terra.center)) - s.terra.radius
+        self.assertGreater(alt, 100.0)
+        v = np.asarray(s.st["flight"]["vel"])
+        g = float(np.linalg.norm(w.gravity(rocket.center_of_mass()[None])[0]))
+        r = float(np.linalg.norm(rocket.center_of_mass() - s.terra.center))
+        self.assertAlmostEqual(float(np.linalg.norm(v)), (g * r) ** 0.5, delta=3.0, msg="円い軌道の速さ")
+        self.run_for(3.0, 1 / 30)
+        self.assertTrue(s.check_orbit(), "エンドロールの間も回り続ける")
+        w.addon_call("story", "credits_done")
+        self.assertFalse(s.st["credits"])
+        self.assertIsNone(w.player.seated)
+        self.assertLess(float(np.linalg.norm(w.player.pos - pad)), 40.0, "発射台の広場に戻る")
+        self.assertLess(float(np.linalg.norm(s.con("rocket").center_of_mass() - pad)), 1.0, "ロケットは発射台に戻る")
 
     def test_vehicles_fly_with_block_programs(self):
         """ドローン（操縦台から無線）・ホバーバイク・ロボットは、ブロックプログラムで飛ぶ。"""
@@ -432,6 +524,25 @@ class StoryCase(unittest.TestCase):
         for role in ("crane", "factory", "interceptor", "robot", "krobot", "unit"):
             self.assertIsNotNone(s2.con(role), role)
 
+    def test_chapter_autosave_and_restore(self):
+        """章の始めに自動で保存（chapters/<番号>/）して、章の一覧の「保存から」で戻せる。"""
+        s, w = self.s, self.w
+        addon = importlib.import_module("alpedia_mods.story.addon")
+        self.run_for(0.2)
+        s.jump(self.idx("power"))
+        self.run_for(0.3)
+        saves = addon.chapter_saves(w.dir)
+        self.assertIn(0, saves)
+        self.assertIn(self.idx("power"), saves)
+        s.jump(self.idx("drone"))
+        self.run_for(0.3)
+        w.save()
+        addon.restore_chapter(w.dir, self.idx("power"))
+        modcode.reset()
+        w2 = World(NAME, CFG).load()
+        self.assertEqual(w2.addon("story").st["ch"], self.idx("power"))
+        self.assertTrue((w.dir / "chapters" / "_before" / "world.json").exists(), "戻す前のファイルも残す")
+
     def test_jump_to_every_chapter(self):
         s, w = self.s, self.w
         where = {"port": "luna"}
@@ -440,7 +551,7 @@ class StoryCase(unittest.TestCase):
             self.run_for(0.3)
             self.assertEqual(s.st["ch"], k, c["id"])
             near = w.nearest_planet(w.player.pos)
-            self.assertEqual(near.defn["id"], where.get(c["id"], "terra"), c["id"])
+            self.assertEqual(near.defn["id"], where.get(c["id"], "gaia"), c["id"])
         s.jump(self.idx("launch"))
         self.run_for(0.5)
         self.assertTrue(s.check_hull() and s.check_thrusters() and s.check_fuel_ship())

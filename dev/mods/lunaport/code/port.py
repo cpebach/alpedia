@@ -1,8 +1,8 @@
 """ルナ・ポートの舞台：月の発着場・管制塔・ドーム・住居・温室（景色の箱）。
 
-月の座標 (x, z) は発着場が原点で、+Z が「月の北」（ワールドの +Y の方）。発着場の上の面は、月とテラの重力を合わせた
-向きに垂直（テラに引かれて船がすべらないように）。テラ（主な惑星）からの高さ・向きで場所を決めるので、
-月とテラ（または主な惑星）があるワールドなら、どのワールドでも同じ形になる。
+月の座標 (x, z) は発着場が原点で、+Z が「月の北」（ワールドの +Y の方）。発着場の上の面は、月とガイアの重力を合わせた
+向きに垂直（ガイアに引かれて船がすべらないように）。ガイア（主な惑星）からの高さ・向きで場所を決めるので、
+月とガイア（または主な惑星）があるワールドなら、どのワールドでも同じ形になる。
 """
 import numpy as np
 
@@ -14,12 +14,12 @@ def _rng(seed):
     return np.random.default_rng(seed)
 
 
-PAD_TILT = 70.0               # 月の発着場：テラの真下の点から、月の北へこの角度（テラが地平線の上に低く見える）
+PAD_TILT = 70.0               # 月の発着場：ガイアの真下の点から、月の北へこの角度（ガイアが地平線の上に低く見える）
 
 
 def luna_pad_dir(terra_center, luna_center):
-    """月の発着場の向き。テラ（ルミナス号の墜落地点の方）の真下の点から、月の北（ワールドの +Y）へ PAD_TILT 度。
-    街からは南の空の低い所にテラが見える。"""
+    """月の発着場の向き。ガイア（ルミナス号の墜落地点の方）の真下の点から、月の北（ワールドの +Y）へ PAD_TILT 度。
+    街からは南の空の低い所にガイアが見える。"""
     p = np.asarray(terra_center, float) + np.array([0.0, 600.0, 150.0])
     u0 = _unit(p - np.asarray(luna_center, float))
     n = _unit(np.array([0.0, 1.0, 0.0]) - u0 * u0[1])
@@ -51,7 +51,7 @@ def _dome(s, x, z, r, color, glow, n=6, tag=None):
 
 
 def pad_frame(luna, terra, top_point, fwd0):
-    """発着場の向き：上の面が、月とテラの重力を合わせた向きに垂直（テラに引かれて船がすべらないように）。"""
+    """発着場の向き：上の面が、月とガイアの重力を合わせた向きに垂直（ガイアに引かれて船がすべらないように）。"""
     def g(pl):
         d = pl.center - top_point
         return d * pl.gm / float(np.linalg.norm(d)) ** 3
@@ -61,7 +61,7 @@ def pad_frame(luna, terra, top_point, fwd0):
 
 
 def build(planet, terra):
-    """ルナ・ポートの景色の箱（月 planet の、テラ terra の方の地平線が見える所）。"""
+    """ルナ・ポートの景色の箱（月 planet の、ガイア terra の方の地平線が見える所）。"""
     m = luna_map(planet, terra.center)
     s = Scenery("lunaport", m)
     rng = _rng(23)

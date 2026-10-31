@@ -57,6 +57,11 @@ class Addon:
         メッセージを返したら、そこで処理済み（シナリオが会話にするなど）。"""
         return None
 
+    def block_hint(self, world, blocks_file):
+        """ブロックプログラム blocks_file（scripts/ のファイル名）の見本（完成形のプログラム）。
+        返すと、プログラム編集で長く（1分）完成しないとき、次に置くブロック・入力する値を光らせる。None なら出さない。"""
+        return None
+
     def on_npc_talk(self, world, key):
         """人物（登場人物の MOD などが立たせた NPC）に E で話しかけた。メッセージを返したら、そこで処理済み。"""
         return None

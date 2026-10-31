@@ -1,6 +1,6 @@
-{"id": "story", "name": "シナリオモード（それでも）", "version": "2.0", "builtin": true, "category": "シナリオ",
+{"id": "story", "name": "シナリオモード（ストーリー vol.1）", "version": "2.0", "builtin": true, "category": "シナリオ",
  "requires": ["scenario_blocks", "soredemo_cast", "lunaport", "amatsu"],
- "description": "物語のチュートリアル「それでも」（約90分）：惑星テラに落ちたトワが、観測基地の設備を動かし、船を直して月へ。艦隊戦・ロボット・落ちていく軌道都市へ。章の区切りにムービー。J で章の一覧。",
- "world": {"note": "シナリオの舞台（惑星テラ・月ルナ・小惑星）で作ります。最初に読み込んだときに舞台ができます",
-           "main": "terra", "main_override": {"noise_amp": 1.5},
-           "settings": {"cleanup": {"enabled": false}, "player": "towa", "story": {"built": false}}}}
+ "description": "物語のチュートリアル「ストーリー vol.1」（約100分）：惑星ガイアに落ちたトワが、観測基地の設備を動かし、船を直して月へ。艦隊戦・ロボット・落ちていく軌道都市へ。章の区切りにムービー。章ごとに自動で保存。J で章の一覧。",
+ "world": {"note": "シナリオの舞台（惑星ガイア・月ルナ・小惑星）で作ります。最初に読み込んだときに舞台ができます",
+           "main": "gaia", "main_override": {"spawn_flat_radius": 190.0, "hill_height": 3.0},
+           "settings": {"cleanup": {"enabled": false}, "full_rigid": true, "player": "towa", "story": {"built": false}}}}

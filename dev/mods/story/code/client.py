@@ -81,6 +81,7 @@ class StoryClient(ClientAddon):
         self._goal_key = None
         self._goal_t = 0.0
         self._movie = None
+        self._credits = None
 
     def destroy(self):
         for v in self.views:
@@ -108,7 +109,8 @@ class StoryClient(ClientAddon):
         from .panel import StoryPanel
         self.game._open_panel(lambda: StoryPanel(self.game))
 
-    TAGS = {"terminal": ("古い端末（E で触れる）", "古い端末に触れる"), "photo": ("古い記録写真（E で見る）", "記録写真を見る")}
+    TAGS = {"terminal": ("古い端末（E で触れる）", "古い端末に触れる"), "photo": ("古い記録写真（E で見る）", "記録写真を見る"),
+            "rocket": ("発射台の乗り口（E でロケットに乗る）", "ロケットに乗る")}
 
     def aim(self, hit):
         if not self.active or not hit or hit.get("kind") != "story":
@@ -149,6 +151,7 @@ class StoryClient(ClientAddon):
         for v in self.views:
             v.update(origin, bool(st.get("lights")), _time.time())
         self._update_movies(st)
+        self._update_credits(st)
         self._update_goals(st)
         self._update_say(st, t)
         self._update_marker(st, origin)
@@ -173,6 +176,36 @@ class StoryClient(ClientAddon):
         g._open_panel(lambda: MoviePlayer(g, name, done))
         if g.editor is None:              # 開けなかった
             done(name)
+
+    def _update_credits(self, st):
+        """軌道に乗ったら（st["credits"]）エンドロールを流し、終わったらワールドの選択（メニュー）へ戻る。"""
+        g = self.game
+        if self._credits is not None or not st.get("credits") or st.get("movies") or self._movie is not None:
+            return
+        if g.cam_mode is not None:
+            g.exit_camera()
+        if g.editor is not None or g.paused:
+            return
+        from .credits import CreditsRoll
+
+        def done():
+            self._credits = None
+            g.editor_closed()
+            self.world.addon_call("story", "credits_done")
+            if self.world.net is None:
+                g._leave("menu", status="ストーリー vol.1 クリア！ 遊んでくれてありがとう")
+        self._credits = True
+        g._open_panel(lambda: CreditsRoll(g, done))
+        if g.editor is None:
+            self._credits = None
+
+    def on_photo(self, path):
+        if self.active:
+            self.world.addon_call("story", "photo_taken")
+
+    def on_camera(self, on):
+        if self.active:
+            self.world.addon_call("story", "posing", bool(on))
 
     def _chapter(self, st):
         ch = st.get("ch", 0)
@@ -274,22 +307,27 @@ class StoryClient(ClientAddon):
         """光る枠を出す (構築物, [(セル, 色)])：修理の場所・切られた配管・推進モジュールの置き場。"""
         c = self._chapter(st)
         if c is None:
-            return None, []
+            return []
         cid = c["id"]
         if cid in ("bike", "repair"):
             ship = self.pack.con("ship")
             if ship is None:
-                return None, []
+                return []
             cells = [(h, (0.3, 0.95, 1.0)) for h in sites.SHIP_HOLES if tuple(h) not in ship.index]
             for h in sites.SHIP_THRUSTERS:
                 i = ship.index.get(tuple(h))
                 if i is None or not ship.devs[i] or ship.devs[i]["def"] != "thruster":
                     cells.append((h, (1.0, 0.6, 0.15)))
-            return ship, cells
+            groups = [(ship, cells)]
+            cart = self.pack.con("cart")
+            if cid == "repair" and cart is not None:
+                hose = [(h, (0.95, 0.9, 0.3)) for h in sites.HOSE if tuple(h) not in cart.index]
+                groups.append((cart, hose))
+            return groups
         if cid == "factory" and st.get("flags", {}).get("pipe_cut"):
             fac = self.pack.con("factory")
             if fac is not None and tuple(sites.FACTORY_CUT) not in fac.index:
-                return fac, [(sites.FACTORY_CUT, (1.0, 0.75, 0.25))]
+                return [(fac, [(sites.FACTORY_CUT, (1.0, 0.75, 0.25))])]
         if cid == "reaccel":
             from . import space
             unit = self.pack.con("unit")
@@ -299,21 +337,25 @@ class StoryClient(ClientAddon):
                     i = unit.index.get(tuple(h))
                     if i is None or not unit.devs[i] or unit.devs[i]["def"] != "rocket_module":
                         cells.append((h, (0.4, 1.0, 0.7)))
-                return unit, cells
-        return None, []
+                return [(unit, cells)]
+        return []
 
     def _update_ghost(self, st, origin):
         """光る枠：なくなった外壁（水色）・推進機（橙）・切られた配管（黄）・推進モジュール（緑）の場所。"""
-        con, cells = self._ghost_cells(st)
-        if con is None or not cells:
+        groups = [(con, cells) for con, cells in self._ghost_cells(st) if con is not None and cells]
+        cells = [x for _, cl in groups for x in cl]
+        if not cells:
             if self._ghost_n != 0:
                 self.ghost.set(np.zeros((0, 12), np.float32))
                 self._ghost_n = 0
             return
-        R, t0 = con.rigid_fit()
-        size = con.size
-        C = np.array([R @ ((np.asarray(h, float) + 0.5) * size) + t0 for h, _ in cells]) - origin
-        A = np.repeat(R.T[None], len(cells), axis=0)
+        C, A = [], []
+        for con, cl in groups:
+            R, t0 = con.rigid_fit()
+            size = con.size
+            C += [R @ ((np.asarray(h, float) + 0.5) * size) + t0 - origin for h, _ in cl]
+            A += [R.T] * len(cl)
+        C, A = np.array(C), np.array(A)
         E = np.full((len(cells), 3), size * 0.5)
         V, N = box_quads(C, A, E)
         a = 0.28 + 0.18 * np.sin(_time.time() * 4.0)
