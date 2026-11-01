@@ -29,7 +29,10 @@ def box_quads(C, A, E):
     return V, N
 
 
-TEXTURES = {"rock": ("rock.png", 3.0), "metal": ("metal.png", 2.0), "ground": ("ground.png", 2.5)}
+# 岩はブロックと同じドット絵（px_rock、0.5 m で1枚＝ブロック1個分）にそろえる。建物・地面は今までの模様
+TEXTURES = {"rock": ("px_rock.png", 0.5), "metal": ("metal.png", 2.0), "ground": ("ground.png", 2.5)}
+PIXEL = {"rock"}                 # ドット絵：にじませない
+EDGE_RGBA = (0.04, 0.045, 0.06, 0.55)   # 箱のふちの線（ブロックの輪郭の線と同じ考え方）
 _tex_cache = {}
 
 
@@ -39,7 +42,11 @@ def _texture(kind):
         from ursina import application
         from .. import paths
         t = application.base.loader.loadTexture(Filename.fromOsSpecific(str(paths.SAUCE / "textures" / TEXTURES[kind][0])))
-        t.setMinfilter(SamplerState.FT_linear_mipmap_linear)
+        if kind in PIXEL:
+            t.setMinfilter(SamplerState.FT_nearest_mipmap_nearest)
+            t.setMagfilter(SamplerState.FT_nearest)
+        else:
+            t.setMinfilter(SamplerState.FT_linear_mipmap_linear)
         _tex_cache[kind] = t
     return _tex_cache[kind]
 
@@ -109,6 +116,38 @@ class SceneView:
         for name in self.meshes:
             if name.startswith("static"):
                 self._colors(name, None)
+        self.edges = self._edges(parent, scene)
+
+    def _edges(self, parent, scene):
+        """ふつうの箱（光らない物）のふちに細い線（景色が平らな色の板に見えないように）。"""
+        try:
+            from panda3d.core import LineSegs
+        except Exception:  # noqa: BLE001
+            return None
+        P = scene.parts
+        idx = [k for k, p in enumerate(P) if p["glow"] is None and p["blink"] is None and p["group"] is None]
+        if not idx:
+            return None
+        idx = np.array(idx)
+        C, A, E = scene.C[idx] - scene.center, scene.A[idx], scene.E[idx]
+        ls = LineSegs(f"scenery_edges_{scene.id}")
+        ls.setThickness(1.4)
+        ls.setColor(*EDGE_RGBA)
+        signs = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], float)
+        for b in range(len(idx)):
+            if float(E[b].min()) < 0.04:                 # 細い棒・板は線を付けない（線だらけになる）
+                continue
+            corners = C[b] + (signs * E[b]) @ A[b]          # A の行が箱の軸
+            for i in range(8):
+                for j in range(i + 1, 8):
+                    if np.count_nonzero(signs[i] != signs[j]) == 1:
+                        ls.moveTo(*corners[i].astype(float))
+                        ls.drawTo(*corners[j].astype(float))
+        np_ = parent.attachNewNode(ls.create())
+        np_.setTransparency(True)
+        np_.setLightOff(1)
+        np_.setShaderOff(1)
+        return np_
 
     def _colors(self, name, on):
         """色を入れる。光る部品は（static なら いつも、lights なら on のとき）光の色で影なし、ほかは影つき。"""
@@ -134,6 +173,8 @@ class SceneView:
         pos = self.s.center - origin
         for it in self.meshes.values():
             it["mesh"].np.setPos(float(pos[0]), float(pos[1]), float(pos[2]))
+        if getattr(self, "edges", None) is not None:
+            self.edges.setPos(float(pos[0]), float(pos[1]), float(pos[2]))
         if self.state.get("lights") != lights_on:
             self.state["lights"] = lights_on
             self._colors("lights", lights_on)
@@ -152,3 +193,6 @@ class SceneView:
     def remove(self):
         for it in self.meshes.values():
             it["mesh"].remove()
+        if getattr(self, "edges", None) is not None:
+            self.edges.removeNode()
+            self.edges = None

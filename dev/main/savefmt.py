@@ -21,7 +21,7 @@ PLANET_KEYS = {"def": str, "position": list, "craters": list, "override": dict}
 # constructs.json の1つ分
 CONSTRUCT_REQUIRED = {"id": str, "name": str, "voxel_size": (int, float), "voxels": list}
 CONSTRUCT_OPTIONAL = {"links": list, "extras": list, "storage": dict, "cavity_air": list, "vertices": list,
-                      "rest": list, "anchor": str}
+                      "rest": list, "anchor": str, "soft_ok": bool}
 DEVICE_KEYS = {"def": str, "dir": int, "name": str, "state": dict}
 
 # spawn.json の1つ分（{構築物ID: これ}）

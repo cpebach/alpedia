@@ -1145,7 +1145,8 @@ class Construct:
         if not self.n_vox or self.asleep:
             return
         phys = world.cfg.get("physics", {})
-        self._full_rigid = bool(world.settings.get("full_rigid", False))
+        # 完全剛体モードでも soft_ok の構築物（物語の見せ場の落石・木箱など）は、曲がる・ちぎれる
+        self._full_rigid = bool(world.settings.get("full_rigid", False)) and not getattr(self, "soft_ok", False)
         if self._full_rigid:
             return self._update_full_rigid(world, phys, dt)
         if self.mode == "art":                      # 完全剛体モードを切ったとき
@@ -1701,6 +1702,8 @@ class Construct:
         out = []
         for comp in comps[1:]:
             sub = Construct(self.reg, size=self.size, name=self.name + "の破片")
+            if getattr(self, "soft_ok", False):
+                sub.soft_ok = True              # 破片も柔らかいまま（完全剛体モードの中の見せ場）
             idx = np.array(comp)
             kv = (8 * idx[:, None] + np.arange(8)).ravel()
             sub.cells = [self.cells[i] for i in comp]
@@ -1844,6 +1847,7 @@ class Construct:
             "vertices": np.round((self.pos - self.rigid_fit()[1]) @ self.rigid_fit()[0], 4).tolist(),
             "rest": np.round(self.rest, 4).tolist(),
             **({"anchor": self.anchor["to"]} if getattr(self, "anchor", None) else {}),
+            **({"soft_ok": True} if getattr(self, "soft_ok", False) else {}),
         }
 
     def spawn_dict(self):
@@ -1875,4 +1879,6 @@ class Construct:
         c.rebuild()
         if data.get("anchor"):
             c.anchor = {"to": data["anchor"]}      # 動く物体（軌道上の街など）に固定。中身は拡張が決める
+        if data.get("soft_ok"):
+            c.soft_ok = True
         return c

@@ -209,6 +209,8 @@ class World:
         self.local_player = self.player
         for a in self.addons:
             a.on_load(self)
+        if self.settings.pop("starter_sample", None):
+            self._place_starter_sample()
         L.info("ワールド '%s' を読み込み: 構築物 %d, 惑星 %d, MOD %s", self.name, len(self.constructs),
                len(self.planets), mods)
         self.message(f"ワールド「{self.name}」を読み込みました")
@@ -217,6 +219,28 @@ class World:
         if n_gen:
             self.message(f"燃料の発電機はなくなったので、{n_gen} 個を配管にしました（推進機が燃えている間に発電します）")
         return self
+
+    def _place_starter_sample(self):
+        """新しく始めたクリエイティブ：出現地点のそばに見本の「はじめのロケット」を置く（F8 の設計図にもある）。"""
+        bp = paths.SAUCE / "blueprints" / "starter_rocket.alp.json"
+        if not bp.exists():
+            return
+        try:
+            data = objio.import_construct(self.registry, bp)
+            pl = self.nearest_planet(self.player.pos)
+            up = pl.up(self.player.pos) if pl is not None else np.array([0, 1.0, 0])
+            side = np.cross(up, [0, 0, 1.0])
+            if np.linalg.norm(side) < 1e-6:
+                side = np.cross(up, [1.0, 0, 0])
+            side /= np.linalg.norm(side)
+            pos = self.player.pos + side * 4.0 + np.array([0, 0, 3.0])
+            if pl is not None:
+                pos = pos - up * float(pl.sdf(pos[None])[0]) + up * 0.3
+            c = self.place_import(data, position=pos)
+            if c is not None:
+                self.message("見本の「はじめのロケット」を置きました。座って Space で点火（F8 の設計図にもあります）")
+        except Exception:  # noqa: BLE001
+            L.exception("見本のロケットを置けません")
 
     def player_def(self, def_id):
         """プレイヤーの見た目の定義。無ければ（MOD を外したなど）宇宙飛行士。"""
@@ -258,6 +282,28 @@ class World:
             if p.seated and p.seated[0] == c.id:
                 out |= set(self.input_keys if p is self.local_player else p.input_keys)
         return out
+
+    def respawn(self, player=None):
+        """リスポーン：自宅など（MOD が決める）か最初の出現地点へ戻る。HP は無いので、宇宙に飛ばされた・
+        穴から出られない などのときに自分で使う。サバイバルでは手持ちの資源をなくす（部屋の収納箱の物は残る）。"""
+        p = player or self.player
+        pos = None
+        for a in self.addons:
+            r = a.respawn_point(self, p)
+            if r is not None:
+                pos = np.asarray(r, dtype=np.float64)
+                break
+        if pos is None:
+            pos = self._default_spawn()
+        p.seated = None
+        p.jetpack = False
+        p.pos = np.asarray(pos, dtype=np.float64)
+        p.vel = np.zeros(3)
+        pl = self.nearest_planet(p.pos)
+        if pl is not None:
+            p.up = pl.up(p.pos)
+        msgs = [m for m in (a.on_respawn(self, p) for a in self.addons) if m]
+        self.message("リスポーンしました" + ("：" + " ".join(msgs) if msgs else ""))
 
     def _default_spawn(self):
         if not self.planets:
@@ -405,6 +451,10 @@ class World:
                     self.input_keys if p is self.local_player else p.input_keys)
         for c in list(self.constructs.values()):
             devices.update(c, dt, frozenset(seats.get(c.id, ())), c.id in seats, ambient)
+            if c.__dict__.get("notes"):
+                for n in c.notes:
+                    self.message(n)
+                c.notes = []
             self.runner.tick(c, dt)
         self.player.update(self, dt, move, jump, thrust_dir)
         for p in self.remote.values():          # 参加者の体は参加者の PC が動かす。ジェットパックの燃料と体重だけここで
@@ -885,8 +935,33 @@ class World:
     def _device_placed(self, c, i):
         if i is None or not c.devs[i]:
             return
+        if self.creative:                       # クリエイティブ：置いたタンクは燃料満タン（E で中身を切り替え）
+            dd = self.registry.device(c.devs[i]["def"]) or {}
+            if dd.get("type") == "tank":
+                cap = float(dd.get("params", {}).get("capacity", 0))
+                c.devs[i]["state"]["contents"] = {"fuel": cap}
         for a in self.addons:
             a.on_device_placed(self, c, i)
+
+    def item_allowed(self, item):
+        """そのアイテムを今使えるか（MOD が絞っていれば従う）。"""
+        for a in self.addons:
+            r = a.item_allowed(self, tuple(item))
+            if r is False:
+                return False
+        return True
+
+    def blueprints_allowed(self):
+        return not any(a.blueprints_allowed(self) is False for a in self.addons)
+
+    def block_categories(self):
+        """ブロックのパレットに出す種類（None なら全部）。"""
+        out = None
+        for a in self.addons:
+            r = a.block_categories(self)
+            if r is not None:
+                out = set(r) if out is None else out & set(r)
+        return out
 
     def item_cost(self, item):
         kind, id_ = item
@@ -897,6 +972,9 @@ class World:
 
     def place(self, hit, item, dir_index, look_dir):
         kind, id_ = item
+        if not self.item_allowed(item):
+            self.message("それは今はまだ使えません（物語が進むと使えるようになります）")
+            return False
         if kind == "material":
             mat, dev = id_, None
         else:

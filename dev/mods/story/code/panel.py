@@ -67,7 +67,7 @@ class StoryPanel:
 
         class Keys(Entity):
             def input(self_, key):
-                if key in ("escape", panel.game.cfg["controls"].get("story_menu", "j")):
+                if key == "escape":          # 閉じるのは Esc・閉じるボタンだけ（J をもう一度押しても閉じない）
                     panel.close()
         self.keys = Keys(parent=self.root)
 

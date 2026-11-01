@@ -186,6 +186,37 @@ def dist_triangles(p, a, b, c):
 
 
 # ---------------------------------------------------------------------------
+# かたい素材の角ばった見た目（多面体）
+# ---------------------------------------------------------------------------
+# 素材の "facet": true（鋼鉄・岩など）は、芯からの距離を球ではなく多面体（面・辺・角を落とした立方体＝
+# 26 面の菱形立方八面体に近い形）で測る。芯（点・線・三角形）は同じなので、直線や階段状に並べたときの
+# つなぎ目・斜面の埋まり方は今までどおり。当たり判定は今までどおり丸い形のまま（坂で転がる）。
+_FN = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1],
+                [1, 1, 0], [1, 0, 1], [0, 1, 1],
+                [1, 1, 1]], dtype=np.float64)
+_FN = _FN / np.linalg.norm(_FN, axis=1, keepdims=True)
+FACET_SCALE = 0.97          # 面の位置（丸い形の半径に対して）。角が少しだけ外へ出て、面は少し内側
+
+
+def facet_norm(v):
+    """多面体の「長さ」：面の向き（軸・辺・角の 7 種）への射影の最大（絶対値で対称）。"""
+    a = np.abs(v)
+    return (a @ _FN.T).max(-1) / FACET_SCALE
+
+
+def facet_voxels(c):
+    """ボクセルごとの「角ばった見た目にするか」（素材の facet）。"""
+    reg = c.reg
+    cache = {}
+    out = np.zeros(c.n_vox, bool)
+    for i, m in enumerate(c.mats):
+        if m not in cache:
+            cache[m] = bool((reg.material(m) or {}).get("facet", False))
+        out[i] = cache[m]
+    return out
+
+
+# ---------------------------------------------------------------------------
 # メッシュ（描画・OBJ 出力）
 # ---------------------------------------------------------------------------
 def build_mesh(c, k=None):
@@ -207,36 +238,46 @@ def build_mesh(c, k=None):
         dims = np.ceil((hi - lo) * k).astype(int) + 1
     m = 2 * k + 3
     O = np.stack(np.meshgrid(*(np.arange(m),) * 3, indexing="ij"), -1).reshape(-1, 3)
+    hard = facet_voxels(c)
 
-    def apply(kind, pts_all, sdf):
-        """pts_all (C, q, 3)：芯（点・線分・三角形）の頂点（セル単位）。sdf に距離 − r を書き込む（小さい方）。"""
+    def apply(kind, pts_all, sdf, facet=None):
+        """pts_all (C, q, 3)：芯（点・線分・三角形）の頂点（セル単位）。sdf に距離 − r を書き込む（小さい方）。
+        facet (C,)：その芯を角ばった多面体で太らせるか（かたい素材）。"""
         if not len(pts_all):
             return
         step = max(1, 4_000_000 // len(O))
         for s0 in range(0, len(pts_all), step):
             pts = pts_all[s0:s0 + step]                        # (C, q, 3)
-            pmin = pts.min(1) - r
+            pmin = pts.min(1) - r - 0.1
             i0 = np.floor((pmin - lo) * k).astype(int)          # (C,3)
             idx = i0[:, None, :] + O[None]                      # (C, S, 3)
             idx = np.clip(idx, 0, dims - 1)
             g = lo + idx / k
             if kind == "p":
-                d = np.linalg.norm(g - pts[:, 0][:, None], axis=-1)
+                q = np.broadcast_to(pts[:, 0][:, None], g.shape)
+                d = np.linalg.norm(g - q, axis=-1)
             elif kind == "s":
-                d, _ = dist_segments(g, pts[:, 0][:, None], pts[:, 1][:, None])
+                d, q = dist_segments(g, pts[:, 0][:, None], pts[:, 1][:, None])
             else:
-                d, _ = dist_triangles(g, pts[:, 0][:, None], pts[:, 1][:, None], pts[:, 2][:, None])
+                d, q = dist_triangles(g, pts[:, 0][:, None], pts[:, 1][:, None], pts[:, 2][:, None])
+            if facet is not None:
+                f = facet[s0:s0 + step]
+                if f.any():
+                    d = np.where(f[:, None], facet_norm(g - q), d)
             lin = (idx[..., 0] * dims[1] + idx[..., 1]) * dims[2] + idx[..., 2]
             np.minimum.at(sdf, lin.ravel(), (d - r).ravel().astype(np.float32))
 
     def shape_of(points, segs, tris, extra_segs=None):
         sdf = np.full(int(np.prod(dims)), 1.0, dtype=np.float32)
-        apply("p", centers[points.reshape(-1, 1)], sdf)
+        apply("p", centers[points.reshape(-1, 1)], sdf, hard[points] if len(points) else None)
         sp = centers[segs] if len(segs) else np.zeros((0, 2, 3))
+        sf = hard[segs].all(1) if len(segs) else np.zeros(0, bool)
         if extra_segs is not None and len(extra_segs):
             sp = np.concatenate([sp, extra_segs])
-        apply("s", sp, sdf)
-        apply("t", centers[tris] if len(tris) else np.zeros((0, 3, 3)), sdf)
+            sf = np.concatenate([sf, np.zeros(len(extra_segs), bool)])
+        apply("s", sp, sdf, sf)
+        apply("t", centers[tris] if len(tris) else np.zeros((0, 3, 3)), sdf,
+              hard[tris].all(1) if len(tris) else None)
         return sdf
 
     points, segs, tris = topo["points"], topo["segs"], topo["tris"]

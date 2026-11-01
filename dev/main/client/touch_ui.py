@@ -26,6 +26,10 @@ KEY_NAMES = {"space": "Space", "left control": "Ctrl", "left shift": "Shift", "e
              "enter": "Enter", "backspace": "BS"}
 
 
+# 操縦席のよくあるキーの意味（機器が割り当てられていないとき）
+SEAT_LABELS = {"space": "上昇", "left control": "下降", "left shift": "下降"}
+
+
 def key_name(k):
     if not k:
         return ""
@@ -136,6 +140,11 @@ class Pill:
         self.icon = U["Entity"](parent=self.root, model="quad", scale=self.h * 0.85, x=-self.w / 2 + self.h * 0.55,
                                 texture=icons.ui_texture("interact"))
         self.text = U["Text"](parent=self.root, text="", origin=(-0.5, 0), x=-self.w / 2 + self.h * 1.15, scale=0.68)
+        # 右端の歯車：その機器の設定（P）
+        self.gear_bg = U["Entity"](parent=self.root, model="quad", scale=(self.h, self.h), x=self.w / 2 + self.h * 0.55,
+                                   color=U["color"].rgba(0.08, 0.1, 0.14, 0.78))
+        self.gear = U["Entity"](parent=self.root, model="quad", scale=self.h * 0.8, x=self.w / 2 + self.h * 0.55,
+                                texture=icons.ui_texture("settings"))
         self.target = None
         self.x = self.y = 0.0
 
@@ -147,6 +156,8 @@ class Pill:
         txt = target["label"] + (f"  [{key_hint}]" if key_hint else "")
         if self.text.text != txt:
             self.text.text = txt
+        on = bool(target.get("settings"))
+        self.gear_bg.enabled = self.gear.enabled = on
         self.root.enabled = True
 
     def hide(self):
@@ -154,7 +165,21 @@ class Pill:
         self.target = None
 
     def hit(self, x, y):
-        return self.root.enabled and abs(x - self.x) <= self.w / 2 and abs(y - self.y) <= self.h / 2
+        """押した所："main"（使う）・"gear"（設定）・None。"""
+        if not self.root.enabled or abs(y - self.y) > self.h / 2:
+            return None
+        if abs(x - self.x) <= self.w / 2:
+            return "main"
+        gx = self.x + self.w / 2 + self.h * 0.55
+        if self.gear.enabled and abs(x - gx) <= self.h / 2:
+            return "gear"
+        return None
+
+
+HOLD_TIME = 0.45        # この秒数より長く、指を動かさずに触っていると長押し
+TAP_TIME = 0.3          # これより短く離せばタップ
+MOVE_TOL = 0.012        # これより動いたら、なぞる（視点）
+REPEAT = 0.22           # 長押しのくり返しの間隔
 
 
 class TouchHUD:
@@ -184,11 +209,14 @@ class TouchHUD:
             "jump": B(self, "jump", "jump", "ジャンプ", BIG, kind="hold", key="jump"),
             "down": B(self, "down", "down", "下へ", MID, kind="hold", key="down"),
             "jetpack": B(self, "jetpack", "jetpack", "ジェット", MID, on_tap=key("jetpack")),
-            "remove": B(self, "remove", "remove", "掘る・壊す", MID, on_tap=g.do_remove),
-            "place": B(self, "place", "place", "置く", MID, on_tap=g.do_place),
+            "remove": B(self, "remove", "remove", "掘る・壊す", MID, kind="repeat", on_tap=g.do_remove),
+            "place": B(self, "place", "place", "置く", MID, kind="repeat", on_tap=g.do_place),
             "rotate": B(self, "rotate", "rotate", "向き", SMALL, on_tap=key("rotate")),
             "new": B(self, "new", "new", "空中に置く", SMALL, on_tap=key("new_construct")),
             "exit": B(self, "exit", "exit", "降りる", MID, on_tap=lambda: g.world.interact(None)),
+            # 照準の先の物を使う（E）・設定（P）。見ている物が使えるときだけ出る
+            "use": B(self, "use", "interact", "使う", MID, on_tap=key("interact")),
+            "settings": B(self, "settings", "settings", "設定", SMALL, on_tap=lambda: g.open_editor()),
         }
         self.seat_btns = {}                 # 操縦席：機器に割り当てたキー → ボタン
         self.pills = [Pill(self) for _ in range(4)]
@@ -245,8 +273,9 @@ class TouchHUD:
         has_city = bool(city is not None and getattr(city, "enabled", False))
         net = w.net
         can_save = net is None or net.can_save()
+        # 読み込み・出力・保存は一時停止メニューの中（F8・F9・F5 のキーはそのまま使える）
         show = {"menu": True, "inventory": not seated, "map": has_city, "marker": has_city, "view": True, "camera": True,
-                "import": not seated, "export": True, "save": can_save}
+                "import": False, "export": False, "save": False and can_save}
         hints = {"menu": "Esc", "inventory": "inventory", "map": "city_map", "marker": "city_marker",
                  "view": "third_person", "camera": "camera_mode", "import": "import", "export": "export", "save": "save"}
         x = right - 0.045
@@ -261,15 +290,20 @@ class TouchHUD:
         bx, by = right - 0.1, -0.36
         A = self.act
         flying = bool(w.player.jetpack) or w.player.in_water > 0.3
+        h = g.hit
+        aim_use = self.touch_mode and bool(h) and g._usable(h)          # キーボードでは E・P があるので出さない
+        aim_set = self.touch_mode and bool(h and h.get("kind") == "voxel" and h["construct"].devs[h["index"]])
         lay = {
             "jump": (bx, by, not seated), "down": (bx, by + 0.15, not seated and flying),
             "jetpack": (bx - 0.02, by + 0.27 if flying else by + 0.15, not seated),
             "remove": (bx - 0.13, by + 0.07, not seated), "place": (bx - 0.15, by - 0.06, not seated),
             "rotate": (bx - 0.25, by + 0.02, not seated), "new": (bx - 0.25, by - 0.08, not seated),
             "exit": (bx, by, seated),
+            "use": (bx - 0.13, by + 0.2, not seated and aim_use),
+            "settings": (bx - 0.25, by + 0.14, not seated and aim_set),
         }
         keys = {"jump": "jump", "down": "down", "jetpack": "jetpack", "rotate": "rotate", "new": "new_construct",
-                "exit": "interact"}
+                "exit": "interact", "use": "interact", "settings": "edit_script"}
         mouse_hint = {"remove": "左クリック", "place": "右クリック"}
         for k, (xx, yy, vis) in lay.items():
             h = self.key_hint(keys[k]) if k in keys else ("" if self.touch_mode else mouse_hint.get(k, ""))
@@ -294,6 +328,8 @@ class TouchHUD:
                     k = (dd.get("params") or {}).get("key")
                     if k:
                         want.setdefault(k, []).append(d["name"])
+                for k in self._program_keys(c):          # プログラムが読むキー（ドローンの X など）
+                    want.setdefault(k, [])
             for k in ("space", "left control", "left shift"):
                 want.setdefault(k, [])
         for k in [k for k in self.seat_btns if k not in want]:
@@ -302,12 +338,58 @@ class TouchHUD:
             destroy(b.root)
         for n, (k, names) in enumerate(sorted(want.items(), key=lambda kv: (not kv[1], kv[0]))):
             b = self.seat_btns.get(k)
-            label = (names[0] if names else key_name(k)) + (f" 他{len(names) - 1}" if len(names) > 1 else "")
-            label = label[:8] + (f" {key_name(k)}" if names else "")
+            label = (names[0] if names else SEAT_LABELS.get(k, key_name(k))) + (f" 他{len(names) - 1}" if len(names) > 1 else "")
+            label = label[:8] + (f" {key_name(k)}" if names or k in SEAT_LABELS else "")
             if b is None:
-                b = self.seat_btns[k] = Btn(self, f"seat:{k}", "key", label, MID, kind="hold", key=k, press_key=True)
+                icon = {"space": "jump", "left control": "down", "left shift": "down"}.get(k, "key:" + key_name(k))
+                b = self.seat_btns[k] = Btn(self, f"seat:{k}", icon, label, MID, kind="hold", key=k, press_key=True)
             col, row = n % 3, n // 3
             b.place(bx - 0.13 * (col + 1) + 0.02 * row, by + 0.12 * row + 0.04 * col, True, label)
+
+    def _program_keys(self, c):
+        """構築物のコンピューターのプログラムが読んでいるキー（ブロックの「キー □」・Python の "x" in api.input など）。"""
+        import json
+        import re
+        w = self.game.world
+        out = []
+        cache = self.__dict__.setdefault("_keys_cache", {})
+        for d in c.devs:
+            if not d or (c.reg.device(d["def"]) or {}).get("type") != "computer":
+                continue
+            st = d.get("state", {})
+            name = st.get("blocks") or st.get("script")
+            if not name:
+                continue
+            path = w.dir / "scripts" / name
+            try:
+                mt = path.stat().st_mtime
+            except OSError:
+                continue
+            got = cache.get(str(path))
+            if got is None or got[0] != mt:
+                keys = []
+                try:
+                    text = path.read_text(encoding="utf-8")
+                    if name.endswith(".json"):
+                        def walk(x):
+                            if isinstance(x, dict):
+                                if x.get("type") in ("on_key", "on_key_down", "key") and isinstance(x.get("key"), str):
+                                    keys.append(x["key"])
+                                for v in x.values():
+                                    walk(v)
+                            elif isinstance(x, list):
+                                for v in x:
+                                    walk(v)
+                        walk(json.loads(text))
+                    else:
+                        keys += re.findall(r"""["']([a-z0-9]|space|left shift|left control|up arrow|down arrow|left arrow|right arrow)["']\s+in\s+api\.input""", text)
+                except Exception:  # noqa: BLE001
+                    keys = []
+                got = cache[str(path)] = (mt, keys)
+            for k in got[1]:
+                if k not in out and k not in ("w", "a", "s", "d"):     # W/A/S/D はスティック
+                    out.append(k)
+        return out
 
     # ------------------------------------------------------------------
     def update(self, dt):
@@ -356,9 +438,14 @@ class TouchHUD:
                 self.own[pid] = o
                 continue
             kind = o[0]
+            now = _time.monotonic()
             if kind == "btn":
                 b = o[1]
                 b.show_pressed(b.hit(x, y))
+                if b.kind == "repeat" and b.hit(x, y) and now - o[2] >= HOLD_TIME and now >= o[3]:
+                    o[3] = now + REPEAT          # 長押し：くり返す
+                    o[4] = True
+                    self._tap(b)
             elif kind == "stick":
                 hx, hy = self.stick_home
                 v = np.array([x - hx, y - hy]) / STICK_R
@@ -366,7 +453,15 @@ class TouchHUD:
                 self.stick = v / n if n > 1 else v
             elif kind == "look":
                 lx, ly = o[1]
-                self.look += (x - lx, y - ly)
+                sx, sy = o[2]
+                if not o[4] and (x - sx) ** 2 + (y - sy) ** 2 > MOVE_TOL ** 2:
+                    o[4] = True                  # 動いた：なぞって視点を回す（長押しにはしない）
+                if o[4]:
+                    self.look += (x - lx, y - ly)
+                elif now - o[3] >= HOLD_TIME and now >= o[5]:
+                    o[5] = now + REPEAT          # 長押し：触っている所を壊す・掘る（くり返す）
+                    o[6] = True
+                    self._world_touch("hold", x, y)
                 o[1] = (x, y)
         if not any(o[0] == "stick" for o in self.own.values()):
             self.stick[:] = 0
@@ -382,10 +477,12 @@ class TouchHUD:
                     self.vkeys[k] = 1
                     if b.press_key:
                         self.game.input(k)
-                return ["btn", b]
+                now = _time.monotonic()
+                return ["btn", b, now, now + HOLD_TIME, False]
         for p in self.pills:
-            if p.hit(x, y):
-                return ["pill", p, p.target]
+            h = p.hit(x, y)
+            if h:
+                return ["pill", p, p.target, h == "gear"]
         if touch and self._in_stick_zone(x, y):
             win = self.U["window"]
             hx = min(max(x, win.left.x + STICK_R + 0.03), win.left.x + 0.62 - STICK_R)
@@ -393,8 +490,24 @@ class TouchHUD:
             self.stick_home = (hx, hy)
             return ["stick"]
         if touch:
-            return ["look", (x, y)]
+            now = _time.monotonic()
+            # [種類, 前の位置, 触り始めの位置, 触り始めの時刻, 動いたか, 次の長押しの時刻, 長押しをしたか]
+            return ["look", (x, y), (x, y), now, False, now + HOLD_TIME, False]
         return ["none"]
+
+    def _tap(self, b):
+        try:
+            b.on_tap()
+        except Exception as e:  # noqa: BLE001
+            L.exception("ボタン %s の操作でエラー", b.id)
+            self.game.world.message(f"⚠ エラー: {e}")
+
+    def _world_touch(self, kind, x, y):
+        try:
+            self.game.touch_action(kind, x, y)
+        except Exception as e:  # noqa: BLE001
+            L.exception("タッチの操作でエラー")
+            self.game.world.message(f"⚠ エラー: {e}")
 
     def _release(self, pid, o, pts):
         if o[0] == "btn":
@@ -405,15 +518,14 @@ class TouchHUD:
                 k = self.game.cfg["controls"].get(b.key, b.key)
                 if not any(x[0] == "btn" and x[1] is not b and x[1].key == b.key for x in self.own.values()):
                     self.vkeys.pop(k, None)
-            elif b.on_tap is not None:
-                try:
-                    b.on_tap()
-                except Exception as e:  # noqa: BLE001
-                    L.exception("ボタン %s の操作でエラー", b.id)
-                    self.game.world.message(f"⚠ エラー: {e}")
+            elif b.on_tap is not None and not (b.kind == "repeat" and o[4]):
+                self._tap(b)                    # 長押しでくり返したあとは、離したときにはもうしない
+        elif o[0] == "look":
+            if not o[4] and not o[6] and _time.monotonic() - o[3] <= TAP_TIME:
+                self._world_touch("tap", *o[1])   # タップ：触った物を使う（使えなければ置く）
         elif o[0] == "pill" and o[2] is not None:
             try:
-                self.game.do_target(o[2])
+                self.game.do_target(o[2], settings=o[3])
             except Exception as e:  # noqa: BLE001
                 L.exception("近くのものの操作でエラー")
                 self.game.world.message(f"⚠ エラー: {e}")

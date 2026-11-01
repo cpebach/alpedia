@@ -110,6 +110,7 @@ class StoryClient(ClientAddon):
         self.game._open_panel(lambda: StoryPanel(self.game))
 
     TAGS = {"terminal": ("古い端末（E で触れる）", "古い端末に触れる"), "photo": ("古い記録写真（E で見る）", "記録写真を見る"),
+            "record": ("脱出ポッドの記録（E で見る）", "ポッドの記録を見る"),
             "rocket": ("発射台の乗り口（E でロケットに乗る）", "ロケットに乗る")}
 
     def aim(self, hit):
@@ -120,8 +121,52 @@ class StoryClient(ClientAddon):
             return (t[0], False)
         return ("", True)
 
+    # 物語で「使う」物：構築物のどこを見て E を押しても、その主な機器を使う（ビーコンの電池を見ていても起動する など）
+    PRIMARY = {"beacon": "computer", "console": "seat", "bike": "seat", "robot": "seat", "gate": "actuator"}
+
+    def nearby_priority(self, target):
+        """今の目標の機器（目印の所にある物）を、近くのボタンのいちばん上に。"""
+        if not self.active:
+            return 0.0
+        goal, _ = self._target(self.pack.st)
+        h = target.get("hit") or {}
+        pt = h.get("point")
+        if goal is None or pt is None:
+            return 0.0
+        return -10.0 if float(np.linalg.norm(np.asarray(pt) - np.asarray(goal))) < 0.8 else 0.0
+
+    def seat_camera(self, construct):
+        """ドローンの操縦台に座っている間は、ドローンを後ろから映す。"""
+        if not self.active or construct.id != self.pack.st.get("ids", {}).get("console"):
+            return None
+        return self.pack.con("drone")
+
+    def _primary_hit(self, hit):
+        if not hit or hit.get("kind") != "voxel":
+            return None
+        c = hit["construct"]
+        ids = self.pack.st.get("ids", {})
+        role = next((r for r in self.PRIMARY if ids.get(r) == c.id), None)
+        if role is None:
+            return None
+        want = self.PRIMARY[role]
+        d = c.devs[hit["index"]]
+        if d and d["def"] == want:
+            return None                      # もうその機器を見ている
+        for i, x in enumerate(c.devs):
+            if x and x["def"] == want:
+                ctr = c.pos[8 * i:8 * i + 8].mean(0)
+                return {"kind": "voxel", "t": hit.get("t", 1.0), "construct": c, "index": i, "face": 2, "point": ctr}
+        return None
+
     def interact(self, hit):
-        if not self.active or not hit or hit.get("kind") != "story" or not hit.get("tag"):
+        if not self.active or not hit:
+            return False
+        ph = self._primary_hit(hit)
+        if ph is not None:
+            self.world.interact(ph)
+            return True
+        if hit.get("kind") != "story" or not hit.get("tag"):
             return False
         msg = self.world.addon_call("story", "talk", hit["tag"])
         if msg:
@@ -151,6 +196,7 @@ class StoryClient(ClientAddon):
         for v in self.views:
             v.update(origin, bool(st.get("lights")), _time.time())
         self._update_movies(st)
+        self._update_choice(st)
         self._update_credits(st)
         self._update_goals(st)
         self._update_say(st, t)
@@ -176,6 +222,21 @@ class StoryClient(ClientAddon):
         g._open_panel(lambda: MoviePlayer(g, name, done))
         if g.editor is None:              # 開けなかった
             done(name)
+
+    def _update_choice(self, st):
+        """第12章のあと：ネムリの前で選ぶ欄（ムービーのあと・ほかの画面を開いていない時）。"""
+        g = self.game
+        c = self._chapter(st)
+        if (c is None or c["id"] != "robot" or not st.get("goals", {}).get("clash") or st.get("flags", {}).get("choice")
+                or st.get("movies") or self._movie is not None or g.editor is not None or g.paused
+                or g.cam_mode is not None):
+            return
+        from .choice import ChoicePanel
+
+        def done(key):
+            g.editor_closed()
+            self.world.addon_call("story", "choose", key)
+        g._open_panel(lambda: ChoicePanel(g, done))
 
     def _update_credits(self, st):
         """軌道に乗ったら（st["credits"]）エンドロールを流し、終わったらワールドの選択（メニュー）へ戻る。"""
@@ -262,8 +323,23 @@ class StoryClient(ClientAddon):
             return None, ""
         for gid, text, key in c["goals"]:
             if not st.get("goals", {}).get(gid):
-                return self.pack.where(key), text.split("（")[0]
+                p = None
+                dev = self.MARK_DEVICE.get(gid)
+                if dev is not None:                  # 目印は「触る機器」の上に（構築物の重心は何もない所のことがある）
+                    try:
+                        p = self.pack._devpos(*dev)
+                    except Exception:  # noqa: BLE001
+                        p = None
+                if p is None:
+                    p = self.pack.where(key)
+                return p, text.split("（")[0]
         return None, ""
+
+    # 目標 → 目印を付ける機器 (役, 機器の種類, 名前)
+    MARK_DEVICE = {"beacon": ("beacon", "computer", None), "door": ("crane", "computer", None),
+                   "trips": ("crane", "computer", None), "rod": ("task", "computer", None),
+                   "console": ("console", "seat", None), "ride": ("bike", "seat", None),
+                   "seat": ("ship", "seat", None), "board": ("robot", "seat", None)}
 
     def _update_marker(self, st, origin):
         target, label = self._target(st)

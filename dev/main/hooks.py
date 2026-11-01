@@ -57,6 +57,27 @@ class Addon:
         メッセージを返したら、そこで処理済み（シナリオが会話にするなど）。"""
         return None
 
+    def respawn_point(self, world, player):
+        """リスポーンで戻る場所（世界座標）。None なら決めない（最初に決めた MOD の場所、無ければ最初の出現地点）。"""
+        return None
+
+    def on_respawn(self, world, player):
+        """リスポーンした（サバイバルは手持ちの資源をなくす など）。メッセージを返すと画面に出す。"""
+        return None
+
+    def item_allowed(self, world, item):
+        """item（("material"|"device", id)）を今使ってよいか。False で使えない（持ち物に出ない・置けない）、
+        None なら決めない。シナリオが章ごとに使える物を絞るのに使う。"""
+        return None
+
+    def blueprints_allowed(self, world):
+        """F8 の「設計図」を出してよいか。False で出さない、None なら決めない。"""
+        return None
+
+    def block_categories(self, world):
+        """ブロックプログラムのパレットで出してよい種類の ID の集合（None なら全部）。"""
+        return None
+
     def block_hint(self, world, blocks_file):
         """ブロックプログラム blocks_file（scripts/ のファイル名）の見本（完成形のプログラム）。
         返すと、プログラム編集で長く（1分）完成しないとき、次に置くブロック・入力する値を光らせる。None なら出さない。"""

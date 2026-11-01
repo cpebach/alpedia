@@ -356,16 +356,22 @@ def update(c, dt, input_keys=frozenset(), seated=False, ambient_kpa=0.0):
         p = dd["params"]
         fuel = p.get("fuel", "fuel")
         want = bool(st.pop("ignite", False)) or bool(seated and p.get("key") and p["key"] in input_keys)
+        asked = st.pop("_ask", False)          # E で頼まれた：点火できなかったら理由を画面に出す
         if want and not st.get("lit"):
             e = float(p.get("ignite_energy", 0.0))
             if flow.pull(i, fuel, 1e-6, dry=True) <= 0:
-                st["error"] = "燃料が届いていません（タンクとつなぐ・バルブを開ける）"
+                st["error"] = "燃料が届いていません（燃料の入ったタンクとつなぐ・間のバルブを開ける）"
             elif pool - ignite_cost < e:
-                st["error"] = "電気が足りず点火できません（バッテリーなど）"
+                st["error"] = (f"電気が足りず点火できません（点火に {e / 1000:.0f} kJ 要ります。"
+                               "バッテリー・太陽光パネル・手回し発電機を同じ構築物に付ける）")
             else:
                 ignite_cost += e
                 st["lit"] = True
                 st.pop("error", None)
+                if asked:
+                    _note(c, f"{d['name']}: 点火しました")
+            if asked and not st.get("lit"):
+                _note(c, f"{d['name']}: {st['error']}")
         st["firing"] = 0.0
         st["throttle"] = 0.0
         if st.get("lit"):
@@ -606,6 +612,13 @@ def _distribute(batteries, energy):
                 break
 
 
+def _note(c, text):
+    """画面に出す知らせ（世界が次のティックでメッセージにする）。"""
+    notes = c.__dict__.setdefault("notes", [])
+    if text not in notes:
+        notes.append(text)
+
+
 def cavity_report(c):
     if c.dirty or not hasattr(c, "_net"):
         rebuild_networks(c)
@@ -652,7 +665,8 @@ def interact(c, i, player=None):
         if st.get("lit"):
             return f"{d['name']}: 燃焼中（止める・出力を変えるには、つながるバルブで）"
         st["ignite"] = True
-        return f"{d['name']}: 点火"
+        st["_ask"] = True                   # 結果（点火した・できない理由）は次のティックで知らせる
+        return None
     if t == "tank":
         return f"{d['name']}: " + (", ".join(f"{k} {v:.0f}kg" for k, v in st["contents"].items()) or "空")
     if t == "battery":

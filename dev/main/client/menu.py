@@ -9,7 +9,7 @@ L = log.get("menu")
 
 NAME_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
 RESOLUTIONS = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)]
-PAGE_SIZE = 7
+PAGE_SIZE = 6
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +28,8 @@ def list_worlds():
         try:
             s = json.loads(wj.read_text(encoding="utf-8"))
             info["time"] = s.get("time", 0.0)
+            if isinstance(s.get("story"), dict):
+                info["story"] = s["story"]
         except Exception:  # noqa: BLE001
             info["broken"] = True
         try:
@@ -44,6 +46,24 @@ def list_worlds():
         out.append(info)
     out.sort(key=lambda x: x["mtime"], reverse=True)
     return out
+
+
+def world_mode_text(w):
+    """一覧に出す遊び方：ストーリーなら今の章、ほかはサバイバル／クリエイティブと構築物の数。"""
+    st = w.get("story")
+    if isinstance(st, dict):
+        if st.get("done"):
+            return "ストーリー（クリア）"
+        if not st.get("built"):
+            return "ストーリー（はじめから）"
+        try:
+            ch = int(st.get("ch", 0))
+        except (TypeError, ValueError):
+            return "ストーリー"
+        names = ["序章"] + [f"第{k}章" for k in range(1, 13)] + ["終章", "エピローグ"]
+        return "ストーリー：" + (names[ch] if 0 <= ch < len(names) else f"{ch}")
+    mode = "サバイバル" if "survival" in w["mods"] else "クリエイティブ"
+    return f"{mode}  /  構築物 {w['constructs']}"
 
 
 def list_mods():
@@ -282,49 +302,87 @@ class MainMenu:
         names = [w["name"] for w in worlds]
         if self.selected not in names:
             self.selected = names[0] if names else None
-        self._text("Alpedia", (0, 0.42), 3.0)
-        self._text("物理演算ボクセルサンドボックス", (0, 0.35), 0.9, col=U["color"].light_gray)
-        # ワールド一覧
-        self._panel((-0.2, 0.0), (0.92, 0.58))
-        self._text("ワールド", (-0.64, 0.26), 1.0, origin=(-0.5, 0))
+        self._text("Alpedia", (0, 0.44), 2.6)
+        self._text("物理演算ボクセルサンドボックス", (0, 0.385), 0.8, col=U["color"].light_gray)
+        # 遊び方を選ぶ（新しく始める）
+        modes = [("ストーリー", "物語を最初から（約100分）", self._start_story, U["color"].rgb(0.45, 0.3, 0.6)),
+                 ("サバイバル", "資源を集めて作る・街で取引", lambda: self._quick_new("survival"), U["color"].rgb(0.25, 0.45, 0.3)),
+                 ("クリエイティブ", "何でも置ける・自由に作る", lambda: self._quick_new("creative"), U["color"].rgb(0.25, 0.38, 0.55))]
+        for k, (title, sub, fn, col) in enumerate(modes):
+            x = -0.52 + k * 0.35
+            self._button(title, (x, 0.29), fn, size=(0.32, 0.075), col=col)
+            self._text(sub, (x, 0.235), 0.6, col=U["color"].light_gray)
+        # 続きから（ワールド一覧）
+        self._panel((-0.17, -0.06), (0.98, 0.44))
+        self._text("続きから", (-0.64, 0.135), 0.95, origin=(-0.5, 0))
         pages = max(1, (len(worlds) + PAGE_SIZE - 1) // PAGE_SIZE)
         self.page_index = min(self.page_index, pages - 1)
         start = self.page_index * PAGE_SIZE
         if not worlds:
-            self._text("ワールドがありません。「新規作成」で作ってください", (-0.2, 0.05), 0.85,
+            self._text("まだワールドがありません。上のボタンで始めてください", (-0.17, -0.05), 0.85,
                        col=U["color"].light_gray)
         for k, w in enumerate(worlds[start:start + PAGE_SIZE]):
-            y = 0.19 - k * 0.07
+            y = 0.075 - k * 0.062
             sel = w["name"] == self.selected
             col = U["color"].rgb(0.25, 0.45, 0.65) if sel else U["color"].rgb(0.15, 0.17, 0.22)
             when = time.strftime("%Y-%m-%d %H:%M", time.localtime(w["mtime"]))
-            mode = "サバイバル" if "survival" in w["mods"] else "クリエイティブ"
-            label = f"{w['name']}    {when}  /  {mode}  /  構築物 {w['constructs']}  /  MOD {len(w['mods'])}"
+            label = f"{w['name']}    {when}  /  {world_mode_text(w)}"
             if w.get("broken"):
                 label = f"{w['name']}    （world.json が壊れています）"
-            b = self._button(label, (-0.2, y), (lambda n=w["name"]: self._select(n)), size=(0.88, 0.06), col=col)
+            b = self._button(label, (-0.17, y), (lambda n=w["name"]: self._select(n)), size=(0.94, 0.054), col=col)
             b.text_entity.origin = (-0.5, 0)
             b.text_entity.x = -0.47
         if pages > 1:
-            self._button("▲", (0.29, 0.26), lambda: self._page(-1), size=(0.045, 0.04))
-            self._text(f"{self.page_index + 1}/{pages}", (0.2, 0.26), 0.75)
-            self._button("▼", (0.29, -0.27), lambda: self._page(1), size=(0.045, 0.04))
+            self._button("▲", (0.27, 0.135), lambda: self._page(-1), size=(0.045, 0.04))
+            self._text(f"{self.page_index + 1}/{pages}", (0.18, 0.135), 0.75)
+            self._button("▼", (0.27, -0.255), lambda: self._page(1), size=(0.045, 0.04))
         # 操作ボタン
         has = self.selected is not None
-        x = 0.5
-        self._button("遊ぶ", (x, 0.2), self._play, size=(0.3, 0.07), col=U["color"].rgb(0.2, 0.5, 0.3), enabled=has)
-        self._button("新規作成", (x, 0.11), self.show_new)
-        self._button("ワールド設定", (x, 0.04), lambda: self.show_world_settings(self.selected), enabled=has)
-        self._button("削除", (x, -0.03), lambda: self.show_delete(self.selected), col=U["color"].rgb(0.5, 0.2, 0.2),
+        x = 0.55
+        self._button("遊ぶ", (x, 0.1), self._play, size=(0.3, 0.07), col=U["color"].rgb(0.2, 0.5, 0.3), enabled=has)
+        self._button("ワールド設定", (x, 0.02), lambda: self.show_world_settings(self.selected), enabled=has)
+        self._button("削除", (x, -0.05), lambda: self.show_delete(self.selected), col=U["color"].rgb(0.5, 0.2, 0.2),
                      enabled=has)
-        self._button("マルチプレイ（LAN）", (x, -0.1), self.show_multiplayer, col=U["color"].rgb(0.25, 0.35, 0.55))
-        self._button("ゲーム設定", (x, -0.17), self.show_game_settings)
-        self._button("終了", (x, -0.24), self.on_quit, col=U["color"].rgb(0.3, 0.3, 0.33))
-        self._text("シナリオ（物語）は「新規作成」→「MOD を選ぶ」で\n「シナリオモード」を入れて作ります", (x, -0.315), 0.6,
-                   col=U["color"].light_gray)
+        self._button("詳しく設定して作る…", (x, -0.12), self.show_new)
+        self._button("マルチプレイ（LAN）", (x, -0.19), self.show_multiplayer, col=U["color"].rgb(0.25, 0.35, 0.55))
+        self._button("ゲーム設定", (x, -0.26), self.show_game_settings)
+        self._button("終了", (x, -0.33), self.on_quit, col=U["color"].rgb(0.3, 0.3, 0.33))
         if has:
-            self._text(f"選択中: {self.selected}", (-0.2, -0.33), 0.85, col=U["color"].light_gray)
+            self._text(f"選択中: {self.selected}", (-0.17, -0.31), 0.8, col=U["color"].light_gray)
         self._status_line()
+
+    def _free_name(self, base):
+        names = {w["name"] for w in list_worlds()}
+        k = 1
+        while f"{base}{k}" in names or paths.world_dir(f"{base}{k}").exists():
+            k += 1
+        return f"{base}{k}"
+
+    def _quick_new(self, mode):
+        """サバイバル・クリエイティブを、おすすめの設定（惑星ガイア）ですぐ始める。"""
+        name = self._free_name(mode)
+        mods = ["survival", "city"] if mode == "survival" else []
+        patch = {} if mode == "survival" else {"starter_sample": True}      # クリエイティブ：見本のロケットを置く
+        try:
+            create_world(name, patch, mods, planet="gaia")
+        except Exception as e:  # noqa: BLE001
+            self.status = f"作れません: {e}"
+            self.show_main()
+            return
+        self.selected = name
+        self.on_play(name)
+
+    def _start_story(self):
+        """ストーリーを最初から（新しいワールド）。途中のストーリーは「続きから」に残る。"""
+        name = self._free_name("story")
+        try:
+            create_world(name, {}, ["story"], planet="gaia")
+        except Exception as e:  # noqa: BLE001
+            self.status = f"作れません: {e}"
+            self.show_main()
+            return
+        self.selected = name
+        self.on_play(name)
 
     # --- マルチプレイ（LAN） -------------------------------------------------
     def show_multiplayer(self):
@@ -479,7 +537,7 @@ class MainMenu:
             k = 1
             while f"world{k}" in names:
                 k += 1
-            self._new = {"name": f"world{k}", "planet": "terra", "voxel_size": 0.5, "gravity_scale": 1.0,
+            self._new = {"name": f"world{k}", "planet": "gaia", "voxel_size": 0.5, "gravity_scale": 1.0,
                          "cleanup": True, "full_rigid": True, "mods": set()}
         opts = self._new
         self._text("新しいワールド", (0, 0.42), 1.8)
@@ -756,11 +814,12 @@ class MainMenu:
         self._text("フォントは config/settings.json で変更できます", (0, y - 0.7), 0.6, col=U["color"].light_gray)
 
         def save():
+            prev = dict(self.cfg.get("window", {}))
             self.cfg.clear()
             self.cfg.update(cfg)
             try:
                 save_config(self.cfg)
-                apply_window_settings(self.cfg)
+                apply_window_settings(self.cfg, prev)
                 self.status = "ゲーム設定を保存しました"
             except Exception as e:  # noqa: BLE001
                 self.status = f"保存できません: {e}"
@@ -788,9 +847,48 @@ def _default_name():
         return "player"
 
 
-def apply_window_settings(cfg):
+def patch_mouse_properties():
+    """ursina の mouse.locked / mouse.visible は、ウィンドウの設定をまるごと（作ったときの大きさ・全画面のまま）送り直す。
+    そのため、ウィンドウの大きさを変えたり最大化したりしたあとにメニュー・画面を開くと、元の大きさに戻ってしまう。
+    カーソルの表示とマウスのモードだけを送るように差し替える（大きさ・全画面はそのまま）。"""
+    from panda3d.core import WindowProperties
+    from ursina import application
+    from ursina.mouse import Mouse
+
+    def send(hidden=None, mode=None):
+        base = application.base
+        if base is None or getattr(base, "win", None) is None:
+            return
+        wp = WindowProperties()
+        if hidden is not None:
+            wp.setCursorHidden(bool(hidden))
+        if mode is not None:
+            wp.setMouseMode(mode)
+        base.win.requestProperties(wp)
+
+    def set_locked(self, value):
+        self._locked = value
+        send(hidden=value, mode=WindowProperties.M_confined if value else WindowProperties.M_absolute)
+        self._locked_mouse_last_frame = True
+
+    def set_visible(self, value):
+        self._visible = value
+        send(hidden=not value)
+
+    try:
+        Mouse.locked = property(Mouse.locked.fget, set_locked)
+        Mouse.visible = property(Mouse.visible.fget, set_visible)
+    except Exception as e:  # noqa: BLE001
+        L.warning("マウスの設定の差し替えに失敗: %s", e)
+
+
+def apply_window_settings(cfg, prev=None):
+    """設定のウィンドウ（解像度・全画面）を反映する。prev（前の設定）と同じなら何もしない
+    （手で大きさを変えた・最大化したウィンドウを、設定の保存で元に戻さないため）。"""
     from ursina import window, Vec2
     w = cfg["window"]
+    if prev is not None and all(prev.get(k) == w.get(k) for k in ("width", "height", "fullscreen")):
+        return
     try:
         if bool(window.fullscreen) != bool(w.get("fullscreen", False)):
             window.fullscreen = bool(w.get("fullscreen", False))
@@ -816,6 +914,7 @@ def run_client(cfg, world_name=None, on_ready=None):
     app = Ursina(title="Alpedia", borderless=False, fullscreen=wcfg.get("fullscreen", False),
                  size=(wcfg.get("width", 1280), wcfg.get("height", 720)), vsync=wcfg.get("vsync", True),
                  development_mode=False)
+    patch_mouse_properties()
     try:
         from ursina import window
         window.exit_button.enabled = False

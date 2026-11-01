@@ -274,7 +274,10 @@ class BlockEditor:
             destroy(e)
         U = self.U
         col = U["color"]
-        cats = list(B.CATEGORIES)
+        allowed = self.world.block_categories()          # シナリオでは章ごとに出す種類を絞る
+        cats = [c for c in B.CATEGORIES if allowed is None or c[0] in allowed]
+        if cats and self.cat not in [c[0] for c in cats]:
+            self.cat = cats[0][0]
         want_cat, want_kind, want_node = self._hint_palette()
         for k, (cid, name, rgb) in enumerate(cats):
             x = -0.79 + (k % 2) * 0.17

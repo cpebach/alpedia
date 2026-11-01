@@ -3,15 +3,79 @@ import numpy as np
 
 from main.hooks import Addon
 
-DIG_AMOUNT = 20.0        # 1回掘ると手に入る資源
+DIG_AMOUNT = 10.0        # 1回掘ると手に入る資源（岩のブロック5個・鋼鉄のブロック1個分）
 WATER_AMOUNT = 20.0      # 1回くむと手に入る水（海や池の水は減らない）
 # 最初の所持品（詰まないように：精錬機・手回し発電機・太陽光パネル・タンクが作れて、少し飛べる）
 STARTER_KIT = {"iron": 250, "silica": 40, "parts": 12, "fuel": 60}
 
 
+# サバイバルの目標（上から順に。画面の左上に出す）：(ID, 表示)
+GOALS = [
+    ("ore", "地面を掘って鉱石を 30 集める（左クリック）"),
+    ("refiner", "精錬機を置く（I → 機器 → 精錬機）"),
+    ("iron", "精錬機に鉱石を入れて、鉄を受け取る（精錬機を E）"),
+    ("fuel", "燃料を 100 ためる（硫黄鉱石・水を精錬。タンクの分も数える）"),
+    ("fly", "推進機の乗り物に乗って、高さ 50 m まで飛ぶ"),
+    ("orbit", "軌道に乗る（近点が地表より上）"),
+    ("moon", "月に降り立つ"),
+]
+
+
 class SurvivalRules(Addon):
     name = "survival"
     resource_rules = True
+    settings_keys = ("survival",)
+
+    def _st(self, world):
+        return world.settings.setdefault("survival", {}).setdefault("goals", {})
+
+    def goals_state(self, world):
+        """画面用：[(ID, 表示, 済んだか)]"""
+        st = self._st(world)
+        return [(g, t, bool(st.get(g))) for g, t in GOALS]
+
+    def _check_goals(self, world):
+        st = self._st(world)
+        p = world.player
+        inv = p.inventory
+
+        def done(g):
+            if not st.get(g):
+                st[g] = True
+                text = dict(GOALS)[g]
+                world.message("◎ 目標達成：" + text.split("（")[0])
+        if inv.get("ore", 0.0) >= 30:
+            done("ore")
+        if not st.get("refiner") and any(d and d["def"] == "refiner" for c in world.constructs.values() for d in c.devs):
+            done("refiner")
+        fuel = inv.get("fuel", 0.0) + sum(float(d["state"].get("contents", {}).get("fuel", 0.0))
+                                         for c in world.constructs.values() for d in c.devs
+                                         if d and d["def"] == "tank")
+        if fuel >= 100:
+            done("fuel")
+        if p.seated:
+            c = world.constructs.get(p.seated[0])
+            if c is not None:
+                o = world.orbit_info(c.center_of_mass(), c.velocity())
+                if o and o.get("altitude", 0.0) >= 50.0:
+                    done("fly")
+                if o and o.get("periapsis", -1.0) > 0.0 and o.get("apoapsis", 0.0) != float("inf"):
+                    done("orbit")
+        if len(world.planets) > 1 and p.on_ground and not p.seated:
+            pl = world.nearest_planet(p.pos)
+            if pl is not None and pl is not world.planets[0] and ("ルナ" in str(getattr(pl, "name", ""))
+                                                                  or "月" in str(getattr(pl, "name", ""))):
+                done("moon")
+
+    def before_physics(self, world, dt):
+        self._goal_t = getattr(self, "_goal_t", 0.0) + dt
+        if self._goal_t >= 0.5:
+            self._goal_t = 0.0
+            try:
+                self._check_goals(world)
+            except Exception:  # noqa: BLE001
+                pass
+        return set()
 
     # --- 読み込み -----------------------------------------------------------
     def on_load(self, world):
@@ -26,6 +90,18 @@ class SurvivalRules(Addon):
     def on_player_join(self, world, player):
         """マルチプレイ：参加した人にも最初の資材を（world.player はその人）。"""
         self.on_load(world)
+
+    # --- リスポーン（HP は無い。戻るときに手持ちの資源をなくす） ----------------------
+    KEEP_ON_RESPAWN = ("credits",)       # お金は口座にある扱いでなくさない
+
+    def on_respawn(self, world, player):
+        lost = {k: v for k, v in player.inventory.items() if v > 0 and k not in self.KEEP_ON_RESPAWN}
+        for k in lost:
+            player.inventory[k] = 0.0
+        if not lost:
+            return None
+        return ("手持ちの資源をなくしました（" + world.registry.res_text(lost, "、") +
+                "）。部屋の収納箱に預けた物は無事です")
 
     # --- 置く・外す ---------------------------------------------------------
     def pay(self, world, cost):
@@ -105,6 +181,9 @@ class SurvivalRules(Addon):
             if amt >= 1e-6:
                 p.inventory[k] = p.inventory.get(k, 0.0) + amt
                 moved.append(f"{world.registry.res_name(k)} {amt:.0f} 回収")
+                if k == "iron" and not self._st(world).get("iron"):
+                    self._st(world)["iron"] = True
+                    world.message("◎ 目標達成：" + dict(GOALS)["iron"].split("（")[0])
         if not moved:
             return None
         st = c.status or {}

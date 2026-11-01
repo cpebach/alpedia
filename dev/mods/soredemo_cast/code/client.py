@@ -34,8 +34,11 @@ class CastClient(ClientAddon):
             cur[1].destroy()
         skin = self._skin()
         mm = skin.models.get(n.defn.get("model")) if skin is not None else None
-        if mm is None:
-            return None
+        if mm is None:                          # VRM が無い・読めない：箱の体で出す（話しかけられるように）
+            from main.client.game import BoxBody
+            b = BoxBody(self.game, n)
+            self.bodies[n.key] = (n.defn["id"], b)
+            return b
         from importlib import import_module
         view = import_module(type(skin).__module__.rsplit(".", 1)[0] + ".view")
         b = view.VRMBody(self.game, n, mm)

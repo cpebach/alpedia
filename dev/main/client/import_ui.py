@@ -90,8 +90,21 @@ class ImportPanel:
             destroy(ch)
 
     # --- 一覧 -----------------------------------------------------------
+    def _usable(self, src):
+        """一覧に出すか：設計図は、必要な MOD がこのワールドに入っている物だけ（シナリオの途中は出さない）。"""
+        group, path = src
+        if not group.startswith("設計図"):
+            return True
+        if not self.world.blueprints_allowed():
+            return False
+        try:
+            meta = objio._resolve(path)[0]
+        except Exception:  # noqa: BLE001
+            return True
+        return all(r in self.world.mods for r in meta.get("requires", []) if isinstance(r, str))
+
     def rescan(self):
-        self.sources = objio.list_sources(self.world.dir, paths.SAVES, self.world.mods)
+        self.sources = [x for x in objio.list_sources(self.world.dir, paths.SAVES, self.world.mods) if self._usable(x)]
         cur = self.sources[self.sel][1] if self.sel is not None and self.sel < len(self.sources) else None
         self.sel = None
         if cur is not None:

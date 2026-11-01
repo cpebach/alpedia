@@ -240,6 +240,15 @@ class CityAddon(Addon):
     def home_id(self):
         return self.economy.home_id() if self.economy else None
 
+    def respawn_point(self, world, player):
+        """リスポーン：使える自宅（部屋）があれば、その戸口へ。"""
+        city, home = self.home()
+        if city is None or not self.can_use_home(home["id"]):
+            return None
+        pl = world.nearest_planet(city.x)
+        up = pl.up(city.x) if pl is not None else city.R[:, 1]
+        return city.x + city.R @ home["door"] + up * 1.2
+
     def home(self):
         """自宅：(街, 家) か (None, None)"""
         hid = self.home_id()

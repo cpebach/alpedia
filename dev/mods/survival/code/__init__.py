@@ -8,3 +8,8 @@
 def world_addon():
     from .rules import SurvivalRules
     return SurvivalRules()
+
+
+def client_addon(game):
+    from .client import SurvivalClient
+    return SurvivalClient(game)

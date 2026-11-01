@@ -391,8 +391,16 @@ def ui_image(name, size=128, bg=(20, 26, 36, 170), fg=(240, 244, 250, 255), ring
         d.rectangle([P(-0.1, 0.2), P(0.08, 0.13)], fill=fg)
         d.ellipse([P(-0.12, 0.09), P(0.12, -0.15)], fill=bg)
         d.ellipse([P(-0.07, 0.04), P(0.07, -0.1)], fill=fg)
-    elif name == "key":
-        d.rounded_rectangle([P(-0.22, 0.16), P(0.22, -0.16)], radius=s * 0.05, outline=fg, width=w)
+    elif name == "key" or name.startswith("key:"):
+        d.rounded_rectangle([P(-0.24, 0.18), P(0.24, -0.18)], radius=s * 0.05, outline=fg, width=w)
+        label = name[4:] if name.startswith("key:") else ""
+        if label:                                   # キーの文字（X など）を真ん中に
+            try:
+                from PIL import ImageFont
+                font = ImageFont.load_default(size=int(s * (0.22 if len(label) <= 2 else 0.12)))
+            except Exception:  # noqa: BLE001
+                font = None
+            d.text((c, c), label, fill=fg, font=font, anchor="mm")
     small = img.resize((size, size), Image.LANCZOS)
     return small
 

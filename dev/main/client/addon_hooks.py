@@ -49,6 +49,14 @@ class ClientAddon:
         見た目を変えたら作り直す。プレイ中にファイルを読まないように、モデルは拡張を作るときに読んでおく。"""
         return None
 
+    def nearby_priority(self, target):
+        """近くのボタンの並び順の補正（小さいほど上）。今の目標の機器を上にするときなどに負の数を返す。"""
+        return 0.0
+
+    def seat_camera(self, construct):
+        """座っている構築物（操縦台など）が遠隔操作の台なら、カメラで追う構築物を返す（ドローンなど）。違えば None。"""
+        return None
+
     def update(self, origin, far):
         """毎フレームの描画。origin はカメラの位置（浮動原点）。"""
 

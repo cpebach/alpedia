@@ -118,7 +118,7 @@ class Game:
         self.sel_text = Text(parent=ui, position=(0, -0.385), origin=(0, 0), scale=0.85, text="")
         self.msg_text = Text(parent=ui, position=window.left + (0.01, 0.06), origin=(-0.5, -0.5),
                              scale=0.7, text="")
-        self.aim_text = Text(parent=ui, position=(0.02, -0.03), origin=(-0.5, 0.5), scale=0.7, text="")
+        self.aim_text = Text(parent=ui, position=(0, -0.04), origin=(0, 0.5), scale=0.7, text="")   # 照準の下、真ん中ぞろえ
         # 拡張（街パックなど）の画面側
         from ..modcode import client_addons, load_client
         load_client(self.load_errors)
@@ -214,7 +214,7 @@ class Game:
         if hit is None:
             hit = self.hit
             if not (hit and hit["kind"] == "voxel" and hit["construct"].devs[hit["index"]]):
-                near = next((t for t in self.nearby_targets() if t["kind"] == "p"), None)
+                near = next((t for t in self.nearby_targets() if t.get("settings")), None)
                 if near is not None:
                     hit = near["hit"]           # 見ていなくても、近くの機器の設定を開く
         if w.player.seated:
@@ -417,13 +417,52 @@ class Game:
             _, _, _, look = self.look_vectors()
             self.world.place(self.hit, item, self.dir_index, look)
 
+    def screen_ray(self, x, y):
+        """画面の UI 座標 (x, y) を通る視線：(始点, 向き)。タッチで触った所を狙うのに使う。"""
+        from panda3d.core import Point2, Point3
+        base = self.U["application"].base
+        win = self.U["window"]
+        fx = x / (win.aspect_ratio / 2)
+        fy = y / 0.5
+        near, far = Point3(), Point3()
+        if not base.camLens.extrude(Point2(fx, fy), near, far):
+            _, _, _, look = self.look_vectors()
+            return self.origin, look
+        v = base.render.getRelativeVector(base.cam, far - near)
+        d = np.array([v[0], v[1], v[2]], dtype=np.float64)
+        n = float(np.linalg.norm(d))
+        if n < 1e-9:
+            _, _, _, look = self.look_vectors()
+            return self.origin, look
+        return np.asarray(self.origin, dtype=np.float64), d / n
+
+    def touch_action(self, kind, x, y):
+        """タッチ：画面の (x, y) を触った。kind = "tap"（使う／置く）・"hold"（長押し：壊す・掘る）。"""
+        w = self.world
+        p = w.player
+        if p.seated or self.editor is not None or self.paused:
+            return
+        o, d = self.screen_ray(x, y)
+        reach = float(p.defn.get("reach", 8.0)) + float(np.linalg.norm(o - p.eye()))
+        hit = w.raycast(o, d, reach)
+        if kind == "hold":
+            self.hit = hit
+            self.do_remove()
+            return
+        if hit and self._usable(hit):
+            self.do_interact(hit)
+            return
+        if hit and (hit["kind"] in ("voxel", "terrain", "water") or hit.get("placeable")):
+            self.hit = hit
+            self.do_place()
+
     def do_interact(self, hit):
         if not any(a.interact(hit) for a in self.addons):
             self.world.interact(hit)
 
-    def do_target(self, t):
-        """近くのもの（画面右のボタン）を使う。"""
-        if t["kind"] == "p":
+    def do_target(self, t, settings=False):
+        """近くのもの（画面右のボタン）を使う。settings=True なら設定（歯車）を開く。"""
+        if settings or t["kind"] == "p":
             self.open_editor(t["hit"])
         else:
             self.do_interact(t["hit"])
@@ -444,8 +483,12 @@ class Game:
             return bool(hit["construct"].devs[hit["index"]]) or any(a.aim(hit) for a in self.addons)
         return any(a.aim(hit) for a in self.addons)
 
+    # 近くのボタンに出さない機器（E で使うことがほとんど無い）
+    QUIET_DEVICES = {"pipe", "battery"}
+
     def nearby_targets(self, radius=2.6):
-        """近くにある、触れるもの（近い順）：[{"label", "hit", "kind": "e"(E)/"p"(設定), "icon", "dist"}]"""
+        """近くにある、触れるもの（使う順）：[{"label", "hit", "kind": "e", "settings": 設定を開けるか, "icon", "dist"}]
+        機器 1 つにボタン 1 つ（設定はボタンの歯車・P）。配管・バッテリーは出さない。MOD の nearby_priority で並べ替える。"""
         w = self.world
         p = w.player
         if p.seated:
@@ -454,7 +497,8 @@ class Game:
         out = []
         surv = not w.creative
         names = {"seat": "座る", "computer": "起動・停止", "tank": "燃料を入れる" if surv else "中身を切り替える",
-                 "actuator": "動かす", "processor": "原料を入れる・受け取る" if surv else None}
+                 "actuator": "動かす", "processor": "原料を入れる・受け取る" if surv else "ON/OFF",
+                 "thruster": "点火", "valve": "開閉", "crank": "回す"}
         for c in w.constructs.values():
             if not c.n_vox or not any(c.devs):
                 continue
@@ -464,30 +508,35 @@ class Game:
             for i, d in enumerate(c.devs):
                 if not d:
                     continue
+                dd = c.reg.device(d["def"]) or {}
+                t_ = dd.get("type")
+                if t_ in self.QUIET_DEVICES:
+                    continue
                 ctr = c.pos[8 * i:8 * i + 8].mean(0)
                 dist = float(np.linalg.norm(ctr - eye))
                 if dist > radius:
                     continue
-                dd = c.reg.device(d["def"]) or {}
-                t_ = dd.get("type")
                 hit = {"kind": "voxel", "t": dist, "construct": c, "index": i, "face": 2, "point": ctr}
-                lab = names.get(t_, "操作") if t_ in names else "操作"
-                if lab:
-                    out.append({"label": f"{lab}（{d['name']}）", "hit": hit, "kind": "e", "dist": dist,
-                                "icon": "interact"})
-                if t_ in ("computer", "actuator") or t_ not in ("seat",):
-                    sl = {"computer": "プログラム", "actuator": "動作の設定"}.get(t_, "名前の設定")
-                    out.append({"label": f"{sl}（{d['name']}）", "hit": hit, "kind": "p", "dist": dist + 0.01,
-                                "icon": "settings"})
+                out.append({"label": f"{names.get(t_, '操作')}（{d['name']}）", "hit": hit, "kind": "e", "dist": dist,
+                            "icon": "interact", "settings": t_ != "seat"})
         for a in self.addons:
             try:
                 out += a.nearby(p.pos, radius) or []
             except Exception:  # noqa: BLE001
                 L.exception("近くのものを探せません（%s）", a.name)
-        out.sort(key=lambda t: t["dist"])
-        # 同じ物の E と設定は並べて、最大 4 つ
-        return out[:4]
 
+        def rank(t):
+            pr = 0.0
+            for a in self.addons:
+                fn = getattr(a, "nearby_priority", None)
+                if fn is not None:
+                    try:
+                        pr += float(fn(t) or 0.0)
+                    except Exception:  # noqa: BLE001
+                        pass
+            return (pr, t["dist"])
+        out.sort(key=rank)
+        return out[:4]
 
     def _leave(self, action, save=True, status=""):
         if self.leaving:
@@ -655,8 +704,35 @@ class Game:
         items.append(b)
         items.append(Text(parent=self.pause_root, origin=(0, 0.5), position=(0.45, -0.01), scale=0.6,
                           color=color.light_gray,
-                          text="ON：画面左下のスティックで移動、ほかの所をなぞって視点\n"
-                               "（タッチ画面向け。OFF でもボタンは Alt を押すと押せます）"))
+                          text="ON：左下のスティックで移動、なぞって視点、\n"
+                               "タップで使う・置く、長押しで壊す・掘る\n"
+                               "（OFF でもボタンは Alt を押すと押せます）"))
+
+        def later(fn):
+            def run():
+                self.toggle_pause()
+                fn()
+            return run
+        # リスポーン（HP は無い。宇宙に飛ばされた・出られない ときに）。サバイバルは手持ちの資源をなくすので2回押す
+        surv = not self.world.creative
+        armed = {"on": False}
+
+        def respawn():
+            if surv and not armed["on"]:
+                armed["on"] = True
+                rb.text = "もう一度：資源をなくして戻る"
+                rb.color = color.rgb(0.6, 0.3, 0.2)
+                return
+            self.toggle_pause()
+            self.world.respawn()
+        rb = pbtn("リスポーン（戻る）", -0.38, respawn, color.rgb(0.4, 0.3, 0.2))
+        items.append(rb)
+        b = pbtn("読み込み（設計図・OBJ）", -0.12, later(self._import), color.rgb(0.25, 0.35, 0.45))
+        b.x = 0.45
+        items.append(b)
+        b = pbtn("見ている構築物を OBJ で出力", -0.20, later(self._export), color.rgb(0.25, 0.35, 0.45))
+        b.x = 0.45
+        items.append(b)
         # 見た目（自分だけ。ほかの人に見える）
         defs = list(self.world.registry.defs["players"].values())
         cur = self.world.local_player.defn
@@ -738,6 +814,10 @@ class Game:
             return
         if key == c.get("toggle_help", "f1"):
             self.open_keys()
+            return
+        if key == c.get("debug_hud", "f3"):
+            g = self.cfg["graphics"]
+            g["debug_hud"] = not g.get("debug_hud", False)
             return
         if key == c.get("camera_mode", "c") and not w.player.seated:
             self.enter_camera()
@@ -936,10 +1016,21 @@ class Game:
         cam = U["camera"]
         cam_up = up
         cam_look = look
+        self._seat_view()
+        follow = self._seat_follow()
         if self.cam_mode is not None:
             origin, cam_look, cam_up, _ = self.cam_mode.camera()
+        elif follow is not None:                # 遠隔操作：操っている物（ドローンなど）の後ろから
+            com, dist = follow
+            origin = com - look * dist + up * dist * 0.25
         elif self.third_person:
-            origin = origin - look * 5.0 + up * 0.8
+            dist = 5.0
+            if w.player.seated:                 # 乗り物の大きさに合わせて離れる
+                c = w.constructs.get(w.player.seated[0])
+                if c is not None and c.n_vox:
+                    ext = float(np.linalg.norm(c.pos.max(0) - c.pos.min(0)))
+                    dist = float(np.clip(ext * 1.3, 5.0, 40.0))
+            origin = self._camera_clip(origin, -look * dist + up * (0.8 + dist * 0.1))
         cam.position = (0, 0, 0)
         from panda3d.core import LPoint3f, LVector3f
         cam.lookAt(LPoint3f(*cam_look.astype(np.float32)), LVector3f(*cam_up.astype(np.float32)))
@@ -955,6 +1046,59 @@ class Game:
         self._update_hud(dt)
         pf["update"] += _time.perf_counter() - t_phys
         self._perf_frame(U["utime"].dt)
+
+    def _camera_clip(self, eye, offset):
+        """三人称のカメラが壁・地面・建物の向こうに入らないように、手前で止める（乗っている乗り物は通り抜ける）。"""
+        w = self.world
+        n = float(np.linalg.norm(offset))
+        if n < 1e-6:
+            return eye
+        d = offset / n
+        own = w.player.seated[0] if w.player.seated else None
+        start, left = np.asarray(eye, dtype=np.float64), n
+        for _ in range(4):
+            try:
+                h = w.raycast(start, d, left)
+            except Exception:  # noqa: BLE001
+                return eye + offset
+            if h is None:
+                return eye + offset
+            if h.get("kind") == "voxel" and own is not None and h["construct"].id == own:
+                step = float(h["t"]) + 0.05       # 自分の乗り物：その先から調べ直す
+                start, left = start + d * step, left - step
+                if left <= 0:
+                    return eye + offset
+                continue
+            t = float(np.linalg.norm(start + d * float(h["t"]) - eye))
+            return eye + d * max(t - 0.4, 0.3)
+        return eye + offset
+
+    def _seat_view(self):
+        """座ったら三人称（一人称では乗り物の中しか見えないため）。降りたら元の視点に戻す。V でいつでも切り替え。"""
+        seated = self.world.player.seated is not None
+        was = getattr(self, "_was_seated", False)
+        if seated and not was:
+            self._third_before_seat = self.third_person
+            self.third_person = True
+        elif was and not seated:
+            self.third_person = getattr(self, "_third_before_seat", False)
+        self._was_seated = seated
+
+    def _seat_follow(self):
+        """座っている席が遠隔操作なら、操っている構築物を後ろから映す：(重心, 距離) か None。MOD の seat_camera() が決める。"""
+        p = self.world.player
+        if not p.seated or not self.third_person:
+            return None
+        c = self.world.constructs.get(p.seated[0])
+        if c is None:
+            return None
+        for a in self.addons:
+            fn = getattr(a, "seat_camera", None)
+            t = fn(c) if fn else None
+            if t is not None and t.n_vox:
+                ext = float(np.linalg.norm(t.pos.max(0) - t.pos.min(0)))
+                return t.center_of_mass(), float(np.clip(ext * 2.0, 4.0, 30.0))
+        return None
 
     def _perf_frame(self, real_dt):
         """処理の重さの内訳を数秒ごとにまとめる（画面左上と、10秒ごとにログ）。"""
@@ -1166,35 +1310,24 @@ class Game:
             if c.anchor:
                 info += "  ［固定中：機器以外のブロックで E を押すと切り離し］"
             if d:
-                info += f"\n{d['name']} ({d['def']}) 向き {DIR_NAMES[d['dir']]}"
+                dd = c.reg.device(d["def"]) or {}
+                t_ = dd.get("type")
+                info += f"\n{d['name']}"
+                if dd.get("directional"):
+                    info += f"  向き {DIR_NAMES[d['dir']]}"
                 same = sum(1 for x in c.devs if x and x["name"] == d["name"])
                 if same > 1:
-                    info += f"  （同名 {same} 個：まとめて動く）"
-                if d["def"] and (c.reg.device(d["def"]) or {}).get("type") == "computer":
-                    info += "  ［E 起動/停止・P プログラム編集］"
-                elif (c.reg.device(d["def"]) or {}).get("type") != "actuator":
-                    info += "  ［P 設定］"
-                t_ = (c.reg.device(d["def"]) or {}).get("type")
+                    info += f"  （同じ名前が {same} 個：まとめて動く）"
                 surv = not w.creative
-                if t_ == "tank":
-                    info += "  ［E 手持ちの燃料を入れる］" if surv else "  ［E 中身の切り替え］"
-                elif t_ == "processor" and surv:
-                    info += "  ［E 原料を入れる・できた物を受け取る］"
-                elif t_ == "thruster":
-                    info += "  ［E 点火（止める・出力はバルブで）］"
-                elif t_ == "valve":
-                    info += "  ［E 開閉・P 開き具合］"
-                if (c.reg.device(d["def"]) or {}).get("type") == "actuator":
-                    from .. import actuator as act
-                    st = d["state"]
-                    info += (f"\n角度 {st.get('angle', 0):.0f}°  伸び {st.get('ext', 0):.2f}  "
-                             f"結合 {'あり' if act.is_attached(c, i) else 'なし'}"
-                             f"\n設定: {act.preset_text(st)}  ［E 実行・P 動作設定］")
-                is_act = (c.reg.device(d["def"]) or {}).get("type") == "actuator"
-                st = {} if is_act else {k: v for k, v in d["state"].items()
-                                        if not k.startswith("_") and k not in ("memory", "display")}
-                if st:
-                    info += "\n" + ", ".join(f"{k}={_fmt(v)}" for k, v in st.items())
+                hint = {"computer": "E 起動/停止・P プログラム", "thruster": "E 点火・止めるのはバルブで",
+                        "valve": "E 開閉・P 開き具合", "actuator": "E 実行・P 動作の設定",
+                        "tank": "E 手持ちの燃料を入れる" if surv else "E 中身の切り替え",
+                        "processor": "E 原料を入れる・できた物を受け取る" if surv else "P 設定",
+                        "seat": "E 座る"}.get(t_, "P 名前の設定")
+                info += f"\n［{hint}］"
+                txt = device_status_text(c, i, d, dd)
+                if txt:
+                    info += "\n" + txt
             s = c.status
             if s:
                 info += f"\n電力 {s.get('stored', 0)/1e6:.2f}/{s.get('capacity', 0)/1e6:.1f} MJ  発電 {s.get('production', 0)/1e3:.1f} kW  消費 {s.get('demand', 0)/1e3:.1f} kW"
@@ -1255,12 +1388,16 @@ class Game:
         pl = w.nearest_planet(p.pos)
         alt = float(pl.sdf(p.pos[None])[0]) if pl else 0
         spd = float(np.linalg.norm(p.vel))
-        lines = [f"Alpedia  ワールド: {w.name}  時刻 {w.time:.0f}s",
-                 f"{pl.name if pl else '宇宙'}  高度 {alt:.1f} m  速度 {spd:.1f} m/s",
-                 f"構築物 {len(w.constructs)}  頂点 {sum(c.n_vert for c in w.constructs.values())}",
-                 f"ジェットパック {'ON' if p.jetpack else 'OFF'}{'' if w.creative or not p.jetpack else ('（燃料 %.0f）' % p.inventory.get('fuel', 0.0))}  {'クリエイティブ' if w.creative else 'サバイバル'}{'  完全剛体' if w.settings.get('full_rigid') else ''}  物理:{native.name()}"]
-        if self._perf_text:
-            lines.append(self._perf_text)
+        dbg = bool(self.cfg["graphics"].get("debug_hud", False))
+        lines = [f"{pl.name if pl else '宇宙'}  高度 {alt:.1f} m  速度 {spd:.1f} m/s"]
+        if p.jetpack:
+            lines.append("ジェットパック ON" + ("" if w.creative else "（燃料 %.0f）" % p.inventory.get("fuel", 0.0)))
+        if dbg:
+            lines.insert(0, f"Alpedia  ワールド: {w.name}  時刻 {w.time:.0f}s  {'クリエイティブ' if w.creative else 'サバイバル'}"
+                            f"{'  完全剛体' if w.settings.get('full_rigid') else ''}  物理:{native.name()}")
+            lines.append(f"構築物 {len(w.constructs)}  頂点 {sum(c.n_vert for c in w.constructs.values())}")
+            if self._perf_text:
+                lines.append(self._perf_text)
         net = w.net
         if net is not None and net.role == "client":
             lines.append(f"マルチプレイ参加中（ホスト {net.host_name}）  {1 + len(net.others)} 人")
@@ -1296,7 +1433,56 @@ class Game:
             cs = "" if w.creative or not cost else "  費用 " + w.registry.res_text(cost, ", ")
             self.sel_text.text = f"{'素材' if kind == 'material' else '機器'}: {name}{extra}{cs}"
         now = _time.time()
+        if alt > 20000.0 and not p.seated and now - getattr(self, "_lost_hint_t", 0.0) > 30.0:
+            self._lost_hint_t = now          # 宇宙に飛ばされた：戻り方を知らせる
+            w.message("宇宙に飛ばされた？ Esc（メニュー）の「リスポーン」で戻れます")
         self.msg_text.text = "\n".join(m for t, m in w.msgs if now - t < 8)
+
+
+def device_status_text(c, i, d, dd):
+    """機器の今の状態を、遊ぶ人が読める言葉で（内部の値の名前は出さない）。"""
+    st = d.get("state", {})
+    t_ = dd.get("type")
+    reg = c.reg
+    out = ""
+    if t_ == "thruster":
+        if st.get("lit"):
+            out = f"燃えている　出力 {float(st.get('throttle', st.get('firing', 0.0)) or 0.0) * 100:.0f}%"
+        else:
+            out = "止まっている"
+    elif t_ == "valve":
+        out = f"開き具合 {float(st.get('open', 0.0)) * 100:.0f}%" + ("（閉）" if float(st.get("open", 0.0)) <= 0.001 else "")
+    elif t_ == "tank":
+        cap = float((dd.get("params") or {}).get("capacity", 0.0))
+        cont = {k: v for k, v in (st.get("contents") or {}).items() if v >= 0.05}
+        if not cont:
+            out = "空" + (f"（{cap:.0f} まで入る）" if cap else "")
+        else:
+            out = "中身: " + reg.res_text(cont, ", ") + (f" / {cap:.0f}" if cap else "")
+    elif t_ == "battery":
+        cap = float((dd.get("params") or {}).get("capacity", 0.0))
+        ch = float(st.get("charge", 0.0))
+        out = f"電気 {ch / 1e6:.2f}" + (f" / {cap / 1e6:.1f} MJ（{ch / cap * 100:.0f}%）" if cap else " MJ")
+    elif t_ == "computer":
+        out = "動いている" if st.get("running") else "止まっている"
+        if st.get("blocks") or st.get("script"):
+            out += f"　プログラム「{st.get('blocks') or st.get('script')}」".replace(".blocks.json", "").replace(".py", "")
+    elif t_ == "actuator":
+        from .. import actuator as act
+        out = (f"角度 {st.get('angle', 0):.0f}°  伸び {st.get('ext', 0):.2f}  "
+               f"結合 {'あり' if act.is_attached(c, i) else 'なし'}\n設定: {act.preset_text(st)}")
+    elif t_ == "processor":
+        store = {k: v for k, v in (st.get("store") or {}).items() if v >= 0.5}
+        out = ("動いている" if st.get("working") else ("止めている" if not st.get("enabled", True) else "待機中"))
+        if store:
+            out += "　中: " + reg.res_text(store, ", ")
+    elif t_ in ("generator", "antenna", "air_vent", "custom"):
+        out = "ON" if st.get("enabled", True) else "OFF"
+        if t_ == "air_vent":
+            out += "　" + {"fill": "与圧", "drain": "減圧"}.get(st.get("mode"), str(st.get("mode", "")))
+    if st.get("error"):
+        out += ("\n" if out else "") + "⚠ " + str(st["error"])
+    return out
 
 
 def _fmt(v):

@@ -92,6 +92,14 @@ class StoryAddon(SceneryHost, Addon):
         for s in self.scenes:
             self.points.update(s.points)
         self.points.update({k: v for k, v in self.port.points.items()})
+        if "desk" in self.points and "pad" in self.points:       # 第10章：ミカガの机の横の端末（ポッドの記録）
+            d = np.asarray(self.points["desk"], float)
+            up = self.luna.up(d)
+            to_pad = np.asarray(self.points["pad"], float) - d
+            side = np.cross(up, to_pad)
+            n = float(np.linalg.norm(side))
+            side = side / n if n > 1e-6 else np.cross(up, [1.0, 0, 0])
+            self.points["record"] = d + side * 1.6 + up * 0.6
         for k, v in {"built": False, "ch": 0, "goals": {}, "ids": {}, "log": [], "n": 0, "dig": 0, "look": 0.0,
                      "rod_t": 0.0, "events": [], "lights": False, "done": False, "ch_t": 0.0, "movies": [],
                      "seen": [], "cnt": {}, "flags": {}}.items():
@@ -142,6 +150,47 @@ class StoryAddon(SceneryHost, Addon):
     # ------------------------------------------------------------------
     # 最初に1回：地面の跡・構築物・スクリプト・プレイヤーの位置
     # ------------------------------------------------------------------
+    # --- 章ごとに使える物（物語が進むと増える。クリアしたら全部） ---------------------
+    # 機器 → 使えるようになる章。ここに無い機器はクリアまで使えない（素材はいつでも使える）
+    DEVICE_UNLOCK = {"pipe": "factory", "valve": "factory", "thruster": "repair", "tank": "repair",
+                     "battery": "repair", "rocket_module": "reaccel"}
+    # ブロックプログラムの種類 → 出てくる章（無い種類は最初から）
+    BLOCK_UNLOCK = {"radio": "drone", "vec": "launch", "weapon": "fleet"}
+
+    def _story_on(self):
+        return self.active and self.st.get("built") and not self.st.get("done")
+
+    def item_allowed(self, world, item):
+        if not self._story_on():
+            return None
+        kind, id_ = item
+        if kind == "material":
+            return True
+        need = self.DEVICE_UNLOCK.get(id_)
+        return need is not None and self.st.get("ch", 0) >= IDX[need]
+
+    def respawn_point(self, world, player):
+        """リスポーン：今の章の始めの場所へ（構築物はそのまま）。"""
+        if not self.active or not self.st.get("built"):
+            return None
+        ids = script.CHAPTER_IDS
+        ch = min(self.st.get("ch", 0), len(ids) - 1)
+        try:
+            self._teleport(ids[ch])
+        except Exception:  # noqa: BLE001
+            return None
+        return player.pos.copy()
+
+    def blueprints_allowed(self, world):
+        return False if self._story_on() else None
+
+    def block_categories(self, world):
+        if not self._story_on():
+            return None
+        import main.blocks as B
+        ch = self.st.get("ch", 0)
+        return {c[0] for c in B.CATEGORIES if ch >= IDX[self.BLOCK_UNLOCK.get(c[0], "wake")]}
+
     def build_world(self, world):
         st = self.st
         self.terra.craters += sites.terra_craters(sites.terra_map(self.terra))
@@ -153,8 +202,8 @@ class StoryAddon(SceneryHost, Addon):
         pl = world.local_player
         pl.pos, pl.vel, pl.up = p, np.zeros(3), up
         pl.hotbar = [("material", "steel"), ("material", "hull_white"), ("material", "rock"), ("material", "glass"),
-                     ("device", "thruster"), ("device", "tank"), ("device", "pipe"), ("device", "computer"),
-                     ("device", "seat")]
+                     ("material", "wood"), ("device", "pipe"), ("device", "valve"), ("device", "thruster"),
+                     ("device", "tank")]                  # 機器は章が進むと使えるようになる（それまで薄く出る）
         st["built"] = True
         st["ch_t"] = world.time
         self._enter(0, intro=True)
@@ -647,6 +696,23 @@ class StoryAddon(SceneryHost, Addon):
     def check_mikaga(self):
         return bool(self._flag("met"))
 
+    def check_record(self):
+        return bool(self._flag("record"))
+
+    def check_choice(self):
+        return bool(self._flag("choice"))
+
+    def choose(self, key):
+        """第12章のあと、ネムリの前で選んだ（画面の選ぶ欄から）。どちらでもトワは撃たない。"""
+        if not self.active or self._cid() != "robot" or not self.st["goals"].get("clash") or self._flag("choice"):
+            return
+        for k, _, lines in script.CHOICE["options"]:
+            if k == key:
+                self.st["flags"]["choice"] = key
+                for who, text in lines:
+                    self.say(who, text)
+                return
+
     # 第11章
     def check_kensu(self):
         return bool(self._flag("kensu"))
@@ -867,7 +933,7 @@ class StoryAddon(SceneryHost, Addon):
         self._queue((c.get("event_movies") or {}).get(key))
         return True
 
-    KEEP_FLAGS = ("sakura_named", "landed")
+    KEEP_FLAGS = ("sakura_named", "landed", "choice")
 
     def _enter(self, ch, intro=True):
         st = self.st
@@ -1099,11 +1165,15 @@ class StoryAddon(SceneryHost, Addon):
             self._ensure_kdrone(self.map.ground(-31.0, 140.0, 40.0)[0])
         if gid == "sakura":
             self._stage()
+            self._rockfall()                        # 見せ場：尾根から岩が落ちてきて、地面で砕ける
+            self._event("rockfall")
         if gid == "ride":
             st["flags"]["chase_t0"] = self.world.time
             self._ensure_kdrone(self.map.ground(-13.0, 70.0, 20.0)[0])
         if gid == "kensu":
             st["flags"]["wave_t"] = self.world.time + 3.0
+        if gid == "clash":
+            self._event("clashed")                  # 一騎打ちのムービー → そのあと選ぶ
         if gid == "board":
             c = self.con("robot")
             if c is not None:
@@ -1482,6 +1552,21 @@ class StoryAddon(SceneryHost, Addon):
         else:
             st["rod_t"] = 0.0
 
+    def _rockfall(self):
+        """第1章：サクラと話すと、谷の奥の尾根から岩が落ちてきて砕ける（柔らかい構築物の見せ場。
+        ワールドは完全剛体モードでも、この岩は soft_ok で曲がる・ちぎれる）。"""
+        try:
+            m = self.map
+            p, up = m.ground(-6.0, 21.0, 14.0)
+            R = m.frame(-6.0, 21.0, 0.4)
+            vox = sites.rock_voxels(9, 4, 4, 3)
+            c = Construct.from_voxels(self.world.registry, vox, p, R, velocity=-up * 3.0 + R[:, 0] * 1.5,
+                                      size=float(self.world.settings.get("voxel_size", 0.5)), name="落ちてきた岩")
+            c.soft_ok = True
+            self.world.add_construct(c)
+        except Exception:  # noqa: BLE001
+            L.exception("落石を落とせません")
+
     def _drop_crate(self):
         """第3章の終わり：風で荷物がずれて落ちる（クレーンから外して、横へ飛ばす）。"""
         c = self.con("crane")
@@ -1490,15 +1575,17 @@ class StoryAddon(SceneryHost, Addon):
         idx = [c.index[tuple(x)] for x in sites.CRANE_CRATE if tuple(x) in c.index and c.mats[c.index[tuple(x)]] == "wood"]
         if not idx:
             return
-        vox = [((0, 0, k), "wood", None) for k in range(len(idx))]
+        # 落ちるのは 2×2×2 の木箱（中身ごと）。地面に当たって割れる
+        vox = [((x, y, z), "wood", None) for x in range(2) for y in range(2) for z in range(2)]
         P = c.voxel_centers()[idx].mean(0)
         c.remove_voxels(idx)
         for part in c.split():
             self.world.add_construct(part)
         R, _ = c.rigid_fit()
         size = c.size
-        box = Construct.from_voxels(self.world.registry, vox, P, R, velocity=R[:, 0] * 2.5 + R[:, 1] * 0.5,
+        box = Construct.from_voxels(self.world.registry, vox, P, R, velocity=R[:, 0] * 3.0 + R[:, 1] * 1.5,
                                     size=size, name="落ちた荷物")
+        box.soft_ok = True                  # 見せ場：木の荷物は地面に落ちて割れる（完全剛体モードの中でも柔らかい）
         self.world.add_construct(box)
 
     # ------------------------------------------------------------------
@@ -1699,6 +1786,16 @@ class StoryAddon(SceneryHost, Addon):
             return "古い端末が光った"
         if tag == "rocket":
             return self._board_rocket()
+        if tag == "record":
+            if cid != "port":
+                return "端末：ルナ・ポートの管制の記録"
+            if not self._flag("met"):
+                return "端末：管制官の認証が要ります（先にミカガに会う）"
+            if not self._flag("record"):
+                self.st["flags"]["record"] = True
+                for who, text in script.RECORD_LINES:
+                    self.say(who, text)
+            return "脱出ポッドの記録を見た"
         if tag == "photo":
             self.st["events"].append("photo")
             line = (script.CHAPTERS[IDX["factory"]].get("events") or {}).get("photo")
@@ -1787,7 +1884,7 @@ class StoryAddon(SceneryHost, Addon):
                 f["kensu"] = True
                 self.say(S.KENSU, "迎撃の制御は艦橋の前のコンピューターだ。P で開いて、砲塔の向きを決めてくれ。")
                 self.say(S.KENSU, "撃ち方は任せる。……昔、似たような戦場を、似たような止め方で止めたことがあってね。")
-                return "ケンス「頼りにしてるよ、技術者さん」"
+                return "ケンス「頼りにしてるよ、トワ」"
             return "ケンス「矢印を見ろ。ミサイルの方を向けば、当たる」"
         if key == "kingi" and cid == "reaccel":
             if "collapse" in st["events"]:
@@ -1802,7 +1899,7 @@ class StoryAddon(SceneryHost, Addon):
                           "nekosa": "先生「あの計算、合ってて本当によかった……！ ……もう一回確かめてもいいですか？」",
                           "dabai": "ダバイ「あのポッド……設計の癖に見覚えがあるんです。……いえ、なんでもないです」",
                           "rutero": "ルテロ「あたしの都市、取り戻してくれてありがと。……次は、もっとすごいのを作るわよ！」",
-                          "siyama": "ヤマシナ「家と向き合うよ。……逃げるのは、もうやめた」",
+                          "siyama": "シヤマ「家と向き合うよ。……逃げるのは、もうやめた」",
                           "donachi": "ドナチ「……守るために飛ぶのも、悪くない」"}
             return done_lines.get(key)
         return None

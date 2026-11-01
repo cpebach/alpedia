@@ -304,8 +304,8 @@ def remote_program():
         stmt("radio_send", ch=T("drone/上下"), value=sub(key("space"), key("left shift"))),
         stmt("radio_send", ch=T("drone/着陸"), value=V("着陸")),
         if_else(radio_has("drone/高さ"),
-                [show(join(T("ドローン操縦台\n高さ "), rnd(radio("drone/高さ")), T(" m\nX で着陸／離陸")), 2.0)],
-                [show(T("ドローン操縦台\n電波なし"), 2.0)]),
+                [show(join(T("ドローン 高さ "), rnd(radio("drone/高さ")), T(" m\nSpace 上昇・Shift 下降\nX 自動着陸")), 1.2)],
+                [show(T("ドローン操縦台\n電波なし"), 1.2)]),
     ]
     land = B.new_stmt("on_key_down")
     land["key"] = "x"

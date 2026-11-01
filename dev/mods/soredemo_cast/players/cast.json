@@ -3,7 +3,7 @@
   {"id": "mikaga", "extends": "default", "name": "ミカガ", "model": "../skinmodel(dummy)/mikaga.vrm", "height": 1.62, "radius": 0.3, "model_scale": 1.0},
   {"id": "nemuri", "extends": "default", "name": "ネムリ", "model": "../skinmodel(dummy)/nemuri.vrm", "height": 1.46, "radius": 0.3, "model_scale": 1.0},
   {"id": "sakura", "extends": "default", "name": "サクラ", "model": "../skinmodel(dummy)/sakura.vrm", "height": 1.85, "radius": 0.3, "model_scale": 1.0},
-  {"id": "siyama", "extends": "default", "name": "ヤマシナ（シヤマ）", "model": "../skinmodel(dummy)/siyama.vrm", "height": 1.59, "radius": 0.3, "model_scale": 1.0},
+  {"id": "siyama", "extends": "default", "name": "シヤマ", "model": "../skinmodel(dummy)/siyama.vrm", "height": 1.59, "radius": 0.3, "model_scale": 1.0},
   {"id": "sirotsu", "extends": "default", "name": "シロツ", "model": "../skinmodel(dummy)/sirotsu.vrm", "height": 1.57, "radius": 0.3, "model_scale": 1.0},
   {"id": "kensu", "extends": "default", "name": "ケンス", "model": "../skinmodel(dummy)/kensu.vrm", "height": 1.38, "radius": 0.3, "model_scale": 1.0},
   {"id": "kingi", "extends": "default", "name": "キンギ", "model": "../skinmodel(dummy)/kingi.vrm", "height": 1.78, "radius": 0.3, "model_scale": 1.0},

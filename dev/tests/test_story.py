@@ -318,6 +318,9 @@ class StoryCase(unittest.TestCase):
         self.assertIn("mikaga", s.cast.npcs)
         w.addon_call("cast", "talk", "mikaga")
         self.run_for(0.4)
+        self.assertEqual(self.ch(), "port", "ミカガに会っただけでは終わらない（ポッドの記録を見る）")
+        self.assertIn("脱出ポッドの記録", w.addon_call("story", "talk", "record") or "")
+        self.run_for(0.4)
         self.assertEqual(self.ch(), "fleet")
         self.assertTrue({"05_declaration", "06_interlude"} <= set(s.st["movies"]))
         self.assertEqual(w.nearest_planet(w.player.pos).defn["id"], "gaia", "迎撃艦（アマツの宙域）へ")
@@ -352,11 +355,14 @@ class StoryCase(unittest.TestCase):
                 return {"w"}
             if not g.get("dodge"):
                 return {"a"} if int(t.w.time) // 2 % 2 else {"d"}
+            if g.get("clash") and not t.s.st["flags"].get("choice"):
+                t.w.addon_call("story", "choose", "talk")       # ネムリの前で選ぶ
             return set()
         self.assertTrue(self.until("robot", 90, keys=keys), "ロボットの章が終わる")
         self.assertGreater(s.slow_ticks, 0, "ミサイルが近いとスローモーション")
         self.assertEqual(s.con("robot").n_vox, len(sp.robot_voxels()), "ロボットは壊れない")
         self.assertTrue({"08_duel", "09_dialogue"} <= set(s.st["movies"]))
+        self.assertEqual(s.st["flags"].get("choice"), "talk")
         w.input_keys = set()
         # 終章：推進モジュール4基 → 点火してバルブをそろえる → 航法に目標の地点 → 上昇
         self.assertEqual(self.ch(), "reaccel")

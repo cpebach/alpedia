@@ -111,7 +111,8 @@ class HotbarView:
     def refresh(self, force=False):
         g = self.game
         hb = g.world.player.hotbar
-        state = (tuple(hb), g.sel)
+        allowed = tuple(bool(it) and g.world.item_allowed(it) for it in hb)
+        state = (tuple(hb), g.sel, allowed)
         if state == self._state and not force:
             return
         self._state = state
@@ -121,6 +122,7 @@ class HotbarView:
             if it:
                 icon.texture = icons.item_texture(reg, it)
                 icon.enabled = True
+                icon.color = self.color.white if allowed[k] else self.color.rgba(1, 1, 1, 0.18)   # まだ使えない物は薄く
             else:
                 icon.enabled = False
             bg.color = self.color.rgba(1.0, 0.82, 0.25, 0.9) if k == g.sel else self.color.rgba(0, 0, 0, 0.5)
@@ -173,7 +175,7 @@ class InventoryPanel:
 
     # ------------------------------------------------------------------
     def items(self):
-        pal = self.reg.palette()
+        pal = [it for it in self.reg.palette() if self.world.item_allowed(it)]   # シナリオでは章ごとに使える物だけ
         if self.tab == "material":
             pal = [p for p in pal if p[0] == "material"]
         elif self.tab == "device":
@@ -210,11 +212,21 @@ class InventoryPanel:
                   color=col.rgb(0.13, 0.15, 0.2), highlight_color=col.rgb(0.25, 0.3, 0.4),
                   pressed_color=col.rgb(0.35, 0.4, 0.5))
             b.on_click = (lambda i=it: self.pick(i))
-            E(parent=self.body, model="quad", texture=icons.item_texture(self.reg, it), position=(x, y + 0.012, -0.01),
-              scale=0.075)
+            surv = not self.world.creative
+            cost = self.world.item_cost(it) if surv else {}
+            inv = self.player.inventory
+            ok = all(inv.get(k, 0.0) >= v for k, v in cost.items())
+            E(parent=self.body, model="quad", texture=icons.item_texture(self.reg, it),
+              position=(x, y + (0.02 if surv else 0.012), -0.01), scale=0.064 if surv else 0.075,
+              color=col.white if ok else col.rgba(1, 1, 1, 0.35))
             name = icons.item_name(self.reg, it)
-            T(parent=self.body, text=name if len(name) <= 7 else name[:6] + "…", position=(x, y - 0.045, -0.01),
-              origin=(0, 0), scale=0.55)
+            T(parent=self.body, text=name if len(name) <= 7 else name[:6] + "…",
+              position=(x, y - (0.026 if surv else 0.045), -0.01), origin=(0, 0), scale=0.55)
+            if surv and cost:                 # サバイバル：費用（足りない物は赤）
+                txt = " ".join(f"{self.reg.res_name(k)}{v:g}" for k, v in cost.items())
+                T(parent=self.body, text=txt if len(txt) <= 12 else txt[:11] + "…", position=(x, y - 0.046, -0.01),
+                  origin=(0, 0), scale=0.45,
+                  color=col.rgb(0.75, 0.85, 0.75) if ok else col.rgb(1.0, 0.45, 0.4))
             self.cells.append((b, it))
         if pages > 1:
             B(parent=self.body, text="◀", position=(0.42, 0.405), scale=(0.05, 0.045),

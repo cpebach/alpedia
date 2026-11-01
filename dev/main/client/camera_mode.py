@@ -224,9 +224,8 @@ class CameraMode:
 
     def on_key(self, key):
         """カメラモード中のキー。使ったら True。"""
-        c = self.game.cfg["controls"]
-        if key in ("escape", c.get("camera_mode", "c")):
-            if not self.panel_on and key == "escape":
+        if key == "escape":                 # 終わるのは Esc・「カメラモードを終わる」だけ（C をもう一度押しても終わらない）
+            if not self.panel_on:
                 self.show_panel()
             else:
                 self.game.exit_camera()

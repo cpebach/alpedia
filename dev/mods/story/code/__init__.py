@@ -1,4 +1,4 @@
-"""ストーリー MOD：「墜落した技術者」のチュートリアル（台本は script.py、舞台は sites.py）。"""
+"""ストーリー MOD：「ストーリー vol.1 それでも」（台本は script.py、舞台は sites.py）。"""
 
 
 def world_addon():

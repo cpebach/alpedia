@@ -156,6 +156,10 @@ class Registry:
                     p2 = paths.SAUCE / v
                     if p2.exists():
                         p = p2
+                    elif cat == "players":
+                        # 人物の見た目（VRM など）が無いだけなら止めない：箱の体で遊べるようにする
+                        L.warning("[%s] %s/%s: %s '%s' が見つかりません（箱の体で表示します）", source, cat, id_, key, v)
+                        p = None
                     else:
                         self._err(f"[{source}] {cat}/{id_}: {key} '{v}' が見つかりません")
                         p = None

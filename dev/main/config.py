@@ -11,14 +11,16 @@ DEFAULTS = {
                  # ブロックの見た目：輪郭の線（セルの境目）・角の暗さ（環境光の遮り）
                  "block_edges": True, "block_ao": True,
                  # 街：この距離（m、街の外周から）より近い街だけ窓・ネオンなどを詳しく描く／これより遠い街は描かない
-                 "city_detail_distance": 100.0, "city_view_distance": 2500.0},
+                 "city_detail_distance": 100.0, "city_view_distance": 2500.0,
+                 # 開発用の表示（処理の重さ・頂点数・物理コアなど）。F3 で切り替え
+                 "debug_hud": False},
     "controls": {
         "mouse_sensitivity": 60.0,
         "forward": "w", "back": "s", "left": "a", "right": "d",
         "jump": "space", "down": "left control", "jetpack": "f",
         "interact": "e", "rotate": "r", "edit_script": "p", "new_construct": "n",
         "save": "f5", "export": "f9", "import": "f8", "toggle_help": "f1", "inventory": "i", "city_marker": "m", "city_map": "k",
-        "third_person": "v", "camera_mode": "c", "story_menu": "j",
+        "third_person": "v", "camera_mode": "c", "story_menu": "j", "debug_hud": "f3",
         # タッチ操作：画面左下の仮想ジョイスティックで移動・画面をなぞって視点（マウスで視点を回さない）
         "touch": False,
     },
