@@ -87,13 +87,12 @@ ext.register_api("nearest_missile", api_nearest_missile)
 ext.register_api("nearest_missile_distance", api_nearest_distance)
 
 B.register_ext(
-    categories=[("weapon", "迎撃・ミサイル", (0.85, 0.35, 0.30))],
     statements={
-        "turret_aim": dict(cat="weapon", label="砲塔 {dev} を {vec} に向ける", slots={"dev": "dev:turret", "vec": "vec"},
+        "turret_aim": dict(cat="actuator", group="weapon", label="砲塔 {dev} を {vec} に向ける", slots={"dev": "dev:turret", "vec": "vec"},
                            code=["for d in _devs(api, {dev}, 'turret'):", "    d.aim({vec})"]),
-        "turret_fire": dict(cat="weapon", label="砲塔 {dev} で撃つ", slots={"dev": "dev:turret"},
+        "turret_fire": dict(cat="actuator", group="weapon", label="砲塔 {dev} で撃つ", slots={"dev": "dev:turret"},
                             code=["for d in _devs(api, {dev}, 'turret'):", "    d.fire()"]),
-        "launcher_fire": dict(cat="weapon", label="発射機 {dev} で {vec} の先へミサイルを撃つ",
+        "launcher_fire": dict(cat="actuator", group="weapon", label="発射機 {dev} で {vec} の先へミサイルを撃つ",
                               slots={"dev": "dev:launcher", "vec": "vec"},
                               code=["for d in _devs(api, {dev}, 'launcher'):", "    d.launch({vec})"]),
     },

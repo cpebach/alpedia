@@ -43,7 +43,8 @@ mods/<MOD名>/
 推進機・タンクなど決まった種類のほかに、`"type": "custom", "behavior": "<名前>"` の機器を作り、ふるまいを MOD のプログラムで書けます。
 コアは電力（`power_use`、`state["active"]`）と保存（`state["enabled"]`・`state["data"]`）だけ受け持ちます。
 スクリプト・ブロックプログラムの口は `main/extensions.py`（`register_device` / `register_api`）と `main/blocks.py` の `register_ext`
-（ブロックの文・センサー・矢印のセンサーを足す）で登録します。例は `mods/scenario_blocks/code/blocks.py`（迎撃砲塔・レーダー・ミサイル発射機）と、
+（ブロックの文・センサー・矢印のセンサーを足す）で登録します。機器を動かす文は `cat="actuator"`（パレットの「アクチュエーター」）に入れます
+（前の版の `"device"`・`"weapon"` の種類は自動でアクチュエーターに読み替え。`group` に自分の分類名を書いておくと、シナリオなどが絞り込みに使えます）。例は `mods/scenario_blocks/code/blocks.py`（迎撃砲塔・レーダー・ミサイル発射機）と、
 `mods/scenario_blocks/code/addon.py` の燃料ポンプ（`fuel_pump`：ON の間、後ろの面の配管の区画のタンクから、向きの面の区画のタンクへ
 燃料などを送る。E で ON/OFF）。
 読み込み結果やエラーは `logs/latest.log` に出ます。

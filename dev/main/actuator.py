@@ -2,6 +2,7 @@
 
 アクチュエーターは向き（出力面）を持つブロック。
 - 回転   : 出力面の先につながったブロック（とその先の部分）を、向きを軸に回す
+           動き方を「ちょうつがい」にすると、出力面の辺（4つのどれか）を軸に曲げる（0〜180°。扉・腕の関節など）
 - 押し出し: 自分が伸びて、出力面の先を押し出す（最大でブロック1つ分）
 - 引き込み: 伸びた分を引き戻す
 - 分離   : 出力面の結合を切り離す（先の部分は別の構築物になる）
@@ -13,11 +14,84 @@
 """
 import numpy as np
 
-from .construct import DIR_TUPLES, JOINT_PAIRS, link_key
+from .construct import CORNER_BITS, DIR_NAMES, DIR_TUPLES, JOINT_PAIRS, link_key
 
 ACTIONS = ["rotate", "extend", "retract", "detach", "attach"]
 ACTION_NAMES = {"rotate": "回転", "extend": "押し出し", "retract": "引き込み", "detach": "分離", "attach": "結合"}
 DEFAULT_PRESET = {"action": "rotate", "amount": 90.0, "speed": 90.0}
+
+
+# ---------------------------------------------------------------------------
+# 動き方：回転（向きを軸に回す）／ちょうつがい（出力面の辺を軸に曲げる）
+# ---------------------------------------------------------------------------
+HINGE_MAX = 180.0           # ちょうつがいで曲げられる角度（0〜180°。0 がまっすぐ）
+
+
+def hinge_sides(d):
+    """向き d の出力面で、ちょうつがいにできる辺の側（向きの番号。出力の軸に垂直な4つ）。"""
+    return [k for k in range(6) if k // 2 != d // 2]
+
+
+def default_hinge_side(d):
+    """既定の辺：出力が縦向きなら構築物の -Z 側、横向きなら下（-Y）側。"""
+    return 5 if d // 2 == 1 else 3
+
+
+def hinge_pair(d, side):
+    """出力面の4隅（JOINT_PAIRS[d] の並び 0〜3）のうち、辺 side の側にある2つの番号。"""
+    ax = side // 2
+    want = 1.0 if side % 2 == 0 else 0.0            # + 側の辺はその軸の bit が 1
+    corners = JOINT_PAIRS[d][:, 0]
+    ks = [k for k in range(4) if CORNER_BITS[int(corners[k])][ax] == want]
+    return (ks[0], ks[1]) if len(ks) == 2 else None
+
+
+def mode_name(st, d=None):
+    h = int(st.get("hinge", -1))
+    return "回転" if h < 0 else f"ちょうつがい（{DIR_NAMES[h]} 側の辺）"
+
+
+def hinge_of(dev):
+    """機器の状態から、ちょうつがいの辺（4隅の番号の組）か None（回転）。"""
+    h = int(dev.get("state", {}).get("hinge", -1))
+    if h < 0:
+        return None
+    d = int(dev.get("dir", 2))
+    if h // 2 == d // 2:
+        return None
+    return hinge_pair(d, h)
+
+
+def cmd_mode(c, i, side):
+    """動き方を変える：side = -1（回転）か 辺の向きの番号。今の角度が 0 でないと変えない。メッセージを返す。"""
+    dev = c.devs[i]
+    st = dev["state"]
+    side = int(side)
+    if side >= 0 and side not in hinge_sides(dev["dir"]):
+        return "その辺は選べません（出力の向きに垂直な辺だけ）"
+    if int(st.get("hinge", -1)) == side:
+        return None
+    if abs(float(st.get("angle", 0.0))) > 0.5 or abs(float(st.get("angle_target", 0.0))) > 0.5:
+        return "動き方を変えるには、角度を 0° に戻してから（今 %.0f°）" % float(st.get("angle", 0.0))
+    st["hinge"] = side
+    st["angle"] = st["angle_target"] = 0.0
+    c.rebuild()                     # 関節の作りが変わる（完全剛体モードの部分分け・Rust の計算の切り替え）
+    c.wake(soft=True)
+    return None
+
+
+def side_from_name(dev, name):
+    """スクリプト・ブロックの辺の名前（"+X" "-Y" など、"回転"）→ 向きの番号（回転は -1）。"""
+    if name is None:
+        return -1
+    n = str(name).strip()
+    if n in ("回転", "spin", "", "軸"):
+        return -1
+    if n in DIR_NAMES:
+        return DIR_NAMES.index(n)
+    if n in ("ちょうつがい", "hinge"):
+        return default_hinge_side(int(dev.get("dir", 2)))
+    raise ValueError(f"辺の名前が分かりません: {name}（+X -X +Y -Y +Z -Z か 回転）")
 
 
 def is_actuator(c, i):
@@ -57,6 +131,8 @@ def busy(st):
 def cmd_rotate(c, i, angle, speed=None, absolute=False):
     st = c.devs[i]["state"]
     st["angle_target"] = float(angle) if absolute else float(st.get("angle_target", 0.0)) + float(angle)
+    if int(st.get("hinge", -1)) >= 0:              # ちょうつがい：0（まっすぐ）〜 180°
+        st["angle_target"] = min(max(st["angle_target"], 0.0), HINGE_MAX)
     if speed is not None:
         st["rot_speed"] = max(1.0, min(float(speed), 3600.0))
     c.wake(soft=True)
@@ -209,6 +285,8 @@ def output_angle(c, i, world=None):
     j = c.index.get(output_cell(c, i))
     if j is None or not is_attached(c, i):
         return 0.0
+    if int(c.devs[i]["state"].get("hinge", -1)) >= 0:
+        return float(c.devs[i]["state"].get("angle", 0.0))      # ちょうつがい：曲げた角度
     ctr, n, _ = face_info(c, i)
     F = c.voxel_frames()[j]
     d = c.devs[i]["dir"]
@@ -249,10 +327,13 @@ def measure_twist(c, i):
 
 def sync_angle(c, i):
     """結合した直後に、今のねじれ角を回転角として取り込む（急に回らないように）。"""
+    st = c.devs[i]["state"]
+    if int(st.get("hinge", -1)) >= 0:              # ちょうつがい：結合したときがまっすぐ（0°）
+        st["angle"] = st["angle_target"] = 0.0
+        return
     tw = measure_twist(c, i)
     if tw is None:
         return
-    st = c.devs[i]["state"]
     cur = float(st.get("angle", 0.0))
     ang = cur + ((tw - cur + 180.0) % 360.0 - 180.0)
     st["angle"] = st["angle_target"] = ang
@@ -265,8 +346,13 @@ def execute_preset(world, c, i):
     a = p.get("action", "rotate")
     name = c.devs[i]["name"]
     if a == "rotate":
+        if "hinge" in p:                            # 設定メニューで動き方も決めてある
+            msg = cmd_mode(c, i, int(p["hinge"]))
+            if msg:
+                return f"{name}: {msg}"
         cmd_rotate(c, i, p.get("amount", 90.0), p.get("speed"))
-        return f"{name}: {p.get('amount', 90):+.0f}° 回転（{p.get('speed', 90):.0f}°/秒）"
+        verb = "曲げる" if int(st.get("hinge", -1)) >= 0 else "回転"
+        return f"{name}: {p.get('amount', 90):+.0f}° {verb}（{p.get('speed', 90):.0f}°/秒）"
     if a == "extend":
         before = st["ext_target"]
         cmd_extend(c, i, p.get("amount", 1.0), p.get("speed"))
@@ -291,7 +377,8 @@ def preset_text(st):
     p = st.get("preset") or DEFAULT_PRESET
     a = p.get("action", "rotate")
     if a == "rotate":
-        return f"{ACTION_NAMES[a]} {p.get('amount', 90):+.0f}° / {p.get('speed', 90):.0f}°/秒"
+        how = "曲げる" if int(p.get("hinge", st.get("hinge", -1))) >= 0 else ACTION_NAMES[a]
+        return f"{how} {p.get('amount', 90):+.0f}° / {p.get('speed', 90):.0f}°/秒"
     if a in ("extend", "retract"):
         return f"{ACTION_NAMES[a]} {p.get('amount', 1):.2f}ブロック / {p.get('speed', 0.5):.2f}ブロック/秒"
     return ACTION_NAMES.get(a, a)

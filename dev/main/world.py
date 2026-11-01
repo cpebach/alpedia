@@ -963,6 +963,9 @@ class World:
                 out = set(r) if out is None else out & set(r)
         return out
 
+    def block_allowed(self, kind):
+        return not any(a.block_allowed(self, kind) is False for a in self.addons)
+
     def item_cost(self, item):
         kind, id_ = item
         if kind == "material":

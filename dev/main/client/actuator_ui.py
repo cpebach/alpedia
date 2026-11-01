@@ -29,7 +29,8 @@ class ActuatorPanel:
         act.init_state(st, dd["params"])
         p = dict(st.get("preset") or act.DEFAULT_PRESET)
         self.preset = {"action": p.get("action", "rotate"), "amount": p.get("amount", 90.0),
-                       "speed": p.get("speed", 90.0)}
+                       "speed": p.get("speed", 90.0), "hinge": int(p.get("hinge", st.get("hinge", -1)))}
+        self.dir = int(construct.devs[index].get("dir", 2))
         self._fix_values()
         self.root = Entity(parent=camera.ui)
         Entity(parent=self.root, model="quad", scale=(3, 2), color=color.rgba(0, 0, 0, 0.5), z=0.3)
@@ -75,10 +76,26 @@ class ActuatorPanel:
         a = self.preset["action"]
         self._row("動作", y, act.ACTIONS, a, lambda v: act.ACTION_NAMES[v], self._set_action)
         if a == "rotate":
-            self._row("回転量", y - 0.08, ROT_AMOUNTS, self.preset["amount"], lambda v: f"{v:+.0f}°",
-                      lambda v: self.preset.__setitem__("amount", v))
-            self._row("回転速度", y - 0.16, ROT_SPEEDS, self.preset["speed"], lambda v: f"{v:.0f}°/秒",
+            from ..construct import DIR_NAMES
+            modes = [-1] + act.hinge_sides(self.dir)
+            if self.preset["hinge"] not in modes:
+                self.preset["hinge"] = -1
+
+            def mode_text(v):
+                return "回転（軸まわり）" if v < 0 else f"ちょうつがい {DIR_NAMES[v]} 辺"
+
+            def set_mode(v):
+                self.preset["hinge"] = v
+                self.build()
+            self._row("動き方", y - 0.08, modes, self.preset["hinge"], mode_text, set_mode)
+            hinge = self.preset["hinge"] >= 0
+            self._row("曲げる量" if hinge else "回転量", y - 0.16, ROT_AMOUNTS, self.preset["amount"],
+                      lambda v: f"{v:+.0f}°", lambda v: self.preset.__setitem__("amount", v))
+            self._row("速さ", y - 0.24, ROT_SPEEDS, self.preset["speed"], lambda v: f"{v:.0f}°/秒",
                       lambda v: self.preset.__setitem__("speed", v))
+            if hinge:
+                U["Text"](parent=self.body, text="辺を軸に 0〜180° 曲げます（+ でその辺の側へ倒れる）。動き方は角度が 0° のときに変わります",
+                          position=(0, y - 0.3), origin=(0, 0), scale=0.6, color=col.light_gray)
         elif a in ("extend", "retract"):
             self._row("移動量", y - 0.08, EXT_AMOUNTS, self.preset["amount"], lambda v: f"{v:.2f} ブロック",
                       lambda v: self.preset.__setitem__("amount", v))
@@ -89,12 +106,12 @@ class ActuatorPanel:
                    else "出力面の先にあるブロック（別の構築物でも可）とつなぎます")
             U["Text"](parent=self.body, text=msg, position=(0, y - 0.11), origin=(0, 0), scale=0.8,
                       color=col.light_gray)
-        U["Text"](parent=self.body, position=(0, -0.13), origin=(0, 0), scale=0.7, color=col.light_gray,
+        U["Text"](parent=self.body, position=(0, -0.205), origin=(0, 0), scale=0.62, color=col.light_gray,
                   text="閉じた後、このアクチュエーターを見て E で実行します\n"
-                       "操縦席では X キーで実行／コンピューターからは rotate() extend() など")
-        self._button("設定して閉じる", (-0.3, -0.27), self.save_close, col.rgb(0.2, 0.45, 0.3))
-        self._button("今すぐ実行", (0.0, -0.27), self.run_now, col.rgb(0.2, 0.5, 0.3))
-        self._button("キャンセル", (0.3, -0.27), self.cancel, col.rgb(0.3, 0.3, 0.33))
+                       "操縦席では X キーで実行／コンピューターからは rotate() extend() hinge() など")
+        self._button("設定して閉じる", (-0.3, -0.3), self.save_close, col.rgb(0.2, 0.45, 0.3))
+        self._button("今すぐ実行", (0.0, -0.3), self.run_now, col.rgb(0.2, 0.5, 0.3))
+        self._button("キャンセル", (0.3, -0.3), self.cancel, col.rgb(0.3, 0.3, 0.33))
 
     def _button(self, text, pos, fn, c):
         b = self.U["Button"](parent=self.body, text=text, position=pos, scale=(0.26, 0.055), color=c,
@@ -134,6 +151,11 @@ class ActuatorPanel:
         if i is None:
             return False
         self.c.devs[i]["state"]["preset"] = dict(self.preset)
+        net = getattr(self.world, "net", None)
+        if self.preset.get("action") == "rotate" and not (net is not None and net.role == "client"):
+            msg = act.cmd_mode(self.c, i, int(self.preset.get("hinge", -1)))      # 動き方はすぐ変える（角度 0° のとき）
+            if msg:
+                self.world.message(msg)
         return True
 
     def save_close(self):

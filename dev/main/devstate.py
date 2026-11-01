@@ -62,7 +62,9 @@ SCHEMA = {
                  "ext_speed": F("float", _p("speed", 0.5)),
                  "angle": F("float", 0.0), "angle_target": F("float", lambda p, st: st.get("angle", 0.0)),
                  "rot_speed": F("float", _p("rot_speed", 90.0)),
-                 "preset": F("dict", lambda p, st: _default_preset())},
+                 "preset": F("dict", lambda p, st: _default_preset()),
+                 # 動き方：-1 = 回転（向きを軸に）、0〜5 = ちょうつがい（その向きの側の、出力面の辺を軸に曲げる）
+                 "hinge": F("int", _p("hinge", -1))},
     "processor": {"progress": F("float", 0.0), "enabled": F("bool", True), "next": F("int", optional=True),
                   "store": F("dict", {}),                       # 中にある物（原料と、作った物）
                   "working": F("bool", optional=True, saved=False)},

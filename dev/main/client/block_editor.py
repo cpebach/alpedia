@@ -290,7 +290,7 @@ class BlockEditor:
         y = 0.42 - ((len(cats) + 1) // 2) * 0.042 - 0.024
         rgb = B.CAT_COLOR[self.cat]
         for kind, spec in B.STATEMENTS.items():
-            if spec["cat"] != self.cat:
+            if spec["cat"] != self.cat or spec.get("hidden") or not self.world.block_allowed(kind):
                 continue
             label = "".join(("□" if t == "slot" else s) for t, s in B.label_parts(spec["label"]))
             if spec.get("hat"):
@@ -495,7 +495,7 @@ class BlockEditor:
         if base in ("var", "vvar", "dev", "key", "choice"):
             # 選ぶだけの欄（変数・機器・キー・選択）：▼ の付いた丸い札
             rgb = {"var": B.CAT_COLOR["var"], "vvar": B.CAT_COLOR["vec"],
-                   "dev": B.CAT_COLOR["device"]}.get(base, (0.82, 0.85, 0.9))
+                   "dev": (0.25, 0.50, 0.85)}.get(base, (0.82, 0.85, 0.9))          # 機器を選ぶ札は青
             dark = base in ("key", "choice")
             txt = B.summary(val) + " ▼"
             tw = self._label(txt, x + 0.008, y, z - 0.003, ts, dark=dark)

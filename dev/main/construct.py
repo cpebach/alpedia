@@ -674,6 +674,9 @@ class Construct:
         core = native.core
         if core is None or not hasattr(core, "Body") or NATIVE_STEP_OFF:
             return None
+        from . import actuator as act
+        if any(act.hinge_of(r["dev"]) is not None for r in self.rotors):
+            return None              # ちょうつがいの関節は Python で計算する（Rust の物理コアは回転だけ）
         key = (self.version, id(core), self.n_vox)
         nb = getattr(self, "_nb_cache", None)
         if nb is not None and nb[0] == key:
@@ -934,7 +937,9 @@ class Construct:
         fastphys.solve_joints(self.pos, self.ja, self.jb, self.jr, self.jk, self.inv_mass, self.jcount)
 
     def _rotor_targets(self, r):
-        """回転ジョイント: アクチュエーター出力面の4頂点を軸まわりに回した位置。"""
+        """回転ジョイント: アクチュエーター出力面の4頂点を、軸まわりに回した位置。
+        回転なら軸＝出力の向き（面の中心を通る）。ちょうつがいなら軸＝出力面の辺（2隅を通る線）で、
+        角度が + のとき出力側はその辺の側へ倒れる（軸 = 向き × 辺の側）。"""
         pairs = JOINT_PAIRS[r["d"]]
         ia, ib = r["a"], r["b"]
         A = 8 * ia + pairs[:, 0]
@@ -944,11 +949,21 @@ class Construct:
         n = c - self.pos[8 * ia:8 * ia + 8].mean(0)
         n /= max(np.linalg.norm(n), 1e-9)
         th = np.radians(float(r["dev"]["state"].get("angle", 0.0)))
-        v = pa - c
+        from . import actuator as act
+        hp = act.hinge_of(r["dev"])
+        if hp is None:
+            m, o = n, c
+        else:
+            o = (pa[hp[0]] + pa[hp[1]]) * 0.5         # 辺の中点（軸が通る点）
+            s = o - c
+            s /= max(np.linalg.norm(s), 1e-9)
+            m = np.cross(n, s)
+            m /= max(np.linalg.norm(m), 1e-9)
+        v = pa - o
         cs, sn = np.cos(th), np.sin(th)
-        rot = v * cs + fcross(n, v) * sn + np.outer(v @ n, n) * (1 - cs)
-        r["_n"], r["_th"] = n, th
-        return A, B, c + rot
+        rot = v * cs + fcross(m, v) * sn + np.outer(v @ m, m) * (1 - cs)
+        r["_n"], r["_th"] = m, th
+        return A, B, o + rot
 
     def _solve_rotors(self):
         for r in self.rotors:
@@ -1275,7 +1290,7 @@ class Construct:
                 nb = self.pos[rows].mean(0) - self.pos[8 * i:8 * i + 8].mean(0)
                 nb /= max(np.linalg.norm(nb), 1e-9)
                 exts.append((i, rows, nb, float(d["state"].get("ext", 0.0))))
-        ra, rb, A, B, C, devs = [], [], [], [], [], []
+        ra, rb, A, B, C, devs, HK = [], [], [], [], [], [], []
         for r in self.rotors:
             a, b = int(gid[r["a"]]), int(gid[r["b"]])
             if a == b:
@@ -1285,6 +1300,8 @@ class Construct:
             A.append(8 * r["a"] + pairs[:, 0]); B.append(8 * r["b"] + pairs[:, 1])
             C.append(np.arange(8 * r["a"], 8 * r["a"] + 8))
             devs.append(r["dev"])
+            hp = act.hinge_of(r["dev"])
+            HK.append(list(hp) if hp is not None else [-1, -1])
         self.art = {"version": self.version, "n": self.n_vox, "gid": gid, "vg": vg, "G": G,
                     "vl0": vl.copy(), "vl": vl, "invM": 1.0 / M, "IinvB": IinvB, "Ib": Ib,
                     "X": X, "R": np.tile(np.eye(3), (G, 1, 1)), "exts": exts,
@@ -1293,8 +1310,10 @@ class Construct:
                     "C": np.array(C, np.int64).reshape(-1, 8), "devs": devs,
                     "applied": np.array([float(d["state"].get("angle", 0.0)) for d in devs]),
                     "ext_applied": np.array([e[3] for e in exts], dtype=np.float64),
-                    "gv": np.arange(len(vg), dtype=np.int64)}
-        self.art["nat"] = self._native_art_topo()
+                    "gv": np.arange(len(vg), dtype=np.int64),
+                    "HK": np.array(HK, np.int64).reshape(-1, 2)}
+        # ちょうつがいがあれば Python（numba）で解く（Rust の物理コアの関節は回転だけ）
+        self.art["nat"] = None if (self.art["HK"] >= 0).any() else self._native_art_topo()
 
     def enter_art(self):
         self._art_build()
@@ -1438,7 +1457,7 @@ class Construct:
                            np.ascontiguousarray(cl), np.ascontiguousarray(N, dtype=np.float64),
                            np.ascontiguousarray(D, dtype=np.float64), self.pos[P].copy(), self._prev[P].copy(),
                            np.ascontiguousarray(VS, dtype=np.float64), np.clip(self.fric[P], 0, 1),
-                           float(h), int(self.ART_ITERS), lamN)
+                           float(h), int(self.ART_ITERS), lamN, a.get("HK"))
         self._art_write()
         a["contacts"] = (cg.astype(np.int64), np.ascontiguousarray(cl), np.ascontiguousarray(N, dtype=np.float64), lamN)
         # 動いている街（ステーション）を押した分の反動

@@ -1469,7 +1469,7 @@ def device_status_text(c, i, d, dd):
             out += f"　プログラム「{st.get('blocks') or st.get('script')}」".replace(".blocks.json", "").replace(".py", "")
     elif t_ == "actuator":
         from .. import actuator as act
-        out = (f"角度 {st.get('angle', 0):.0f}°  伸び {st.get('ext', 0):.2f}  "
+        out = (f"{act.mode_name(st)}  角度 {st.get('angle', 0):.0f}°  伸び {st.get('ext', 0):.2f}  "
                f"結合 {'あり' if act.is_attached(c, i) else 'なし'}\n設定: {act.preset_text(st)}")
     elif t_ == "processor":
         store = {k: v for k, v in (st.get("store") or {}).items() if v >= 0.5}

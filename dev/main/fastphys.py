@@ -354,7 +354,9 @@ def _ang_w(R, IinvB, g, ux, uy, uz):
 
 
 @njit(cache=True, nogil=True, fastmath=True)
-def _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN):
+def _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN,
+                  HK):
+    """HK (nr,2)：関節ごとのちょうつがいの辺（出力面の4隅のうち2つの番号）。-1 なら回転（向きを軸に）。"""
     nr = ra.shape[0]
     nc = cg.shape[0]
     lamT = np.zeros(nc)
@@ -381,16 +383,41 @@ def _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, c
             if L < 1e-12:
                 continue
             nx, ny, nz = nx / L, ny / L, nz / L
+            # 軸（モーターの向き）と、軸が通る点。回転：向き・面の中心。ちょうつがい：辺の向き・辺の中点
+            k1 = HK[q, 0]
+            k2 = HK[q, 1]
+            ox, oy, oz = cx, cy, cz
+            if k1 >= 0:
+                ox = (pa[k1, 0] + pa[k2, 0]) * 0.5
+                oy = (pa[k1, 1] + pa[k2, 1]) * 0.5
+                oz = (pa[k1, 2] + pa[k2, 2]) * 0.5
+                sx, sy, sz = ox - cx, oy - cy, oz - cz
+                sl = np.sqrt(sx * sx + sy * sy + sz * sz)
+                if sl < 1e-12:
+                    continue
+                sx, sy, sz = sx / sl, sy / sl, sz / sl
+                mx = ny * sz - nz * sy
+                my = nz * sx - nx * sz
+                mz = nx * sy - ny * sx
+                ml = np.sqrt(mx * mx + my * my + mz * mz)
+                nx, ny, nz = mx / ml, my / ml, mz / ml       # ここから先の「軸」はちょうつがいの辺
             cs, sn = np.cos(ang[q]), np.sin(ang[q])
+            tcx = 0.0
+            tcy = 0.0
+            tcz = 0.0
             for k in range(4):
-                vx, vy, vz = pa[k, 0] - cx, pa[k, 1] - cy, pa[k, 2] - cz
+                vx, vy, vz = pa[k, 0] - ox, pa[k, 1] - oy, pa[k, 2] - oz
                 dot = vx * nx + vy * ny + vz * nz
                 crx = ny * vz - nz * vy
                 cry = nz * vx - nx * vz
                 crz = nx * vy - ny * vx
-                tg[k, 0] = cx + vx * cs + crx * sn + nx * dot * (1 - cs)
-                tg[k, 1] = cy + vy * cs + cry * sn + ny * dot * (1 - cs)
-                tg[k, 2] = cz + vz * cs + crz * sn + nz * dot * (1 - cs)
+                tg[k, 0] = ox + vx * cs + crx * sn + nx * dot * (1 - cs)
+                tg[k, 1] = oy + vy * cs + cry * sn + ny * dot * (1 - cs)
+                tg[k, 2] = oz + vz * cs + crz * sn + nz * dot * (1 - cs)
+                tcx += tg[k, 0] * 0.25
+                tcy += tg[k, 1] * 0.25
+                tcz += tg[k, 2] * 0.25
+            cx, cy, cz = tcx, tcy, tcz            # 出力面の中心が来るべき所（回転なら面の中心のまま）
             # 出力側の今の4隅と、その中心
             bcx = 0.0
             bcy = 0.0
@@ -595,7 +622,7 @@ def warmup():
     _nb_art_solve(X, R2, np.ones(2), IB, np.array([0], np.int64), np.array([1], np.int64), np.random.rand(1, 4, 3),
               np.random.rand(1, 4, 3), np.zeros((1, 3)), np.zeros(1), np.ones(1), np.array([0], np.int64), np.zeros((1, 3)),
               np.array([[0, 1.0, 0]]), np.ones(1) * 0.01, np.zeros((1, 3)), np.zeros((1, 3)), np.zeros((1, 3)),
-              np.ones(1), 0.01, 2, np.zeros(1))
+              np.ones(1), 0.01, 2, np.zeros(1), np.array([[0, 1]], np.int64))
     _nb_art_contact_vel(np.zeros((2, 3)), np.zeros((2, 3)), X, R2, np.ones(2), IB, np.array([0], np.int64), np.zeros((1, 3)),
                     np.array([[0, 1.0, 0]]), np.ones(1), 2)
     _nb_art_write(np.zeros((4, 3)), X, R2, np.arange(4, dtype=np.int64), np.zeros(4, np.int64), np.zeros((4, 3)))
@@ -657,12 +684,20 @@ def vertex_normals(v, faces):
     return r if ok else _nb_vertex_normals(v, faces)
 
 
-def art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN):
-    ok, _ = _rust("art_solve", X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu,
-                  float(h), int(iters), lamN)
+def art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN,
+              HK=None):
+    """HK：関節ごとのちょうつがいの辺（無ければ全部回転）。ちょうつがいがあるときは numba で解く（Rust は回転だけ）。"""
+    nr = ra.shape[0]
+    if HK is None or HK.shape[0] != nr:
+        HK = np.full((nr, 2), -1, np.int64)
+    hinge = bool((HK >= 0).any())
+    ok = False
+    if not hinge:
+        ok, _ = _rust("art_solve", X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs,
+                      cmu, float(h), int(iters), lamN)
     if not ok:
         _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters,
-                      lamN)
+                      lamN, np.ascontiguousarray(HK, dtype=np.int64))
 
 
 def art_contact_vel(V, W, X, R, invM, IinvB, cg, cl, cn, lamN, iters):

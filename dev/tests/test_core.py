@@ -178,6 +178,75 @@ class TestScripts(CoreCase):
         self.assertAlmostEqual(st["angle"], 90.0, places=3)
         self.assertEqual(len(w.constructs), 1)
 
+    def _hinge_arm(self, full_rigid):
+        """土台の上のアクチュエーター（上向き）と3ブロックの腕。ちょうつがい（-Z 側の辺）で 90° 曲げる。"""
+        w = self.world(full_rigid=full_rigid)
+        self.script(w, "h.py", "def tick(api):\n"
+                               "    a = api.device('arm')\n"
+                               "    if not api.memory.get('sent'):\n"
+                               "        api.memory['msg'] = a.hinge('-Z')\n"
+                               "        a.rotate_to(90, speed=90)\n"
+                               "        api.memory['sent'] = True\n")
+        vox = [((x, 0, z), "steel", None) for x in range(3) for z in range(3) if (x, z) != (1, 1)]
+        vox += [((1, 0, 1), "steel", {"def": "battery", "dir": 2}),
+                ((0, 1, 1), "steel", {"def": "computer", "dir": 4, "state": {"script": "h.py", "running": True}}),
+                ((1, 1, 1), "steel", {"def": "actuator", "dir": 2, "name": "arm"})]
+        vox += [((1, 2 + k, 1), "aluminum", None) for k in range(3)]
+        c = self.put(w, vox, extra=0.4)
+        self.run_for(w, 3.0)
+        i = next(k for k, d in enumerate(c.devs) if d and d["def"] == "actuator")
+        st = c.devs[i]["state"]
+        tip = c.pos[8 * c.index[(1, 4, 1)]:8 * c.index[(1, 4, 1)] + 8].mean(0) - c.pos[8 * i:8 * i + 8].mean(0)
+        return w, c, st, tip
+
+    def test_actuator_hinge_bends(self):
+        """ちょうつがい：出力面の辺を軸に曲がる（腕が横に倒れる）。完全剛体モードでも同じ。"""
+        for full in (False, True):
+            w, c, st, tip = self._hinge_arm(full)
+            self.assertEqual(st["hinge"], 5, full)
+            self.assertAlmostEqual(st["angle"], 90.0, places=3)
+            self.assertLess(tip[1], 0.8, f"腕は横に倒れている（上 {tip[1]:.2f}）{full}")
+            self.assertLess(tip[2], -1.2, f"-Z 側へ倒れる（{tip[2]:.2f}）{full}")
+            self.assertEqual(len(w.constructs), 1)
+            w.save()
+            self.assertEqual(json.loads((w.dir / "constructs.json").read_text(encoding="utf-8"))[0]["voxels"][-4][4]
+                             ["state"]["hinge"], 5, "ちょうつがいの辺は保存される")
+            shutil.rmtree(w.dir)
+
+    def test_actuator_mode_needs_zero_angle(self):
+        from main import actuator as act
+        w = self.world()
+        c = self.put(w, [((0, 0, 0), "steel", {"def": "actuator", "dir": 2, "name": "a"}), ((0, 1, 0), "steel", None)])
+        i = 0
+        act.cmd_rotate(c, i, 30)
+        self.assertIn("0°", act.cmd_mode(c, i, 5) or "")
+        c.devs[i]["state"]["angle"] = c.devs[i]["state"]["angle_target"] = 0.0
+        self.assertIsNone(act.cmd_mode(c, i, 5))
+        act.cmd_rotate(c, i, 500)
+        self.assertEqual(c.devs[i]["state"]["angle_target"], act.HINGE_MAX, "ちょうつがいは 180° まで")
+        self.assertIsNotNone(act.cmd_mode(c, i, 2), "出力の軸と同じ向きの辺は選べない")
+
+    def test_block_categories_merged(self):
+        """機器・アクチュエーター・MOD の機器（迎撃など）のブロックは「アクチュエーター」の1つの種類。"""
+        from main import blocks as B
+        cats = [c[0] for c in B.CATEGORIES]
+        self.assertNotIn("device", cats)
+        self.assertEqual(B.STATEMENTS["ignite"]["cat"], "actuator")
+        B.register_ext(categories=[("weapon", "迎撃", (1, 0, 0))],
+                       statements={"zz_fire": dict(cat="weapon", label="撃つ", code=["pass"])})
+        try:
+            self.assertNotIn("weapon", [c[0] for c in B.CATEGORIES])
+            self.assertEqual(B.STATEMENTS["zz_fire"]["cat"], "actuator")
+            self.assertEqual(B.STATEMENTS["zz_fire"]["orig_cat"], "weapon")
+        finally:
+            B.reset_ext()
+        prog = B.new_program()
+        prog["scripts"].append({"type": "on_start", "body": [{"type": "act_mode", "dev": "arm", "mode": "-Z"},
+                                                             {"type": "act_mode", "dev": "arm", "mode": "回転"}]})
+        py = B.to_python(prog, "t.blocks.json")
+        self.assertIn("d.hinge('-Z')", py)
+        self.assertIn("d.spin()", py)
+
     def test_vector_blocks(self):
         """矢印（ベクトル）のブロック：入る欄・Python への変換・実行（重力の矢印・船から見た成分・矢印を見せる）。"""
         from main import blocks as B

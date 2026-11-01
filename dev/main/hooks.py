@@ -78,6 +78,10 @@ class Addon:
         """ブロックプログラムのパレットで出してよい種類の ID の集合（None なら全部）。"""
         return None
 
+    def block_allowed(self, world, kind):
+        """ブロックプログラムのパレットにその文ブロック（kind）を出してよいか。False で出さない、None なら決めない。"""
+        return None
+
     def block_hint(self, world, blocks_file):
         """ブロックプログラム blocks_file（scripts/ のファイル名）の見本（完成形のプログラム）。
         返すと、プログラム編集で長く（1分）完成しないとき、次に置くブロック・入力する値を光らせる。None なら出さない。"""

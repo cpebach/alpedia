@@ -18,7 +18,7 @@ FORMAT = "alpedia-blocks"
 CATEGORIES = [
     ("event", "イベント", (0.80, 0.62, 0.15)),
     ("control", "制御", (0.85, 0.45, 0.15)),
-    ("device", "機器", (0.25, 0.50, 0.85)),
+    # 機器（推進機・バルブ）・アクチュエーター・MOD の機器（迎撃・ミサイルなど）は1つの種類「アクチュエーター」にまとめる
     ("actuator", "アクチュエーター", (0.45, 0.35, 0.80)),
     ("look", "表示", (0.65, 0.35, 0.75)),
     ("var", "変数", (0.85, 0.35, 0.20)),
@@ -28,6 +28,8 @@ CATEGORIES = [
     ("vec", "矢印", (0.60, 0.30, 1.00)),
 ]
 CAT_COLOR = {k: c for k, _, c in CATEGORIES}
+# 前の版・MOD の種類 → まとめた先（register_ext で MOD のブロックの種類も読み替える。元の種類は "orig_cat" に残す）
+CAT_MERGE = {"device": "actuator", "weapon": "actuator"}
 
 KEYS = ["space", "w", "a", "s", "d", "q", "e", "x", "z", "c", "up arrow", "down arrow", "left arrow",
         "right arrow", "left shift", "left control", "1", "2", "3", "4"]
@@ -53,14 +55,14 @@ STATEMENTS = {
     "reset_timer": dict(cat="control", label="タイマーをリセット"),
     "stop": dict(cat="control", label="プログラムを止める"),
     # 機器
-    "ignite": dict(cat="device", label="推進機 {dev} に点火する", slots={"dev": "dev:thruster"}),
-    "valve_flow": dict(cat="device", label="バルブ {dev} の開き具合を {value} にする",
+    "ignite": dict(cat="actuator", label="推進機 {dev} に点火する", slots={"dev": "dev:thruster"}),
+    "valve_flow": dict(cat="actuator", label="バルブ {dev} の開き具合を {value} にする",
                        slots={"dev": "dev:valve", "value": "num"}),
-    "valve": dict(cat="device", label="バルブ {dev} を {state}", slots={"dev": "dev:valve", "state": "choice:開く|閉じる"}),
+    "valve": dict(cat="actuator", label="バルブ {dev} を {state}", slots={"dev": "dev:valve", "state": "choice:開く|閉じる"}),
     # 前の版のブロック（0 より大きいと点火するだけ。出力はバルブで変える）
-    "throttle": dict(cat="device", label="推進機 {dev} の出力を {value} にする（点火のみ）",
-                     slots={"dev": "dev:thruster", "value": "num"}),
-    "enable": dict(cat="device", label="機器 {dev} を {state}", slots={"dev": "dev:*", "state": "choice:ON|OFF"}),
+    "throttle": dict(cat="actuator", label="推進機 {dev} の出力を {value} にする（点火のみ）",
+                     slots={"dev": "dev:thruster", "value": "num"}, hidden=True),   # パレットには出さない
+    "enable": dict(cat="actuator", label="機器 {dev} を {state}", slots={"dev": "dev:*", "state": "choice:ON|OFF"}),
     # アクチュエーター
     "act_rotate": dict(cat="actuator", label="{dev} を {angle} 度回す（速さ {speed} 度/秒）",
                        slots={"dev": "dev:actuator", "angle": "num", "speed": "num"}),
@@ -73,6 +75,8 @@ STATEMENTS = {
     "act_detach": dict(cat="actuator", label="{dev} を分離する", slots={"dev": "dev:actuator"}),
     "act_attach": dict(cat="actuator", label="{dev} を結合する", slots={"dev": "dev:actuator"}),
     "act_execute": dict(cat="actuator", label="{dev} の設定動作を実行", slots={"dev": "dev:actuator"}),
+    "act_mode": dict(cat="actuator", label="{dev} の動き方を {mode} にする",
+                     slots={"dev": "dev:actuator", "mode": "choice:回転|ちょうつがい|+X|-X|+Y|-Y|+Z|-Z"}),
     # 表示
     "display": dict(cat="look", label="表面に {text} と表示（幅 {width} m）", slots={"text": "text", "width": "num"}),
     "clear_display": dict(cat="look", label="表示を消す"),
@@ -106,6 +110,7 @@ STMT_DEFAULTS = {
     "enable": {"dev": "*", "state": "ON"},
     "act_rotate": {"dev": "*", "angle": {"type": "num", "v": 90}, "speed": {"type": "num", "v": 45}},
     "act_rotate_to": {"dev": "*", "angle": {"type": "num", "v": 0}, "speed": {"type": "num", "v": 45}},
+    "act_mode": {"dev": "*", "mode": "ちょうつがい"},
     "act_extend": {"dev": "*", "amount": {"type": "num", "v": 1.0}, "speed": {"type": "num", "v": 0.5}},
     "act_retract": {"dev": "*", "amount": {"type": "num", "v": 1.0}, "speed": {"type": "num", "v": 0.5}},
     "act_detach": {"dev": "*"}, "act_attach": {"dev": "*"}, "act_execute": {"dev": "*"},
@@ -578,10 +583,16 @@ def register_ext(statements=None, defaults=None, sensors=None, bool_sensors=None
                  devprops=None, devbools=None, categories=None):
     _keep_base()
     for cat in categories or []:
+        if cat[0] in CAT_MERGE:
+            continue                      # まとめた種類（機器・迎撃など）はアクチュエーターに入る
         if cat[0] not in CAT_COLOR:
             CATEGORIES.append(tuple(cat))
             CAT_COLOR[cat[0]] = cat[2]
-    STATEMENTS.update(statements or {})
+    for kind, spec in (statements or {}).items():
+        c = spec.get("cat")
+        if c in CAT_MERGE:
+            spec = dict(spec, cat=CAT_MERGE[c], orig_cat=c)
+        STATEMENTS[kind] = spec
     STMT_DEFAULTS.update(defaults or {})
     SENSORS.update(sensors or {})
     BOOL_SENSORS.update(bool_sensors or {})
@@ -920,6 +931,9 @@ def gen_stmt(node):
         return _dev_loop(node, "actuator", "d.attach()")
     if t == "act_execute":
         return _dev_loop(node, "actuator", "d.execute()")
+    if t == "act_mode":
+        m = node.get("mode", "回転")
+        return _dev_loop(node, "actuator", "d.spin()" if m == "回転" else f"d.hinge({m!r})")
     if t == "display":
         return [f"api.display(str({g(node.get('text'), 'text')}), width={g(node.get('width'))})"]
     if t == "clear_display":

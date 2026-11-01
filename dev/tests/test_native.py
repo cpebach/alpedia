@@ -94,7 +94,8 @@ class TestKernels(unittest.TestCase):
         cd, cp, cprev, cvs, cmu = rng.random(NC) * 0.1, rng.normal(size=(NC, 3)), rng.normal(size=(NC, 3)), rng.normal(size=(NC, 3)), rng.random(NC)
         a = [X.copy(), R.copy(), np.zeros(NC)]
         b = [X.copy(), R.copy(), np.zeros(NC)]
-        fastphys._nb_art_solve(a[0], a[1], invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6, a[2])
+        fastphys._nb_art_solve(a[0], a[1], invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6, a[2],
+                               np.full((NR, 2), -1, np.int64))      # 回転だけ（ちょうつがいは numba だけ）
         core.art_solve(b[0], b[1], invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6, b[2])
         for u, v in zip(a, b):
             self.assertLess(np.abs(u - v).max(), 1e-7)

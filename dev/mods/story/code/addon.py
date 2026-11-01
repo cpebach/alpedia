@@ -155,7 +155,9 @@ class StoryAddon(SceneryHost, Addon):
     DEVICE_UNLOCK = {"pipe": "factory", "valve": "factory", "thruster": "repair", "tank": "repair",
                      "battery": "repair", "rocket_module": "reaccel"}
     # ブロックプログラムの種類 → 出てくる章（無い種類は最初から）
-    BLOCK_UNLOCK = {"radio": "drone", "vec": "launch", "weapon": "fleet"}
+    BLOCK_UNLOCK = {"radio": "drone", "vec": "launch"}
+    # アクチュエーターの中の迎撃・ミサイルのブロック（group "weapon"）は艦隊戦から
+    GROUP_UNLOCK = {"weapon": "fleet"}
 
     def _story_on(self):
         return self.active and self.st.get("built") and not self.st.get("done")
@@ -180,6 +182,15 @@ class StoryAddon(SceneryHost, Addon):
         except Exception:  # noqa: BLE001
             return None
         return player.pos.copy()
+
+    def block_allowed(self, world, kind):
+        if not self._story_on():
+            return None
+        import main.blocks as B
+        spec = B.STATEMENTS.get(kind) or {}
+        g = spec.get("group") or spec.get("orig_cat")
+        need = self.GROUP_UNLOCK.get(g)
+        return None if need is None else self.st.get("ch", 0) >= IDX[need]
 
     def blueprints_allowed(self, world):
         return False if self._story_on() else None
