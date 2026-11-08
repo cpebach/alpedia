@@ -1055,7 +1055,7 @@ class World:
         side = act.side_toward(np.asarray(frame_rows), int(dev.get("dir", 2)), look_dir)
         dev.setdefault("state", {})["hinge"] = int(side)
         from .construct import DIR_NAMES
-        self.message(f"ヒンジ：{DIR_NAMES[side]} 側へ曲がります（置くときに見ていた側。R で出力の向き）")
+        self.message(f"ヒンジ：+ の角度で {DIR_NAMES[side]} 側へ倒れます（置くときに見ていた側。-90〜+90°。R で出力の向き）")
 
     def _blocked(self, ctr, size):
         for p in self.all_players():

@@ -57,7 +57,10 @@ class ActuatorPanel:
 
     def _fix_values(self):
         a = self.preset["action"]
-        if a == "rotate":
+        if a == "rotate" and self.hinge:
+            self.preset["amount"] = _nearest(act.HINGE_AMOUNTS, self.preset["amount"], 90.0)
+            self.preset["speed"] = _nearest(ROT_SPEEDS, self.preset["speed"], 90.0)
+        elif a == "rotate":
             self.preset["amount"] = _nearest(ROT_AMOUNTS, self.preset["amount"], 90.0)
             self.preset["speed"] = _nearest(ROT_SPEEDS, self.preset["speed"], 90.0)
         elif a in ("extend", "retract"):
@@ -80,14 +83,16 @@ class ActuatorPanel:
         names = dict(act.ACTION_NAMES, rotate="曲げる") if self.hinge else act.ACTION_NAMES
         self._row("動作", y, acts, a, lambda v: names[v], self._set_action)
         if a == "rotate":
-            self._row("曲げる量" if self.hinge else "回転量", y - 0.08, ROT_AMOUNTS, self.preset["amount"],
+            self._row("曲げる角度" if self.hinge else "回転量", y - 0.08,
+                      act.HINGE_AMOUNTS if self.hinge else ROT_AMOUNTS, self.preset["amount"],
                       lambda v: f"{v:+.0f}°", lambda v: self.preset.__setitem__("amount", v))
             self._row("速さ", y - 0.16, ROT_SPEEDS, self.preset["speed"], lambda v: f"{v:.0f}°/秒",
                       lambda v: self.preset.__setitem__("speed", v))
             if self.hinge:
                 dev = self.c.devs[self.index]
-                U["Text"](parent=self.body, text=f"{act.mode_name(dev['state'], dev)}：出力面の辺を軸に 0〜180° 曲げます。"
-                                                 "曲がる側は置き方で決まります（置くときに見ていた側）",
+                U["Text"](parent=self.body, text=f"{act.mode_name(dev['state'], dev)}：ブロックの中心を軸に -90〜+90° 振ります。"
+                                                 "E を押すたびにこの角度と 0° を行き来します。\n"
+                                                 "倒れる側は置き方で決まります（置くときに見ていた側が +）",
                           position=(0, y - 0.23), origin=(0, 0), scale=0.6, color=col.light_gray)
         elif a in ("extend", "retract"):
             self._row("移動量", y - 0.08, EXT_AMOUNTS, self.preset["amount"], lambda v: f"{v:.2f} ブロック",

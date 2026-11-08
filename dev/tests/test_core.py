@@ -178,14 +178,14 @@ class TestScripts(CoreCase):
         self.assertAlmostEqual(st["angle"], 90.0, places=3)
         self.assertEqual(len(w.constructs), 1)
 
-    def _hinge_arm(self, full_rigid):
-        """土台の上のヒンジ（出力は上、-Z 側へ曲がる）と3ブロックの腕。スクリプトで 90° 曲げる。"""
+    def _hinge_arm(self, full_rigid, to=90):
+        """土台の上のヒンジ（出力は上、+ で -Z 側へ倒れる）と3ブロックの腕。スクリプトで to° 曲げる。"""
         w = self.world(full_rigid=full_rigid)
-        self.script(w, "h.py", "def tick(api):\n"
+        self.script(w, "h.py", ("def tick(api):\n"
                                "    a = api.device('arm')\n"
                                "    if not api.memory.get('sent'):\n"
-                               "        a.rotate_to(90, speed=90)\n"
-                               "        api.memory['sent'] = True\n")
+                               "        a.rotate_to(%s, speed=90)\n"
+                               "        api.memory['sent'] = True\n") % to)
         vox = [((x, 0, z), "steel", None) for x in range(3) for z in range(3) if (x, z) != (1, 1)]
         vox += [((1, 0, 1), "steel", {"def": "battery", "dir": 2}),
                 ((0, 1, 1), "steel", {"def": "computer", "dir": 4, "state": {"script": "h.py", "running": True}}),
@@ -199,12 +199,16 @@ class TestScripts(CoreCase):
         return w, c, st, c.voxel_frames()[i] @ tip
 
     def test_hinge_bends(self):
-        """ヒンジ：出力面の辺を軸に曲がる（腕が横に倒れる）。完全剛体モードでも同じ。"""
-        for full in (False, True):
-            w, c, st, tip = self._hinge_arm(full)
-            self.assertAlmostEqual(st["angle"], 90.0, places=3)
-            self.assertLess(tip[1], 0.8, f"腕は横に倒れている（上 {tip[1]:.2f}）{full}")
-            self.assertLess(tip[2], -1.2, f"-Z 側へ倒れる（{tip[2]:.2f}）{full}")
+        """ヒンジ：ブロックの中心を軸に振る（腕が横に倒れ、ヒンジの横に並ぶ）。- の角度は反対側。完全剛体モードでも同じ。"""
+        for full, to in ((False, 90), (True, 90), (False, -90)):
+            w, c, st, tip = self._hinge_arm(full, to)
+            self.assertAlmostEqual(st["angle"], float(to), places=3)
+            self.assertLess(abs(tip[1]), 0.3 * c.size, f"腕はヒンジと同じ高さに倒れている（上 {tip[1]:.2f}）{full}")
+            self.assertAlmostEqual(tip[2], (-3.0 if to > 0 else 3.0) * c.size, delta=0.3 * c.size,
+                                   msg=f"ヒンジの中心から3つ先（{tip[2]:.2f}）{full} {to}")
+            if to < 0:
+                shutil.rmtree(w.dir)
+                continue
             self.assertEqual(len(w.constructs), 1)
             w.save()
             self.assertEqual(json.loads((w.dir / "constructs.json").read_text(encoding="utf-8"))[0]["voxels"][-4][4]
@@ -229,9 +233,15 @@ class TestScripts(CoreCase):
         self.assertIsNone(act.hinge_of(c.devs[j], c.reg), "ふつうのアクチュエーターはヒンジにならない")
         c2 = self.put(w, [((0, 0, 0), "steel", {"def": "hinge", "dir": 2, "name": "h"}), ((0, 1, 0), "steel", None)])
         act.cmd_rotate(c2, 0, 500)
-        self.assertEqual(c2.devs[0]["state"]["angle_target"], act.HINGE_MAX, "ヒンジは 180° まで")
+        self.assertEqual(c2.devs[0]["state"]["angle_target"], act.HINGE_MAX, "ヒンジは +90° まで")
         act.cmd_rotate(c2, 0, -900)
-        self.assertEqual(c2.devs[0]["state"]["angle_target"], 0.0, "0° より戻らない")
+        self.assertEqual(c2.devs[0]["state"]["angle_target"], -act.HINGE_MAX, "-90° まで")
+        c2.devs[0]["state"]["preset"] = {"action": "rotate", "amount": 45.0, "speed": 90.0}
+        c2.devs[0]["state"]["angle_target"] = 0.0
+        act.execute_preset(w, c2, 0)
+        self.assertEqual(c2.devs[0]["state"]["angle_target"], 45.0, "E：設定した角度へ")
+        act.execute_preset(w, c2, 0)
+        self.assertEqual(c2.devs[0]["state"]["angle_target"], 0.0, "もう一度 E でまっすぐに戻る")
 
     def test_block_categories_merged(self):
         """機器・アクチュエーター・MOD の機器（迎撃など）のブロックは「アクチュエーター」の1つの種類。"""

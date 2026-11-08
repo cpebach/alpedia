@@ -84,7 +84,7 @@ api.antenna_range           届く距離 m（送る側と受ける側の短い�
   .retract(量, speed)               引き込み      .extend_to(位置 0〜1, speed)
   .detach()                         分離          .attach()  出力面の先のブロックと結合
   .execute()                        P メニューで設定した動作を実行
-  ヒンジ（機器「ヒンジ」）も同じ名前で使う：.rotate / .rotate_to で 0〜180° 曲げる（曲がる側は置き方で決まる）
+  ヒンジ（機器「ヒンジ」）も同じ名前で使う：.rotate / .rotate_to で -90〜+90° 振る（ブロックの中心が軸。+ で倒れる側は置き方で決まる）
   .angle .extension .attached .busy（読み取り）
   .output_angle                     出力側ブロックの世界から見た向き（度・横軸なら真上が 0）
 '''

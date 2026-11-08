@@ -383,15 +383,15 @@ def _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, c
             if L < 1e-12:
                 continue
             nx, ny, nz = nx / L, ny / L, nz / L
-            # 軸（モーターの向き）と、軸が通る点。回転：向き・面の中心。ヒンジ：辺の向き・辺の中点
+            # 軸（モーターの向き）と、軸が通る点。回転：向き・面の中心。ヒンジ：向き×側・ブロックの中心
             k1 = HK[q, 0]
             k2 = HK[q, 1]
             ox, oy, oz = cx, cy, cz
             if k1 >= 0:
-                ox = (pa[k1, 0] + pa[k2, 0]) * 0.5
-                oy = (pa[k1, 1] + pa[k2, 1]) * 0.5
-                oz = (pa[k1, 2] + pa[k2, 2]) * 0.5
-                sx, sy, sz = ox - cx, oy - cy, oz - cz
+                sx = (pa[k1, 0] + pa[k2, 0]) * 0.5 - cx
+                sy = (pa[k1, 1] + pa[k2, 1]) * 0.5 - cy
+                sz = (pa[k1, 2] + pa[k2, 2]) * 0.5 - cz
+                ox, oy, oz = ax, ay, az                       # ヒンジのブロックの中心を軸が通る
                 sl = np.sqrt(sx * sx + sy * sy + sz * sz)
                 if sl < 1e-12:
                     continue
@@ -400,7 +400,7 @@ def _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, c
                 my = nz * sx - nx * sz
                 mz = nx * sy - ny * sx
                 ml = np.sqrt(mx * mx + my * my + mz * mz)
-                nx, ny, nz = mx / ml, my / ml, mz / ml       # ここから先の「軸」はヒンジの辺
+                nx, ny, nz = mx / ml, my / ml, mz / ml       # ここから先の「軸」はヒンジの軸
             cs, sn = np.cos(ang[q]), np.sin(ang[q])
             tcx = 0.0
             tcy = 0.0

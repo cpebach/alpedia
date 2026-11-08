@@ -2,7 +2,7 @@
 
 アクチュエーターは向き（出力面）を持つブロック。
 - 回転   : 出力面の先につながったブロック（とその先の部分）を、向きを軸に回す
-           ヒンジ（別の機器）は、出力面の辺を軸に 0〜180° 曲げる（扉・腕の関節など。曲がる側は置き方で決まる）
+           ヒンジ（別の機器）は、ヒンジのブロックの中心を軸に -90〜+90° 振る（扉・腕の関節など。曲がる側は置き方で決まる）
 - 押し出し: 自分が伸びて、出力面の先を押し出す（最大でブロック1つ分）
 - 引き込み: 伸びた分を引き戻す
 - 分離   : 出力面の結合を切り離す（先の部分は別の構築物になる）
@@ -23,10 +23,11 @@ DEFAULT_PRESET = {"action": "rotate", "amount": 90.0, "speed": 90.0}
 
 
 # ---------------------------------------------------------------------------
-# ヒンジ：出力面の辺を軸に曲げるアクチュエーター（機器 "hinge"。params.hinge が true）
-#   どの辺で曲がるかは置き方で決まる：出力の向き（R）と、置いたときに見ていた向き（その側へ曲がる）
+# ヒンジ：ブロックの中心を通る軸で、出力側を振るアクチュエーター（機器 "hinge"。params.hinge が true）
+#   振る向きは置き方で決まる：出力の向き（R）と、置いたときに見ていた向き（+ の角度でその側へ倒れる）
 # ---------------------------------------------------------------------------
-HINGE_MAX = 180.0           # ヒンジで曲げられる角度（0〜180°。0 がまっすぐ）
+HINGE_MAX = 90.0            # ヒンジで曲げられる角度（-90〜+90°。0 がまっすぐ）
+HINGE_AMOUNTS = [-90.0, -60.0, -45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0, 60.0, 90.0]   # P メニューで選べる角度
 
 
 def hinge_sides(d):
@@ -86,7 +87,7 @@ def side_toward(frame_rows, d, look):
 
 def mode_name(st, dev=None):
     if dev is not None and is_hinge_dev(dev):
-        return f"ヒンジ（{DIR_NAMES[hinge_side(dev)]} 側へ曲がる）"
+        return f"ヒンジ（+ で {DIR_NAMES[hinge_side(dev)]} 側へ倒れる）"
     return "回転"
 
 
@@ -127,8 +128,8 @@ def busy(st):
 def cmd_rotate(c, i, angle, speed=None, absolute=False):
     st = c.devs[i]["state"]
     st["angle_target"] = float(angle) if absolute else float(st.get("angle_target", 0.0)) + float(angle)
-    if is_hinge_dev(c.devs[i], c.reg):             # ヒンジ：0（まっすぐ）〜 180°
-        st["angle_target"] = min(max(st["angle_target"], 0.0), HINGE_MAX)
+    if is_hinge_dev(c.devs[i], c.reg):             # ヒンジ：-90〜+90°（0 がまっすぐ）
+        st["angle_target"] = min(max(st["angle_target"], -HINGE_MAX), HINGE_MAX)
     if speed is not None:
         st["rot_speed"] = max(1.0, min(float(speed), 3600.0))
     c.wake(soft=True)
@@ -342,10 +343,15 @@ def execute_preset(world, c, i):
     a = p.get("action", "rotate")
     name = c.devs[i]["name"]
     hinge = is_hinge_dev(c.devs[i], c.reg)
+    if a == "rotate" and hinge:
+        # ヒンジ：設定した角度へ曲げる。もうその角度なら 0°（まっすぐ）へ戻す（E を押すたびに行き来する）
+        to = float(p.get("amount", 90.0))
+        if abs(float(st.get("angle_target", 0.0)) - to) < 0.5:
+            to = 0.0
+        cmd_rotate(c, i, to, p.get("speed"), absolute=True)
+        return f"{name}: {st['angle_target']:+.0f}° へ曲げる（{p.get('speed', 90):.0f}°/秒）"
     if a == "rotate":
         cmd_rotate(c, i, p.get("amount", 90.0), p.get("speed"))
-        if hinge:
-            return f"{name}: {st['angle_target']:.0f}° まで曲げる（{p.get('speed', 90):.0f}°/秒）"
         return f"{name}: {p.get('amount', 90):+.0f}° 回転（{p.get('speed', 90):.0f}°/秒）"
     if a == "extend":
         before = st["ext_target"]
@@ -371,7 +377,9 @@ def preset_text(st, hinge=False):
     p = st.get("preset") or DEFAULT_PRESET
     a = p.get("action", "rotate")
     if a == "rotate":
-        how = "曲げる" if hinge else ACTION_NAMES[a]
+        if hinge:
+            return f"{p.get('amount', 90):+.0f}° と 0° を行き来 / {p.get('speed', 90):.0f}°/秒"
+        how = ACTION_NAMES[a]
         return f"{how} {p.get('amount', 90):+.0f}° / {p.get('speed', 90):.0f}°/秒"
     if a in ("extend", "retract"):
         return f"{ACTION_NAMES[a]} {p.get('amount', 1):.2f}ブロック / {p.get('speed', 0.5):.2f}ブロック/秒"

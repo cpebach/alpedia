@@ -1430,7 +1430,7 @@ class Game:
                 name = dd["name"]
                 extra = f"  向き {DIR_NAMES[self.dir_index]}" if dd.get("directional") else ""
                 if (dd.get("params") or {}).get("hinge"):
-                    extra += "（曲がるのは置くときに見ている側）"
+                    extra += "（+ の角度で倒れるのは置くときに見ている側）"
             cost = w.item_cost((kind, id_))
             cs = "" if w.creative or not cost else "  費用 " + w.registry.res_text(cost, ", ")
             self.sel_text.text = f"{'素材' if kind == 'material' else '機器'}: {name}{extra}{cs}"

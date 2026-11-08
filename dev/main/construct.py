@@ -938,8 +938,8 @@ class Construct:
 
     def _rotor_targets(self, r):
         """回転ジョイント: アクチュエーター出力面の4頂点を、軸まわりに回した位置。
-        回転なら軸＝出力の向き（面の中心を通る）。ヒンジなら軸＝出力面の辺（2隅を通る線）で、
-        角度が + のとき出力側はその辺の側へ倒れる（軸 = 向き × 辺の側）。"""
+        回転なら軸＝出力の向き（面の中心を通る）。ヒンジなら軸はヒンジのブロックの中心を通り、
+        角度が + のとき出力側は決めた側へ倒れる（軸 = 向き × 側）。"""
         pairs = JOINT_PAIRS[r["d"]]
         ia, ib = r["a"], r["b"]
         A = 8 * ia + pairs[:, 0]
@@ -954,8 +954,8 @@ class Construct:
         if hp is None:
             m, o = n, c
         else:
-            o = (pa[hp[0]] + pa[hp[1]]) * 0.5         # 辺の中点（軸が通る点）
-            s = o - c
+            s = (pa[hp[0]] + pa[hp[1]]) * 0.5 - c     # 倒れる側（面の中心 → その側の辺）
+            o = self.pos[8 * ia:8 * ia + 8].mean(0)   # 軸が通る点：ヒンジのブロックの中心
             s /= max(np.linalg.norm(s), 1e-9)
             m = np.cross(n, s)
             m /= max(np.linalg.norm(m), 1e-9)
