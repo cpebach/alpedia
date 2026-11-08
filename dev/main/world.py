@@ -992,6 +992,7 @@ class World:
                 self.message("そこには既にボクセルがあります")
                 return False
             F = c.voxel_frames()[i]
+            self._hinge_side(dev, F, look_dir)
             axis, sign = hit["face"] // 2, (1 if hit["face"] % 2 == 0 else -1)
             ctr = c.pos[8 * i:8 * i + 8].mean(0) + F[axis] * sign * c.size
             verts = ctr + (REST_UNIT * c.size) @ F
@@ -1020,6 +1021,7 @@ class World:
         fwd /= np.linalg.norm(fwd)
         right = np.cross(up, fwd)
         R = np.stack([right, up, fwd], axis=1)  # ローカルx,y,z → ワールド
+        self._hinge_side(dev, R.T, look_dir)
         if not self.pay(self.item_cost(item)):
             return False
         origin = ctr - R @ (np.array([0.5, 0.5, 0.5]) * size)
@@ -1031,6 +1033,18 @@ class World:
             for a in self.addons:
                 a.on_placed(self, hit, c)
         return True
+
+    def _hinge_side(self, dev, frame_rows, look_dir):
+        """ヒンジを置くとき：曲がる側を、置くときに見ている向きで決める（出力の軸に垂直な4つのうち、いちばん近い側）。"""
+        if not dev:
+            return
+        from . import actuator as act
+        if not act.is_hinge_dev(dev, self.registry):
+            return
+        side = act.side_toward(np.asarray(frame_rows), int(dev.get("dir", 2)), look_dir)
+        dev.setdefault("state", {})["hinge"] = int(side)
+        from .construct import DIR_NAMES
+        self.message(f"ヒンジ：{DIR_NAMES[side]} 側へ曲がります（置くときに見ていた側。R で出力の向き）")
 
     def _blocked(self, ctr, size):
         for p in self.all_players():

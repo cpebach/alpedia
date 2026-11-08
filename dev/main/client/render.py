@@ -553,6 +553,8 @@ class DecalView:
             kind = kind if kind in self._kinds() else "other"
             directional = bool(dd.get("directional"))
             dirv = DIRS[int(d.get("dir", 2)) % 6]
+            from .. import actuator as act
+            bend = act.hinge_side(d) if act.is_hinge_dev(d, reg) else None
             disp = d["state"].get("display")
             disp_faces = set(display_faces(c, i, disp)) if disp and disp.get("text") else set()
             cell = c.cells[i]
@@ -569,6 +571,12 @@ class DecalView:
                         var, up = "back", default_up
                     else:
                         var, up = "side", dirv
+                    if bend is not None and f == bend:     # ヒンジの曲がる側の面：曲がった矢印
+                        vox.append(i)
+                        nrm.append(n)
+                        upv.append(dirv)
+                        uvs.append(self._uv[("bend", "plain")])
+                        continue
                 else:
                     var, up = "plain", default_up
                 vox.append(i)

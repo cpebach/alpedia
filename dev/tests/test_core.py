@@ -179,52 +179,59 @@ class TestScripts(CoreCase):
         self.assertEqual(len(w.constructs), 1)
 
     def _hinge_arm(self, full_rigid):
-        """土台の上のアクチュエーター（上向き）と3ブロックの腕。ちょうつがい（-Z 側の辺）で 90° 曲げる。"""
+        """土台の上のヒンジ（出力は上、-Z 側へ曲がる）と3ブロックの腕。スクリプトで 90° 曲げる。"""
         w = self.world(full_rigid=full_rigid)
         self.script(w, "h.py", "def tick(api):\n"
                                "    a = api.device('arm')\n"
                                "    if not api.memory.get('sent'):\n"
-                               "        api.memory['msg'] = a.hinge('-Z')\n"
                                "        a.rotate_to(90, speed=90)\n"
                                "        api.memory['sent'] = True\n")
         vox = [((x, 0, z), "steel", None) for x in range(3) for z in range(3) if (x, z) != (1, 1)]
         vox += [((1, 0, 1), "steel", {"def": "battery", "dir": 2}),
                 ((0, 1, 1), "steel", {"def": "computer", "dir": 4, "state": {"script": "h.py", "running": True}}),
-                ((1, 1, 1), "steel", {"def": "actuator", "dir": 2, "name": "arm"})]
+                ((1, 1, 1), "steel", {"def": "hinge", "dir": 2, "name": "arm", "state": {"hinge": 5}})]
         vox += [((1, 2 + k, 1), "aluminum", None) for k in range(3)]
         c = self.put(w, vox, extra=0.4)
         self.run_for(w, 3.0)
-        i = next(k for k, d in enumerate(c.devs) if d and d["def"] == "actuator")
+        i = next(k for k, d in enumerate(c.devs) if d and d["def"] == "hinge")
         st = c.devs[i]["state"]
         tip = c.pos[8 * c.index[(1, 4, 1)]:8 * c.index[(1, 4, 1)] + 8].mean(0) - c.pos[8 * i:8 * i + 8].mean(0)
-        return w, c, st, tip
+        return w, c, st, c.voxel_frames()[i] @ tip
 
-    def test_actuator_hinge_bends(self):
-        """ちょうつがい：出力面の辺を軸に曲がる（腕が横に倒れる）。完全剛体モードでも同じ。"""
+    def test_hinge_bends(self):
+        """ヒンジ：出力面の辺を軸に曲がる（腕が横に倒れる）。完全剛体モードでも同じ。"""
         for full in (False, True):
             w, c, st, tip = self._hinge_arm(full)
-            self.assertEqual(st["hinge"], 5, full)
             self.assertAlmostEqual(st["angle"], 90.0, places=3)
             self.assertLess(tip[1], 0.8, f"腕は横に倒れている（上 {tip[1]:.2f}）{full}")
             self.assertLess(tip[2], -1.2, f"-Z 側へ倒れる（{tip[2]:.2f}）{full}")
             self.assertEqual(len(w.constructs), 1)
             w.save()
             self.assertEqual(json.loads((w.dir / "constructs.json").read_text(encoding="utf-8"))[0]["voxels"][-4][4]
-                             ["state"]["hinge"], 5, "ちょうつがいの辺は保存される")
+                             ["state"]["hinge"], 5, "曲がる側は保存される")
             shutil.rmtree(w.dir)
 
-    def test_actuator_mode_needs_zero_angle(self):
+    def test_hinge_side_from_placement(self):
+        """ヒンジの曲がる側は置き方で決まる：置くときに見ている向きにいちばん近い側。回転のアクチュエーターは回るだけ。"""
         from main import actuator as act
         w = self.world()
-        c = self.put(w, [((0, 0, 0), "steel", {"def": "actuator", "dir": 2, "name": "a"}), ((0, 1, 0), "steel", None)])
-        i = 0
-        act.cmd_rotate(c, i, 30)
-        self.assertIn("0°", act.cmd_mode(c, i, 5) or "")
-        c.devs[i]["state"]["angle"] = c.devs[i]["state"]["angle_target"] = 0.0
-        self.assertIsNone(act.cmd_mode(c, i, 5))
-        act.cmd_rotate(c, i, 500)
-        self.assertEqual(c.devs[i]["state"]["angle_target"], act.HINGE_MAX, "ちょうつがいは 180° まで")
-        self.assertIsNotNone(act.cmd_mode(c, i, 2), "出力の軸と同じ向きの辺は選べない")
+        c = self.put(w, [((0, 0, 0), "steel", None)])
+        for look, side in (((0, 0, 1.0), 4), ((1.0, 0, 0.2), 0), ((-0.3, 0, -1.0), 5)):
+            hit = {"kind": "voxel", "construct": c, "index": 0, "face": 2}
+            self.assertTrue(w.place(hit, ("device", "hinge"), 2, np.array(look)))
+            j = c.index[(0, 1, 0)]
+            self.assertEqual(c.devs[j]["state"]["hinge"], side, look)
+            self.assertEqual(act.hinge_of(c.devs[j], c.reg), act.hinge_pair(2, side))
+            c.remove_voxels([j])
+        self.assertTrue(w.place({"kind": "voxel", "construct": c, "index": 0, "face": 2}, ("device", "actuator"), 2,
+                                np.array([0, 0, 1.0])))
+        j = c.index[(0, 1, 0)]
+        self.assertIsNone(act.hinge_of(c.devs[j], c.reg), "ふつうのアクチュエーターはヒンジにならない")
+        c2 = self.put(w, [((0, 0, 0), "steel", {"def": "hinge", "dir": 2, "name": "h"}), ((0, 1, 0), "steel", None)])
+        act.cmd_rotate(c2, 0, 500)
+        self.assertEqual(c2.devs[0]["state"]["angle_target"], act.HINGE_MAX, "ヒンジは 180° まで")
+        act.cmd_rotate(c2, 0, -900)
+        self.assertEqual(c2.devs[0]["state"]["angle_target"], 0.0, "0° より戻らない")
 
     def test_block_categories_merged(self):
         """機器・アクチュエーター・MOD の機器（迎撃など）のブロックは「アクチュエーター」の1つの種類。"""
@@ -240,12 +247,6 @@ class TestScripts(CoreCase):
             self.assertEqual(B.STATEMENTS["zz_fire"]["orig_cat"], "weapon")
         finally:
             B.reset_ext()
-        prog = B.new_program()
-        prog["scripts"].append({"type": "on_start", "body": [{"type": "act_mode", "dev": "arm", "mode": "-Z"},
-                                                             {"type": "act_mode", "dev": "arm", "mode": "回転"}]})
-        py = B.to_python(prog, "t.blocks.json")
-        self.assertIn("d.hinge('-Z')", py)
-        self.assertIn("d.spin()", py)
 
     def test_vector_blocks(self):
         """矢印（ベクトル）のブロック：入る欄・Python への変換・実行（重力の矢印・船から見た成分・矢印を見せる）。"""

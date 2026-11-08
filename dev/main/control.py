@@ -208,12 +208,6 @@ class Port:
         self._act(i)
         actuator.cmd_rotate(self._c, i, angle, speed, absolute=absolute)
 
-    def act_mode(self, i, side):
-        """動き方を変える（side：-1 で回転、"+X" などの辺の名前でちょうつがい）。変えられなければ理由の文を返す。"""
-        d = self._act(i)
-        s = actuator.side_from_name(d, side) if isinstance(side, str) or side is None else int(side)
-        return actuator.cmd_mode(self._c, i, s)
-
     def act_extend(self, i, amount, speed=None, absolute=False):
         self._act(i)
         actuator.cmd_extend(self._c, i, amount, speed, absolute=absolute)

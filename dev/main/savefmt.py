@@ -13,6 +13,7 @@ FORMAT = 2     # 2: クリエイティブ／サバイバル・街の ON/OFF を 
 WORLD_KEYS = {
     "format": int, "name": str, "voxel_size": (int, float), "gravity_scale": (int, float),
     "cleanup": dict, "player": str, "planets": list, "time": (int, float), "full_rigid": bool, "tutorial": bool,
+    "starter_sample": bool,       # 新規ワールドに見本を置く（最初の読み込みで消える）
 }
 CLEANUP_KEYS = {"enabled": bool, "distance": (int, float), "seconds": (int, float), "max_vertices": int,
                 "check_interval": (int, float)}

@@ -172,15 +172,6 @@ class DeviceHandle:
         """角度 angle 度まで回す（絶対）。"""
         self._p.act_rotate(self._i, angle, speed, absolute=True)
 
-    def hinge(self, side="ちょうつがい"):
-        """動き方をちょうつがいにする：出力面の辺 side（"+X" "-Y" など。省略で既定の辺）を軸に、
-        rotate() で 0〜180° 曲げる。角度が 0° のときだけ変えられる。変えられなければ理由の文を返す。"""
-        return self._p.act_mode(self._i, side)
-
-    def spin(self):
-        """動き方を回転（出力の向きを軸に回す。いつもの動き）に戻す。角度が 0° のときだけ。"""
-        return self._p.act_mode(self._i, -1)
-
     def extend(self, amount=1.0, speed=None):
         """amount ブロック分押し出す（相対・最大でブロック1つ分）。speed: ブロック/秒"""
         self._p.act_extend(self._i, amount, speed)

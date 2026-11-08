@@ -356,7 +356,7 @@ def _ang_w(R, IinvB, g, ux, uy, uz):
 @njit(cache=True, nogil=True, fastmath=True)
 def _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN,
                   HK):
-    """HK (nr,2)：関節ごとのちょうつがいの辺（出力面の4隅のうち2つの番号）。-1 なら回転（向きを軸に）。"""
+    """HK (nr,2)：関節ごとのヒンジの辺（出力面の4隅のうち2つの番号）。-1 なら回転（向きを軸に）。"""
     nr = ra.shape[0]
     nc = cg.shape[0]
     lamT = np.zeros(nc)
@@ -383,7 +383,7 @@ def _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, c
             if L < 1e-12:
                 continue
             nx, ny, nz = nx / L, ny / L, nz / L
-            # 軸（モーターの向き）と、軸が通る点。回転：向き・面の中心。ちょうつがい：辺の向き・辺の中点
+            # 軸（モーターの向き）と、軸が通る点。回転：向き・面の中心。ヒンジ：辺の向き・辺の中点
             k1 = HK[q, 0]
             k2 = HK[q, 1]
             ox, oy, oz = cx, cy, cz
@@ -400,7 +400,7 @@ def _nb_art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, c
                 my = nz * sx - nx * sz
                 mz = nx * sy - ny * sx
                 ml = np.sqrt(mx * mx + my * my + mz * mz)
-                nx, ny, nz = mx / ml, my / ml, mz / ml       # ここから先の「軸」はちょうつがいの辺
+                nx, ny, nz = mx / ml, my / ml, mz / ml       # ここから先の「軸」はヒンジの辺
             cs, sn = np.cos(ang[q]), np.sin(ang[q])
             tcx = 0.0
             tcy = 0.0
@@ -686,7 +686,7 @@ def vertex_normals(v, faces):
 
 def art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN,
               HK=None):
-    """HK：関節ごとのちょうつがいの辺（無ければ全部回転）。ちょうつがいがあるときは numba で解く（Rust は回転だけ）。"""
+    """HK：関節ごとのヒンジの辺（無ければ全部回転）。ヒンジがあるときは numba で解く（Rust は回転だけ）。"""
     nr = ra.shape[0]
     if HK is None or HK.shape[0] != nr:
         HK = np.full((nr, 2), -1, np.int64)

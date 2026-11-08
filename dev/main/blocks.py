@@ -64,7 +64,7 @@ STATEMENTS = {
                      slots={"dev": "dev:thruster", "value": "num"}, hidden=True),   # パレットには出さない
     "enable": dict(cat="actuator", label="機器 {dev} を {state}", slots={"dev": "dev:*", "state": "choice:ON|OFF"}),
     # アクチュエーター
-    "act_rotate": dict(cat="actuator", label="{dev} を {angle} 度回す（速さ {speed} 度/秒）",
+    "act_rotate": dict(cat="actuator", label="{dev} を {angle} 度回す・曲げる（速さ {speed} 度/秒）",
                        slots={"dev": "dev:actuator", "angle": "num", "speed": "num"}),
     "act_rotate_to": dict(cat="actuator", label="{dev} の角度を {angle} 度にする（速さ {speed}）",
                           slots={"dev": "dev:actuator", "angle": "num", "speed": "num"}),
@@ -75,8 +75,6 @@ STATEMENTS = {
     "act_detach": dict(cat="actuator", label="{dev} を分離する", slots={"dev": "dev:actuator"}),
     "act_attach": dict(cat="actuator", label="{dev} を結合する", slots={"dev": "dev:actuator"}),
     "act_execute": dict(cat="actuator", label="{dev} の設定動作を実行", slots={"dev": "dev:actuator"}),
-    "act_mode": dict(cat="actuator", label="{dev} の動き方を {mode} にする",
-                     slots={"dev": "dev:actuator", "mode": "choice:回転|ちょうつがい|+X|-X|+Y|-Y|+Z|-Z"}),
     # 表示
     "display": dict(cat="look", label="表面に {text} と表示（幅 {width} m）", slots={"text": "text", "width": "num"}),
     "clear_display": dict(cat="look", label="表示を消す"),
@@ -110,7 +108,6 @@ STMT_DEFAULTS = {
     "enable": {"dev": "*", "state": "ON"},
     "act_rotate": {"dev": "*", "angle": {"type": "num", "v": 90}, "speed": {"type": "num", "v": 45}},
     "act_rotate_to": {"dev": "*", "angle": {"type": "num", "v": 0}, "speed": {"type": "num", "v": 45}},
-    "act_mode": {"dev": "*", "mode": "ちょうつがい"},
     "act_extend": {"dev": "*", "amount": {"type": "num", "v": 1.0}, "speed": {"type": "num", "v": 0.5}},
     "act_retract": {"dev": "*", "amount": {"type": "num", "v": 1.0}, "speed": {"type": "num", "v": 0.5}},
     "act_detach": {"dev": "*"}, "act_attach": {"dev": "*"}, "act_execute": {"dev": "*"},
@@ -931,9 +928,6 @@ def gen_stmt(node):
         return _dev_loop(node, "actuator", "d.attach()")
     if t == "act_execute":
         return _dev_loop(node, "actuator", "d.execute()")
-    if t == "act_mode":
-        m = node.get("mode", "回転")
-        return _dev_loop(node, "actuator", "d.spin()" if m == "回転" else f"d.hinge({m!r})")
     if t == "display":
         return [f"api.display(str({g(node.get('text'), 'text')}), width={g(node.get('width'))})"]
     if t == "clear_display":

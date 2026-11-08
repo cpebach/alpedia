@@ -675,8 +675,8 @@ class Construct:
         if core is None or not hasattr(core, "Body") or NATIVE_STEP_OFF:
             return None
         from . import actuator as act
-        if any(act.hinge_of(r["dev"]) is not None for r in self.rotors):
-            return None              # ちょうつがいの関節は Python で計算する（Rust の物理コアは回転だけ）
+        if any(act.hinge_of(r["dev"], self.reg) is not None for r in self.rotors):
+            return None              # ヒンジの関節は Python で計算する（Rust の物理コアは回転だけ）
         key = (self.version, id(core), self.n_vox)
         nb = getattr(self, "_nb_cache", None)
         if nb is not None and nb[0] == key:
@@ -938,7 +938,7 @@ class Construct:
 
     def _rotor_targets(self, r):
         """回転ジョイント: アクチュエーター出力面の4頂点を、軸まわりに回した位置。
-        回転なら軸＝出力の向き（面の中心を通る）。ちょうつがいなら軸＝出力面の辺（2隅を通る線）で、
+        回転なら軸＝出力の向き（面の中心を通る）。ヒンジなら軸＝出力面の辺（2隅を通る線）で、
         角度が + のとき出力側はその辺の側へ倒れる（軸 = 向き × 辺の側）。"""
         pairs = JOINT_PAIRS[r["d"]]
         ia, ib = r["a"], r["b"]
@@ -950,7 +950,7 @@ class Construct:
         n /= max(np.linalg.norm(n), 1e-9)
         th = np.radians(float(r["dev"]["state"].get("angle", 0.0)))
         from . import actuator as act
-        hp = act.hinge_of(r["dev"])
+        hp = act.hinge_of(r["dev"], self.reg)
         if hp is None:
             m, o = n, c
         else:
@@ -1300,7 +1300,7 @@ class Construct:
             A.append(8 * r["a"] + pairs[:, 0]); B.append(8 * r["b"] + pairs[:, 1])
             C.append(np.arange(8 * r["a"], 8 * r["a"] + 8))
             devs.append(r["dev"])
-            hp = act.hinge_of(r["dev"])
+            hp = act.hinge_of(r["dev"], self.reg)
             HK.append(list(hp) if hp is not None else [-1, -1])
         self.art = {"version": self.version, "n": self.n_vox, "gid": gid, "vg": vg, "G": G,
                     "vl0": vl.copy(), "vl": vl, "invM": 1.0 / M, "IinvB": IinvB, "Ib": Ib,
@@ -1312,7 +1312,7 @@ class Construct:
                     "ext_applied": np.array([e[3] for e in exts], dtype=np.float64),
                     "gv": np.arange(len(vg), dtype=np.int64),
                     "HK": np.array(HK, np.int64).reshape(-1, 2)}
-        # ちょうつがいがあれば Python（numba）で解く（Rust の物理コアの関節は回転だけ）
+        # ヒンジがあれば Python（numba）で解く（Rust の物理コアの関節は回転だけ）
         self.art["nat"] = None if (self.art["HK"] >= 0).any() else self._native_art_topo()
 
     def enter_art(self):

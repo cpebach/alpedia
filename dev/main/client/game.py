@@ -1429,6 +1429,8 @@ class Game:
                 dd = w.registry.device(id_)
                 name = dd["name"]
                 extra = f"  向き {DIR_NAMES[self.dir_index]}" if dd.get("directional") else ""
+                if (dd.get("params") or {}).get("hinge"):
+                    extra += "（曲がるのは置くときに見ている側）"
             cost = w.item_cost((kind, id_))
             cs = "" if w.creative or not cost else "  費用 " + w.registry.res_text(cost, ", ")
             self.sel_text.text = f"{'素材' if kind == 'material' else '機器'}: {name}{extra}{cs}"
@@ -1469,8 +1471,8 @@ def device_status_text(c, i, d, dd):
             out += f"　プログラム「{st.get('blocks') or st.get('script')}」".replace(".blocks.json", "").replace(".py", "")
     elif t_ == "actuator":
         from .. import actuator as act
-        out = (f"{act.mode_name(st)}  角度 {st.get('angle', 0):.0f}°  伸び {st.get('ext', 0):.2f}  "
-               f"結合 {'あり' if act.is_attached(c, i) else 'なし'}\n設定: {act.preset_text(st)}")
+        out = (f"{act.mode_name(st, d)}  角度 {st.get('angle', 0):.0f}°  伸び {st.get('ext', 0):.2f}  "
+               f"結合 {'あり' if act.is_attached(c, i) else 'なし'}\n設定: {act.preset_text(st, act.is_hinge_dev(d, reg))}")
     elif t_ == "processor":
         store = {k: v for k, v in (st.get("store") or {}).items() if v >= 0.5}
         out = ("動いている" if st.get("working") else ("止めている" if not st.get("enabled", True) else "待機中"))
