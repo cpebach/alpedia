@@ -78,11 +78,12 @@ api.antenna_range           届く距離 m（送る側と受ける側の短い�
 タンク:         .contents（読み取り）
 バッテリー:     .charge（読み取り）
 コンピューター: .display(text, ...) / .clear_display()（他のコンピューターに表示）
-アクチュエーター（出力面の先の部分を動かす）:
-  .rotate(角度, speed=度/秒)        相対回転      .rotate_to(角度, speed)   絶対角度へ
-  .extend(量, speed=ブロック/秒)    押し出し（最大ブロック1つ分）
-  .retract(量, speed)               引き込み      .extend_to(位置 0〜1, speed)
-  .detach()                         分離          .attach()  出力面の先のブロックと結合
+アクチュエーター（出力面の先の部分を動かす。ローター・ピストン・ヒンジの3種類）:
+  ローター:  .rotate(角度, speed=度/秒)  相対回転      .rotate_to(角度, speed)   絶対角度へ
+  ピストン:  .extend(量, speed=ブロック/秒)  押し出し（最大ブロック1つ分）
+             .retract(量, speed)  引き込み      .extend_to(位置 0〜1, speed)
+  （種類にない動作はエラー：ローターは押し出せない・ピストンは回せない）
+  どれでも:  .detach()  分離          .attach()  出力面の先のブロックと結合
   .execute()                        P メニューで設定した動作を実行
   ヒンジ（機器「ヒンジ」）も同じ名前で使う：.rotate / .rotate_to で -90〜+90° 振る（ブロックの中心が軸。+ で倒れる側は置き方で決まる）
   .angle .extension .attached .busy（読み取り）

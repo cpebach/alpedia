@@ -161,6 +161,8 @@ class Construct:
 
     def _init_device(self, dev):
         """機器の情報を決まった形にする（状態は devstate の表のとおりにそろえる）。"""
+        from .actuator import migrate_device
+        dev = migrate_device(dev)                # 古い「アクチュエーター」で押し出していた物はピストンに
         dd = self.reg.device(dev["def"])
         out = {"def": dev["def"], "dir": int(dev.get("dir", 2)), "name": dev.get("name") or (dd["name"] if dd else dev["def"])}
         if dd:

@@ -27,12 +27,13 @@ class ActuatorPanel:
         st = construct.devs[index]["state"]
         dd = construct.reg.device(construct.devs[index]["def"]) or {"params": {}}
         act.init_state(st, dd["params"])
-        p = dict(st.get("preset") or act.DEFAULT_PRESET)
+        p = dict(st.get("preset") or act.default_preset(construct.devs[index], construct.reg))
+        self.actions = act.actions_for(construct.devs[index], construct.reg)
+        if p.get("action") not in self.actions:
+            p = act.default_preset(construct.devs[index], construct.reg)
         self.hinge = act.is_hinge_dev(construct.devs[index], construct.reg)
         self.preset = {"action": p.get("action", "rotate"), "amount": p.get("amount", 90.0),
                        "speed": p.get("speed", 90.0)}
-        if self.hinge and self.preset["action"] not in act.HINGE_ACTIONS:
-            self.preset["action"] = "rotate"
         self._fix_values()
         self.root = Entity(parent=camera.ui)
         Entity(parent=self.root, model="quad", scale=(3, 2), color=color.rgba(0, 0, 0, 0.5), z=0.3)
@@ -74,12 +75,12 @@ class ActuatorPanel:
         U = self.U
         col = U["color"]
         d = self.c.devs[self.index] if self.index is not None else None
-        name = d["name"] if d else "アクチュエーター"
+        name = d["name"] if d else act.MOTION_NAMES[act.motion(d, self.c.reg)]
         U["Text"](parent=self.body, text=f"{name} の動作設定", position=(-0.1, 0.35), origin=(0, 0), scale=1.3)
         self._button("名前を変更", (0.36, 0.35), self.open_rename, col.rgb(0.6, 0.45, 0.15))
         y = 0.12
         a = self.preset["action"]
-        acts = act.HINGE_ACTIONS if self.hinge else act.ACTIONS
+        acts = self.actions
         names = dict(act.ACTION_NAMES, rotate="曲げる") if self.hinge else act.ACTION_NAMES
         self._row("動作", y, acts, a, lambda v: names[v], self._set_action)
         if a == "rotate":
@@ -199,6 +200,10 @@ class ActuatorPanel:
         s = self.c.status or {}
         att = "あり" if act.is_attached(self.c, i) else "なし"
         moving = "動作中" if act.busy(st) else "停止"
-        self.status.text = (f"角度 {st.get('angle', 0):.0f}°   伸び {st.get('ext', 0):.2f} ブロック   "
+        m = act.motion(self.c.devs[i], self.c.reg)
+        val = {"piston": f"伸び {st.get('ext', 0):.2f} ブロック   ",
+               "both": f"角度 {st.get('angle', 0):.0f}°   伸び {st.get('ext', 0):.2f} ブロック   "}.get(
+            m, f"角度 {st.get('angle', 0):.0f}°   ")
+        self.status.text = (val +
                             f"出力面の結合 {att}   {moving}\n"
                             f"電力 {s.get('stored', 0) / 1e6:.2f} MJ（動かすには電力が必要）")

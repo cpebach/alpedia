@@ -204,16 +204,25 @@ class Port:
         actuator.init_state(d["state"], dd["params"])
         return d
 
+    def _can(self, i, action):
+        try:
+            actuator.check_action(self._c, i, action)
+        except actuator.MotionError as e:
+            raise PortError(str(e))
+
     def act_rotate(self, i, angle, speed=None, absolute=False):
         self._act(i)
+        self._can(i, "rotate")
         actuator.cmd_rotate(self._c, i, angle, speed, absolute=absolute)
 
     def act_extend(self, i, amount, speed=None, absolute=False):
         self._act(i)
+        self._can(i, "extend")
         actuator.cmd_extend(self._c, i, amount, speed, absolute=absolute)
 
     def act_retract(self, i, amount, speed=None):
         self._act(i)
+        self._can(i, "retract")
         actuator.cmd_retract(self._c, i, amount, speed)
 
     def act_detach(self, i):

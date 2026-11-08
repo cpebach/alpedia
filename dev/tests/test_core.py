@@ -162,6 +162,39 @@ class TestScripts(CoreCase):
         st["ignite"] = False                     # コピーなので本体は変わらない
         self.assertTrue(c.devs[ti]["state"]["ignite"])
 
+    def test_rotor_and_piston(self):
+        """ローターは回すだけ、ピストンは押し出し・引き込みだけ。分離・結合はどちらも。古いアクチュエーターの読み替え。"""
+        from main import actuator as act
+        w = self.world()
+        c = self.put(w, [((0, 0, 0), "steel", {"def": "battery", "dir": 2}),
+                         ((1, 0, 0), "steel", {"def": "actuator", "dir": 2, "name": "rot"}),
+                         ((1, 1, 0), "steel", None),
+                         ((2, 0, 0), "steel", {"def": "piston", "dir": 2, "name": "pis"}),
+                         ((2, 1, 0), "steel", None)])
+        p = Port(w, c)
+        ri, pi = c.index[(1, 0, 0)], c.index[(2, 0, 0)]
+        self.assertEqual((act.motion(c.devs[ri], c.reg), act.motion(c.devs[pi], c.reg)), ("rotor", "piston"))
+        self.assertEqual(w.registry.device("actuator")["name"], "ローター")
+        p.act_rotate(ri, 90)
+        with self.assertRaises(PortError):
+            p.act_extend(ri, 1.0)
+        with self.assertRaises(PortError):
+            p.act_rotate(pi, 90)
+        p.act_extend(pi, 1.0)
+        self.assertEqual(c.devs[pi]["state"]["ext_target"], 1.0)
+        self.assertEqual(c.devs[pi]["state"]["preset"]["action"], "extend", "ピストンの既定の動作は押し出し")
+        c.devs[ri]["state"]["preset"] = {"action": "extend", "amount": 1.0, "speed": 0.5}   # できない動作の設定
+        self.assertIn("回転", act.execute_preset(w, c, ri), "ローターの既定（回転）にする")
+        self.assertTrue(p.act_detach(pi))
+        self.assertTrue(p.act_detach(ri))
+        # 古いセーブ：押し出していたアクチュエーターはピストン、それ以外はローター
+        old = Construct.from_voxels(w.registry, [((0, 0, 0), "steel", {"def": "actuator", "dir": 2, "state": {"ext": 0.5}}),
+                                                 ((1, 0, 0), "steel", {"def": "actuator", "dir": 2, "state": {
+                                                     "preset": {"action": "retract", "amount": 1, "speed": 0.5}}}),
+                                                 ((2, 0, 0), "steel", {"def": "actuator", "dir": 2, "state": {"angle": 90}})],
+                                    np.zeros(3), size=0.5)
+        self.assertEqual([d["def"] for d in old.devs], ["piston", "piston", "actuator"])
+
     def test_actuator_rotates(self):
         w = self.world()
         self.script(w, "a.py", "def tick(api):\n"

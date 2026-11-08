@@ -62,7 +62,7 @@ SCHEMA = {
                  "ext_speed": F("float", _p("speed", 0.5)),
                  "angle": F("float", 0.0), "angle_target": F("float", lambda p, st: st.get("angle", 0.0)),
                  "rot_speed": F("float", _p("rot_speed", 90.0)),
-                 "preset": F("dict", lambda p, st: _default_preset()),
+                 "preset": F("dict", lambda p, st: _default_preset(p)),
                  # ヒンジ（機器 "hinge"）の曲がる側：0〜5 の向きの番号（置くときに決める）。-1 = まだ決めていない（既定の側）
                  "hinge": F("int", -1)},
     "processor": {"progress": F("float", 0.0), "enabled": F("bool", True), "next": F("int", optional=True),
@@ -77,9 +77,9 @@ SCHEMA = {
 }
 
 
-def _default_preset():
-    from .actuator import DEFAULT_PRESET
-    return dict(DEFAULT_PRESET)
+def _default_preset(params=None):
+    from .actuator import DEFAULT_PRESET, PISTON_PRESET
+    return dict(PISTON_PRESET if (params or {}).get("motion") == "piston" else DEFAULT_PRESET)
 
 
 def fields(dtype):

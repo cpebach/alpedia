@@ -19,7 +19,71 @@ from .construct import CORNER_BITS, DIR_NAMES, DIR_TUPLES, JOINT_PAIRS, link_key
 ACTIONS = ["rotate", "extend", "retract", "detach", "attach"]
 ACTION_NAMES = {"rotate": "回転", "extend": "押し出し", "retract": "引き込み", "detach": "分離", "attach": "結合"}
 HINGE_ACTIONS = ["rotate", "detach", "attach"]       # ヒンジは押し出さない（rotate は「曲げる」）
+# アクチュエーターの種類（定義の params.motion）と、できる動作。分離・結合はどれでもできる
+#   rotor（ローター。機器 "actuator"）：回す / piston（ピストン）：押し出す・引き込む / hinge（ヒンジ）：曲げる
+#   motion の無い MOD の機器は、昔のアクチュエーターと同じく全部できる（"both"）
+MOTION_ACTIONS = {"rotor": ["rotate", "detach", "attach"], "piston": ["extend", "retract", "detach", "attach"],
+                  "hinge": HINGE_ACTIONS, "both": ACTIONS}
+MOTION_NAMES = {"rotor": "ローター", "piston": "ピストン", "hinge": "ヒンジ", "both": "アクチュエーター"}
 DEFAULT_PRESET = {"action": "rotate", "amount": 90.0, "speed": 90.0}
+PISTON_PRESET = {"action": "extend", "amount": 1.0, "speed": 0.5}
+
+
+def motion(dev, reg=None):
+    """アクチュエーターの種類："rotor" / "piston" / "hinge" / "both"。"""
+    if not dev:
+        return "both"
+    dd = reg.device(dev["def"]) if reg is not None else None
+    p = (dd or {}).get("params") or {}
+    m = p.get("motion")
+    if m in MOTION_ACTIONS:
+        return m
+    if p.get("hinge") or dev.get("def") == "hinge":
+        return "hinge"
+    if dev.get("def") == "piston":
+        return "piston"
+    if dev.get("def") == "actuator" and dd is None:
+        return "rotor"
+    return "both"
+
+
+def actions_for(dev, reg=None):
+    return MOTION_ACTIONS[motion(dev, reg)]
+
+
+def default_preset(dev, reg=None):
+    return dict(PISTON_PRESET if motion(dev, reg) == "piston" else DEFAULT_PRESET)
+
+
+def migrate_device(dev):
+    """古いセーブの「アクチュエーター」（回転も押し出しもできた）：押し出しを使っていたものはピストンにする。
+    それ以外は同じ ID のローターのまま。"""
+    if not dev or dev.get("def") != "actuator":
+        return dev
+    st = dev.get("state") or {}
+    pre = st.get("preset") or {}
+    if (abs(float(st.get("ext", 0) or 0)) > 1e-6 or abs(float(st.get("ext_target", 0) or 0)) > 1e-6
+            or pre.get("action") in ("extend", "retract")):
+        dev = dict(dev)
+        dev["def"] = "piston"
+    return dev
+
+
+class MotionError(ValueError):
+    """その種類のアクチュエーターにはできない動作。"""
+
+
+def check_action(c, i, action):
+    """その動作ができなければ MotionError（メッセージ付き）。"""
+    d = c.devs[i]
+    if action in actions_for(d, c.reg):
+        return
+    m = motion(d, c.reg)
+    what = {"rotate": "回せません", "extend": "押し出せません", "retract": "引き込めません"}.get(action, "できません")
+    hint = {"rotor": "回転・分離・結合だけ。押し出すならピストンを使ってください",
+            "piston": "押し出し・引き込み・分離・結合だけ。回すならローターを使ってください",
+            "hinge": "曲げる・分離・結合だけ"}.get(m, "")
+    raise MotionError(f"{d['name']}（{MOTION_NAMES[m]}）は{what}（{hint}）")
 
 
 # ---------------------------------------------------------------------------
@@ -339,8 +403,11 @@ def sync_angle(c, i):
 def execute_preset(world, c, i):
     """P メニューで設定した動作を実行（E キー・操縦席のキー）。"""
     st = c.devs[i]["state"]
-    p = st.get("preset") or dict(DEFAULT_PRESET)
+    p = st.get("preset") or default_preset(c.devs[i], c.reg)
     a = p.get("action", "rotate")
+    if a not in actions_for(c.devs[i], c.reg):      # この種類にはできない動作（古い設定）：その種類の既定の動作に
+        p = default_preset(c.devs[i], c.reg)
+        a = p["action"]
     name = c.devs[i]["name"]
     hinge = is_hinge_dev(c.devs[i], c.reg)
     if a == "rotate" and hinge:
