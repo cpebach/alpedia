@@ -211,6 +211,7 @@ class World:
             a.on_load(self)
         if self.settings.pop("starter_sample", None):
             self._place_starter_sample()
+        self._refresh_script_readme()
         L.info("ワールド '%s' を読み込み: 構築物 %d, 惑星 %d, MOD %s", self.name, len(self.constructs),
                len(self.planets), mods)
         self.message(f"ワールド「{self.name}」を読み込みました")
@@ -219,6 +220,16 @@ class World:
         if n_gen:
             self.message(f"燃料の発電機はなくなったので、{n_gen} 個を配管にしました（推進機が燃えている間に発電します）")
         return self
+
+    def _refresh_script_readme(self):
+        """scripts/README.txt を今の版の説明に合わせる（古いワールドに古い説明が残らないように）。"""
+        from .content import SCRIPT_README
+        p = self.dir / "scripts" / "README.txt"
+        try:
+            if p.parent.is_dir() and (not p.exists() or p.read_text(encoding="utf-8") != SCRIPT_README):
+                p.write_text(SCRIPT_README, encoding="utf-8")
+        except OSError as e:
+            L.warning("README.txt を更新できません: %s", e)
 
     def _place_starter_sample(self):
         """新しく始めたクリエイティブ：出現地点のそばに見本の「はじめのロケット」を置く（F8 の設計図にもある）。"""

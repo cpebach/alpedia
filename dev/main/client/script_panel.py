@@ -157,9 +157,9 @@ class ScriptPanel:
         return d
 
     def readme(self):
+        from ..content import SCRIPT_README
         p = self.scripts_dir() / "README.txt"
-        if not p.exists():
-            from ..content import SCRIPT_README
+        if not p.exists() or p.read_text(encoding="utf-8") != SCRIPT_README:      # 古い版の説明は書き直す
             p.write_text(SCRIPT_README, encoding="utf-8")
         return p
 
