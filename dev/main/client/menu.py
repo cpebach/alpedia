@@ -760,6 +760,11 @@ class MainMenu:
 
     def _back(self):
         self.status = ""
+        try:
+            from . import sound
+            sound.get(self.cfg)                # 保存せずに戻った：音量を元に
+        except Exception:  # noqa: BLE001
+            pass
         self._new = None
         self._ws = None
         self.show_main()
@@ -859,21 +864,33 @@ class MainMenu:
         def set_res(v):
             w["width"], w["height"] = v
         self._stepper("解像度", y, res_opts, res, lambda v: f"{v[0]}×{v[1]}", set_res)
-        self._toggle("フルスクリーン", y - 0.07, w.get("fullscreen", False), lambda v: w.__setitem__("fullscreen", v))
-        self._toggle("垂直同期（再起動後）", y - 0.14, w.get("vsync", True), lambda v: w.__setitem__("vsync", v))
-        self._stepper("視野角", y - 0.21, list(range(50, 115, 5)), int(g.get("fov", 80)), lambda v: f"{v}°",
-                      lambda v: g.__setitem__("fov", v))
-        self._stepper("描画距離", y - 0.28, [500, 1000, 2000, 3000, 5000, 10000, 20000],
-                      int(g.get("view_distance", 3000)), lambda v: f"{v} m", lambda v: g.__setitem__("view_distance", v))
-        self._stepper("地表の細かさ", y - 0.35, [24, 32, 48, 64, 96], int(g.get("terrain_patch_cells", 48)),
-                      lambda v: f"{v * 2 + 1}×{v * 2 + 1}", lambda v: g.__setitem__("terrain_patch_cells", v))
-        self._stepper("マウス感度", y - 0.42, list(range(10, 210, 10)), int(c.get("mouse_sensitivity", 60)),
-                      lambda v: f"{v}", lambda v: c.__setitem__("mouse_sensitivity", float(v)))
-        self._stepper("物理サブステップ（多いほど正確・重い）", y - 0.49, [1, 2, 3, 4, 6, 8], int(ph.get("substeps", 3)),
-                      lambda v: f"{v}", lambda v: ph.__setitem__("substeps", v))
-        self._stepper("物理反復回数（多いほど硬い・重い）", y - 0.56, [1, 2, 3, 4, 6], int(ph.get("iterations", 2)),
-                      lambda v: f"{v}", lambda v: ph.__setitem__("iterations", v))
-        self._toggle("仮想ジョイスティック（タッチ操作）", y - 0.63, c.get("touch", False), lambda v: c.__setitem__("touch", v))
+        a = cfg.setdefault("audio", {"bgm": 60, "sfx": 80})
+        pct = list(range(0, 101, 10))
+        rows = [
+            lambda yy: self._toggle("フルスクリーン", yy, w.get("fullscreen", False), lambda v: w.__setitem__("fullscreen", v)),
+            lambda yy: self._toggle("垂直同期（再起動後）", yy, w.get("vsync", True), lambda v: w.__setitem__("vsync", v)),
+            lambda yy: self._stepper("BGM の音量", yy, pct, int(a.get("bgm", 60)), lambda v: f"{v} %",
+                                     lambda v: self._set_volume(a, "bgm", v)),
+            lambda yy: self._stepper("効果音の音量", yy, pct, int(a.get("sfx", 80)), lambda v: f"{v} %",
+                                     lambda v: self._set_volume(a, "sfx", v)),
+            lambda yy: self._stepper("視野角", yy, list(range(50, 115, 5)), int(g.get("fov", 80)), lambda v: f"{v}°",
+                                     lambda v: g.__setitem__("fov", v)),
+            lambda yy: self._stepper("描画距離", yy, [500, 1000, 2000, 3000, 5000, 10000, 20000],
+                                     int(g.get("view_distance", 3000)), lambda v: f"{v} m",
+                                     lambda v: g.__setitem__("view_distance", v)),
+            lambda yy: self._stepper("地表の細かさ", yy, [24, 32, 48, 64, 96], int(g.get("terrain_patch_cells", 48)),
+                                     lambda v: f"{v * 2 + 1}×{v * 2 + 1}", lambda v: g.__setitem__("terrain_patch_cells", v)),
+            lambda yy: self._stepper("マウス感度", yy, list(range(10, 210, 10)), int(c.get("mouse_sensitivity", 60)),
+                                     lambda v: f"{v}", lambda v: c.__setitem__("mouse_sensitivity", float(v))),
+            lambda yy: self._stepper("物理サブステップ（多いほど正確・重い）", yy, [1, 2, 3, 4, 6, 8], int(ph.get("substeps", 3)),
+                                     lambda v: f"{v}", lambda v: ph.__setitem__("substeps", v)),
+            lambda yy: self._stepper("物理反復回数（多いほど硬い・重い）", yy, [1, 2, 3, 4, 6], int(ph.get("iterations", 2)),
+                                     lambda v: f"{v}", lambda v: ph.__setitem__("iterations", v)),
+            lambda yy: self._toggle("仮想ジョイスティック（タッチ操作）", yy, c.get("touch", False),
+                                    lambda v: c.__setitem__("touch", v)),
+        ]
+        for k, row in enumerate(rows):
+            row(y - 0.06 * (k + 1))
 
         def keys():
             from .keys_panel import KeysPanel, ACTIONS
@@ -883,7 +900,7 @@ class MainMenu:
                     c[aid] = self.cfg["controls"].get(aid, c.get(aid))
             KeysPanel(self.U, self.cfg, self.root, None, on_change=changed)
         self._button("操作とキー設定", (0.62, -0.09), keys, size=(0.2, 0.055), col=U["color"].rgb(0.25, 0.35, 0.45))
-        self._text("フォントは config/settings.json で変更できます", (0, y - 0.7), 0.6, col=U["color"].light_gray)
+        self._text("フォントは config/settings.json で変更できます", (0, y - 0.76), 0.6, col=U["color"].light_gray)
 
         def save():
             prev = dict(self.cfg.get("window", {}))
@@ -904,6 +921,17 @@ class MainMenu:
         self._button("保存", (0.62, -0.17), save, size=(0.2, 0.055), col=U["color"].rgb(0.2, 0.5, 0.3))
         self._button("初期値に戻す", (0.62, -0.25), reset, size=(0.2, 0.055))
         self._button("戻る", (0.62, -0.33), self._back, size=(0.2, 0.055), col=U["color"].rgb(0.3, 0.3, 0.33))
+
+    def _set_volume(self, audio_cfg, key, v):
+        """BGM・効果音の音量：選んだらすぐ聞こえ方を変える（保存は「保存」で）。"""
+        audio_cfg[key] = int(v)
+        try:
+            from . import sound
+            sound.get({"audio": audio_cfg})
+            if key == "sfx":
+                sound.get().sfx("click")
+        except Exception:  # noqa: BLE001
+            pass
 
     def destroy(self):
         from .ui_destroy import destroy

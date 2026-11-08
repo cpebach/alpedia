@@ -58,6 +58,23 @@ class CreditsRoll:
             text(name, 1.05)
             y -= 0.1
         y -= 0.08
+        # 音楽：BGM の MOD（mods/bgm）に入っていて、このシナリオで流した曲
+        try:
+            from main.client.sound import library
+            lib = library()
+        except Exception:  # noqa: BLE001
+            lib = {}
+        used = []
+        for k in list(script.BGM["chapters"].values()) + list(script.BGM["movies"].values()) + [script.BGM["credits"]]:
+            if k[0] in lib and lib[k[0]][2] not in used:
+                used.append(lib[k[0]][2])
+        if used:
+            text("―― 音楽 ――", 1.0, cyan)
+            y -= 0.1
+            for title in used:
+                text(title, 0.78, gray)
+                y -= 0.05
+            y -= 0.1
         text("―― お世話になったもの ――", 1.0, cyan)
         y -= 0.11
         items = script.CREDITS_THANKS

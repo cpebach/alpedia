@@ -8,10 +8,11 @@ mod.json の項目：
                 {"planets": [...] または "bodies": "default", "settings": {world.json に足す項目}, "note": "説明"}
                 すでにあるワールドに後から入れても、ワールドの形は変わらない
     category    一覧の分け方（"ブロック"・"登場人物"・"場所"・"見た目" など。省略可）
-    type        MOD の種類："scenario"（シナリオ：メニューの「シナリオ」で選んで始める。MOD の選択には出ない）か
-                "addon"（要素を足す MOD：新規作成・ワールド設定の MOD の選択に出る。省略時）
+    type        MOD の種類："scenario"（シナリオ：メニューの「シナリオ」で選んで始める。MOD の選択には出ない）、
+                "addon"（要素を足す MOD：新規作成・ワールド設定の MOD の選択に出る。省略時）、
+                "assets"（素材の置き場：BGM など。どちらの一覧にも出ず、ワールドで選ばなくても使われる）
 """
-TYPES = ("addon", "scenario")
+TYPES = ("addon", "scenario", "assets")
 BUILTIN_MODES = ("survival",)    # 前の版では MOD だった本体の遊び方（mods/ に残っていても一覧に出さない）
 import json
 

@@ -1,0 +1,7 @@
+{
+ "id": "bgm",
+ "name": "BGM",
+ "version": "1.0",
+ "type": "assets",
+ "description": "シナリオ・ムービーで流す曲（mp3）と、その一覧 bgm.json。ワールドで選ばなくても使われる（入っていなければ BGM なし）。曲のファイル（*.mp3）はリポジトリに入れない（.gitignore）。"
+}

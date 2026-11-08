@@ -14,3 +14,11 @@ packages/windows/dist/
 packages/windows/build/cache/
 _repo_export.tar
 dev/photos/
+# BGM の曲（ファイルは大きく、配布の扱いも曲ごとなのでリポジトリに入れない。一覧 bgm.json だけ入れる）
+dev/mods/bgm/*.mp3
+dev/mods/bgm/*.ogg
+dev/mods/bgm/*.wav
+# ムービーの描いたままの出力（ゲームに入れる物は圧縮して dev/mods/story/movies へ）
+movies/output/0*.mp4
+movies/output/1*.mp4
+movies/output/stills/

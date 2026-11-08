@@ -155,6 +155,59 @@ class TestModLoading(ModCase):
         self.assertEqual(modmeta.read("m9")["type"], "addon", "type が無ければ addon")
 
 
+class TestSound(unittest.TestCase):
+    """BGM の一覧（mods/bgm/bgm.json）・シナリオの曲の割り当て・効果音のファイル"""
+
+    def setUp(self):
+        # 音の係（main.client.sound）は画面側だが、曲の一覧を読む所は画面なしで使える。test_core の仕掛けを外す
+        self._blockers = [f for f in sys.meta_path if type(f).__name__ == "_Block"]
+        for f in self._blockers:
+            sys.meta_path.remove(f)
+
+    def tearDown(self):
+        for f in self._blockers:
+            sys.meta_path.insert(0, f)
+
+    def test_bgm_library_and_story_mapping(self):
+        from main import modmeta
+        from main.client import sound
+        meta = json.loads((paths.MODS / "bgm" / "bgm.json").read_text(encoding="utf-8"))
+        self.assertEqual(modmeta.read("bgm")["type"], "assets")
+        self.assertNotIn("bgm", [m["id"] for m in modmeta.list_all(kind="addon") + modmeta.list_all(kind="scenario")])
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_script", paths.MODS / "story" / "code" / "script.py")
+        sc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sc)
+        keys = list(sc.BGM["chapters"].values()) + list(sc.BGM["movies"].values()) + [sc.BGM["credits"]]
+        for tid, start in keys:
+            self.assertIn(tid, meta["tracks"], tid)
+            self.assertLess(start, meta["tracks"][tid]["seconds"], tid)
+        self.assertEqual(set(sc.BGM["chapters"]), {c["id"] for c in sc.CHAPTERS}, "どの章にも曲がある")
+        self.assertEqual(set(sc.BGM["movies"]), set(sc.MOVIES), "どのムービーにも曲がある")
+        # ファイルの無い曲は使わない（曲を入れていない人は BGM なし）
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "bgm"
+            d.mkdir()
+            (d / "bgm.json").write_text(json.dumps({"tracks": {"a": {"file": "a.mp3", "gain_db": -6},
+                                                               "b": {"file": "b.mp3"}}}), "utf-8")
+            (d / "a.mp3").write_bytes(b"x")
+            old = paths.MODS
+            paths.MODS = Path(td)
+            try:
+                lib = sound.library()
+            finally:
+                paths.MODS = old
+            self.assertEqual(list(lib), ["a"])
+            self.assertAlmostEqual(lib["a"][1], 10 ** (-6 / 20), places=4)
+        self.assertEqual(sound.volume_of({"audio": {"bgm": 150}}, "bgm", 60), 1.0)
+        self.assertEqual(sound.volume_of({}, "sfx", 80), 0.8)
+
+    def test_sound_files(self):
+        for n in ("place", "device", "break", "dig", "click", "seat", "ignite", "thruster_loop", "jetpack_loop",
+                  "motor_loop", "error"):
+            self.assertTrue((paths.SAUCE / "sounds" / f"{n}.wav").exists(), n)
+
+
 SKIN = "skinmodel(dummy)"
 
 

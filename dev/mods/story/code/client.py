@@ -91,6 +91,16 @@ class StoryClient(ClientAddon):
             self.ghost.remove()
 
     # ------------------------------------------------------------------
+    def bgm(self):
+        """章ごとの BGM（ムービーの間はムービーの曲、エンドロールは歓喜の歌）。"""
+        if not self.active:
+            return None
+        st = self.pack.st             # ムービーの間の曲は MoviePlayer が決める（set_override）
+        if st.get("credits"):
+            return script.BGM["credits"]
+        c = self._chapter(st)
+        return script.BGM["chapters"].get(c["id"]) if c else None
+
     def on_key(self, key):
         if not self.active:
             return False

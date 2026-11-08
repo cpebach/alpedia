@@ -34,6 +34,8 @@ DEFAULTS = {
     "game": {"default_world": "scenario", "language": "ja",
              # スクリプトを開くエディタのコマンド（空なら自動：VS Code があればそれ、無ければメモ帳）。例 "notepad++.exe"
              "editor": ""},
+    # 音量（0〜100 %）：BGM（mods/bgm の曲）と効果音（ブロック・機器・ムービーの効果音）
+    "audio": {"bgm": 60, "sfx": 80},
     # マルチプレイ（LAN）：自分の名前（空ならパソコンのユーザー名）、公開するポート
     "multiplayer": {"name": "", "port": 47620},
     "log_level": "INFO",

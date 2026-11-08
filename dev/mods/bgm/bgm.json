@@ -1,0 +1,119 @@
+{
+ "_説明": "BGM の曲の一覧。ゲームはここに書いた曲だけを使う（ファイルが無い曲は鳴らさない）。gain_db：曲どうしの音の大きさをそろえる補正（大きい曲を下げる）。どの場面で流すかは各シナリオ（mods/story/code/script.py の BGM）が決める",
+ "tracks": {
+  "wagner_meistersinger": {
+   "file": "01_Richard_Wagner_-_die_meistersinger_von_nurnberg_-_overture.mp3",
+   "title": "ワーグナー：ニュルンベルクのマイスタージンガー 前奏曲",
+   "seconds": 696.0,
+   "gain_db": -5.0
+  },
+  "wagner_preislied": {
+   "file": "02_Richard_Wagner_-_Preislied_from_Die_Meistersinger_von_Nuernberg_sung_by_Leo_Slezak.mp3",
+   "title": "ワーグナー：マイスタージンガー「優勝の歌」（スレザーク）",
+   "seconds": 223.0,
+   "gain_db": 0.0
+  },
+  "bach_brandenburg2": {
+   "file": "03_IMSLP83563_-_Brandenburg_Concerto_No.2_in_F_major,_BWV_1047_(Bach,_Johann_Sebastian)_-_1._(Allegro).mp3",
+   "title": "バッハ：ブランデンブルク協奏曲 第2番 第1楽章",
+   "seconds": 317.0,
+   "gain_db": -2.0
+  },
+  "elgar_hope_glory": {
+   "file": "04_Clara_Butt_-_Land_Of_Hope_And_Glory.mp3",
+   "title": "エルガー：希望と栄光の国（クララ・バット）",
+   "seconds": 198.0,
+   "gain_db": -9.0
+  },
+  "tchaikovsky_1812": {
+   "file": "05_1812_Overture_-_United_States_Marine_Band.mp3",
+   "title": "チャイコフスキー：序曲「1812年」",
+   "seconds": 754.0,
+   "gain_db": -5.0
+  },
+  "beethoven9_1": {
+   "file": "06_PMLP01607-Symphony_No.9,_Op.125_(Beethoven,_Ludwig_van),_I._Allegro_ma_non_troppo,_un_poco_maestoso.mp3",
+   "title": "ベートーヴェン：交響曲 第9番 第1楽章",
+   "seconds": 209.0,
+   "gain_db": -7.0
+  },
+  "beethoven9_2": {
+   "file": "07_Sym_9_Second_Movement.mp3",
+   "title": "ベートーヴェン：交響曲 第9番 第2楽章",
+   "seconds": 835.0,
+   "gain_db": -1.0
+  },
+  "beethoven9_3": {
+   "file": "08_PMLP01607-Symphony_No.9,_Op.125_(Beethoven,_Ludwig_van),_III._Adagio_molto_e_cantabile.mp3",
+   "title": "ベートーヴェン：交響曲 第9番 第3楽章",
+   "seconds": 349.0,
+   "gain_db": -6.0
+  },
+  "beethoven9_4": {
+   "file": "09_PMLP01607-Symphony_No.9,_Op.125_(Beethoven,_Ludwig_van),_IV_Presto.mp3",
+   "title": "ベートーヴェン：交響曲 第9番 第4楽章",
+   "seconds": 1349.0,
+   "gain_db": -4.0
+  },
+  "dvorak9_1": {
+   "file": "10_Antonin_Dvorak_-_symphony_no._9_in_e_minor_'from_the_new_world',_op._95_-_i._adagio_-_allegro_molto.mp3",
+   "title": "ドヴォルザーク：交響曲 第9番「新世界より」第1楽章",
+   "seconds": 604.0,
+   "gain_db": -6.0
+  },
+  "dvorak9_2": {
+   "file": "11_Antonin_Dvorak_-_symphony_no._9_in_e_minor_'from_the_new_world',_op._95_-_ii._largo.mp3",
+   "title": "ドヴォルザーク：交響曲 第9番「新世界より」第2楽章",
+   "seconds": 694.0,
+   "gain_db": 0.0
+  },
+  "dvorak9_3": {
+   "file": "12_Antonin_Dvorak_-_symphony_no._9_in_e_minor_'from_the_new_world',_op._95_-_iii._molto_vivace.mp3",
+   "title": "ドヴォルザーク：交響曲 第9番「新世界より」第3楽章",
+   "seconds": 505.0,
+   "gain_db": -4.0
+  },
+  "dvorak9_4": {
+   "file": "13_Antonin_Dvorak_-_symphony_no._9_in_e_minor_'from_the_new_world',_op._95_-_iv._allegro_con_fuoco.mp3",
+   "title": "ドヴォルザーク：交響曲 第9番「新世界より」第4楽章",
+   "seconds": 702.0,
+   "gain_db": -5.0
+  },
+  "mahler1_1": {
+   "file": "14_Mahler_Symphony1_Movement1_VPO.mp3",
+   "title": "マーラー：交響曲 第1番 第1楽章",
+   "seconds": 827.0,
+   "gain_db": 0.0
+  },
+  "mahler1_2": {
+   "file": "15_Mahler_Symphony1_Movement2_VPO.mp3",
+   "title": "マーラー：交響曲 第1番 第2楽章",
+   "seconds": 447.0,
+   "gain_db": -3.0
+  },
+  "mahler1_3": {
+   "file": "16_Mahler_Symphony1_Movement3_VPO.mp3",
+   "title": "マーラー：交響曲 第1番 第3楽章",
+   "seconds": 517.0,
+   "gain_db": 0.0
+  },
+  "mahler1_4": {
+   "file": "17_Mahler_Symphony1_Movement4_VPO.mp3",
+   "title": "マーラー：交響曲 第1番 第4楽章",
+   "seconds": 1030.0,
+   "gain_db": -6.0
+  },
+  "handel_hornpipe": {
+   "file": "18_Handel's_Water_Music_-_12._Alla_hornpipe_-_Chamber_Orchestra_-_United_States_Marine_Band.mp3",
+   "title": "ヘンデル：水上の音楽「アラ・ホーンパイプ」",
+   "seconds": 228.0,
+   "gain_db": -3.0
+  },
+  "saintsaens3_maestoso": {
+   "file": "19_Symphony_No._3_in_C_Minor_-_II._Maestoso_-_Stellar_Brass_-_United_States_Air_Force_Academy_Band.mp3",
+   "title": "サン＝サーンス：交響曲 第3番 第2楽章後半 マエストーソ（吹奏楽）",
+   "seconds": 470.0,
+   "gain_db": -2.0
+  }
+ }
+}

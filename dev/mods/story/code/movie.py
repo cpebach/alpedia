@@ -32,6 +32,11 @@ class MoviePlayer:
         self.sound = None
         self.t0 = _time.monotonic()
         self.length = 0.0
+        try:                           # ムービーの曲（BGM の MOD の曲。無ければ鳴らない）
+            from main.client import sound
+            sound.get().set_override(script.BGM["movies"].get(name))
+        except Exception:  # noqa: BLE001
+            L.exception("ムービーの曲を流せません")
         path = movie_path(name)
         title = script.MOVIES.get(name, name)
         try:
@@ -51,7 +56,7 @@ class MoviePlayer:
             try:
                 snd = game.U["application"].base.loader.loadSfx(Filename.fromOsSpecific(str(path)))
                 if snd is not None and snd.length() > 0:
-                    snd.setVolume(float(game.cfg.get("audio", {}).get("movie_volume", 0.9)))
+                    snd.setVolume(1.0)            # 大きさは効果音の音量（設定）。曲は BGM として別に流れる
                     tex.synchronizeTo(snd)
                     snd.play()
                     self.sound = snd
@@ -99,6 +104,11 @@ class MoviePlayer:
         if self.done:
             return
         self.done = True
+        try:
+            from main.client import sound
+            sound.get().set_override(None)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             if self.sound is not None:
                 self.sound.stop()

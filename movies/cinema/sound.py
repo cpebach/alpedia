@@ -11,6 +11,9 @@ import numpy as np
 from scipy import signal
 
 SR = 48000
+# 音楽（和音のパッド）を入れるか。ゲームでは BGM の MOD（mods/bgm）の曲を重ねて流すので、
+# ゲームに入れるムービーは MUSIC = False で作る（効果音と環境音だけ。remix_audio.py）
+MUSIC = True
 
 
 def _t(dur):
@@ -132,7 +135,9 @@ def alarm(dur, f=(880, 660), rate=1.1):
 
 
 def pad(freqs, dur, a=1.5, r=1.5, bright=1200.0, detune=0.004):
-    """和音のパッド（ゆっくり立ち上がる、のこぎり波をやわらかくしたもの）。"""
+    """和音のパッド（ゆっくり立ち上がる、のこぎり波をやわらかくしたもの）。MUSIC = False なら無音。"""
+    if not MUSIC:
+        return np.zeros(int(dur * SR))
     x = 0
     for f in freqs:
         x = x + saw(f, dur, detune)
@@ -201,6 +206,8 @@ class Mixer:
         # やわらかく音割れを防ぐ
         peak = np.abs(b).max() + 1e-9
         b = np.tanh(b / peak * 1.4) / np.tanh(1.4) * 0.92
+        if not MUSIC:              # ゲームでは BGM を重ねるので、効果音と環境音は小さめに（-7 dB）
+            b *= 0.45
         data = (b * 32767).astype(np.int16)
         with wave.open(str(path), "wb") as w:
             w.setnchannels(2)

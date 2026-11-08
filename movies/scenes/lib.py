@@ -14,7 +14,7 @@ from cinema.stage import DEV
 # ---------------------------------------------------------------------------
 CAST = {
     "towa": ("towa.vrm", "トワ"), "mikaga": ("mikaga.vrm", "ミカガ"), "nemuri": ("nemuri.vrm", "ネムリ"),
-    "sakura": ("sakura.vrm", "サクラ"), "siyama": ("siyama.vrm", "ヤマシナ"), "sirotsu": ("sirotsu.vrm", "シロツ"),
+    "sakura": ("sakura.vrm", "サクラ"), "siyama": ("siyama.vrm", "シヤマ"), "sirotsu": ("sirotsu.vrm", "シロツ"),
     "kensu": ("kensu.vrm", "ケンス"), "kingi": ("kingi.vrm", "キンギ"), "donachi": ("donachi.vrm", "ドナチ"),
     "nekosa": ("nekosa.vrm", "先生"), "dabai": ("dabai.vrm", "ダバイ"), "rutero": ("rutero.vrm", "ルテロ"),
     "omiku": ("omiku.vrm", "オミク"),

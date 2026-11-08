@@ -126,6 +126,12 @@ class Game:
         if self.world.addon("survival") is not None and getattr(self.world.addon("survival"), "mod_id", None) is None:
             from .survival_ui import SurvivalClient          # 本体のサバイバル：左上に目標
             self.addons.insert(0, SurvivalClient(self))
+        # 音（BGM・効果音）
+        from . import sound
+        self.snd = sound.get(self.cfg)
+        self._snd_t = 0.0
+        self._snd_lit = set()
+        self._snd_loops = {}
         # プレイヤーの体：MOD（VRM の見た目など）が引き受けなければ、コアが定義の色の箱（またはモデル）で描く。
         # 見た目のモデルはここで全部読み込む（ゲーム中に見た目を変える・ほかの参加者が来ても、ファイルを読まない）
         self.bodies = {}            # キー → (見た目の ID, Player, 体)
@@ -410,15 +416,18 @@ class Game:
     def do_remove(self):
         w = self.world
         if self.hit and self.hit["kind"] == "voxel":
-            w.remove(self.hit)
+            if w.remove(self.hit) is not False:
+                self.sfx("break")
         elif self.hit and self.hit["kind"] in ("terrain", "water"):
-            w.dig(self.hit)
+            if w.dig(self.hit) is not False:
+                self.sfx("dig")
 
     def do_place(self):
         item = self.current_item()
         if item:
             _, _, _, look = self.look_vectors()
-            self.world.place(self.hit, item, self.dir_index, look)
+            ok = self.world.place(self.hit, item, self.dir_index, look)
+            self.sfx(("device" if item[0] == "device" else "place") if ok is not False else "error")
 
     def screen_ray(self, x, y):
         """画面の UI 座標 (x, y) を通る視線：(始点, 向き)。タッチで触った所を狙うのに使う。"""
@@ -461,7 +470,79 @@ class Game:
 
     def do_interact(self, hit):
         if not any(a.interact(hit) for a in self.addons):
+            kind = None
+            if hit and hit.get("kind") == "voxel" and hit["construct"].devs[hit["index"]]:
+                dd = self.world.registry.device(hit["construct"].devs[hit["index"]]["def"]) or {}
+                kind = dd.get("type")
             self.world.interact(hit)
+            self.sfx("seat" if kind == "seat" else "click")
+        else:
+            self.sfx("click")
+
+    # --- 音 -------------------------------------------------------------------
+    def sfx(self, name, volume=1.0):
+        snd = getattr(self, "snd", None)
+        if snd is not None:
+            snd.sfx(name, volume)
+
+    def _update_sound(self, dt, active):
+        """BGM（拡張が決める）と、近くの推進機・アクチュエーター・ジェットパックの音。"""
+        snd = getattr(self, "snd", None)
+        if snd is None:
+            return
+        want = None
+        for a in self.addons:
+            try:
+                want = a.bgm()
+            except Exception:  # noqa: BLE001
+                want = None
+            if want:
+                break
+        snd.set_bgm(want)
+        if not active:
+            snd.stop_loops()
+            return
+        self._snd_t -= dt
+        if self._snd_t <= 0:                 # 機器の様子を数えるのは 0.1 秒ごと
+            self._snd_t = 0.1
+            self._snd_loops = self._sound_sources()
+        for name in ("thruster_loop", "motor_loop", "jetpack_loop"):
+            snd.loop(name, self._snd_loops.get(name, 0.0))
+
+    def _sound_sources(self):
+        """近くで燃えている推進機・動いているアクチュエーターの大きさ（距離で小さく）。点火した推進機は「ボッ」。"""
+        from .. import actuator as act
+        w = self.world
+        eye = w.player.eye()
+        out = {"thruster_loop": 0.0, "motor_loop": 0.0, "jetpack_loop": 0.0}
+        lit = set()
+        for c in w.constructs.values():
+            if not c.n_vox or not any(c.devs):
+                continue
+            d0 = float(np.linalg.norm(c.center_of_mass() - eye))
+            if d0 > 150.0:
+                continue
+            for i, d in enumerate(c.devs):
+                if not d:
+                    continue
+                st = d["state"]
+                if "firing" in st or "lit" in st:
+                    f = float(st.get("firing", 0.0) or 0.0)
+                    if f > 0.01 or st.get("lit"):
+                        dist = float(np.linalg.norm(c.voxel_center(i) - eye))
+                        att = 1.0 / (1.0 + (dist / 12.0) ** 2)
+                        out["thruster_loop"] += max(f, 0.15) * att * 0.5
+                        lit.add((c.id, i))
+                        if (c.id, i) not in self._snd_lit:
+                            self.sfx("ignite", min(1.0, att * 1.5))
+                elif "angle_target" in st and act.busy(st):
+                    dist = float(np.linalg.norm(c.voxel_center(i) - eye))
+                    out["motor_loop"] += 0.7 / (1.0 + (dist / 8.0) ** 2)
+        self._snd_lit = lit
+        p = w.player
+        if getattr(p, "flying", False) and float(np.linalg.norm(getattr(p, "thrust", np.zeros(3)))) > 0.05:
+            out["jetpack_loop"] = 0.6
+        return {k: min(1.0, v) for k, v in out.items()}
 
     def do_target(self, t, settings=False):
         """近くのもの（画面右のボタン）を使う。settings=True なら設定（歯車）を開く。"""
@@ -560,6 +641,11 @@ class Game:
 
     def destroy(self):
         from .ui_destroy import destroy
+        snd = getattr(self, "snd", None)
+        if snd is not None:
+            snd.set_bgm(None)
+            snd.set_override(None)
+            snd.stop_loops()
         if getattr(self, "cam_mode", None) is not None:
             try:
                 self.cam_mode.destroy()
@@ -736,6 +822,13 @@ class Game:
         b = pbtn("見ている構築物を OBJ で出力", -0.20, later(self._export), color.rgb(0.25, 0.35, 0.45))
         b.x = 0.45
         items.append(b)
+        # 音量（押すたびに 10 % ずつ上げる。100 の次は 0）。ゲーム設定にも同じ物がある
+        au = self.cfg.setdefault("audio", {"bgm": 60, "sfx": 80})
+        for k, (key, label) in enumerate((("bgm", "BGM"), ("sfx", "効果音"))):
+            b = pbtn(f"{label} {int(au.get(key, 0))} %（押すと +10）", -0.30 - 0.08 * k,
+                     (lambda key=key: self._cycle_volume(key)), color.rgb(0.25, 0.3, 0.4))
+            b.x = 0.45
+            items.append(b)
         # 見た目（自分だけ。ほかの人に見える）
         defs = list(self.world.registry.defs["players"].values())
         cur = self.world.local_player.defn
@@ -748,6 +841,20 @@ class Game:
                            color=color.rgb(0.22, 0.32, 0.45), text_size=0.8)
                 b.on_click = (lambda d=d: self.cycle_skin(d))
                 items.append(b)
+
+    def _cycle_volume(self, key):
+        au = self.cfg.setdefault("audio", {"bgm": 60, "sfx": 80})
+        v = int(au.get(key, 0))
+        au[key] = 0 if v >= 100 else min(100, (v // 10 + 1) * 10)
+        self.snd.apply(self.cfg)
+        if key == "sfx":
+            self.sfx("click")
+        try:
+            from .menu import save_config
+            save_config(self.cfg)
+        except Exception:  # noqa: BLE001
+            pass
+        self._build_pause()
 
     def cycle_skin(self, step):
         """見た目を変える（宇宙飛行士・VRM など。ワールドに入っている MOD の見た目から選ぶ）。"""
@@ -830,6 +937,7 @@ class Game:
                 w.key_pressed(key)
             if key == c["interact"]:
                 w.interact(None)
+                self.sfx("seat")
             elif key == c["save"]:
                 w.save()
             elif key == c["export"]:
@@ -847,7 +955,8 @@ class Game:
             item = self.current_item()
             if item:
                 _, _, _, look = self.look_vectors()
-                w.place(None, item, self.dir_index, look)
+                ok = w.place(None, item, self.dir_index, look)
+                self.sfx(("device" if item[0] == "device" else "place") if ok is not False else "error")
         elif key == "scroll up":
             self.sel = (self.sel - 1) % 9
         elif key == "scroll down":
@@ -935,6 +1044,7 @@ class Game:
         def H(k):
             return 1 if (held[k] or vk.get(k)) else 0
         online = net is not None        # LAN に公開中・参加中は、一時停止しても世界と通信を止めない（参加の受け付けも）
+        self._update_sound(dt, not (self.paused or self.hold or cam_mode is not None))
         if (self.paused or self.hold) and not online:
             return                  # マルチプレイ中は一時停止しても世界は止めない（ほかの人がいるので）
         if cam_mode is not None:

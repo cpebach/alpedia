@@ -30,6 +30,11 @@ class ClientAddon:
         辞書の書き方は mods/README.md の「モーション」。体の見た目の MOD（VRM の見た目など）が使う。"""
         return {}
 
+    def bgm(self):
+        """今流したい BGM：(曲の ID, 始める秒) か None（決めない）。曲の ID は mods/bgm/bgm.json の tracks。
+        いちばん先に None 以外を返した拡張の曲が流れる。毎フレーム呼ばれる。"""
+        return None
+
     def on_photo(self, path):
         """カメラモードで写真を保存した（path：保存した画像）。"""
 

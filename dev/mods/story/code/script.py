@@ -259,22 +259,26 @@ CHAPTERS = [
     },
     {
         "id": "port", "title": "第10章　ルナ・ポート", "place": "月ルナ・自由港ルナ・ポート",
-        "intro": [],
+        # 始めに「宣戦」のムービー（広場でミカガに会い、ネムリの宣戦の立体映像を見る。記憶のかけらがよぎる）
+        "movie_in": ["05_declaration"],
+        "intro": [
+            (MIKAGA, "……顔色、まだ悪いね。管制塔の下のわたしの部屋で、少し休もう。"),
+        ],
         "goals": [
-            ("mikaga", "管制塔の下のミカガに会う（近づいて E）", "mikaga"),
+            ("mikaga", "管制塔の下のミカガと話す（近づいて E）", "mikaga"),
             ("record", "ミカガの机の端末で、脱出ポッドの記録を見る（E）", "record"),
         ],
         "hints": {
             "record": (MIKAGA, "机の横の端末だよ。あなたのポッドの記録が残ってる。……見るかどうかは、あなたが決めて。"),
         },
         "outro": [
-            (MIKAGA, "……思い出したんだね。あなたは、ネムリを消すために作られた。"),
+            (MIKAGA, "……思い出したんだね。広場で見たあの人が、あなたの標的。あなたは、ネムリを消すために作られた。"),
             (MIKAGA, "わたしは止めないし、行けとも言わない。どうするかは、あなたが選んで。"),
-            (SAKURA, "トワ！ 大変、大変！ 帝国の計算データ、拾っちゃった……！ アマツの軌道、下がり続けてる。このままだと落ちるよ！"),
             (KENSU, "こちら連盟艦隊、旗艦アルテミスのケンス。ルナ・ポートのお嬢さん方、聞こえるかい？"),
-            (KENSU, "情報屋の嬢ちゃんの話、こっちでも確かめた。アマツの宙域へ来てくれ。ルミナス号の嬢ちゃん、手を貸してくれ。迎えの船を出したぜ。"),
+            (KENSU, "アマツの宙域がきな臭い。ルミナス号の嬢ちゃん、手を貸してくれ。迎えの船を出したぜ。"),
         ],
-        "movie_out": ["05_declaration", "06_interlude"],
+        # 幕間：シヤマの誘いと、旧資料室でアマツの落下の証拠をつかむサクラ（第11章でケンスがその話をする）
+        "movie_out": ["06_interlude"],
     },
     {
         "id": "fleet", "title": "第11章　艦隊戦", "place": "地球高軌道・軌道都市アマツの宙域",
@@ -471,6 +475,29 @@ OLD_TO_NEW = {"wake": "wake", "valley": "valley", "power": "power", "control": "
               "bike": "bike", "repair": "repair", "launch": "launch", "meet": "port"}
 
 # ムービー（MOD の movies/ の mp4）
+# BGM（mods/bgm/bgm.json の曲の ID, 始める秒）。曲のファイルが無ければ鳴らない
+# 章：ガイアの朝は静かに（マーラー1番の夜明け）、基地の作業は軽快に（バッハ・マーラーのレントラー・ヘンデル）、
+# 追いかけっこはドヴォルザークのスケルツォ、月へは「新世界」の終楽章、戦いは「1812年」とベートーヴェン、
+# 再加速はオルガン交響曲の主題、旅立ちは「優勝の歌」、エンドロールは「歓喜の歌」
+# ムービー：それぞれの場面の盛り上がりに曲の山が来るように始める秒を選んである（序章は 20 秒の墜落で全合奏 など）
+BGM = {
+    "chapters": {
+        "wake": ("mahler1_1", 15), "valley": ("mahler1_1", 15),
+        "power": ("bach_brandenburg2", 0), "openloop": ("bach_brandenburg2", 0), "control": ("bach_brandenburg2", 0),
+        "drone": ("handel_hornpipe", 0), "factory": ("mahler1_2", 0), "bike": ("dvorak9_3", 0),
+        "repair": ("bach_brandenburg2", 0), "launch": ("dvorak9_4", 0), "port": ("dvorak9_2", 0),
+        "fleet": ("tchaikovsky_1812", 0), "robot": ("beethoven9_2", 20), "reaccel": ("saintsaens3_maestoso", 0),
+        "depart": ("wagner_preislied", 0),
+    },
+    "credits": ("beethoven9_4", 1000),
+    "movies": {
+        "01_prologue": ("dvorak9_1", 40), "02_naming": ("dvorak9_2", 0), "03_watch": ("mahler1_3", 5),
+        "04_launch": ("mahler1_1", 232), "05_declaration": ("beethoven9_1", 0), "06_interlude": ("beethoven9_2", 5),
+        "07_fleet": ("tchaikovsky_1812", 528), "08_duel": ("mahler1_4", 0), "09_dialogue": ("beethoven9_3", 0),
+        "10_reaccel": ("saintsaens3_maestoso", 0), "11_epilogue": ("wagner_meistersinger", 0),
+    },
+}
+
 MOVIES = {
     "01_prologue": "序章　不時着", "02_naming": "第1章　名前", "03_watch": "第5章　見張り",
     "04_launch": "第9章　発進", "05_declaration": "第10章　宣戦", "06_interlude": "幕間　誘惑と証拠",
