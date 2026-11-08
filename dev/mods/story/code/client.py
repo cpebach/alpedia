@@ -349,7 +349,7 @@ class StoryClient(ClientAddon):
     MARK_DEVICE = {"beacon": ("beacon", "computer", None), "door": ("crane", "computer", None),
                    "trips": ("crane", "computer", None), "rod": ("task", "computer", None),
                    "console": ("console", "seat", None), "ride": ("bike", "seat", None),
-                   "seat": ("ship", "seat", None), "board": ("robot", "seat", None)}
+                   "seat": ("ship", "seat", None)}
 
     def _update_marker(self, st, origin):
         target, label = self._target(st)

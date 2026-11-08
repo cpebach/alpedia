@@ -18,7 +18,7 @@ import time
 
 import numpy as np
 
-from main import log
+from main import log, paths
 from main.construct import Construct
 from main.geom import box_sdf
 from main.hooks import Addon
@@ -31,6 +31,8 @@ L = log.get("story")
 CHECK_EVERY = 0.2          # 目標を調べる間隔（秒・ワールド時刻）
 HINT_AFTER = 75.0          # 目標が済まないとき、この秒数でヒントのセリフ
 VERSION = 2
+ROBOT_BLUEPRINT = "transformer_robot.alp.json"     # 第12章のトワのロボット（sauce/blueprints の設計図）
+ROBOT_NAME = "変形ロボット ツバメ"
 ANCHORED = ("interceptor", "krobot", "unit", "kdrone", "cart", "booth", "rocket")
 # 旅立ちのロケットの打ち上げ（エピローグ。シナリオが位置を決める）
 COUNTDOWN = 5.0
@@ -112,8 +114,8 @@ class StoryAddon(SceneryHost, Addon):
             self.build_world(world)
         elif host:
             self.ensure_constructs()
-        if host and self._cid() == "robot":
-            self._prepare_robot()
+        if host and self.st.get("built"):
+            self._prepare_robot(on_load=True)
         if host and self._cid() == "repair" and self.con("cart") is None and not self.port_attached():
             self._ensure_fuel_port()
             self._place_cart()
@@ -260,10 +262,7 @@ class StoryAddon(SceneryHost, Addon):
             d = self.deck
             self._put_space("interceptor", "連盟の迎撃艦", space.interceptor_voxels(),
                             space.fleet_origin(d), d.frame(0.0), (6.0, 0.0, 12.0))
-            rx, rz = space.ROBOT_START
-            rv = space.robot_voxels()
-            self._put_space("robot", "トワのロボット", rv, d.point(rx, rz, 0.3), d.frame(0.0), (1.5, 0.0, 2.5),
-                            links=space.robot_links(rv))
+            # トワのロボット（変形ロボット ツバメ）は第12章の始めに迎撃艦の甲板へ出す（_launch_robot）
             kx, kz = space.KROBOT_START
             self._put_space("krobot", "キンギのロボット", space.krobot_voxels(), d.point(kx, kz, 0.6), d.frame(180.0),
                             (1.5, 0.0, 2.5))
@@ -370,6 +369,9 @@ class StoryAddon(SceneryHost, Addon):
                    "fuel_valve": ("factory", "valve", None), "turret_pc": ("interceptor", "computer", None),
                    "unit_pc": ("unit", "computer", "再加速の航法"), "fuel_port": ("ship", "actuator", "給油口"),
                    "pump": ("cart", "fuel_pump", None)}
+        if key == "deck_land" and self.deck is not None:
+            rx, rz = space.ROBOT_START
+            return self.deck.point(rx, rz, 1.0)
         if key == "rocket_c":
             c = self.con("rocket")
             return c.center_of_mass() if c is not None else None
@@ -739,8 +741,31 @@ class StoryAddon(SceneryHost, Addon):
         return self._count("intercepted") >= 12
 
     # 第12章
-    def check_board(self):
-        return self._seated("robot")
+    def check_takeoff(self):
+        c = self.con("robot")
+        start = self._flag("launch_at")
+        return c is not None and start is not None and \
+            float(np.linalg.norm(c.center_of_mass() - np.asarray(start, float))) > 20.0
+
+    def check_arrive(self):
+        """アマツの甲板に降りた：甲板の上・低い・ゆっくり・人型。"""
+        c = self.con("robot")
+        if c is None or self.deck is None:
+            return False
+        x, h, z = self._on_deck(c.center_of_mass())
+        return abs(x) < space.DECK_W / 2 and abs(z) < space.DECK_L / 2 and h < 7.0 \
+            and float(np.linalg.norm(c.velocity())) < 4.0 and self._robot_var("変形", 0) == 0
+
+    def _on_deck(self, p):
+        d = self.deck
+        rp = np.asarray(p, float) - d.top
+        return float(rp @ d.R[:, 0]), float(rp @ d.R[:, 1]), float(rp @ d.R[:, 2])
+
+    def _robot_var(self, name, default=None):
+        c, i = self.dev("robot", "computer")
+        if i is None:
+            return default
+        return ((c.devs[i]["state"].get("memory") or {}).get("vars") or {}).get(name, default)
 
     def check_robot_walk(self):
         return self._robot_moved() >= 25.0
@@ -1009,10 +1034,7 @@ class StoryAddon(SceneryHost, Addon):
             if i is not None:
                 c.devs[i]["state"]["running"] = False
         if cid == "robot":
-            self._prepare_robot()
-            c = self.con("robot")
-            if c is not None:
-                self.st["flags"]["robot_start"] = c.center_of_mass().tolist()
+            self._launch_robot()
         if cid == "reaccel":
             self._sign_target()
         if cid == "repair":
@@ -1025,29 +1047,67 @@ class StoryAddon(SceneryHost, Addon):
             self._teleport("depart")
 
     # --- ロボット（第12章） -------------------------------------------------
-    def _prepare_robot(self):
-        """トワのロボット：前の版の物（扉が無い）は作り直す。燃料を満タンにして、制御のコンピューターを動かす。"""
-        d = self.deck
+    def _prepare_robot(self, on_load=False):
+        """トワのロボット：第12章より前には無い（前の版で甲板に置いていた古いロボットは消す）。
+        第12章でツバメでなければ（前の版のセーブ）迎撃艦の甲板に出し直す。燃料は満タンにして、制御を動かす。"""
         c = self.con("robot")
-        if d is not None and (c is None or not any(x and x["name"] == "コックピット" for x in c.devs)) \
-                and not self._seated("robot"):
-            self._remove_role("robot")
-            rx, rz = space.ROBOT_START
-            rv = space.robot_voxels()
-            self._put_space("robot", "トワのロボット", rv, d.point(rx, rz, 0.3), d.frame(0.0), (1.5, 0.0, 2.5),
-                            links=space.robot_links(rv))
-            c = self.con("robot")
-            if c is not None and self.weapons is not None:
-                self.weapons.protected.add(c.id)
-        if c is None:
+        ch = int(self.st.get("ch", 0))
+        if ch < IDX["robot"]:
+            if self.st["ids"].get("robot"):
+                self._remove_role("robot")
             return
+        if c is None or not any(x and x["name"] == "左肩" for x in c.devs):
+            if self._cid() == "robot" and not self._seated("robot"):
+                self._launch_robot()
+            return
+        self._fill_robot(c)
+
+    def _launch_robot(self):
+        """第12章の始め：迎撃艦の甲板に変形ロボット ツバメを出して、トワを操縦席に座らせる。"""
+        from main import objio
+        ship = self.con("interceptor")
+        if ship is None:
+            return
+        self._remove_role("robot")
+        try:
+            data = objio.import_construct(self.world.registry, paths.SAUCE / "blueprints" / ROBOT_BLUEPRINT)
+        except Exception:  # noqa: BLE001
+            L.exception("変形ロボットの設計図を読めません")
+            return
+        sd = self.world.dir / "scripts"
+        sd.mkdir(parents=True, exist_ok=True)
+        for fname, text in (data.get("scripts") or {}).items():
+            (sd / fname).write_text(text, encoding="utf-8")
+        R, _ = ship.rigid_fit()
+        size = float(data["size"])
+        # 迎撃艦の甲板の真ん中（砲塔の間）に、艦と同じ向き（前 = +Z）で立てる
+        base = self._cell_world(ship, space.ROBOT_ON_SHIP) - R[:, 1] * (ship.size * 0.5 - 0.05)
+        origin = base - R @ (np.array([2.5, 0.0, 0.5]) * size)
+        c = Construct.from_voxels(self.world.registry, data["voxels"], origin, R, size=size, name=ROBOT_NAME,
+                                  links=data["links"])
+        c.storage = dict(data.get("storage") or {})
+        self.world.add_construct(c)
+        self.st["ids"]["robot"] = c.id
+        if self.weapons is not None:
+            self.weapons.protected.add(c.id)
+        self._fill_robot(c)
+        f = self.st["flags"]
+        f["launch_at"] = c.center_of_mass().tolist()
+        f.pop("robot_start", None)
+        seat = next((k for k, x in enumerate(c.devs) if x and x["def"] == "seat"), None)
+        if seat is not None:
+            pl = self.world.player
+            pl.seated = (c.id, c.cells[seat])
+            pl.pos, pl.vel = self._cell_world(c, c.cells[seat]), np.zeros(3)
+
+    def _fill_robot(self, c):
         for x in c.devs:
             if not x:
                 continue
             dd = c.reg.device(x["def"]) or {}
             if dd.get("type") == "tank":
                 x["state"]["contents"] = {"fuel": float(dd.get("params", {}).get("capacity", 800))}
-            if x["def"] == "computer" and x["name"] == "ロボットの制御":
+            if x["def"] == "computer":
                 x["state"]["running"] = True
                 x["state"].pop("error", None)
 
@@ -1121,6 +1181,12 @@ class StoryAddon(SceneryHost, Addon):
             cid = self.st["ids"].get(role)
             if cid in self.world.constructs:
                 out.add(cid)
+        # ツバメ：だれも乗っていなければ止めておく（宇宙で流されて地球へ落ちないように）。
+        # 第12章でアマツの甲板に降りたあとだけは、降りても甲板の上に着地させる
+        c = self.con("robot")
+        if c is not None and not self._seated("robot"):
+            if not (self._cid() == "robot" and self.st["goals"].get("arrive")):
+                out.add(c.id)
         return out
 
     def before_physics(self, world, dt):
@@ -1183,7 +1249,7 @@ class StoryAddon(SceneryHost, Addon):
             st["flags"]["wave_t"] = self.world.time + 3.0
         if gid == "clash":
             self._event("clashed")                  # 一騎打ちのムービー → そのあと選ぶ
-        if gid == "board":
+        if gid == "arrive":                         # ここから 25 m（甲板の上を進む）
             c = self.con("robot")
             if c is not None:
                 st["flags"]["robot_start"] = c.center_of_mass().tolist()
@@ -1337,7 +1403,7 @@ class StoryAddon(SceneryHost, Addon):
         if clash <= 0 or self.st["goals"].get("dodge"):     # 組みついている間も、ついて来る
             y = 3.6
             if self.st["goals"].get("dodge"):            # ミサイルを撃ち尽くした：組み合いに来る（同じ高さで、すぐ前へ）
-                x, z = float(np.clip(rx_, -28.0, 28.0)), float(np.clip(rz_ + 4.0, -90.0, 90.0))
+                x, z = float(np.clip(rx_, -28.0, 28.0)), float(np.clip(rz_ + 7.0, -90.0, 90.0))
                 y = float(np.clip(rp @ d.R[:, 1], 1.0, 8.0))
             elif self.st["goals"].get("robot_walk"):     # 立ちはだかる：トワのロボットの前に回りこむ
                 x = float(np.clip(rx_, -24.0, 24.0)) + 6.0 * np.sin(t * 0.8)
@@ -1658,9 +1724,11 @@ class StoryAddon(SceneryHost, Addon):
                 R, _ = ship.rigid_fit()
                 p = self._cell_world(ship, (6, 1, 8)) + R[:, 1] * 0.6
                 up = R[:, 1]
-            elif cid == "robot":
-                rx, rz = space.ROBOT_START
-                p, up = d.point(rx + 4.0, rz - 3.0, 1.2), d.R[:, 1]
+            elif cid == "robot":                 # 迎撃艦の甲板（すぐにツバメの操縦席に座る：_launch_robot）
+                ship = self.con("interceptor")
+                R, _ = ship.rigid_fit()
+                p = self._cell_world(ship, (6, 1, 4)) + R[:, 1] * 0.6
+                up = R[:, 1]
             else:
                 ux, uz = space.UNIT_AT
                 p, up = d.point(ux - 2.0, uz - 4.0, 1.2), d.R[:, 1]

@@ -96,6 +96,13 @@ class StoryCase(unittest.TestCase):
         (sd / f"{base}.py").write_text(B.to_python(prog, f"{base}.blocks.json"), encoding="utf-8")
         self.w.runner.invalidate(f"{base}.py")
 
+    def until_goal(self, gid, sec):
+        for _ in range(int(sec * 4)):
+            self.run_for(0.25)
+            if self.s.st["goals"].get(gid):
+                return True
+        return False
+
     def until(self, cid, sec, dt=1 / 60, keys=None):
         """章 cid が終わるまで（最大 sec 秒）進める。"""
         for _ in range(int(sec)):
@@ -345,9 +352,34 @@ class StoryCase(unittest.TestCase):
         self.assertTrue(self.until("fleet", 60))
         self.assertGreaterEqual(s._count("intercepted"), 0)
         self.assertIn("07_fleet", s.st["movies"])
-        # 第12章：ロボットに乗る → 進む → ミサイルをかわす（横に動く）→ 組みつく
+        # 第12章：迎撃艦の甲板でツバメに座っている → ロケットで発進 → アマツの甲板に降りる → 進む → かわす → 組みつく
         self.assertEqual(self.ch(), "robot")
-        self.sit("robot")
+        rb = s.con("robot")
+        self.assertIsNotNone(rb)
+        self.assertEqual(rb.name, "変形ロボット ツバメ")
+        self.assertEqual(w.player.seated and w.player.seated[0], rb.id, "発進の時点でツバメに座っている")
+        n_vox = rb.n_vox
+        self.run_for(2.0)
+        w.input_keys = {"q"}
+        self.run_for(0.2)
+        w.input_keys = set()
+        self.run_for(3.5)                                  # 変形が済むまで
+        self.assertEqual(s._robot_var("変形"), 1, "Q でロケットに")
+        w.input_keys = {"space"}
+        self.run_for(2.5)
+        w.input_keys = set()
+        self.assertTrue(s.st["goals"].get("takeoff"), "迎撃艦から発進した")
+        # アマツまでの飛行は省いて、甲板の上空へ運ぶ（人型に戻して下りる）
+        w.input_keys = {"q"}
+        self.run_for(0.2)
+        w.input_keys = set()
+        self.run_for(3.5)
+        rb.pos += s.deck.point(*sp.ROBOT_START, 5.0) - rb.center_of_mass()
+        rb.vel[:] = 0.0
+        self.assertEqual(s._robot_var("変形"), 0)
+        w.input_keys = {"left shift"}
+        self.assertTrue(self.until_goal("arrive", 15), "アマツの甲板に降りた")
+        w.input_keys = set()
 
         def keys(t):
             g = t.s.st["goals"]
@@ -358,9 +390,13 @@ class StoryCase(unittest.TestCase):
             if g.get("clash") and not t.s.st["flags"].get("choice"):
                 t.w.addon_call("story", "choose", "talk")       # ネムリの前で選ぶ
             return set()
-        self.assertTrue(self.until("robot", 90, keys=keys), "ロボットの章が終わる")
+        ok = self.until("robot", 90, keys=keys)
+        rb = s.con("robot")
+        self.assertTrue(ok, f"ロボットの章が終わる {s.st['goals']} {s.st['cnt']} "
+                            f"{s._on_deck(rb.center_of_mass()) if rb is not None else None} "
+                            f"{s._on_deck(s.con('krobot').center_of_mass())} {s.st['flags'].get('clash_t')}")
         self.assertGreater(s.slow_ticks, 0, "ミサイルが近いとスローモーション")
-        self.assertEqual(s.con("robot").n_vox, len(sp.robot_voxels()), "ロボットは壊れない")
+        self.assertEqual(s.con("robot").n_vox, n_vox, "ロボットは壊れない")
         self.assertTrue({"08_duel", "09_dialogue"} <= set(s.st["movies"]))
         self.assertEqual(s.st["flags"].get("choice"), "talk")
         w.input_keys = set()
@@ -512,7 +548,7 @@ class StoryCase(unittest.TestCase):
         d = w.dir
         wj = json.loads((d / "world.json").read_text(encoding="utf-8"))
         st = wj["story"]
-        for role in ("crane", "factory", "interceptor", "robot", "krobot", "unit"):
+        for role in ("crane", "factory", "interceptor", "krobot", "unit"):
             st["ids"].pop(role, None)
         cons = [c for c in json.loads((d / "constructs.json").read_text(encoding="utf-8"))
                 if c["id"] in st["ids"].values()]
@@ -527,7 +563,7 @@ class StoryCase(unittest.TestCase):
         self.assertIn("lunaport", w2.mods)
         self.assertEqual(json.loads((d / "mods.json").read_text())["enabled"][-1], "story")
         self.assertEqual(self.script.CHAPTER_IDS[s2.st["ch"]], "bike")
-        for role in ("crane", "factory", "interceptor", "robot", "krobot", "unit"):
+        for role in ("crane", "factory", "interceptor", "krobot", "unit"):
             self.assertIsNotNone(s2.con(role), role)
 
     def test_chapter_autosave_and_restore(self):

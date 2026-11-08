@@ -300,19 +300,22 @@ CHAPTERS = [
             "hit": (KENSU, "っと、当たっても沈みやしないさ。落ち着いて、矢印を見ろ。"),
         },
         "outro": [
-            (KENSU, "やるねえ！ 道が開いた。ルミナス号で抜けて、アマツへ行きな！"),
+            (KENSU, "やるねえ！ 道が開いた。……甲板に、うちの変形ロボット「ツバメ」を出しておく。そいつでアマツへ飛びな！"),
         ],
         "movie_out": ["07_fleet"],
     },
     {
-        "id": "robot", "title": "第12章　ロボット", "place": "軌道都市アマツの外壁",
+        "id": "robot", "title": "第12章　ロボット", "place": "迎撃艦の甲板 → 軌道都市アマツの外壁",
         "intro": [
-            (MIKAGA, "アマツの外壁に着いたよ。そこのロボットに乗って。都市の中心へ行く道を、キンギがふさいでる。"),
-            (MIKAGA, "操縦はホバーバイクと同じ。W/S/A/D で動いて、Space で少し高く。ミサイルは横に動けばかわせるよ。"),
+            (KENSU, "乗り心地はどうだい？ そいつがツバメだ。Q でロケットに変形して、W/S/A/D で傾けて進む。"),
+            (KENSU, "このあたりは重力が弱い。Space を長く押すと飛んでいっちまうから、ちょんとな。止まるときは S で後ろに傾けな。"),
+            (MIKAGA, "アマツの甲板の上まで来たら Q で人型に戻して、Shift でゆっくり降りて。"),
+            (MIKAGA, "都市の中心へ行く道を、キンギがふさいでる。人型なら横に動けるから、ミサイルは横に動いてかわして。"),
         ],
         "goals": [
-            ("board", "ロボットに乗る（操縦席を E）", "robot"),
-            ("robot_walk", "ロボットで 25 m 進む", "robot"),
+            ("takeoff", "ツバメで迎撃艦から発進する（Q でロケット・W で進む）", "robot"),
+            ("arrive", "アマツの甲板に降りる（Q で人型に戻して Shift で下りる）", "deck_land"),
+            ("robot_walk", "甲板の上を 25 m 進む", "robot"),
             ("dodge", "キンギのミサイルを 8 発かわす（横に動く）", "krobot"),
             ("clash", "キンギのロボットに組みつく（近くに 2 秒）", "krobot"),
             ("choice", "ネムリに向き合う（どうするか選ぶ）", None),
@@ -492,7 +495,10 @@ BGM = {
     "credits": ("beethoven9_4", 1000),
     "movies": {
         "01_prologue": ("dvorak9_1", 40), "02_naming": ("dvorak9_2", 0), "03_watch": ("mahler1_3", 5),
-        "04_launch": ("mahler1_1", 232), "05_declaration": ("beethoven9_1", 0), "06_interlude": ("beethoven9_2", 5),
+        "04_launch": ("mahler1_1", 232),
+        # 05：立体映像が出る 14.3 秒に第1楽章の強奏、記憶の 2 カット（26.0・27.4 秒）にも強い拍
+        # 06：資料室へ切り替わる 18.0 秒に、第2楽章の休符のあとの一撃（13 秒にも同じ休符と一撃）
+        "05_declaration": ("beethoven9_1", 20.5), "06_interlude": ("beethoven9_2", 146.5),
         "07_fleet": ("tchaikovsky_1812", 528), "08_duel": ("mahler1_4", 0), "09_dialogue": ("beethoven9_3", 0),
         "10_reaccel": ("saintsaens3_maestoso", 0), "11_epilogue": ("wagner_meistersinger", 0),
     },
