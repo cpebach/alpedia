@@ -677,9 +677,10 @@ class Construct:
         if core is None or not hasattr(core, "Body") or NATIVE_STEP_OFF:
             return None
         from . import actuator as act
-        if any(act.hinge_of(r["dev"], self.reg) is not None for r in self.rotors):
-            return None              # ヒンジの関節は Python で計算する（Rust の物理コアは回転だけ）
-        key = (self.version, id(core), self.n_vox)
+        hk = np.array([list(act.hinge_of(r["dev"], self.reg) or (-1, -1)) for r in self.rotors], np.int64).reshape(-1, 2)
+        if (hk >= 0).any() and not getattr(core, "HINGE", False):
+            return None              # 古い Rust の物理コア（ヒンジを解けない）：Python で計算する
+        key = (self.version, id(core), self.n_vox, hk.tobytes())     # ヒンジの側が変わっても作り直す
         nb = getattr(self, "_nb_cache", None)
         if nb is not None and nb[0] == key:
             return nb[1]
@@ -699,7 +700,8 @@ class Construct:
         body = core.Body(float(self.size), i64(self.ja), i64(self.jb), f64(self.jr), f64(self.jk), f64(self.jbrk),
                          f64(self.jcount), f64(self.inv_mass), f64(self.mass), f64(self.damp), f64(self.fric),
                          f64(self.v_stiff), f64(self.v_plast), f64(self.v_yield), f64(self.v_density),
-                         i64(self.ctype), i64(self.cidx), ra, rva, rvb, rbr)
+                         i64(self.ctype), i64(self.cidx), ra, rva, rvb, rbr,
+                         *((hk,) if getattr(core, "HINGE", False) else ()))
         self._nb_cache = (key, body)
         return body
 
@@ -786,6 +788,9 @@ class Construct:
         if core is None or not hasattr(core, "ArtTopo") or NATIVE_STEP_OFF:
             return None
         a = self.art
+        new = getattr(core, "HINGE", False)
+        if (a["HK"] >= 0).any() and not new:
+            return None
         i64 = lambda x: np.ascontiguousarray(x, dtype=np.int64)  # noqa: E731
         f64 = lambda x: np.ascontiguousarray(x, dtype=np.float64)  # noqa: E731
         ex = a["exts"]
@@ -793,7 +798,8 @@ class Construct:
                             i64(a["A"]).reshape(-1, 4), i64(a["B"]).reshape(-1, 4), i64(a["C"]).reshape(-1, 8),
                             i64([e[1] for e in ex]).reshape(-1, 4), f64([e[2] for e in ex]).reshape(-1, 3),
                             f64([e[3] for e in ex]), int(self.ART_ITERS), int(self.ART_CONTACTS),
-                            float(self.MOTOR_STEP_X), float(self.MOTOR_HOLD_DEG))
+                            float(self.MOTOR_STEP_X), float(self.MOTOR_HOLD_DEG),
+                            *((i64(a["HK"]).reshape(-1, 2),) if new else ()))
 
     def _art_contig(self):
         a = self.art
@@ -1314,8 +1320,7 @@ class Construct:
                     "ext_applied": np.array([e[3] for e in exts], dtype=np.float64),
                     "gv": np.arange(len(vg), dtype=np.int64),
                     "HK": np.array(HK, np.int64).reshape(-1, 2)}
-        # ヒンジがあれば Python（numba）で解く（Rust の物理コアの関節は回転だけ）
-        self.art["nat"] = None if (self.art["HK"] >= 0).any() else self._native_art_topo()
+        self.art["nat"] = self._native_art_topo()       # ヒンジも Rust で（古い Rust ならヒンジのときは None）
 
     def enter_art(self):
         self._art_build()

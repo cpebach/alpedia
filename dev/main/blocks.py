@@ -64,14 +64,15 @@ STATEMENTS = {
                      slots={"dev": "dev:thruster", "value": "num"}, hidden=True),   # パレットには出さない
     "enable": dict(cat="actuator", label="機器 {dev} を {state}", slots={"dev": "dev:*", "state": "choice:ON|OFF"}),
     # アクチュエーター
+    # 機器の欄 "dev:actuator.rotate" は、その動作ができるアクチュエーター（ローター・ヒンジ／ピストン）だけ
     "act_rotate": dict(cat="actuator", label="{dev} を {angle} 度回す・曲げる（速さ {speed} 度/秒）",
-                       slots={"dev": "dev:actuator", "angle": "num", "speed": "num"}),
+                       slots={"dev": "dev:actuator.rotate", "angle": "num", "speed": "num"}),
     "act_rotate_to": dict(cat="actuator", label="{dev} の角度を {angle} 度にする（速さ {speed}）",
-                          slots={"dev": "dev:actuator", "angle": "num", "speed": "num"}),
+                          slots={"dev": "dev:actuator.rotate", "angle": "num", "speed": "num"}),
     "act_extend": dict(cat="actuator", label="{dev} を {amount} ブロック押し出す（速さ {speed}）",
-                       slots={"dev": "dev:actuator", "amount": "num", "speed": "num"}),
+                       slots={"dev": "dev:actuator.extend", "amount": "num", "speed": "num"}),
     "act_retract": dict(cat="actuator", label="{dev} を {amount} ブロック引き込む（速さ {speed}）",
-                        slots={"dev": "dev:actuator", "amount": "num", "speed": "num"}),
+                        slots={"dev": "dev:actuator.retract", "amount": "num", "speed": "num"}),
     "act_detach": dict(cat="actuator", label="{dev} を分離する", slots={"dev": "dev:actuator"}),
     "act_attach": dict(cat="actuator", label="{dev} を結合する", slots={"dev": "dev:actuator"}),
     "act_execute": dict(cat="actuator", label="{dev} の設定動作を実行", slots={"dev": "dev:actuator"}),
@@ -876,6 +877,14 @@ def _dev_loop(node, kind, line):
     return [f"for d in _devs(api, {_q(node.get('dev', '*'))}, {_q(kind)}):", f"    {line}"]
 
 
+def _act_loop(node, action, line):
+    """アクチュエーターの動作。「すべて」なら、その動作ができる種類だけ（ローターに押し出し、ピストンに回転はしない）。
+    名前で選んだ機器はそのまま頼む（できない種類ならエラーで分かる）。"""
+    if node.get("dev", "*") != "*":
+        return _dev_loop(node, "actuator", line)
+    return [f"for d in _devs(api, '*', 'actuator'):", f"    if d.can({_q(action)}):", f"        {line}"]
+
+
 def gen_stmt(node):
     """文 → Python の行のリスト（インデントなし）"""
     t = node.get("type")
@@ -915,13 +924,13 @@ def gen_stmt(node):
         return _dev_loop(node, None, f"d.enabled = {node.get('state') == 'ON'}") if node.get("dev") != "*" else \
             ["for d in api.devices():", f"    d.enabled = {node.get('state') == 'ON'}"]
     if t == "act_rotate":
-        return _dev_loop(node, "actuator", f"d.rotate({g(node.get('angle'))}, speed={g(node.get('speed'))})")
+        return _act_loop(node, "rotate", f"d.rotate({g(node.get('angle'))}, speed={g(node.get('speed'))})")
     if t == "act_rotate_to":
-        return _dev_loop(node, "actuator", f"d.rotate_to({g(node.get('angle'))}, speed={g(node.get('speed'))})")
+        return _act_loop(node, "rotate", f"d.rotate_to({g(node.get('angle'))}, speed={g(node.get('speed'))})")
     if t == "act_extend":
-        return _dev_loop(node, "actuator", f"d.extend({g(node.get('amount'))}, speed={g(node.get('speed'))})")
+        return _act_loop(node, "extend", f"d.extend({g(node.get('amount'))}, speed={g(node.get('speed'))})")
     if t == "act_retract":
-        return _dev_loop(node, "actuator", f"d.retract({g(node.get('amount'))}, speed={g(node.get('speed'))})")
+        return _act_loop(node, "retract", f"d.retract({g(node.get('amount'))}, speed={g(node.get('speed'))})")
     if t == "act_detach":
         return _dev_loop(node, "actuator", "d.detach()")
     if t == "act_attach":

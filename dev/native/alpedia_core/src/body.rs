@@ -49,6 +49,8 @@ pub struct Rotor {
     pub a: [usize; 4],
     pub b: [usize; 4],
     pub br: f64,
+    /// ヒンジなら、倒れる側の辺（出力面の4隅 a のうち2つの番号）。回転なら [-1, -1]
+    pub hk: [i64; 2],
 }
 
 /// 形が変わるまで変わらない値
@@ -317,14 +319,33 @@ fn rotor_target(pos: &[f64], r: &Rotor, angle: f64) -> [[f64; 3]; 4] {
     for x in n.iter_mut() {
         *x /= nl;
     }
+    // 軸 m と軸が通る点 o。回転：向き・面の中心。ヒンジ：向き × 倒れる側・アクチュエーターのブロックの中心
+    let (mut m, mut o) = (n, c);
+    if r.hk[0] >= 0 {
+        let (k1, k2) = (r.hk[0] as usize, r.hk[1] as usize);
+        let mut s = [0.0; 3];
+        for a in 0..3 {
+            s[a] = (pa[k1][a] + pa[k2][a]) * 0.5 - c[a];
+        }
+        let sl = dot(s, s).sqrt().max(1e-9);
+        for x in s.iter_mut() {
+            *x /= sl;
+        }
+        m = cross(n, s);
+        let ml = dot(m, m).sqrt().max(1e-9);
+        for x in m.iter_mut() {
+            *x /= ml;
+        }
+        o = [va[0] / 8.0, va[1] / 8.0, va[2] / 8.0];
+    }
     let (cs, sn) = (angle.cos(), angle.sin());
     let mut out = [[0.0; 3]; 4];
     for k in 0..4 {
-        let v = [pa[k][0] - c[0], pa[k][1] - c[1], pa[k][2] - c[2]];
-        let cr = cross(n, v);
-        let vn = dot(v, n);
+        let v = [pa[k][0] - o[0], pa[k][1] - o[1], pa[k][2] - o[2]];
+        let cr = cross(m, v);
+        let vm = dot(v, m);
         for a in 0..3 {
-            out[k][a] = c[a] + v[a] * cs + cr[a] * sn + n[a] * vn * (1.0 - cs);
+            out[k][a] = o[a] + v[a] * cs + cr[a] * sn + m[a] * vm * (1.0 - cs);
         }
     }
     out

@@ -28,6 +28,8 @@ pub struct ArtTopo {
     pub b: Vec<usize>, // (R,4)
     pub c: Vec<usize>, // (R,8)
     pub exts: Vec<Ext>,
+    /// (R,2)：関節ごとのヒンジの倒れる側の辺（出力面の4隅のうち2つ）。回転なら -1
+    pub hk: Vec<i64>,
     pub iters: i64,
     pub max_contacts: usize,
     pub motor_step_x: f64,
@@ -304,7 +306,7 @@ pub fn solve(
     let mut lam = vec![0.0; nc];
     art::art_solve(
         x, r, &at.inv_m, &at.iinv_b, &at.ra, &at.rb, &la, &lb, &lc, &ang, &cap, &cg, &cl, &cn, &cd, &cp, &cprev, &cvs,
-        &cmu, h, at.iters, &mut lam,
+        &cmu, h, at.iters, &mut lam, &at.hk,
     );
     write(pos, x, r, vl, at);
     (kept, cl, lam)

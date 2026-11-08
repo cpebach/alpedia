@@ -129,15 +129,33 @@ fn box_sdf<'py>(
     Ok((PyArray1::from_vec_bound(py, d), PyArray1::from_vec_bound(py, nn).reshape([n, 3])?, PyArray1::from_vec_bound(py, k)))
 }
 
+/// ヒンジの辺 (R,2)。None なら全部 -1（回転）。番号は 0〜3 か -1
+fn hinge_rows(hk: &Option<RoI>, nr: usize) -> PyResult<Vec<i64>> {
+    match hk {
+        None => Ok(vec![-1; 2 * nr]),
+        Some(a) => {
+            let v = ro(a, "hk")?.to_vec();
+            need(
+                v.len() == 2 * nr
+                    && v.chunks(2).all(|p| (p[0] == -1 && p[1] == -1) || (0..4).contains(&p[0]) && (0..4).contains(&p[1])),
+                "ヒンジの辺 hk",
+            )?;
+            Ok(v)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 完全剛体モード
 // ---------------------------------------------------------------------------
+/// hk (R,2)：関節ごとのヒンジの倒れる側の辺（出力面の4隅のうち2つ）。省略・-1 なら回転
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (x, r, inv_m, iinv_b, ra, rb, la, lb, lc, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lam_n, hk=None))]
 fn art_solve(
     py: Python<'_>, mut x: RwF, mut r: RwF, inv_m: RoF, iinv_b: RoF, ra: RoI, rb: RoI, la: RoF, lb: RoF, lc: RoF,
     ang: RoF, cap: RoF, cg: RoI, cl: RoF, cn: RoF, cd: RoF, cp: RoF, cprev: RoF, cvs: RoF, cmu: RoF, h: f64,
-    iters: i64, mut lam_n: RwF,
+    iters: i64, mut lam_n: RwF, hk: Option<RoI>,
 ) -> PyResult<()> {
     let (xx, rr) = (rw(&mut x, "X")?, rw(&mut r, "R")?);
     let ln = rw(&mut lam_n, "lamN")?;
@@ -156,7 +174,10 @@ fn art_solve(
     if !ok {
         return Err(PyValueError::new_err("art_solve: 配列の大きさが合いません"));
     }
-    py.allow_threads(|| art::art_solve(xx, rr, im, ib, a, b, la_, lb_, lc_, an, cp_, g, l, n, d, p0, pv, vs, mu, h, iters, ln));
+    let hkv = hinge_rows(&hk, nr)?;
+    py.allow_threads(|| {
+        art::art_solve(xx, rr, im, ib, a, b, la_, lb_, lc_, an, cp_, g, l, n, d, p0, pv, vs, mu, h, iters, ln, &hkv)
+    });
     Ok(())
 }
 
@@ -487,15 +508,16 @@ fn need(ok: bool, what: &str) -> PyResult<()> {
 
 #[pymethods]
 impl Body {
-    /// rotor_avox (R,)、rotor_a / rotor_b (R,4)：回転ジョイントの土台のボクセル・土台側と出力側の4頂点、rotor_br (R,)：ちぎれる距離
+    /// rotor_avox (R,)、rotor_a / rotor_b (R,4)：回転ジョイントの土台のボクセル・土台側と出力側の4頂点、rotor_br (R,)：ちぎれる距離、
+    /// rotor_hk (R,2)：ヒンジの倒れる側の辺（rotor_a の4つのうち2つ。省略・-1 なら回転）
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (size, ja, jb, jr, jk, jbrk, jcount, inv_mass, mass, damp, fric, stiff, plast, yield_, density, ctype, cidx,
-                        rotor_avox, rotor_a, rotor_b, rotor_br))]
+                        rotor_avox, rotor_a, rotor_b, rotor_br, rotor_hk=None))]
     fn new(
         size: f64, ja: RoI, jb: RoI, jr: RoF, jk: RoF, jbrk: RoF, jcount: RoF, inv_mass: RoF, mass: RoF, damp: RoF, fric: RoF,
         stiff: RoF, plast: RoF, yield_: RoF, density: RoF, ctype: RoI, cidx: RoI, rotor_avox: RoI, rotor_a: RoI, rotor_b: RoI,
-        rotor_br: RoF,
+        rotor_br: RoF, rotor_hk: Option<RoI>,
     ) -> PyResult<Self> {
         let nvox = ro(&stiff, "stiff")?.len();
         let nv = 8 * nvox;
@@ -511,8 +533,10 @@ impl Body {
                 && rva.iter().chain(rvb.iter()).all(|&i| i >= 0 && (i as usize) < nv),
             "Body 回転ジョイントの番号",
         )?;
+        let rhk = hinge_rows(&rotor_hk, nr)?;
         let rotors = (0..nr)
             .map(|q| body::Rotor {
+                hk: [rhk[2 * q], rhk[2 * q + 1]],
                 a_vox: ra[q] as usize,
                 a: [rva[4 * q] as usize, rva[4 * q + 1] as usize, rva[4 * q + 2] as usize, rva[4 * q + 3] as usize],
                 b: [rvb[4 * q] as usize, rvb[4 * q + 1] as usize, rvb[4 * q + 2] as usize, rvb[4 * q + 3] as usize],
@@ -703,12 +727,14 @@ fn idx_rows(a: &RoI, name: &str, w: usize, lim: usize) -> PyResult<Vec<usize>> {
 impl ArtTopo {
     /// vg：頂点ごとの部分の番号。inv_m・iinv_b：部分ごとの逆質量と物体座標の逆慣性 (G,3,3)。
     /// ra/rb：回転関節の土台側・出力側の部分、a/b (R,4)：出力面の4頂点、c (R,8)：アクチュエーターの8頂点。
-    /// ext_rows (E,4)・ext_nb (E,3)・ext_e0 (E,)：押し出し
+    /// ext_rows (E,4)・ext_nb (E,3)・ext_e0 (E,)：押し出し。hk (R,2)：ヒンジの倒れる側の辺（省略・-1 なら回転）
     #[new]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (vg, inv_m, iinv_b, ra, rb, a, b, c, ext_rows, ext_nb, ext_e0, iters, max_contacts, motor_step_x,
+                        motor_hold_deg, hk=None))]
     fn new(
         vg: RoI, inv_m: RoF, iinv_b: RoF, ra: RoI, rb: RoI, a: RoI, b: RoI, c: RoI, ext_rows: RoI, ext_nb: RoF, ext_e0: RoF,
-        iters: i64, max_contacts: usize, motor_step_x: f64, motor_hold_deg: f64,
+        iters: i64, max_contacts: usize, motor_step_x: f64, motor_hold_deg: f64, hk: Option<RoI>,
     ) -> PyResult<Self> {
         let vgv = ro(&vg, "vg")?.to_vec();
         let im = ro(&inv_m, "inv_m")?.to_vec();
@@ -735,7 +761,8 @@ impl ArtTopo {
             .collect();
         Ok(ArtTopo {
             at: artstep::ArtTopo {
-                g, vg: vgv, inv_m: im, iinv_b: ib, ra: rav, rb: rbv, a: av, b: bv, c: cv, exts, iters, max_contacts,
+                g, vg: vgv, inv_m: im, iinv_b: ib, ra: rav, rb: rbv, a: av, b: bv, c: cv, exts, hk: hinge_rows(&hk, nr)?, iters,
+                max_contacts,
                 motor_step_x, motor_hold_deg,
             },
         })
@@ -1003,6 +1030,7 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(skin, m)?)?;
     m.add_function(wrap_pyfunction!(vertex_normals, m)?)?;
     m.add_function(wrap_pyfunction!(box_sdf, m)?)?;
+    m.add("HINGE", true)?; // ヒンジの関節（hk）を解ける版
     m.add_function(wrap_pyfunction!(art_solve, m)?)?;
     m.add_function(wrap_pyfunction!(art_contact_vel, m)?)?;
     m.add_function(wrap_pyfunction!(art_write, m)?)?;

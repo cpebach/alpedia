@@ -91,7 +91,7 @@ fn local_to_world(x: &[f64], r: &[f64], g: usize, l: &[f64]) -> [f64; 3] {
 pub fn art_solve(
     x: &mut [f64], r: &mut [f64], inv_m: &[f64], ib: &[f64], ra: &[i64], rb: &[i64], la: &[f64], lb: &[f64],
     lc: &[f64], ang: &[f64], cap: &[f64], cg: &[i64], cl: &[f64], cn: &[f64], cd: &[f64], cp: &[f64],
-    cprev: &[f64], cvs: &[f64], cmu: &[f64], h: f64, iters: i64, lam_n: &mut [f64],
+    cprev: &[f64], cvs: &[f64], cmu: &[f64], h: f64, iters: i64, lam_n: &mut [f64], hk: &[i64],
 ) {
     let nr = ra.len();
     let nc = cg.len();
@@ -107,9 +107,9 @@ pub fn art_solve(
             for k in 0..4 {
                 pa[k] = local_to_world(x, r, a, &la[12 * q + 3 * k..12 * q + 3 * k + 3]);
             }
-            let cx = (pa[0][0] + pa[1][0] + pa[2][0] + pa[3][0]) * 0.25;
-            let cy = (pa[0][1] + pa[1][1] + pa[2][1] + pa[3][1]) * 0.25;
-            let cz = (pa[0][2] + pa[1][2] + pa[2][2] + pa[3][2]) * 0.25;
+            let mut cx = (pa[0][0] + pa[1][0] + pa[2][0] + pa[3][0]) * 0.25;
+            let mut cy = (pa[0][1] + pa[1][1] + pa[2][1] + pa[3][1]) * 0.25;
+            let mut cz = (pa[0][2] + pa[1][2] + pa[2][2] + pa[3][2]) * 0.25;
             let ac = local_to_world(x, r, a, &lc[3 * q..3 * q + 3]);
             let (mut nx, mut ny, mut nz) = (cx - ac[0], cy - ac[1], cz - ac[2]);
             let l = (nx * nx + ny * ny + nz * nz).sqrt();
@@ -119,19 +119,45 @@ pub fn art_solve(
             nx /= l;
             ny /= l;
             nz /= l;
+            // 軸と、軸が通る点。回転：向き・面の中心。ヒンジ：向き × 倒れる側・アクチュエーターのブロックの中心
+            let (mut ox, mut oy, mut oz) = (cx, cy, cz);
+            let k1 = if hk.len() >= 2 * nr { hk[2 * q] } else { -1 };
+            if k1 >= 0 {
+                let k2 = hk[2 * q + 1] as usize;
+                let k1 = k1 as usize;
+                let sx = (pa[k1][0] + pa[k2][0]) * 0.5 - cx;
+                let sy = (pa[k1][1] + pa[k2][1]) * 0.5 - cy;
+                let sz = (pa[k1][2] + pa[k2][2]) * 0.5 - cz;
+                let sl = (sx * sx + sy * sy + sz * sz).sqrt();
+                if sl < 1e-12 {
+                    continue;
+                }
+                let (sx, sy, sz) = (sx / sl, sy / sl, sz / sl);
+                let (mx, my, mz) = (ny * sz - nz * sy, nz * sx - nx * sz, nx * sy - ny * sx);
+                let ml = (mx * mx + my * my + mz * mz).sqrt().max(1e-30);
+                nx = mx / ml; // ここから先の「軸」はヒンジの軸
+                ny = my / ml;
+                nz = mz / ml;
+                (ox, oy, oz) = (ac[0], ac[1], ac[2]);
+            }
             let (cs, sn) = (ang[q].cos(), ang[q].sin());
+            let (mut tcx, mut tcy, mut tcz) = (0.0, 0.0, 0.0);
             for k in 0..4 {
-                let (vx, vy, vz) = (pa[k][0] - cx, pa[k][1] - cy, pa[k][2] - cz);
+                let (vx, vy, vz) = (pa[k][0] - ox, pa[k][1] - oy, pa[k][2] - oz);
                 let dot = vx * nx + vy * ny + vz * nz;
                 let crx = ny * vz - nz * vy;
                 let cry = nz * vx - nx * vz;
                 let crz = nx * vy - ny * vx;
                 tg[k] = [
-                    cx + vx * cs + crx * sn + nx * dot * (1.0 - cs),
-                    cy + vy * cs + cry * sn + ny * dot * (1.0 - cs),
-                    cz + vz * cs + crz * sn + nz * dot * (1.0 - cs),
+                    ox + vx * cs + crx * sn + nx * dot * (1.0 - cs),
+                    oy + vy * cs + cry * sn + ny * dot * (1.0 - cs),
+                    oz + vz * cs + crz * sn + nz * dot * (1.0 - cs),
                 ];
+                tcx += tg[k][0] * 0.25;
+                tcy += tg[k][1] * 0.25;
+                tcz += tg[k][2] * 0.25;
             }
+            (cx, cy, cz) = (tcx, tcy, tcz); // 出力面の中心が来るべき所（回転なら面の中心のまま）
             let (mut bcx, mut bcy, mut bcz) = (0.0, 0.0, 0.0);
             for k in 0..4 {
                 pb[k] = local_to_world(x, r, b, &lb[12 * q + 3 * k..12 * q + 3 * k + 3]);

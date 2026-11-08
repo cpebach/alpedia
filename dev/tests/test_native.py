@@ -94,11 +94,15 @@ class TestKernels(unittest.TestCase):
         cd, cp, cprev, cvs, cmu = rng.random(NC) * 0.1, rng.normal(size=(NC, 3)), rng.normal(size=(NC, 3)), rng.normal(size=(NC, 3)), rng.random(NC)
         a = [X.copy(), R.copy(), np.zeros(NC)]
         b = [X.copy(), R.copy(), np.zeros(NC)]
-        fastphys._nb_art_solve(a[0], a[1], invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6, a[2],
-                               np.full((NR, 2), -1, np.int64))      # 回転だけ（ヒンジは numba だけ）
-        core.art_solve(b[0], b[1], invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6, b[2])
-        for u, v in zip(a, b):
-            self.assertLess(np.abs(u - v).max(), 1e-7)
+        for HK in (np.full((NR, 2), -1, np.int64), np.array([[0, 1], [-1, -1], [2, 3]], np.int64)):   # 回転だけ・ヒンジあり
+            a = [X.copy(), R.copy(), np.zeros(NC)]
+            b = [X.copy(), R.copy(), np.zeros(NC)]
+            fastphys._nb_art_solve(a[0], a[1], invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6,
+                                   a[2], HK)
+            core.art_solve(b[0], b[1], invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6, b[2],
+                           HK if (HK >= 0).any() else None)
+            for u, v in zip(a, b):
+                self.assertLess(np.abs(u - v).max(), 1e-7)
         V, W = rng.normal(size=(G, 3)), rng.normal(size=(G, 3))
         lam = np.abs(rng.normal(size=NC))
         v1, w1, v2, w2 = V.copy(), W.copy(), V.copy(), W.copy()
@@ -339,6 +343,17 @@ class TestStep(unittest.TestCase):
         a, b = self._run(lambda: self._make(vox, 0.3, setup=setup))
         self.assertTrue(a.rotors)
 
+    def test_soft_hinge(self):
+        """ヒンジの関節（ブロックの中心を軸に振る）も Rust で：Python と同じ"""
+        vox = [((0, 0, 0), "steel", {"def": "battery", "dir": 2}),
+               ((1, 0, 0), "steel", {"def": "hinge", "dir": 2, "name": "arm", "state": {"hinge": 0}}),
+               ((1, 1, 0), "steel", None), ((1, 2, 0), "steel", None)]
+
+        def setup(c):
+            next(d for d in c.devs if d and d["def"] == "hinge")["state"]["angle"] = 35.0
+        a, b = self._run(lambda: self._make(vox, 0.3, setup=setup))
+        self.assertTrue(a.rotors)
+
     def test_soft_breaks(self):
         def setup(c):
             c.pos[8:16] += np.array([2.0, 0, 0])      # 2つめのボクセルを引きはがす
@@ -392,6 +407,31 @@ class TestStep(unittest.TestCase):
         self.assertLess(np.abs(a.art["vl"] - b.art["vl"]).max(), 1e-9)
         self.assertGreater(np.abs(a.art["vl"] - a.art["vl0"]).max(), 0.01)      # 押し出しで形が変わった
         self.assertLess(self.touch, 0.01)
+
+    def test_art_hinge(self):
+        """完全剛体モードのヒンジ（とローター）：Rust と Python で同じ。Rust の ArtTopo で解いている"""
+        vox = [((x, 0, z), "steel", None) for x in range(3) for z in range(2)]
+        vox += [((1, 1, 0), "steel", {"def": "battery", "dir": 2}),
+                ((1, 2, 0), "steel", {"def": "hinge", "dir": 2, "state": {"hinge": 5}}),
+                ((1, 3, 0), "aluminum", None), ((1, 4, 0), "aluminum", None),
+                ((0, 1, 1), "steel", {"def": "actuator", "dir": 4}), ((0, 1, 2), "wood", None)]
+
+        def make():
+            c = self._make(vox, 0.03)
+            c._full_rigid = True
+            c.enter_art()
+            for d in c.devs:
+                if d and d["def"] in ("hinge", "actuator"):
+                    d["state"]["angle"] = 40.0         # art を作ったあとで動かす（applied が追いかける）
+            return c
+        a, b = self._run(make, n=10)
+        self.assertEqual(a.mode, "art")
+        self.assertIsNotNone(b.art["nat"], "ヒンジがあっても Rust の ArtTopo")
+        self.assertTrue((a.art["HK"] >= 0).any())
+        self.assertGreater(np.abs(a.art["applied"]).max(), 1.0, "動いた")
+        self.assertLess(np.abs(a.art["X"] - b.art["X"]).max(), 1e-6)
+        self.assertLess(np.abs(a.art["R"] - b.art["R"]).max(), 1e-6)
+        self.assertLess(np.abs(a.art["applied"] - b.art["applied"]).max(), 1e-9)
 
     def _with_box(self, mode, vox):
         """construct の下に MOD の箱（動いている板）を置く"""

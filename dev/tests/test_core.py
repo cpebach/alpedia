@@ -195,6 +195,88 @@ class TestScripts(CoreCase):
                                     np.zeros(3), size=0.5)
         self.assertEqual([d["def"] for d in old.devs], ["piston", "piston", "actuator"])
 
+    def _three_actuators(self, prog_or_code, full_rigid=False):
+        """ローター・ピストン・ヒンジ（どれも出力は上）とその先のブロック。コンピューターで動かして3秒。"""
+        from main import blocks as B
+        w = self.world(full_rigid=full_rigid)
+        st = {"running": True}
+        if isinstance(prog_or_code, dict):
+            B.save(w.dir / "scripts" / "m.blocks.json", prog_or_code)
+            self.script(w, "m.py", B.to_python(prog_or_code, "m.blocks.json"))
+            st.update(script="m.py", blocks="m.blocks.json")
+        else:
+            self.script(w, "m.py", prog_or_code)
+            st["script"] = "m.py"
+        vox = [((x, 0, z), "steel", None) for x in range(9) for z in range(2)]
+        vox += [((0, 1, 1), "steel", {"def": "battery", "dir": 2}),
+                ((2, 1, 1), "steel", {"def": "computer", "dir": 4, "state": st}),
+                ((0, 1, 0), "steel", {"def": "actuator", "dir": 2, "name": "rot"}),
+                ((0, 2, 0), "steel", None), ((1, 2, 0), "aluminum", None),
+                ((4, 1, 0), "steel", {"def": "piston", "dir": 2, "name": "pis"}), ((4, 2, 0), "aluminum", None),
+                ((7, 1, 0), "steel", {"def": "hinge", "dir": 2, "name": "hin", "state": {"hinge": 0}}),
+                ((7, 2, 0), "aluminum", None), ((7, 3, 0), "aluminum", None)]
+        c = self.put(w, vox, extra=0.4)
+        self.run_for(w, 3.0)
+        comp = next(d for d in c.devs if d and d["def"] == "computer")["state"]
+        self.assertFalse(comp.get("error"), comp.get("error"))
+        F = c.voxel_frames()
+        out = {}
+        for name, tip in (("rot", (1, 2, 0)), ("pis", (4, 2, 0)), ("hin", (7, 3, 0))):
+            i = next(k for k, d in enumerate(c.devs) if d and d["name"] == name)
+            v = c.pos[8 * c.index[tip]:8 * c.index[tip] + 8].mean(0) - c.pos[8 * i:8 * i + 8].mean(0)
+            out[name] = (c.devs[i]["state"], F[i] @ v / c.size)
+        shutil.rmtree(w.dir)
+        return out
+
+    def _check_three(self, out, hinge_to):
+        st, v = out["rot"]
+        self.assertAlmostEqual(st["angle"], 90.0, places=2)
+        self.assertLess(abs(v[0]), 0.3, f"ローターの腕は +X から横へ回った {v}")
+        self.assertGreater(abs(v[2]), 0.7, f"ローターの腕 {v}")
+        st, v = out["pis"]
+        self.assertAlmostEqual(st["ext"], 1.0, places=2)
+        # ピストンのブロック自身が伸びる（中心は 0.5 上がる）ので、中心から先までは 1 + 1 - 0.5 = 1.5
+        self.assertAlmostEqual(v[1], 1.5, delta=0.15, msg=f"ピストンの先は1ブロック押し出された {v}")
+        st, v = out["hin"]
+        self.assertAlmostEqual(st["angle"], hinge_to, places=2)
+        self.assertAlmostEqual(v[0], 2.0 * np.sin(np.radians(hinge_to)), delta=0.25, msg=f"ヒンジ {v}")
+        self.assertAlmostEqual(v[1], 2.0 * np.cos(np.radians(hinge_to)), delta=0.25, msg=f"ヒンジ {v}")
+
+    def test_blocks_move_all_actuators(self):
+        """ブロックプログラム：「すべて」で回す・押し出すと、できる種類だけが動く（エラーにならない）。名前で選んでも動く。"""
+        from main import blocks as B
+        prog = B.new_program()
+        on = B.new_stmt("on_start")
+        r, e, rr = B.new_stmt("act_rotate"), B.new_stmt("act_extend"), B.new_stmt("act_retract")
+        r["speed"] = {"type": "num", "v": 180}
+        rr["amount"] = {"type": "num", "v": 0}
+        on["body"] = [r, e, rr]
+        prog["scripts"].append(on)
+        for full in (False, True):
+            self._check_three(self._three_actuators(prog, full), 90.0)
+        prog = B.new_program()
+        on = B.new_stmt("on_start")
+        a, b, h = B.new_stmt("act_rotate_to"), B.new_stmt("act_extend"), B.new_stmt("act_rotate_to")
+        a.update(dev="rot", angle={"type": "num", "v": 90}, speed={"type": "num", "v": 180})
+        b.update(dev="pis")
+        h.update(dev="hin", angle={"type": "num", "v": 60}, speed={"type": "num", "v": 180})
+        on["body"] = [a, b, h]
+        prog["scripts"].append(on)
+        self._check_three(self._three_actuators(prog), 60.0)
+
+    def test_script_moves_all_actuators(self):
+        """スクリプト：ローターは rotate、ピストンは extend、ヒンジは rotate_to。can / motion で種類が分かる。"""
+        code = ("def tick(api):\n"
+                "    if api.memory.get('sent'):\n        return\n"
+                "    api.memory['sent'] = True\n"
+                "    for d in api.devices('actuator'):\n"
+                "        if d.motion == 'rotor': d.rotate(90, speed=180)\n"
+                "        elif d.motion == 'hinge': d.rotate_to(-45, speed=180)\n"
+                "        elif d.can('extend'): d.extend(1.0)\n"
+                "    assert not api.device('pis').can('rotate') and api.device('rot').can('detach')\n")
+        for full in (False, True):
+            self._check_three(self._three_actuators(code, full), -45.0)
+
     def test_actuator_rotates(self):
         w = self.world()
         self.script(w, "a.py", "def tick(api):\n"

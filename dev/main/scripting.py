@@ -184,6 +184,16 @@ class DeviceHandle:
         """伸び量を position ブロック（0〜1）にする（絶対）。"""
         self._p.act_extend(self._i, position, speed, absolute=True)
 
+    def can(self, action):
+        """このアクチュエーターに action（"rotate" / "extend" / "retract" / "detach" / "attach"）ができるか。
+        ローターは回転、ピストンは押し出し・引き込み、ヒンジは曲げる（rotate）。分離・結合はどれでも。"""
+        return self._p.act_can(self._i, action)
+
+    @property
+    def motion(self):
+        """アクチュエーターの種類："rotor"（ローター）/ "piston"（ピストン）/ "hinge"（ヒンジ）。"""
+        return self._p.act_motion(self._i)
+
     def detach(self):
         """出力面の結合を切り離す。切り離したら True。"""
         return self._p.act_detach(self._i)

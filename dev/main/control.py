@@ -204,6 +204,15 @@ class Port:
         actuator.init_state(d["state"], dd["params"])
         return d
 
+    def act_can(self, i, action):
+        d = self._dev(i)
+        dd = self._c.reg.device(d["def"])
+        return bool(dd and dd["type"] == "actuator" and action in actuator.actions_for(d, self._c.reg))
+
+    def act_motion(self, i):
+        self._act(i)
+        return actuator.motion(self._c.devs[i], self._c.reg)
+
     def _can(self, i, action):
         try:
             actuator.check_action(self._c, i, action)

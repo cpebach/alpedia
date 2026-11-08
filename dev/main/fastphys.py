@@ -686,13 +686,16 @@ def vertex_normals(v, faces):
 
 def art_solve(X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, h, iters, lamN,
               HK=None):
-    """HK：関節ごとのヒンジの辺（無ければ全部回転）。ヒンジがあるときは numba で解く（Rust は回転だけ）。"""
+    """HK：関節ごとのヒンジの倒れる側の辺（無ければ全部回転）。Rust（ヒンジも同じ式）が無ければ numba。"""
     nr = ra.shape[0]
     if HK is None or HK.shape[0] != nr:
         HK = np.full((nr, 2), -1, np.int64)
-    hinge = bool((HK >= 0).any())
+    HK = np.ascontiguousarray(HK, dtype=np.int64)
     ok = False
-    if not hinge:
+    if getattr(native.core, "HINGE", False):
+        ok, _ = _rust("art_solve", X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs,
+                      cmu, float(h), int(iters), lamN, HK)
+    elif not (HK >= 0).any():                   # 古い Rust（ヒンジを解けない）：回転だけなら使える
         ok, _ = _rust("art_solve", X, R, invM, IinvB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs,
                       cmu, float(h), int(iters), lamN)
     if not ok:

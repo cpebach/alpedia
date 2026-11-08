@@ -727,7 +727,12 @@ class BlockEditor:
                 continue
             dd = self.c.reg.device(d["def"]) or {}
             from ..extensions import behavior_of
-            if kind in ("*", None) or dd.get("type") == kind or behavior_of(dd) == kind:
+            kind_, _, action = (kind or "").partition(".")   # "actuator.rotate"：その動作ができる物だけ
+            if action:
+                from .. import actuator as act
+                if dd.get("type") != kind_ or action not in act.actions_for(d, self.c.reg):
+                    continue
+            if kind in ("*", None) or dd.get("type") == kind_ or behavior_of(dd) == kind_:
                 if d["name"] not in names:
                     names.append(d["name"])
         return names
