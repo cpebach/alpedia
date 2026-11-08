@@ -123,6 +123,9 @@ class Game:
         from ..modcode import client_addons, load_client
         load_client(self.load_errors)
         self.addons = client_addons(self, self.load_errors)
+        if self.world.addon("survival") is not None and getattr(self.world.addon("survival"), "mod_id", None) is None:
+            from .survival_ui import SurvivalClient          # 本体のサバイバル：左上に目標
+            self.addons.insert(0, SurvivalClient(self))
         # プレイヤーの体：MOD（VRM の見た目など）が引き受けなければ、コアが定義の色の箱（またはモデル）で描く。
         # 見た目のモデルはここで全部読み込む（ゲーム中に見た目を変える・ほかの参加者が来ても、ファイルを読まない）
         self.bodies = {}            # キー → (見た目の ID, Player, 体)

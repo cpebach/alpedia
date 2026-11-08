@@ -53,7 +53,8 @@ class CoreCase(unittest.TestCase):
     def world(self, addons=(), **settings):
         d = paths.world_dir("t")
         (d / "scripts").mkdir(parents=True, exist_ok=True)
-        s = dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
+        s = dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}],
+                 full_rigid=False)                  # テストはやわらかいブロックの計算を調べる（完全剛体は指定して）
         s.update(settings)
         (d / "world.json").write_text(json.dumps(s), encoding="utf-8")
         return World("t", CFG, addons=list(addons)).load()
@@ -467,10 +468,41 @@ class TestFormats(CoreCase):
 
     def test_old_world_settings_become_mods(self):
         s, mods, up = savefmt.upgrade_world({"creative": False, "voxel_size": 0.5}, [])
-        self.assertEqual((mods, up, "creative" in s, s["format"]), (["survival", "city"], True, False, 2))
+        self.assertEqual((mods, up, "creative" in s, s["format"], s["mode"]), (["city"], True, False, 2, "survival"))
+        # 前の版のサバイバルの MOD は、本体の遊び方に
+        s, mods, up = savefmt.upgrade_world({"format": 2}, ["survival", "city"])
+        self.assertEqual((mods, up, s["mode"]), (["city"], True, "survival"))
         s, mods, _ = savefmt.upgrade_world({"creative": True, "cities": False}, ["example_mod"])
         self.assertEqual(mods, ["example_mod"])
         self.assertEqual(savefmt.upgrade_world({"format": 2}, ["city"])[1:], (["city"], False))
+
+    def test_survival_is_a_mode(self):
+        """サバイバルは本体の遊び方（world.json の mode）。MOD なしで資源のルールと目標が入る。前の版の MOD も読み替える"""
+        w = self.world(mode="survival")
+        self.assertFalse(w.creative)
+        self.assertEqual([a.name for a in w.addons], ["survival"])
+        self.assertIsNone(getattr(w.addon("survival"), "mod_id", None), "MOD ではない")
+        self.assertGreater(w.player.inventory.get("iron", 0), 0, "最初の所持品")
+        w.save()
+        w2 = self.reload(w)
+        self.assertFalse(w2.creative)
+        self.assertEqual(json.loads((w.dir / "world.json").read_text(encoding="utf-8"))["mode"], "survival")
+        (w.dir / "mods.json").write_text(json.dumps({"enabled": ["survival"]}), encoding="utf-8")
+        s = json.loads((w.dir / "world.json").read_text(encoding="utf-8"))
+        s.pop("mode")
+        (w.dir / "world.json").write_text(json.dumps(s), encoding="utf-8")
+        w3 = World("t", CFG).load()
+        self.assertFalse(w3.creative, "前の版のサバイバルの MOD → 遊び方")
+        self.assertEqual(json.loads((w.dir / "mods.json").read_text(encoding="utf-8"))["enabled"], [])
+        self.assertTrue(self.world().creative, "mode が無ければクリエイティブ")
+
+    def test_full_rigid_is_default(self):
+        from main.tutorial import create_world
+        shutil.rmtree(paths.world_dir("fr"), ignore_errors=True)
+        create_world("fr", [], {}, "gaia")
+        s = json.loads((paths.world_dir("fr") / "world.json").read_text(encoding="utf-8"))
+        self.assertTrue(s["full_rigid"], "新しいワールドは完全剛体モード")
+        shutil.rmtree(paths.world_dir("fr"))
 
     def test_creative_without_rule_mods(self):
         w = self.world()
@@ -711,7 +743,8 @@ class TestFuelAndFlow(CoreCase):
     def test_old_world_generator_becomes_pipe(self):
         d = paths.world_dir("t")
         (d / "scripts").mkdir(parents=True, exist_ok=True)
-        s = dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
+        s = dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}],
+                 full_rigid=False)                  # テストはやわらかいブロックの計算を調べる（完全剛体は指定して）
         (d / "world.json").write_text(json.dumps(s), encoding="utf-8")
         (d / "constructs.json").write_text(json.dumps([{"id": "g", "name": "古い", "voxel_size": 0.5, "voxels": [
             [0, 0, 0, "steel", {"def": "generator", "dir": 2, "name": "発電機", "state": {"enabled": True}}],

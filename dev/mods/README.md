@@ -16,14 +16,15 @@ mods/<MOD名>/
 ```
 
 ワールドで使うには、メニューの新規作成／ワールド設定の MOD 選択で選びます（`saves/<ワールド>/mods.json` の `"enabled"`）。
-本体に入っている MOD：`survival`（サバイバル＝資源のルール。入れないとクリエイティブ）、`city`（サイバーパンクの街）、
-`story`（シナリオモード「ストーリー vol.1」。新しいワールドを作るときに選ぶとシナリオのワールドになる。台本は `docs/ストーリー台本.md`）、
+シナリオの MOD（`mod.json` の `"type": "scenario"`）は MOD 選択には出ず、メニューの「シナリオ」で選んで始めます。
+本体に入っている MOD：`city`（サイバーパンクの街）、
+`story`（シナリオ「ストーリー vol.1」。台本は `docs/ストーリー台本.md`）、
 `scenario_blocks`（シナリオ再現ブロック）、`soredemo_cast`（登場人物）、`lunaport`・`amatsu`（場所）、`cute_motions`（かわいいモーション）。
 
 ## mod.json
 
 ```json
-{"id": "story", "name": "シナリオモード（ストーリー vol.1）", "version": "2.0", "category": "シナリオ",
+{"id": "story", "name": "シナリオモード（ストーリー vol.1）", "version": "2.0", "type": "scenario",
  "requires": ["scenario_blocks", "soredemo_cast", "lunaport", "amatsu"],
  "description": "…",
  "world": {"note": "…", "main": "terra", "main_override": {"noise_amp": 1.5}, "settings": {"story": {"built": false}}}}
@@ -31,6 +32,7 @@ mods/<MOD名>/
 
 | 項目 | 意味 |
 |---|---|
+| type | MOD の種類。`"scenario"`（シナリオ：メニューの「シナリオ」→ シナリオの選択に出て、選ぶと新しいワールドで始まる。MOD の選択には出ない）か `"addon"`（要素を足す MOD：新規作成・ワールド設定の「MOD を選ぶ…」に出る）。省略すると `"addon"` |
 | requires | 一緒に読み込む必要がある MOD。MOD の画面で入れると一緒に入り、読み込みのときに足りなければ足す（依存する方が先に読み込まれる） |
 | world | 新しいワールドを作るときにこの MOD を選ぶと、ワールドをこの形で作る（惑星 `planets` か `main`・`main_override`、world.json に足す `settings`） |
 | category | MOD の画面での分類の表示 |
@@ -120,7 +122,7 @@ VRM のモデル（.vrm）を使うときは `skinmodel(dummy)` MOD（VRM の見
 
 ## プログラムを持つ MOD
 
-`code/__init__.py` に次の関数を書くと、ワールドを読み込むときにプログラムが動きます（例は `mods/survival`, `mods/city`）。
+`code/__init__.py` に次の関数を書くと、ワールドを読み込むときにプログラムが動きます（例は `mods/city`。本体のサバイバル `main/survival.py` も同じ形）。
 
 ```python
 def world_addon():          # ワールド側（必須）

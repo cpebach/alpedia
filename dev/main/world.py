@@ -34,6 +34,8 @@ DEFAULT_SETTINGS = {
                 "check_interval": 5.0},
     "player": "default",
     "planets": [{"def": "terra", "position": [0, 0, 0]}],
+    # 完全剛体モード（構築物は丸ごと1つの剛体）が既定：やわらかいブロックの計算は重いので、ローエンドでも遊べるように
+    "full_rigid": True,
 }
 
 
@@ -152,7 +154,12 @@ class World:
         mods = _read_json(self.dir / "mods.json", {"enabled": []}).get("enabled", [])
         s, mods, upgraded = savefmt.upgrade_world(s, mods)
         if upgraded:
-            L.info("古い形式のワールド：クリエイティブ／街の設定を MOD に読み替えました: %s", mods)
+            L.info("古い形式のワールドを読み替えました：遊び方 %s、MOD %s", s.get("mode", "creative"), mods)
+            if self._given_addons is None:
+                try:                     # 読み替えた MOD の一覧はすぐ書き戻す（world.json は保存のときに）
+                    _write_json(self.dir / "mods.json", {"enabled": list(mods)})
+                except OSError:
+                    pass
         # 依存する MOD（mod.json の requires）を足す（前の版のワールドに、あとから分かれた MOD など）
         from . import modcode, modmeta
         mods, added, missing = modmeta.resolve(mods)
@@ -171,6 +178,9 @@ class World:
         if self._given_addons is None:
             modcode.load(self.registry.loaded_mods, errors)
             self.addons = modcode.world_addons(self.registry.loaded_mods, errors)
+        from . import survival
+        if survival.mode_of(s) == "survival" and self.addon("survival") is None:
+            self.addons.insert(0, survival.SurvivalRules())     # 本体の遊び方（MOD ではない）
         extra = [k for a in self.addons for k in a.settings_keys]
         for msg in savefmt.check_world(s, extra):
             L.warning("保存形式: %s", msg)

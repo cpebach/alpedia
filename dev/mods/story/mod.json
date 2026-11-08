@@ -1,4 +1,4 @@
-{"id": "story", "name": "シナリオモード（ストーリー vol.1）", "version": "2.0", "builtin": true, "category": "シナリオ",
+{"id": "story", "name": "シナリオモード（ストーリー vol.1）", "version": "2.0", "builtin": true, "type": "scenario",
  "requires": ["scenario_blocks", "soredemo_cast", "lunaport", "amatsu"],
  "description": "物語のチュートリアル「ストーリー vol.1」（約100分）：惑星ガイアに落ちたトワが、観測基地の設備を動かし、船を直して月へ。艦隊戦・ロボット・落ちていく軌道都市へ。章の区切りにムービー。章ごとに自動で保存。J で章の一覧。",
  "world": {"note": "シナリオの舞台（惑星ガイア・月ルナ・小惑星）で作ります。最初に読み込んだときに舞台ができます",

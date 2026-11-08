@@ -7,8 +7,12 @@ mod.json の項目：
     world       この MOD を選んで「新しいワールド」を作ると、ワールドをこの形で作る（シナリオなど）：
                 {"planets": [...] または "bodies": "default", "settings": {world.json に足す項目}, "note": "説明"}
                 すでにあるワールドに後から入れても、ワールドの形は変わらない
-    category    一覧の分け方（"シナリオ"・"ブロック"・"登場人物"・"場所"・"見た目" など。省略可）
+    category    一覧の分け方（"ブロック"・"登場人物"・"場所"・"見た目" など。省略可）
+    type        MOD の種類："scenario"（シナリオ：メニューの「シナリオ」で選んで始める。MOD の選択には出ない）か
+                "addon"（要素を足す MOD：新規作成・ワールド設定の MOD の選択に出る。省略時）
 """
+TYPES = ("addon", "scenario")
+BUILTIN_MODES = ("survival",)    # 前の版では MOD だった本体の遊び方（mods/ に残っていても一覧に出さない）
 import json
 
 from . import log, paths
@@ -32,20 +36,28 @@ def read(mod_id, mods_dir=None):
     req = meta.get("requires") or []
     meta["requires"] = [r for r in req if isinstance(r, str) and r != mod_id] if isinstance(req, list) else []
     meta["exists"] = d.is_dir()
+    if meta.get("type") not in TYPES:
+        meta["type"] = "addon"
     return meta
 
 
-def list_all(mods_dir=None):
-    """mods/ にある MOD の情報のリスト。本体に入っている MOD を先に、その中ではサバイバルを先頭に。"""
+def list_all(mods_dir=None, kind=None):
+    """mods/ にある MOD の情報のリスト（kind="addon" / "scenario" でその種類だけ）。本体に入っている MOD を先に。"""
     root = mods_dir or paths.MODS
     out = []
     if not root.exists():
         return out
     for d in sorted(root.iterdir()):
-        if d.is_dir() and not d.name.startswith(".") and not d.name.startswith("_"):
-            out.append(read(d.name, root))
-    out.sort(key=lambda m: (not m.get("builtin"), m["id"] != "survival", str(m.get("category", "")), m["id"]))
+        if d.is_dir() and not d.name.startswith(".") and not d.name.startswith("_") and d.name not in BUILTIN_MODES:
+            m = read(d.name, root)
+            if kind is None or m["type"] == kind:
+                out.append(m)
+    out.sort(key=lambda m: (not m.get("builtin"), str(m.get("category", "")), m["id"]))
     return out
+
+
+def is_scenario(mod_id, mods_dir=None):
+    return read(mod_id, mods_dir)["type"] == "scenario"
 
 
 def resolve(enabled, mods_dir=None):

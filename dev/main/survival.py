@@ -1,7 +1,19 @@
-"""サバイバルの決まり（ワールド側）。"""
+"""サバイバル（本体の遊び方の1つ）：ブロックを置くのに資源を払い、掘って・精錬して資源を集める。
+
+world.json の "mode" が "survival" のワールドで、ワールドの拡張の先頭に入る（MOD ではない）。
+"mode" が無い・"creative" ならクリエイティブ（資源なしで何でも置ける・タンクは満タン）。
+費用は各定義の "cost"、資源は sauce/base/resources、精錬機・加工機のレシピは機器の params.recipes。
+"""
 import numpy as np
 
-from main.hooks import Addon
+from .hooks import Addon
+
+MODES = ("survival", "creative")
+
+
+def mode_of(settings):
+    """ワールドの遊び方："survival" か "creative"。"""
+    return "survival" if (settings or {}).get("mode") == "survival" else "creative"
 
 DIG_AMOUNT = 10.0        # 1回掘ると手に入る資源（岩のブロック5個・鋼鉄のブロック1個分）
 WATER_AMOUNT = 20.0      # 1回くむと手に入る水（海や池の水は減らない）
@@ -167,7 +179,7 @@ class SurvivalRules(Addon):
 
     def _exchange(self, world, c, d, dd):
         """精錬機・加工機：所持品の原料を入れ、できた物を受け取る（何も動かなければ None：ふつうの操作へ）。"""
-        from main.devices import proc_inputs, proc_outputs
+        from .devices import proc_inputs, proc_outputs
         p = world.player
         moved = []
         store = d["state"].setdefault("store", {})

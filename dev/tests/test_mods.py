@@ -133,10 +133,26 @@ class TestModLoading(ModCase):
         self.assertEqual([x[1] for x in modcode._deferred], ["alpedia_mods.m1.ui"])
 
     def test_builtin_mods_load_cleanly(self):
-        """本体に入っている MOD（サバイバル・街）がエラーなく読み込める"""
+        """本体に入っている MOD（街）がエラーなく読み込める。前の版のサバイバルの MOD は本体の遊び方になる"""
         paths.MODS = self._mods
         w = self.world(["survival", "city"]).load()
         self.assertEqual(sorted(a.name for a in w.addons), ["city", "survival"])
+        self.assertFalse(w.creative)
+
+    def test_mod_types(self):
+        """mod.json の type：シナリオは MOD の選択に出ず、シナリオの選択に出る。省略は addon"""
+        from main import modmeta
+        paths.MODS = self._mods
+        add = [m["id"] for m in modmeta.list_all(kind="addon")]
+        sc = [m["id"] for m in modmeta.list_all(kind="scenario")]
+        self.assertEqual(sc, ["story"])
+        self.assertIn("city", add)
+        self.assertNotIn("story", add)
+        self.assertNotIn("survival", add + sc, "サバイバルは本体の遊び方")
+        self.assertTrue(modmeta.is_scenario("story"))
+        paths.MODS = self.tmp / "mods"
+        self.mod("m9", {})
+        self.assertEqual(modmeta.read("m9")["type"], "addon", "type が無ければ addon")
 
 
 SKIN = "skinmodel(dummy)"

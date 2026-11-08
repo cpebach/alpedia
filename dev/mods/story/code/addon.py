@@ -1176,8 +1176,6 @@ class StoryAddon(SceneryHost, Addon):
             self._ensure_kdrone(self.map.ground(-31.0, 140.0, 40.0)[0])
         if gid == "sakura":
             self._stage()
-            self._rockfall()                        # 見せ場：尾根から岩が落ちてきて、地面で砕ける
-            self._event("rockfall")
         if gid == "ride":
             st["flags"]["chase_t0"] = self.world.time
             self._ensure_kdrone(self.map.ground(-13.0, 70.0, 20.0)[0])
@@ -1563,21 +1561,6 @@ class StoryAddon(SceneryHost, Addon):
         else:
             st["rod_t"] = 0.0
 
-    def _rockfall(self):
-        """第1章：サクラと話すと、谷の奥の尾根から岩が落ちてきて砕ける（柔らかい構築物の見せ場。
-        ワールドは完全剛体モードでも、この岩は soft_ok で曲がる・ちぎれる）。"""
-        try:
-            m = self.map
-            p, up = m.ground(-6.0, 21.0, 14.0)
-            R = m.frame(-6.0, 21.0, 0.4)
-            vox = sites.rock_voxels(9, 4, 4, 3)
-            c = Construct.from_voxels(self.world.registry, vox, p, R, velocity=-up * 3.0 + R[:, 0] * 1.5,
-                                      size=float(self.world.settings.get("voxel_size", 0.5)), name="落ちてきた岩")
-            c.soft_ok = True
-            self.world.add_construct(c)
-        except Exception:  # noqa: BLE001
-            L.exception("落石を落とせません")
-
     def _drop_crate(self):
         """第3章の終わり：風で荷物がずれて落ちる（クレーンから外して、横へ飛ばす）。"""
         c = self.con("crane")
@@ -1586,17 +1569,15 @@ class StoryAddon(SceneryHost, Addon):
         idx = [c.index[tuple(x)] for x in sites.CRANE_CRATE if tuple(x) in c.index and c.mats[c.index[tuple(x)]] == "wood"]
         if not idx:
             return
-        # 落ちるのは 2×2×2 の木箱（中身ごと）。地面に当たって割れる
-        vox = [((x, y, z), "wood", None) for x in range(2) for y in range(2) for z in range(2)]
+        vox = [((0, 0, k), "wood", None) for k in range(len(idx))]
         P = c.voxel_centers()[idx].mean(0)
         c.remove_voxels(idx)
         for part in c.split():
             self.world.add_construct(part)
         R, _ = c.rigid_fit()
         size = c.size
-        box = Construct.from_voxels(self.world.registry, vox, P, R, velocity=R[:, 0] * 3.0 + R[:, 1] * 1.5,
+        box = Construct.from_voxels(self.world.registry, vox, P, R, velocity=R[:, 0] * 2.5 + R[:, 1] * 0.5,
                                     size=size, name="落ちた荷物")
-        box.soft_ok = True                  # 見せ場：木の荷物は地面に落ちて割れる（完全剛体モードの中でも柔らかい）
         self.world.add_construct(box)
 
     # ------------------------------------------------------------------

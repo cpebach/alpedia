@@ -1,2 +1,2 @@
-{"id": "city", "name": "サイバーパンクの街", "version": "1.0", "builtin": true,
- "description": "地表と軌道上に街を作る。NPC・取引・部屋・政治、目印（M）とマップ（K）。取引はサバイバル MOD と一緒に使う。"}
+{"id": "city", "name": "サイバーパンクの街", "version": "1.0", "type": "addon", "builtin": true,
+ "description": "地表と軌道上に街を作る。NPC・取引・部屋・政治、目印（M）とマップ（K）。取引・部屋はサバイバルのワールドで使える。"}

@@ -1,3 +1,3 @@
-{"id": "soredemo_cast", "name": "登場人物（ストーリー vol.1）", "version": "1.0", "builtin": true, "category": "登場人物",
+{"id": "soredemo_cast", "name": "登場人物（ストーリー vol.1）", "version": "1.0", "type": "addon", "builtin": true, "category": "登場人物",
  "requires": ["skinmodel(dummy)"],
  "description": "ストーリー vol.1 の13人（トワ・ミカガ・ネムリ・サクラ・シヤマ・シロツ・ケンス・キンギ・ドナチ・先生・ダバイ・ルテロ・オミク）。見た目（Esc の「見た目」）に選べるほか、ほかの MOD が人物（NPC）として立たせて話しかけられるようにする。"}

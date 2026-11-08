@@ -94,11 +94,12 @@ class NetCase(unittest.TestCase):
             time.sleep(0.003)
 
     def test_join_and_see_same_world(self):
-        w, _ = self.make_host(["survival"])
+        w, _ = self.make_host(["survival", "example_mod"])           # 前の版のサバイバルの MOD → 遊び方
         cw = self.join()
         self.run_frames(200)                                          # 落ちて止まるまで
         self.assertEqual(set(cw.constructs), set(w.constructs))
-        self.assertTrue((self.tmp / "cache" / "survival" / "mod.json").exists())     # MOD を受け取った
+        self.assertTrue((self.tmp / "cache" / "example_mod" / "mod.json").exists())     # MOD を受け取った
+        self.assertFalse(w.creative or cw.creative, "参加者もサバイバル")
         self.assertTrue((cw.dir / "scripts" / "a.py").exists())
         for cid, c in w.constructs.items():
             self.assertLess(np.abs(cw.constructs[cid].pos - c.pos).max(), 0.02)

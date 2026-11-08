@@ -1,5 +1,5 @@
 """サバイバルの画面：左上に目標（上から順に）。"""
-from main.client.addon_hooks import ClientAddon
+from .addon_hooks import ClientAddon
 
 
 class SurvivalClient(ClientAddon):
@@ -39,5 +39,5 @@ class SurvivalClient(ClientAddon):
         self.bg.scale = (0.6, 0.06 + len(lines) * 0.024)
 
     def destroy(self):
-        from main.client.ui_destroy import destroy
+        from .ui_destroy import destroy
         destroy(self.root)

@@ -14,6 +14,7 @@ WORLD_KEYS = {
     "format": int, "name": str, "voxel_size": (int, float), "gravity_scale": (int, float),
     "cleanup": dict, "player": str, "planets": list, "time": (int, float), "full_rigid": bool, "tutorial": bool,
     "starter_sample": bool,       # 新規ワールドに見本を置く（最初の読み込みで消える）
+    "mode": str,                  # 遊び方："survival"（サバイバル）／"creative"（クリエイティブ。省略時）
 }
 CLEANUP_KEYS = {"enabled": bool, "distance": (int, float), "seconds": (int, float), "max_vertices": int,
                 "check_interval": (int, float)}
@@ -37,21 +38,27 @@ LEGACY_WORLD_KEYS = ("creative", "cities")      # 形式 1 までの項目（読
 
 
 def upgrade_world(settings, mods):
-    """形式 1 までのワールド：world.json の creative / cities を MOD に読み替える。
-    settings（world.json の中身そのまま）から古い項目を取り除き、(settings, mods, 読み替えたか) を返す。"""
+    """古いワールドの読み替え。settings（world.json の中身そのまま）と mods から古い項目を取り除き、
+    (settings, mods, 読み替えたか) を返す。
+    - 形式 1 まで：world.json の creative / cities → 遊び方（mode）と街の MOD
+    - サバイバルは前の版では MOD（"survival"）だった → 本体の遊び方 "mode": "survival" """
     s = dict(settings)
     mods = list(mods)
-    if int(s.get("format", 0) or 0) >= 2:
-        return s, mods, False
-    add = []
-    if s.get("creative", True) is False:
-        add.append("survival")
-    if s.get("cities", True):                    # 形式 1 までは、項目が無ければ街あり
-        add.append("city")
-    for k in LEGACY_WORLD_KEYS:
-        s.pop(k, None)
-    s["format"] = FORMAT
-    return s, mods + [m for m in add if m not in mods], True
+    changed = False
+    if int(s.get("format", 0) or 0) < 2:
+        if s.get("creative", True) is False:
+            s["mode"] = "survival"
+        if s.get("cities", True) and "city" not in mods:     # 形式 1 までは、項目が無ければ街あり
+            mods.append("city")
+        for k in LEGACY_WORLD_KEYS:
+            s.pop(k, None)
+        s["format"] = FORMAT
+        changed = True
+    if "survival" in mods:
+        mods = [m for m in mods if m != "survival"]
+        s["mode"] = "survival"
+        changed = True
+    return s, mods, changed
 
 
 def _keys(d, spec, where, required=(), extra=()):

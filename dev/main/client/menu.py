@@ -41,7 +41,8 @@ def list_worlds():
         except Exception:  # noqa: BLE001
             pass
         from ..savefmt import upgrade_world
-        info["mods"] = upgrade_world(s, info["mods"])[1]      # 古い形式のワールドも MOD で表示
+        s2, info["mods"], _ = upgrade_world(s, info["mods"])      # 古い形式のワールドも今の形で表示
+        info["mode"] = s2.get("mode", "creative")
         info["mtime"] = max((f.stat().st_mtime for f in d.glob("*.json")), default=wj.stat().st_mtime)
         out.append(info)
     out.sort(key=lambda x: x["mtime"], reverse=True)
@@ -62,14 +63,14 @@ def world_mode_text(w):
             return "ストーリー"
         names = ["序章"] + [f"第{k}章" for k in range(1, 13)] + ["終章", "エピローグ"]
         return "ストーリー：" + (names[ch] if 0 <= ch < len(names) else f"{ch}")
-    mode = "サバイバル" if "survival" in w["mods"] else "クリエイティブ"
+    mode = "サバイバル" if w.get("mode") == "survival" else "クリエイティブ"
     return f"{mode}  /  構築物 {w['constructs']}"
 
 
 def list_mods():
-    """[(MOD名, 表示名)]。本体に入っている MOD（サバイバル・街）を先に並べる。"""
+    """[(MOD名, 表示名)]。要素を足す MOD（シナリオは除く）。本体に入っている MOD を先に並べる。"""
     from .. import modmeta
-    return [(m["id"], m.get("name", m["id"])) for m in modmeta.list_all()]
+    return [(m["id"], m.get("name", m["id"])) for m in modmeta.list_all(kind="addon")]
 
 
 def read_world_settings(name):
@@ -86,7 +87,7 @@ def read_world_settings(name):
         mods = json.loads((d / "mods.json").read_text(encoding="utf-8")).get("enabled", [])
     except Exception:  # noqa: BLE001
         mods = []
-    raw, mods, _ = upgrade_world(raw, mods)      # 古い形式（creative / cities）は MOD に読み替える
+    raw, mods, _ = upgrade_world(raw, mods)      # 古い形式（creative / cities・サバイバルの MOD）を読み替える
     s.update(raw)
     s["cleanup"] = {**DEFAULT_SETTINGS["cleanup"], **s.get("cleanup", {})}
     return s, mods
@@ -100,6 +101,8 @@ def write_world_settings(name, settings, mods):
 
 
 PLANETS = {"terra": "球体（テラ）", "gaia": "地球型（ガイア）"}
+MODES = {"creative": "クリエイティブ", "survival": "サバイバル"}
+MODE_NOTES = {"creative": "何でも置ける（資源なし）", "survival": "置くのに資源が要る・目標がある"}
 
 
 def _setup_window_icon():
@@ -305,8 +308,8 @@ class MainMenu:
         self._text("Alpedia", (0, 0.44), 2.6)
         self._text("物理演算ボクセルサンドボックス", (0, 0.385), 0.8, col=U["color"].light_gray)
         # 遊び方を選ぶ（新しく始める）
-        modes = [("ストーリー", "物語を最初から（約100分）", self._start_story, U["color"].rgb(0.45, 0.3, 0.6)),
-                 ("サバイバル", "資源を集めて作る・街で取引", lambda: self._quick_new("survival"), U["color"].rgb(0.25, 0.45, 0.3)),
+        modes = [("シナリオ", "物語を選んで始める", self.show_scenarios, U["color"].rgb(0.45, 0.3, 0.6)),
+                 ("サバイバル", "資源を集めて作る・月をめざす", lambda: self._quick_new("survival"), U["color"].rgb(0.25, 0.45, 0.3)),
                  ("クリエイティブ", "何でも置ける・自由に作る", lambda: self._quick_new("creative"), U["color"].rgb(0.25, 0.38, 0.55))]
         for k, (title, sub, fn, col) in enumerate(modes):
             x = -0.52 + k * 0.35
@@ -361,8 +364,11 @@ class MainMenu:
     def _quick_new(self, mode):
         """サバイバル・クリエイティブを、おすすめの設定（惑星ガイア）ですぐ始める。"""
         name = self._free_name(mode)
-        mods = ["survival", "city"] if mode == "survival" else []
-        patch = {} if mode == "survival" else {"starter_sample": True}      # クリエイティブ：見本のロケットを置く
+        # MOD は入れない（街などは「詳しく設定して作る」の MOD の選択で）。完全剛体モード（軽い）
+        mods = []
+        patch = {"mode": mode, "full_rigid": True}
+        if mode == "creative":
+            patch["starter_sample"] = True          # クリエイティブ：見本のロケットを置く
         try:
             create_world(name, patch, mods, planet="gaia")
         except Exception as e:  # noqa: BLE001
@@ -372,11 +378,46 @@ class MainMenu:
         self.selected = name
         self.on_play(name)
 
-    def _start_story(self):
-        """ストーリーを最初から（新しいワールド）。途中のストーリーは「続きから」に残る。"""
-        name = self._free_name("story")
+    # --- シナリオを選ぶ ---------------------------------------------------
+    def show_scenarios(self, page=0):
+        """シナリオの MOD（mod.json の "type": "scenario"）の一覧。選ぶと新しいワールドで最初から始める。"""
+        self._clear()
+        U = self.U
+        from .. import modmeta
+        sc = modmeta.list_all(kind="scenario")
+        self._text("シナリオを選ぶ", (0, 0.42), 1.8)
+        self._text("選んだシナリオを最初から始めます（途中のシナリオは「続きから」に残ります）", (0, 0.36), 0.7,
+                   col=U["color"].light_gray)
+        rows = 4
+        pages = max(1, (len(sc) + rows - 1) // rows)
+        page = max(0, min(page, pages - 1))
+        if not sc:
+            self._text("シナリオがありません（mods/ に \"type\": \"scenario\" の MOD を入れると出ます）", (0, 0.1), 0.8,
+                       col=U["color"].light_gray)
+        for k, m in enumerate(sc[page * rows:(page + 1) * rows]):
+            y = 0.24 - k * 0.15
+            self._panel((0.0, y - 0.02), (1.5, 0.13), col=U["color"].rgba(1, 1, 1, 0.06))
+            self._text(m.get("name", m["id"]), (-0.7, y + 0.02), 1.0, origin=(-0.5, 0))
+            desc = (m.get("description") or "").replace("\n", " ")
+            lines = [desc[i:i + 52] for i in range(0, min(len(desc), 104), 52)]
+            if len(desc) > 104:
+                lines[-1] = lines[-1][:-1] + "…"
+            self._text("\n".join(lines), (-0.7, y - 0.035), 0.6, origin=(-0.5, 0), col=U["color"].light_gray)
+            ok = m["exists"] and not m.get("error")
+            self._button("始める", (0.62, y - 0.01), (lambda mid=m["id"]: self._start_scenario(mid)),
+                         size=(0.16, 0.06), col=U["color"].rgb(0.45, 0.3, 0.6), enabled=ok)
+        if pages > 1:
+            self._button("◀ 前", (-0.2, -0.36), lambda: self.show_scenarios(page - 1), size=(0.14, 0.05))
+            self._text(f"{page + 1}/{pages}", (0, -0.36), 0.8)
+            self._button("次 ▶", (0.2, -0.36), lambda: self.show_scenarios(page + 1), size=(0.14, 0.05))
+        self._button("戻る", (0.62, -0.42), self._back, size=(0.2, 0.055), col=U["color"].rgb(0.3, 0.3, 0.33))
+        self._status_line()
+
+    def _start_scenario(self, mod_id):
+        """シナリオを最初から（新しいワールド）。"""
+        name = self._free_name("story" if mod_id == "story" else mod_id)
         try:
-            create_world(name, {}, ["story"], planet="gaia")
+            create_world(name, {}, [mod_id], planet="gaia")
         except Exception as e:  # noqa: BLE001
             self.status = f"作れません: {e}"
             self.show_main()
@@ -538,7 +579,7 @@ class MainMenu:
             while f"world{k}" in names:
                 k += 1
             self._new = {"name": f"world{k}", "planet": "gaia", "voxel_size": 0.5, "gravity_scale": 1.0,
-                         "cleanup": True, "full_rigid": True, "mods": set()}
+                         "cleanup": True, "full_rigid": True, "mode": "creative", "mods": set()}
         opts = self._new
         self._text("新しいワールド", (0, 0.42), 1.8)
         self._text("名前（半角英数字・- _）", (-0.38, 0.3), 0.85, origin=(-0.5, 0))
@@ -551,13 +592,23 @@ class MainMenu:
         from .. import modmeta
         pre_id, preset = modmeta.world_preset(sorted(opts["mods"]))
         y = 0.21
+
+        def redraw():
+            opts["name"] = name_now() or opts["name"]
+            self.show_new(keep=True)
+        self._stepper("遊び方", y, ["creative", "survival"], opts.get("mode", "creative"), lambda v: MODES[v],
+                      lambda v: (opts.__setitem__("mode", v), redraw()))
+        self._text(MODE_NOTES[opts.get("mode", "creative")], (0.2, y - 0.035), 0.6, col=U["color"].light_gray)
+        y -= 0.075
         if preset:
             self._text(f"ワールドの形：{modmeta.name_of(pre_id)}", (-0.38, y), 0.85, origin=(-0.5, 0),
                        col=U["color"].rgb(1.0, 0.85, 0.45))
             self._text(preset.get("note", "惑星・大きさは MOD が決めます"), (-0.38, y - 0.045), 0.62, origin=(-0.5, 0),
                        col=U["color"].light_gray)
             y -= 0.07
-            self._toggle("完全剛体モード", y - 0.02, opts["full_rigid"], lambda v: opts.__setitem__("full_rigid", v))
+            self._toggle("完全剛体モード", y - 0.02, opts["full_rigid"],
+                         lambda v: (opts.__setitem__("full_rigid", v), redraw()))
+            self._rigid_note((0.2, y - 0.055), opts["full_rigid"], centered=True)
             y -= 0.07
         else:
             self._stepper("惑星", y, list(PLANETS), opts["planet"],
@@ -568,9 +619,9 @@ class MainMenu:
             self._stepper("重力倍率", y - 0.14, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], opts["gravity_scale"],
                           lambda v: f"×{v}", lambda v: opts.__setitem__("gravity_scale", v))
             self._toggle("構築物の自動削除", y - 0.21, opts["cleanup"], lambda v: opts.__setitem__("cleanup", v))
-            self._toggle("完全剛体モード", y - 0.28, opts["full_rigid"], lambda v: opts.__setitem__("full_rigid", v))
-            self._text("構築物は丸ごと1つの剛体（曲がらない・壊れない。軽い）", (0.2, y - 0.315), 0.58,
-                       col=U["color"].light_gray)
+            self._toggle("完全剛体モード", y - 0.28, opts["full_rigid"],
+                         lambda v: (opts.__setitem__("full_rigid", v), redraw()))
+            self._rigid_note((0.2, y - 0.315), opts["full_rigid"], centered=True)
             y -= 0.30
         y -= 0.09
 
@@ -587,7 +638,8 @@ class MainMenu:
                 self.show_new(keep=True)
                 return
             try:
-                create_world(name, {"voxel_size": opts["voxel_size"], "gravity_scale": opts["gravity_scale"],
+                create_world(name, {"mode": opts.get("mode", "creative"),
+                                    "voxel_size": opts["voxel_size"], "gravity_scale": opts["gravity_scale"],
                                     "cleanup": {"enabled": opts["cleanup"]}, "full_rigid": bool(opts.get("full_rigid", True))},
                              sorted(opts["mods"]), opts["planet"])
             except Exception as e:  # noqa: BLE001
@@ -608,18 +660,30 @@ class MainMenu:
         self._button("戻る", (0.46, -0.36), self._back, size=(0.2, 0.055), col=U["color"].rgb(0.3, 0.3, 0.33))
         self._status_line()
 
+    def _rigid_note(self, pos, on, centered=False, short=False):
+        """完全剛体モードの説明。OFF（やわらかいブロック）は重くなることがあるので、そのことを目立たせる。"""
+        U = self.U
+        if on:
+            txt = "1つの剛体で軽い（おすすめ）" if short else "ON：構築物は丸ごと1つの剛体（曲がらない・壊れない。軽い。おすすめ）"
+            col = U["color"].light_gray
+        else:
+            txt = ("やわらかい。負荷が増え重くなることも" if short
+                   else "OFF：やわらかいブロック（曲がる・ちぎれる）。負荷が増え、重くなることがあります")
+            col = U["color"].orange
+        self._text(txt, pos, 0.58, col=col, origin=(0, 0) if centered else (-0.5, 0))
+
     def _mod_summary(self, y, selected, open_mods):
         """MOD の行：選んでいる MOD の名前と「MOD を選ぶ…」ボタン（MOD の画面へ）。"""
         U = self.U
         from .. import modmeta
         self._text("MOD", (-0.38, y), 0.85, origin=(-0.5, 0))
         order, _, _ = modmeta.resolve(sorted(selected))
-        names = [modmeta.name_of(m) for m in order] or ["なし（クリエイティブ）"]
+        names = [modmeta.name_of(m) for m in order] or ["なし"]
         txt = "、".join(names)
         if len(txt) > 40:
             txt = txt[:38] + "…"
         self._text(txt, (-0.25, y), 0.7, origin=(-0.5, 0), col=U["color"].light_gray)
-        self._text(f"{len(order)} 個（サバイバル無し＝クリエイティブ）", (-0.25, y - 0.035), 0.58, origin=(-0.5, 0),
+        self._text(f"{len(order)} 個", (-0.25, y - 0.035), 0.58, origin=(-0.5, 0),
                    col=U["color"].gray)
         self._button("MOD を選ぶ…", (0.55, y - 0.012), open_mods, size=(0.22, 0.055), col=U["color"].rgb(0.3, 0.38, 0.55))
 
@@ -631,7 +695,7 @@ class MainMenu:
         self._clear()
         U = self.U
         from .. import modmeta
-        mods = modmeta.list_all()
+        mods = modmeta.list_all(kind="addon")          # シナリオはメニューの「シナリオ」から選ぶ
         on_col = U["color"].rgb(0.25, 0.5, 0.35)
         off_col = U["color"].rgb(0.2, 0.2, 0.24)
         self._text(title, (0, 0.44), 1.6)
@@ -737,28 +801,36 @@ class MainMenu:
         cl = s["cleanup"]
         self._text(f"ワールド設定: {name}", (0, 0.42), 1.6)
         y = 0.31
-        self._toggle("完全剛体モード", y, s.get("full_rigid", False), lambda v: s.__setitem__("full_rigid", v))
-        self._text("構築物は丸ごと1つの剛体（曲がらない・壊れない）", (0.43, y), 0.62,
-                   col=U["color"].light_gray, origin=(-0.5, 0))
-        self._stepper("ボクセルサイズ（新規設置）", y - 0.07, [0.25, 0.5, 1.0, 2.0], s.get("voxel_size", 0.5),
+
+        def redraw():
+            self._ws = (name, s, sel)
+            self.show_world_settings(name, keep=True)
+        self._stepper("遊び方", y, ["creative", "survival"], s.get("mode", "creative"), lambda v: MODES[v],
+                      lambda v: (s.__setitem__("mode", v), redraw()))
+        self._text(MODE_NOTES[s.get("mode", "creative")], (0.43, y), 0.62, col=U["color"].light_gray, origin=(-0.5, 0))
+        self._toggle("完全剛体モード", y - 0.065, s.get("full_rigid", True),
+                     lambda v: (s.__setitem__("full_rigid", v), redraw()))
+        self._rigid_note((0.43, y - 0.065), s.get("full_rigid", True), short=True)
+        y -= 0.065
+        self._stepper("ボクセルサイズ（新規設置）", y - 0.065, [0.25, 0.5, 1.0, 2.0], s.get("voxel_size", 0.5),
                       lambda v: f"{v} m", lambda v: s.__setitem__("voxel_size", v))
-        self._stepper("重力倍率", y - 0.14, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], s.get("gravity_scale", 1.0),
+        self._stepper("重力倍率", y - 0.13, [0.0, 0.25, 0.5, 1.0, 1.5, 2.0], s.get("gravity_scale", 1.0),
                       lambda v: f"×{v}", lambda v: s.__setitem__("gravity_scale", v))
-        self._toggle("構築物の自動削除", y - 0.21, cl.get("enabled", True), lambda v: cl.__setitem__("enabled", v))
-        self._stepper("　削除する距離", y - 0.28, [200.0, 500.0, 1000.0, 1500.0, 3000.0, 5000.0, 10000.0],
+        self._toggle("構築物の自動削除", y - 0.195, cl.get("enabled", True), lambda v: cl.__setitem__("enabled", v))
+        self._stepper("　削除する距離", y - 0.26, [200.0, 500.0, 1000.0, 1500.0, 3000.0, 5000.0, 10000.0],
                       float(cl.get("distance", 1500)), lambda v: f"{v:.0f} m", lambda v: cl.__setitem__("distance", v))
-        self._stepper("　離れている時間", y - 0.35, [10.0, 30.0, 60.0, 120.0, 300.0, 600.0],
+        self._stepper("　離れている時間", y - 0.325, [10.0, 30.0, 60.0, 120.0, 300.0, 600.0],
                       float(cl.get("seconds", 60)), lambda v: f"{v:.0f} 秒", lambda v: cl.__setitem__("seconds", v))
-        self._stepper("　対象の最大頂点数", y - 0.42, [80, 200, 400, 800, 1600, 4000],
+        self._stepper("　対象の最大頂点数", y - 0.39, [80, 200, 400, 800, 1600, 4000],
                       int(cl.get("max_vertices", 400)), lambda v: f"{v}", lambda v: cl.__setitem__("max_vertices", v))
         def open_mods():
             self._ws = (name, s, sel)
             self.show_mods(sel, lambda: self.show_world_settings(name, keep=True), f"ワールド「{name}」の MOD")
-        self._mod_summary(y - 0.50, sel, open_mods)
+        self._mod_summary(y - 0.465, sel, open_mods)
         planets = ", ".join(p.get("def", "?") for p in s.get("planets", []))
-        self._text(f"惑星: {planets}（world.json で編集）", (0, y - 0.64), 0.7, col=U["color"].light_gray)
+        self._text(f"惑星: {planets}（world.json で編集）", (0, y - 0.6), 0.7, col=U["color"].light_gray)
         self._text("MOD を入れる・外す前に、ワールド（saves/ のフォルダ）をコピーしておくことをすすめます。"
-                   "使っている MOD を外すと、そのワールドは始められなくなります。", (0, y - 0.70), 0.58,
+                   "使っている MOD を外すと、そのワールドは始められなくなります。", (0, y - 0.66), 0.58,
                    col=U["color"].rgb(1, 0.8, 0.45))
 
         def save():
