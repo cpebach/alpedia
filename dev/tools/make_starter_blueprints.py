@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from main import paths  # noqa: E402
 
@@ -80,13 +81,35 @@ def room():
             "宇宙の基地の練習に", V)
 
 
+def story_helpers():
+    """ブロックを作る道具（mods/story/code/programs.py。MOD としては読み込まず、ファイルとして使う）。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_programs", paths.MODS / "story" / "code" / "programs.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def transformer():
+    """変形ロボット（ロケット ⇄ 人型）：形・結合（部分の間はアクチュエーターだけ）・ブロックプログラム。"""
+    from main import blocks as B
+    import transformer_robot as TR
+    V = TR.voxels()
+    vox = [[c[0], c[1], c[2], m, d] for c, m, d, _ in V]
+    prog = TR.program(story_helpers())
+    scripts = {"transformer.blocks.json": json.dumps(prog, ensure_ascii=False, indent=1),
+               "transformer.py": B.to_python(prog, "transformer.blocks.json")}
+    return "transformer_robot", TR.NAME, TR.DESC, vox, TR.links(V), scripts
+
+
 def main():
     out = paths.SAUCE / "blueprints"
     out.mkdir(parents=True, exist_ok=True)
-    for fname, name, desc, vox in (rocket(), factory(), room()):
+    items = [(*x, None, {}) for x in (rocket(), factory(), room())] + [transformer()]
+    for fname, name, desc, vox, links, scripts in items:
         meta = {"format": "alpedia-construct", "version": 1, "name": name, "description": desc, "requires": [],
                 "voxel_size": 0.5, "scale": 1.0, "default_material": "steel", "voxels": vox, "storage": {},
-                "scripts": {}}
+                "scripts": scripts, **({"links": links} if links else {})}
         (out / f"{fname}.alp.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         print(f"{fname}.alp.json  {name}  ボクセル {len(vox)}")
 

@@ -16,13 +16,15 @@ import numpy as np
 
 from .construct import CORNER_BITS, DIR_NAMES, DIR_TUPLES, JOINT_PAIRS, link_key
 
-ACTIONS = ["rotate", "extend", "retract", "detach", "attach"]
-ACTION_NAMES = {"rotate": "回転", "extend": "押し出し", "retract": "引き込み", "detach": "分離", "attach": "結合"}
-HINGE_ACTIONS = ["rotate", "detach", "attach"]       # ヒンジは押し出さない（rotate は「曲げる」）
+ACTIONS = ["rotate", "extend", "retract", "detach", "attach", "none"]
+ACTION_NAMES = {"rotate": "回転", "extend": "押し出し", "retract": "引き込み", "detach": "分離", "attach": "結合",
+                "none": "なし"}
+# "none"（なし）：E・操縦席のキー（X）では動かさない。コンピューターのプログラムだけで動かすアクチュエーターに
+HINGE_ACTIONS = ["rotate", "detach", "attach", "none"]       # ヒンジは押し出さない（rotate は「曲げる」）
 # アクチュエーターの種類（定義の params.motion）と、できる動作。分離・結合はどれでもできる
 #   rotor（ローター。機器 "actuator"）：回す / piston（ピストン）：押し出す・引き込む / hinge（ヒンジ）：曲げる
 #   motion の無い MOD の機器は、昔のアクチュエーターと同じく全部できる（"both"）
-MOTION_ACTIONS = {"rotor": ["rotate", "detach", "attach"], "piston": ["extend", "retract", "detach", "attach"],
+MOTION_ACTIONS = {"rotor": ["rotate", "detach", "attach", "none"], "piston": ["extend", "retract", "detach", "attach", "none"],
                   "hinge": HINGE_ACTIONS, "both": ACTIONS}
 MOTION_NAMES = {"rotor": "ローター", "piston": "ピストン", "hinge": "ヒンジ", "both": "アクチュエーター"}
 DEFAULT_PRESET = {"action": "rotate", "amount": 90.0, "speed": 90.0}
@@ -410,6 +412,8 @@ def execute_preset(world, c, i):
         a = p["action"]
     name = c.devs[i]["name"]
     hinge = is_hinge_dev(c.devs[i], c.reg)
+    if a == "none":
+        return f"{name}: 設定の動作は「なし」です（コンピューターのプログラムで動かします）"
     if a == "rotate" and hinge:
         # ヒンジ：設定した角度へ曲げる。もうその角度なら 0°（まっすぐ）へ戻す（E を押すたびに行き来する）
         to = float(p.get("amount", 90.0))

@@ -186,6 +186,10 @@ class TestScripts(CoreCase):
         self.assertEqual(c.devs[pi]["state"]["preset"]["action"], "extend", "ピストンの既定の動作は押し出し")
         c.devs[ri]["state"]["preset"] = {"action": "extend", "amount": 1.0, "speed": 0.5}   # できない動作の設定
         self.assertIn("回転", act.execute_preset(w, c, ri), "ローターの既定（回転）にする")
+        c.devs[ri]["state"]["preset"] = {"action": "none", "amount": 0.0, "speed": 90.0}
+        c.devs[ri]["state"]["angle_target"] = 0.0
+        self.assertIn("なし", act.execute_preset(w, c, ri), "動作「なし」は動かさない")
+        self.assertEqual(c.devs[ri]["state"]["angle_target"], 0.0)
         self.assertTrue(p.act_detach(pi))
         self.assertTrue(p.act_detach(ri))
         # 古いセーブ：押し出していたアクチュエーターはピストン、それ以外はローター
@@ -330,6 +334,56 @@ class TestScripts(CoreCase):
             self.assertEqual(json.loads((w.dir / "constructs.json").read_text(encoding="utf-8"))[0]["voxels"][-4][4]
                              ["state"]["hinge"], 5, "曲がる側は保存される")
             shutil.rmtree(w.dir)
+
+    def test_transformer_robot(self):
+        """設計図の変形ロボット：座ると浮く・横へ速く・Q でロケット（腕・ポッドが動き、推進機が全部下を向いて速く上がる）・
+        降りると人型に戻ってハッチが開く。センサーの傾きはコンピューターの付いた部分で測る（変形しても狂わない）"""
+        from main import objio
+        w = self.world(full_rigid=True)
+        data = objio.import_construct(w.registry, paths.SAUCE / "blueprints" / "transformer_robot.alp.json")
+        self.assertTrue(data["links"], "部分の間はアクチュエーターだけでつなぐ")
+        p, up = self.ground(w, 0.3)
+        c = w.place_import(data, position=p)
+        self.assertIsNotNone(c)
+        self.assertEqual(len(c.rotors), 6)
+        dev = lambda n: c.devs[next(i for i, d in enumerate(c.devs) if d and d["name"] == n)]  # noqa: E731
+        comp = next(i for i, d in enumerate(c.devs) if d and d["def"] == "computer")
+        seat = next(i for i, d in enumerate(c.devs) if d and d["def"] == "seat")
+
+        def run(sec, keys=()):
+            w.input_keys = set(keys)
+            self.run_for(w, sec)
+
+        def h():
+            return float((c.center_of_mass() - p) @ up)
+        run(2.0)
+        self.assertAlmostEqual(dev("ハッチ")["state"]["angle"], 90.0, places=1, msg="座っていないとハッチが開く")
+        h0 = h()
+        w.interact({"kind": "voxel", "construct": c, "index": seat, "face": 2})
+        run(3.0)
+        self.assertAlmostEqual(dev("ハッチ")["state"]["angle"], 0.0, places=1)
+        self.assertGreater(h() - h0, 0.6, "座ると浮く")
+        R, _ = c.rigid_fit(c.part_of(comp))
+        v0 = R.T @ c.velocity()
+        run(2.0, {"d"})
+        R, _ = c.rigid_fit(c.part_of(comp))
+        self.assertGreater((R.T @ c.velocity())[0] - v0[0], 3.0, "人型は横へすばやく動ける")
+        run(3.0)
+        run(0.1, {"q"})
+        run(4.0)
+        self.assertEqual(c.devs[comp]["state"]["memory"]["vars"]["変形"], 1)
+        self.assertAlmostEqual(dev("左肩")["state"]["angle"], 180.0, places=1)
+        self.assertAlmostEqual(dev("左腰")["state"]["angle"], 90.0, places=1)
+        R, _ = c.rigid_fit(c.part_of(comp))
+        self.assertGreater(float(R[:, 1] @ up), 0.97, "ロケットに変形しても立ったまま（傾きはコンピューターの部分で測る）")
+        hr = h()
+        run(2.0, {"space"})
+        self.assertGreater(h() - hr, 20.0, "ロケットは推進機が全部下を向いて速く上がる")
+        w.interact(None)                                       # 降りる
+        run(3.0)
+        self.assertEqual(c.devs[comp]["state"]["memory"]["vars"]["変形"], 0, "降りると人型に戻る")
+        self.assertAlmostEqual(dev("ハッチ")["state"]["angle"], 90.0, places=1)
+        self.assertGreater(float(c.velocity() @ up), -6.0, "ゆっくり下りる")
 
     def test_hinge_side_from_placement(self):
         """ヒンジの曲がる側は置き方で決まる：置くときに見ている向きにいちばん近い側。回転のアクチュエーターは回るだけ。"""

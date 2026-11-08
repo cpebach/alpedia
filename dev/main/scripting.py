@@ -265,6 +265,8 @@ class ScriptAPI:
         from .control import Port
         self._p = port or Port(world, c)
         self._ci = comp_idx
+        if port is None:
+            self._p.frame = comp_idx      # 姿勢・速さの向きは、コンピューターの付いている部分で測る
         self.memory = self._p.comp_state(comp_idx).setdefault("memory", {})
         self.logs = []
 

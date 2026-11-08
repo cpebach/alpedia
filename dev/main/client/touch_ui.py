@@ -326,6 +326,8 @@ class TouchHUD:
                         continue
                     dd = c.reg.device(d["def"]) or {}
                     k = (dd.get("params") or {}).get("key")
+                    if dd.get("type") == "actuator" and (d["state"].get("preset") or {}).get("action") == "none":
+                        k = None                         # 動作「なし」のアクチュエーターはキーで動かさない
                     if k:
                         want.setdefault(k, []).append(d["name"])
                 for k in self._program_keys(c):          # プログラムが読むキー（ドローンの X など）

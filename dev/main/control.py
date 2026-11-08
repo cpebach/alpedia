@@ -33,6 +33,7 @@ class Port:
         self._w = world
         self._c = c
         self._pose = None
+        self.frame = None        # 姿勢を測るブロック（コンピューター）：その部分の向きを使う（変形しても傾きが狂わない）
 
     # ------------------------------------------------------------------
     # 構築物全体
@@ -49,7 +50,10 @@ class Port:
         """(重心 [3], 回転行列 R（列がローカル軸のワールド方向）[3x3], 速度 [3], 角速度 [3])。同じティック中は使い回す。"""
         if self._pose is None:
             c = self._c
-            R, _ = c.rigid_fit()
+            if self.frame is not None and c.rotors and 0 <= self.frame < c.n_vox:
+                R, _ = c.rigid_fit(c.part_of(self.frame))
+            else:
+                R, _ = c.rigid_fit()
             self._pose = (c.center_of_mass(), R, c.velocity(), c.angular_velocity())
         return self._pose
 

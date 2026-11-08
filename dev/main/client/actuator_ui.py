@@ -101,8 +101,9 @@ class ActuatorPanel:
             self._row("移動速度", y - 0.16, EXT_SPEEDS, self.preset["speed"], lambda v: f"{v:.2f} ブロック/秒",
                       lambda v: self.preset.__setitem__("speed", v))
         else:
-            msg = ("出力面の先の部分を切り離します" if a == "detach"
-                   else "出力面の先にあるブロック（別の構築物でも可）とつなぎます")
+            msg = {"detach": "出力面の先の部分を切り離します",
+                   "none": "E・操縦席のキー（X）では動かしません（コンピューターのプログラムで動かす物に）"}.get(
+                a, "出力面の先にあるブロック（別の構築物でも可）とつなぎます")
             U["Text"](parent=self.body, text=msg, position=(0, y - 0.11), origin=(0, 0), scale=0.8,
                       color=col.light_gray)
         U["Text"](parent=self.body, position=(0, -0.205), origin=(0, 0), scale=0.62, color=col.light_gray,

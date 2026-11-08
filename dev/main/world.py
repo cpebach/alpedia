@@ -1180,6 +1180,8 @@ class World:
                 continue
             dd = self.registry.device(d["def"])
             if dd and dd["type"] == "actuator" and dd["params"].get("key") == key:
+                if (d["state"].get("preset") or {}).get("action") == "none":
+                    continue                    # 動作「なし」：キーでは動かさない（プログラムが動かす）
                 from . import actuator
                 self.message(actuator.execute_preset(self, c, i))
 

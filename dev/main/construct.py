@@ -1836,11 +1836,42 @@ class Construct:
     # ------------------------------------------------------------------
     # 保存
     # ------------------------------------------------------------------
-    def rigid_fit(self):
-        """現在の頂点位置にもっとも合う剛体変換 (R, t)：pos ≒ R @ local + t"""
-        local = ((np.asarray(self.cells, dtype=np.float64)[:, None, :] + CORNER_BITS[None]) * self.size).reshape(-1, 3)
-        lc, pc = local.mean(0), self.pos.mean(0)
-        H = (local - lc).T @ (self.pos - pc)
+    def part_of(self, i):
+        """ブロック i と同じ「部分」（アクチュエーターの出力面の結合をたどらずにつながっているブロック）の番号の配列。
+        変形する構築物で、コンピューターの付いている部分の姿勢を測るのに使う。"""
+        cache = getattr(self, "_part_cache", None)
+        if cache is None or cache[0] != (self.version, self.n_vox):
+            n = self.n_vox
+            parent = list(range(n))
+
+            def find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+            joints = {r["key"] for r in self.rotors}
+            for key in list(self.links) + list(getattr(self, "extras", {}).keys()):
+                if key in joints:
+                    continue
+                ia, ib = self.index.get(key[0]), self.index.get(key[1])
+                if ia is not None and ib is not None:
+                    parent[find(ia)] = find(ib)
+            label = np.array([find(k) for k in range(n)], dtype=np.int64)
+            cache = self._part_cache = ((self.version, self.n_vox), label)
+        label = cache[1]
+        return np.nonzero(label == label[i])[0]
+
+    def rigid_fit(self, idx=None):
+        """現在の頂点位置にもっとも合う剛体変換 (R, t)：pos ≒ R @ local + t。idx：その番号のブロックだけで合わせる"""
+        cells = np.asarray(self.cells, dtype=np.float64)
+        pos = self.pos
+        if idx is not None:
+            idx = np.asarray(idx, dtype=np.int64)
+            cells = cells[idx]
+            pos = self.pos.reshape(-1, 8, 3)[idx].reshape(-1, 3)
+        local = ((cells[:, None, :] + CORNER_BITS[None]) * self.size).reshape(-1, 3)
+        lc, pc = local.mean(0), pos.mean(0)
+        H = (local - lc).T @ (pos - pc)
         U, _, Vt = np.linalg.svd(H)
         R = Vt.T @ U.T
         if np.linalg.det(R) < 0:

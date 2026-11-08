@@ -143,6 +143,7 @@ SENSORS = {
     "roll": ("右への傾き(度)", "math.degrees(math.atan2(-api.up_local[0], api.up_local[1]))"),
     "pitch_rate": ("前へ傾く速さ(度/秒)", "math.degrees(api.angular_velocity_local[0])"),
     "roll_rate": ("右へ傾く速さ(度/秒)", "-math.degrees(api.angular_velocity_local[2])"),
+    "yaw_rate": ("右へ回る速さ(度/秒)", "math.degrees(api.angular_velocity_local[1])"),
     # 構築物から見た速さ（前＝ローカル +Z、右＝ローカル +X）と、その場所の重力
     "fwd_speed": ("前への速さ", "api.velocity_local[2]"),
     "right_speed": ("右への速さ", "api.velocity_local[0]"),
