@@ -51,9 +51,22 @@ def _hull_tris(offsets):
     return res
 
 
+def block_kinds(c):
+    """ブロックの種類の番号（素材ごと。機器は機器の種類ごと）。階段状の隙間を埋めるのは同じ種類どうしだけ。"""
+    names = {}
+    out = np.zeros(c.n_vox, np.int64)
+    for i, (m, d) in enumerate(zip(c.mats, c.devs)):
+        key = ("dev", d["def"]) if d else ("mat", m)
+        out[i] = names.setdefault(key, len(names))
+    return out
+
+
 def topology(c):
-    """形を作る図形の一覧を返す: dict(points, segs, tris)（ボクセル番号の配列）。"""
+    """形を作る図形の一覧を返す: dict(points, segs, tris)（ボクセル番号の配列）。
+    階段状・L 字の内側を埋める斜面（三角形）は、同じ種類のブロックどうしだけで作る
+    （違う種類どうし（内装と外装など）は階段状のまま）。"""
     idx = c.index
+    kind = block_kinds(c)
     links = c.links
     n = c.n_vox
     linked_count = np.zeros(n, int)
@@ -121,7 +134,7 @@ def topology(c):
         for o, _ in mem:
             for d in DIR_TUPLES:
                 o2 = (o[0] + d[0], o[1] + d[1], o[2] + d[2])
-                if o2 in m:
+                if o2 in m and kind[m[o]] == kind[m[o2]]:
                     ca = (a[0] + o[0], a[1] + o[1], a[2] + o[2])
                     cb = (a[0] + o2[0], a[1] + o2[1], a[2] + o2[2])
                     if link_key(ca, cb) in links:
@@ -353,6 +366,55 @@ def build_mesh(c, k=None):
             "vidx": (8 * owner[:, None] + np.arange(8)[None]).astype(np.int64), "version": c.version}
 
 
+# ---------------------------------------------------------------------------
+# 裏での読み込み：大きい構築物の形のメッシュは別のスレッドで作る（作り終わるまでは遠景の箱で見せる）
+# ---------------------------------------------------------------------------
+_pool = None
+_jobs = {}
+
+
+def cached_mesh(c):
+    """作ってあるメッシュ（形が変わっていなければ）。無ければ None。"""
+    m = getattr(c, "_mesh_cache", None)
+    return m[1] if m is not None and m[0] == (c.version, c.n_vox) else None
+
+
+def mesh_ready(c):
+    return getattr(c, "_mesh_cache", (None,))[0] == (c.version, c.n_vox)
+
+
+def request_mesh(c):
+    """メッシュを裏で作り始める（もう作ってある・作っている途中なら何もしない）。できていれば True。"""
+    global _pool
+    key = (c.version, c.n_vox)
+    if mesh_ready(c):
+        return True
+    job = _jobs.get(c.id)
+    if job is not None and job[0] == key:
+        if job[1].done():
+            _jobs.pop(c.id, None)
+            try:
+                c._mesh_cache = (key, job[1].result())
+            except Exception:  # noqa: BLE001
+                return False                       # 作っている間に形が変わったなど：次に頼まれたら作り直す
+            return True
+        return False
+    if _pool is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mesh")
+    _jobs[c.id] = (key, _pool.submit(build_mesh, c))
+    return False
+
+
+def mesh_for(c):
+    """描画用のメッシュ：作ってあればそれを、無ければ今作る。"""
+    if mesh_ready(c):
+        return cached_mesh(c)
+    m = build_mesh(c)
+    c._mesh_cache = ((c.version, c.n_vox), m)
+    return m
+
+
 def _owner(c, p, centers, allowed=None):
     """点（セル単位）が属するボクセル：そのセルのボクセル、無ければいちばん近いボクセル。
     allowed（ボクセルごとの bool）があれば、その中から選ぶ。"""
@@ -400,7 +462,7 @@ def closest_on_shape(c, p, max_dist):
     if not c.n_vox:
         return None
     r = c.size * 0.5
-    cen = c.voxel_centers()
+    cen = c.centers_cached() if hasattr(c, "centers_cached") else c.voxel_centers()
     near = np.linalg.norm(cen - p, axis=1) < max_dist + c.size * 1.8
     if not near.any():
         return None

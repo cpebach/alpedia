@@ -9,6 +9,13 @@ L = log.get("menu")
 
 NAME_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
 RESOLUTIONS = [(1280, 720), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)]
+# 構築物の読み込み距離・機能処理の距離（m）。いちばん右の 0 は「全部」（これまで通り、距離に関係なく全部）
+LOAD_STEPS = [50.0, 100.0, 200.0, 300.0, 400.0, 600.0, 1000.0, 1500.0, 2500.0, 0.0]
+PROCESS_STEPS = [50.0, 100.0, 200.0, 400.0, 800.0, 1500.0, 3000.0, 6000.0, 0.0]
+
+
+def _dist_text(v):
+    return "全部" if not v else f"{v:.0f} m"
 PAGE_SIZE = 6
 
 
@@ -288,6 +295,43 @@ class MainMenu:
             on_change(values[state["i"]])
         self._button("◀", (x + 0.06, y), lambda: step(-1), size=(0.045, 0.045))
         self._button("▶", (x + 0.34, y), lambda: step(1), size=(0.045, 0.045))
+
+    def _slider(self, label, y, values, current, fmt, on_change, x=0.0):
+        """ラベル ◀ ━━●━━ ▶ 値 の行。values：選べる値（小さい順）。棒を押すとその位置の値に、◀ ▶ で1つずつ。"""
+        U = self.U
+        if current in values:
+            idx = values.index(current)
+        else:
+            idx = min(range(len(values)), key=lambda i: abs(values[i] - current) if values[i] else 1e18)
+        state = {"i": idx}
+        n = len(values)
+        x0, x1 = x + 0.04, x + 0.3
+        self._text(label, (x - 0.38, y), 0.85, origin=(-0.5, 0))
+        val = self._text(fmt(values[idx]), (x + 0.43, y), 0.85)
+        bar = U["Button"](parent=self.root, model="quad", position=((x0 + x1) / 2, y), scale=(x1 - x0, 0.012),
+                          color=U["color"].rgb(0.35, 0.38, 0.42), highlight_color=U["color"].rgb(0.45, 0.5, 0.55))
+        knob = U["Entity"](parent=self.root, model="quad", position=(x0, y, -0.01), scale=(0.014, 0.04),
+                           color=U["color"].rgb(0.9, 0.75, 0.3))
+
+        def show():
+            knob.x = x0 + (x1 - x0) * state["i"] / max(n - 1, 1)
+            val.text = fmt(values[state["i"]])
+
+        def set_i(i):
+            state["i"] = max(0, min(n - 1, i))
+            show()
+            on_change(values[state["i"]])
+
+        def click():
+            from ursina import mouse
+            pt = getattr(mouse, "point", None)
+            if pt is None:
+                return
+            set_i(int(round((float(pt[0]) + 0.5) * (n - 1))))
+        bar.on_click = click
+        self._button("◀", (x0 - 0.04, y), lambda: set_i(state["i"] - 1), size=(0.035, 0.04))
+        self._button("▶", (x1 + 0.04, y), lambda: set_i(state["i"] + 1), size=(0.035, 0.04))
+        show()
 
     def _toggle(self, label, y, current, on_change, x=0.0):
         onoff = lambda v: "ON" if v else "OFF"  # noqa: E731
@@ -878,6 +922,10 @@ class MainMenu:
             lambda yy: self._stepper("描画距離", yy, [500, 1000, 2000, 3000, 5000, 10000, 20000],
                                      int(g.get("view_distance", 3000)), lambda v: f"{v} m",
                                      lambda v: g.__setitem__("view_distance", v)),
+            lambda yy: self._slider("構築物の読み込み距離", yy, LOAD_STEPS, float(g.get("load_distance", 0) or 0),
+                                    _dist_text, lambda v: g.__setitem__("load_distance", v)),
+            lambda yy: self._slider("機能処理の距離", yy, PROCESS_STEPS, float(ph.get("process_distance", 0) or 0),
+                                    _dist_text, lambda v: ph.__setitem__("process_distance", v)),
             lambda yy: self._stepper("地表の細かさ", yy, [24, 32, 48, 64, 96], int(g.get("terrain_patch_cells", 48)),
                                      lambda v: f"{v * 2 + 1}×{v * 2 + 1}", lambda v: g.__setitem__("terrain_patch_cells", v)),
             lambda yy: self._stepper("マウス感度", yy, list(range(10, 210, 10)), int(c.get("mouse_sensitivity", 60)),
@@ -890,7 +938,7 @@ class MainMenu:
                                     lambda v: c.__setitem__("touch", v)),
         ]
         for k, row in enumerate(rows):
-            row(y - 0.06 * (k + 1))
+            row(y - 0.056 * (k + 1))
 
         def keys():
             from .keys_panel import KeysPanel, ACTIONS
@@ -900,7 +948,8 @@ class MainMenu:
                     c[aid] = self.cfg["controls"].get(aid, c.get(aid))
             KeysPanel(self.U, self.cfg, self.root, None, on_change=changed)
         self._button("操作とキー設定", (0.62, -0.09), keys, size=(0.2, 0.055), col=U["color"].rgb(0.25, 0.35, 0.45))
-        self._text("フォントは config/settings.json で変更できます", (0, y - 0.76), 0.6, col=U["color"].light_gray)
+        self._text("フォントは config/settings.json で変更できます。読み込み距離より遠い構築物は色の箱で描き、"
+                   "機能処理の距離より遠い構築物は止まります（いちばん右で全部）", (0, y - 0.77), 0.55, col=U["color"].light_gray)
 
         def save():
             prev = dict(self.cfg.get("window", {}))

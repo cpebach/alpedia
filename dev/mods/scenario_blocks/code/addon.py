@@ -32,6 +32,7 @@ class WeaponsAddon(Addon):
         self.missiles = []           # dict(id, p, v, speed, turn, target, point, owner, t0, life, blast)
         self.effects = []            # (種類, 位置, 終点か None, 時刻) 種類: beam / boom / spark / launch
         self.protected = set()
+        self.ignore = set()             # ミサイルが当たらない構築物（遠くの艦隊の張りぼてなど）
         self.listeners = []
         self._ids = itertools.count(1)
 
@@ -287,13 +288,11 @@ class WeaponsAddon(Addon):
             self._explode(world, m, None)
             self._tell("ground", {"missile": m})
             return True
-        for c in world.constructs.values():
-            if not c.n_vox or (c.id == m["owner"] and not armed):
+        near = world.constructs_near(p, 3.0) if hasattr(world, "constructs_near") else world.constructs.values()
+        for c in near:
+            if not c.n_vox or (c.id == m["owner"] and not armed) or c.id in self.ignore:
                 continue
-            com = c.pos.mean(0)
-            if float(np.linalg.norm(com - p)) > float(np.abs(c.pos - com).max()) * 1.8 + 3.0:
-                continue
-            P = c.voxel_centers()
+            P = c.centers_cached() if hasattr(c, "centers_cached") else c.voxel_centers()
             dd = np.linalg.norm(P - p, axis=1)
             if float(dd.min()) < c.size * 0.9 + 0.3:
                 self._explode(world, m, c)

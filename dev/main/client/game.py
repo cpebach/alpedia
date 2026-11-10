@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .. import log, native
+from .. import log, native, shape
 from ..construct import DIR_NAMES
 from . import render
 
@@ -1241,23 +1241,55 @@ class Game:
         for cid in list(self.views):
             if cid not in w.constructs:
                 self.views.pop(cid).remove()
+        if hasattr(self, "_loaded"):
+            self._loaded &= set(w.constructs)
         far = float(self.cfg["graphics"].get("view_distance", 3000))
         decal_dist = float(self.cfg["graphics"].get("decal_distance", 30.0))
+        # 読み込み距離：これより遠い構築物はブロックのメッシュを作らず（作ってあれば捨てる）、それっぽい色の箱で描く。
+        # 近づいた物のメッシュは1フレームに少しずつ作る（作るまでは箱のまま）
+        load = float(self.cfg["graphics"].get("load_distance", 0) or 0)
+        if not hasattr(self, "_lod"):
+            self._lod = render.LodLayer(self.scene_root)
+            self._loaded = set()
+        lod_list = []
+        budget = _time.perf_counter() + 0.008
         for cid, c in w.constructs.items():
+            if not c.n_vox:
+                continue
+            ctr, rad = c.bounds()
+            dist = float(np.linalg.norm(ctr - origin)) - rad
+            if dist > far:
+                if cid in self.views:
+                    self.views[cid].set_visible(False)
+                continue
             v = self.views.get(cid)
             if v is not None and v.c is not c:       # マルチプレイ：形が変わって作り直された
                 v.remove()
                 v = None
-            if v is None:
-                v = self.views[cid] = render.ConstructView(self.scene_root, self.loader, c)
-            q = c.pos[0] - origin
-            if float(q @ q) > far * far:
-                v.set_visible(False)
+            seated = w.player.seated and w.player.seated[0] == cid
+            near = load <= 0 or seated or dist < load or (cid in self._loaded and dist < load * 1.1)
+            if not near:
+                if v is not None:
+                    self.views.pop(cid).remove()
+                    c._mesh_cache = None             # 読み込みを外す：形のメッシュも捨てる（近づいたら作り直す）
+                self._loaded.discard(cid)
+                lod_list.append(c)
                 continue
+            if v is None:
+                # 大きい物の形は裏のスレッドで作る（できるまでは箱）。小さい物もこのフレームの時間切れなら次へ
+                if not seated and c.n_vox > 150 and not shape.request_mesh(c):
+                    lod_list.append(c)
+                    continue
+                if _time.perf_counter() > budget and cid not in self._loaded and not seated:
+                    lod_list.append(c)                   # このフレームは時間切れ：次のフレームで読み込む
+                    continue
+                v = self.views[cid] = render.ConstructView(self.scene_root, self.loader, c)
+            self._loaded.add(cid)
             v.set_visible(True)
             v.update(origin)
             v.update_decals(origin, origin, decal_dist)
             v.update_displays(origin, far)
+        self._lod.update(lod_list, origin)
         for a in self.addons:
             a.update(origin, far)
         npl = w.nearest_planet(w.player.pos)

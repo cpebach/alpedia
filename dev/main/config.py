@@ -7,6 +7,8 @@ from . import paths, log
 DEFAULTS = {
     "window": {"width": 1280, "height": 720, "fullscreen": False, "vsync": True},
     "graphics": {"fov": 80, "terrain_patch_cells": 48, "terrain_patch_step": 1.0, "view_distance": 3000,
+                 # 描画の読み込み距離（m）：これより遠い構築物は、それっぽい色の箱で描く（ブロックを読み込まない）。0 = 全部ブロック
+                 "load_distance": 400.0,
                  "decal_distance": 30.0,
                  # ブロックの見た目：輪郭の線（セルの境目）・角の暗さ（環境光の遮り）
                  "block_edges": True, "block_ao": True,
@@ -27,6 +29,8 @@ DEFAULTS = {
     "physics": {"tick_rate": 60, "substeps": 3, "iterations": 2,
                 # 軽量化：剛体化・遠方のレール
                 "rigid_enabled": True, "rails_enabled": True, "rails_distance": 400.0,
+                # 機能処理の距離（m）：どのプレイヤーからもこれより遠い構築物は、機器・プログラム・物理を止める。0 = 全部処理する
+                "process_distance": 1500.0,
                 # 構築物ごとの計算に使うスレッド数（0 = 自動）
                 "threads": 0,
                 # 物理コア："auto"（Rust の alpedia_core があれば使う）/ "rust"（必須）/ "python"（numba）

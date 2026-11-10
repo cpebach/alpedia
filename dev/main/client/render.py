@@ -88,6 +88,64 @@ class DynamicMesh:
         self.np.removeNode()
 
 
+_BOX_FACES = np.array([[1, 3, 7, 5], [0, 4, 6, 2], [2, 6, 7, 3], [0, 1, 5, 4], [4, 5, 7, 6], [0, 2, 3, 1]])
+_BOX_N = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], dtype=np.float64)
+_BITS = np.array([[c & 1, (c >> 1) & 1, (c >> 2) & 1] for c in range(8)], dtype=np.float64) * 2 - 1
+
+
+def lod_vertices(c, base):
+    """構築物 c の遠景の箱（lod_boxes）を、ワールド座標 − base の頂点 (N,12) にする（6面×4頂点ずつ）。"""
+    C, H, col = c.lod_boxes()
+    if not len(C):
+        return np.zeros((0, 12), np.float32)
+    R, t = c.lattice_pose()
+    s = c.size
+    corners = (C[:, None, :] + H[:, None, :] * _BITS[None]) * s           # (k,8,3) 格子の座標
+    W = corners @ R.T + (t - base)
+    q = W[:, _BOX_FACES]                                                  # (k,6,4,3)
+    n = np.broadcast_to((_BOX_N @ R.T)[None, :, None, :], q.shape)
+    cc = shade(n.reshape(-1, 3), np.repeat(col, 24, axis=0))
+    out = np.zeros((len(C) * 24, 12), np.float32)
+    out[:, 0:3] = q.reshape(-1, 3)
+    out[:, 3:6] = n.reshape(-1, 3)
+    out[:, 6:9] = cc
+    out[:, 9] = 1.0
+    return out
+
+
+class LodLayer:
+    """読み込み距離より遠い構築物を、それっぽい色の箱でまとめて描く（ブロックのメッシュを作らない・記号も看板も出さない）。
+    止まっている物は1つのメッシュにまとめ（入れ替わったときだけ作り直す）、動いている物は毎フレーム作る。"""
+
+    def __init__(self, parent):
+        self.static = DynamicMesh(parent, "lod_static")
+        self.moving = DynamicMesh(parent, "lod_moving")
+        self.key = None
+        self.base = np.zeros(3)
+        self.n_moving = 0
+
+    def update(self, constructs, origin):
+        statics = [c for c in constructs if c.is_static or c.asleep]
+        moving = [c for c in constructs if not (c.is_static or c.asleep)]
+        key = tuple(sorted((c.id, c._pose_key()) for c in statics))
+        if key != self.key:
+            self.key = key
+            self.base = np.asarray(origin, float).copy()
+            V = [lod_vertices(c, self.base) for c in statics]
+            V = np.concatenate(V) if V else np.zeros((0, 12), np.float32)
+            self.static.set(V, quad_tris(len(V) // 4) if len(V) else None)
+        self.static.np.setPos(*(self.base - origin))
+        if moving or self.n_moving:
+            V = [lod_vertices(c, origin) for c in moving]
+            V = np.concatenate(V) if V else np.zeros((0, 12), np.float32)
+            self.moving.set(V, quad_tris(len(V) // 4) if len(V) else None)
+            self.n_moving = len(moving)
+
+    def remove(self):
+        self.static.remove()
+        self.moving.remove()
+
+
 def quad_tris(nq):
     base = (np.arange(nq) * 4)[:, None]
     return np.concatenate([base + [0, 1, 2], base + [0, 2, 3]], axis=1).reshape(-1, 3)
@@ -266,7 +324,7 @@ class ConstructView:
             g["mesh"].remove()
         self.groups = []
         c = self.c
-        m = shape.build_mesh(c)
+        m = shape.mesh_for(c)
         self.blob = m
         self.version = c.version
         if m is None:

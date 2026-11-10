@@ -113,6 +113,51 @@ class TestPhysics(CoreCase):
         self.assertEqual(len(w.constructs), 1)
 
 
+class TestShape(CoreCase):
+    def test_stairs_fill_only_between_same_kind(self):
+        """階段状の隙間を斜面で埋めるのは同じ種類のブロックどうしだけ（違う種類は階段状のまま）。"""
+        w = self.world()
+
+        def tris(mats, dev=None):
+            V = [((0, 0, 0), mats[0], None), ((1, 0, 0), mats[1], dev), ((1, 1, 0), mats[2], None)]
+            c = Construct.from_voxels(w.registry, V, np.zeros(3), size=0.5)
+            return len(c.topo["tris"])
+        self.assertEqual(tris(["steel"] * 3), 1)
+        self.assertEqual(tris(["steel", "wood", "steel"]), 0)
+        self.assertEqual(tris(["steel", "steel", "wood"]), 0)
+        self.assertEqual(tris(["steel"] * 3, {"def": "battery", "dir": 2}), 0)
+
+
+class TestDistances(CoreCase):
+    """機能処理の距離：どのプレイヤーからも遠い構築物は止まる（0 なら全部動く）。遠景の箱。"""
+
+    def test_far_constructs_stop_and_resume(self):
+        w = self.world(full_rigid=True)
+        far = self.put(w, [((x, 0, 0), "steel", None) for x in range(3)], extra=8.0, name="遠い箱")
+        w.player.pos = w.player.pos + np.array([0.0, 0.0, 300.0])
+        w.cfg = json.loads(json.dumps(w.cfg))
+        w.cfg["physics"]["process_distance"] = 100.0
+        x0 = far.center_of_mass().copy()
+        self.run_for(w, 1.0)
+        self.assertIn(far.id, w.far_ids())
+        self.assertLess(float(np.linalg.norm(far.center_of_mass() - x0)), 1e-9, "遠い物は止まっている（空中のまま）")
+        w.cfg["physics"]["process_distance"] = 0.0               # 全部：これまで通り
+        self.run_for(w, 1.0)
+        self.assertGreater(float(np.linalg.norm(far.center_of_mass() - x0)), 0.5, "全部にすると落ちる")
+
+    def test_lod_boxes(self):
+        w = self.world()
+        V = [((x, y, z), "steel" if y < 4 else "wood", None) for x in range(8) for y in range(6) for z in range(8)
+             if x in (0, 7) or z in (0, 7) or y in (0, 5)]
+        c = self.put(w, V)
+        C, H, col = c.lod_boxes()
+        self.assertLess(len(C), len(V) / 5, "遠景は少しの箱")
+        lo, hi = (C - H).min(0), (C + H).max(0)
+        self.assertTrue(np.allclose(lo, [0, 0, 0]) and np.allclose(hi, [8, 6, 8]), "外形はブロックと同じ")
+        wood = w.registry.material("wood")["color"]
+        self.assertTrue(any(np.allclose(k, wood) for k in col), "上の段は木の色")
+
+
 class TestAnchor(CoreCase):
     """アンカー：つながっている構築物は惑星に固定（物理計算しない・当たり判定はある）。
     アクチュエーターの先は動く。両側にアンカーがあれば動かない。アンカーと離れた部分は動く。"""

@@ -476,7 +476,14 @@ class World:
             if p.seated:
                 seats.setdefault(p.seated[0], set()).update(
                     self.input_keys if p is self.local_player else p.input_keys)
+        self._bnd = None                         # 構築物の外側の球（このティックの問い合わせで使い回す）
+        far = self.far_ids()                     # 機能処理の距離より遠い物は、機器・プログラム・物理を止める
         for c in list(self.constructs.values()):
+            if c.id in far:
+                continue
+            if not c.has_devices and not c.dirty:   # 機器の無い物（建物・飾り）は機器・プログラムの処理を飛ばす
+                c.force[:] = 0.0
+                continue
             devices.update(c, dt, frozenset(seats.get(c.id, ())), c.id in seats, ambient)
             if c.__dict__.get("notes"):
                 for n in c.notes:
@@ -499,6 +506,9 @@ class World:
         anchored_ids = set()
         for a in self.addons:
             anchored_ids |= a.before_physics(self, dt) or set()
+        # 機能処理の距離より遠い物は止めておく（当たり判定の相手にはなる）。レール（遠方の軌道）に乗っている物は軌道だけ進める
+        frozen = {cid for cid in far if self.constructs[cid].mode != "rails"}
+        anchored_ids |= frozen
         for c in self.constructs.values():
             if c.id in anchored_ids:
                 continue
@@ -521,6 +531,7 @@ class World:
         sleeping = [c for c in self.constructs.values() if c.n_vox and (c.asleep or c.id in anchored_ids)]
         for c in cons:
             self._prep_ext(c, dt)
+        sleeping = self._sleeping_near(cons, sleeping, dt)
         broken = set()
         fixed_pos = [(c, c.pos.copy()) for c in sleeping if c.is_static]      # アンカーで固定：押されても戻す
         for _ in range(self.substeps):
@@ -543,6 +554,7 @@ class World:
                 sleeping = [c for c in sleeping if c.asleep or c.id in anchored_ids]
         for c in cons:
             c.update_sleep(dt)
+        self._bnd = None
         for a in self.addons:
             a.after_physics(self, cons)
         for c in cons:
@@ -875,12 +887,85 @@ class World:
     # ------------------------------------------------------------------
     # 問い合わせ
     # ------------------------------------------------------------------
+    def _bounds(self):
+        """すべての構築物の外側の球（このティックの間は使い回す）：(構築物のリスト, 中心 (n,3), 半径 (n,))"""
+        b = getattr(self, "_bnd", None)
+        if b is None or b[0] != len(self.constructs):
+            cs = [c for c in self.constructs.values() if c.n_vox]
+            bb = [c.bounds() for c in cs]
+            C = np.array([x[0] for x in bb]).reshape(-1, 3)
+            Rr = np.array([x[1] + c.size for x, c in zip(bb, cs)])
+            b = self._bnd = (len(self.constructs), cs, C, Rr)
+        return b[1], b[2], b[3]
+
+    def process_distance(self):
+        """機能処理の距離（m）。0 なら全部（距離に関係なく処理する）。"""
+        return float(self.cfg.get("physics", {}).get("process_distance", 0) or 0)
+
+    def far_ids(self):
+        """どのプレイヤーからも機能処理の距離より遠い構築物の ID（座っている物・最近いた物は近い扱い）。"""
+        lim = self.process_distance()
+        if lim <= 0 or not self.constructs:
+            return set()
+        cs = [c for c in self.constructs.values() if c.n_vox]
+        if not cs:
+            return set()
+        bb = [c.bounds() for c in cs]
+        C = np.array([b[0] for b in bb])
+        Rr = np.array([b[1] for b in bb])
+        P = np.array([p.pos for p in self.all_players()])
+        d = np.linalg.norm(C[:, None, :] - P[None], axis=2).min(1) - Rr
+        seated = {p.seated[0] for p in self.all_players() if p.seated}
+        prev = getattr(self, "_far_prev", set())
+        out = set()
+        for c, dd in zip(cs, d):
+            if c.id in seated:
+                continue
+            # 境目で行ったり来たりしないように、止まっていた物は少し近づくまで止めたまま
+            if dd > lim or (c.id in prev and dd > lim * 0.9):
+                out.add(c.id)
+        self._far_prev = out
+        return out
+
+    def _sleeping_near(self, cons, sleeping, dt):
+        """押し出しの相手にする止まっている構築物：動いている物のどれかの外側の球にかかる物だけ
+        （街の建物などがたくさんあっても、離れた物は調べない）。"""
+        if not cons or not sleeping:
+            return [] if not cons else sleeping
+        A = [c.bounds() for c in cons]
+        AC = np.array([b[0] for b in A])
+        AR = np.array([b[1] + float(np.abs(c.vel).max()) * dt * 2 + c.size * 2 for b, c in zip(A, cons)])
+        out = []
+        for c in sleeping:
+            cc, rr = c.bounds()
+            if (np.linalg.norm(AC - cc, axis=1) < AR + rr).any():
+                out.append(c)
+        return out
+
+    def constructs_near(self, p, r):
+        """点 p から r 以内に外側の球がかかる構築物。"""
+        cs, C, Rr = self._bounds()
+        if not cs:
+            return []
+        d = np.linalg.norm(C - np.asarray(p, float), axis=1)
+        return [cs[k] for k in np.nonzero(d < Rr + r)[0]]
+
+    def constructs_on_ray(self, o, dvec, length):
+        """線分 o → o + dvec × length の近くに外側の球がかかる構築物。"""
+        cs, C, Rr = self._bounds()
+        if not cs:
+            return []
+        rel = C - o
+        t = np.clip(rel @ dvec, 0.0, length)
+        d = np.linalg.norm(rel - t[:, None] * dvec[None], axis=1)
+        return [cs[k] for k in np.nonzero(d < Rr)[0]]
+
     def voxel_contacts(self, center, radius):
         """球（プレイヤーなど）と構築物の形（球・カプセル・斜面）の接触: [(construct, idx, push, normal)]"""
         from . import shape
         out = []
         center = np.asarray(center, dtype=np.float64).copy()
-        for c in self.constructs.values():
+        for c in self.constructs_near(center, radius + 1.0):
             if not c.n_vox:
                 continue
             for _ in range(2):
@@ -905,17 +990,17 @@ class World:
         dvec = np.asarray(direction, dtype=np.float64)
         dvec = dvec / np.linalg.norm(dvec)
         best = None
-        for c in self.constructs.values():
+        for c in self.constructs_on_ray(o, dvec, max_dist):
             if not c.n_vox:
                 continue
-            ctrs = c.voxel_centers()
+            ctrs = c.centers_cached()
             rel = ctrs - o
             tproj = rel @ dvec
             perp = np.linalg.norm(rel - np.outer(tproj, dvec), axis=1)
             cand = np.nonzero((perp < c.size) & (tproj > -c.size) & (tproj < max_dist + c.size))[0]
             if not len(cand):
                 continue
-            F = c.voxel_frames()[cand]
+            F = c.frames_cached()[cand]
             lo_ = np.einsum("nij,nj->ni", F, o - ctrs[cand])
             ld = np.einsum("nij,j->ni", F, dvec)
             half = c.size * 0.5

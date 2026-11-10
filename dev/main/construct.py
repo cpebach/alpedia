@@ -361,6 +361,104 @@ class Construct:
         fixed = set(label[anc].tolist())
         return int(label[i]) in fixed and int(label[j]) in fixed
 
+    def _pose_key(self):
+        """形と置き場所が変わっていなければ同じになる値（止まっている物の計算の使い回しに）。"""
+        if not self.n_vox:
+            return (self.version, 0)
+        p = self.pos
+        return (self.version, self.n_vox, self.mode, float(p[0, 0]), float(p[0, 1]), float(p[-1, 2]), float(p[-1, 0]))
+
+    def centers_cached(self):
+        """ブロックの中心。止まっている物（アンカーで固定・眠っている）は計算を使い回す。"""
+        if not (self.is_static or self.asleep):
+            return self.voxel_centers()
+        k = self._pose_key()
+        cache = getattr(self, "_ctr_cache", None)
+        if cache is None or cache[0] != k:
+            cache = self._ctr_cache = (k, self.voxel_centers())
+        return cache[1]
+
+    def frames_cached(self):
+        if not (self.is_static or self.asleep):
+            return self.voxel_frames()
+        k = self._pose_key()
+        cache = getattr(self, "_frm_cache", None)
+        if cache is None or cache[0] != k:
+            cache = self._frm_cache = (k, self.voxel_frames())
+        return cache[1]
+
+    def bounds(self):
+        """外側の球 (中心, 半径)。止まっている物は使い回す。"""
+        k = self._pose_key() if (self.is_static or self.asleep) else None
+        cache = getattr(self, "_bnd_cache", None)
+        if k is not None and cache is not None and cache[0] == k:
+            return cache[1]
+        if not self.n_vox:
+            b = (np.zeros(3), 0.0)
+        else:
+            lo, hi = self.pos.min(0), self.pos.max(0)
+            b = ((lo + hi) * 0.5, float(np.linalg.norm(hi - lo)) * 0.5)
+        self._bnd_cache = (k, b)
+        return b
+
+    @property
+    def has_devices(self):
+        cache = getattr(self, "_hasdev", None)
+        if cache is None or cache[0] != (self.version, self.n_vox):
+            cache = self._hasdev = ((self.version, self.n_vox), any(d for d in self.devs))
+        return cache[1]
+
+    def lattice_pose(self):
+        """(R, t)：格子の座標（セル × 大きさ）→ ワールド。剛体なら剛体の姿勢、止まっている物は使い回す。"""
+        if self.mode in ("rigid", "rails") and self.rb is not None and not (self.is_static or self.asleep):
+            return self.rigid_fit()
+        k = self._pose_key() if (self.is_static or self.asleep) else None
+        cache = getattr(self, "_lat_cache", None)
+        if k is not None and cache is not None and cache[0] == k:
+            return cache[1]
+        out = self.rigid_fit()
+        self._lat_cache = (k, out)
+        return out
+
+    LOD_CELL = 4                 # 遠くで見せる箱：この数のブロックごとにまとめる
+
+    def lod_boxes(self):
+        """遠くから見せる「それっぽい色の箱」：(中心 (k,3), 半分の大きさ (k,3), 色 (k,3))。格子の座標（セル単位）。
+        LOD_CELL ブロック角ごとに、中にあるブロックをちょうど囲む箱を1つ、いちばん多い色で。形が変わったときだけ作り直す。"""
+        cache = getattr(self, "_lod_cache", None)
+        if cache is not None and cache[0] == (self.version, self.n_vox):
+            return cache[1]
+        if not self.n_vox:
+            out = (np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 3)))
+        else:
+            cells = np.asarray(self.cells, dtype=np.int64)
+            cols = []
+            for m, d in zip(self.mats, self.devs):
+                if d:
+                    cols.append((self.reg.device(d["def"]) or {}).get("color", [0.6, 0.6, 0.6]))
+                else:
+                    cols.append((self.reg.material(m) or {}).get("color", [0.6, 0.6, 0.6]))
+            cols = np.asarray(cols, dtype=np.float64)
+            key = np.floor_divide(cells, self.LOD_CELL)
+            _, inv = np.unique(key, axis=0, return_inverse=True)
+            inv = inv.ravel()
+            G = int(inv.max()) + 1
+            lo = np.full((G, 3), np.iinfo(np.int64).max)
+            hi = np.full((G, 3), np.iinfo(np.int64).min)
+            np.minimum.at(lo, inv, cells)
+            np.maximum.at(hi, inv, cells + 1)
+            # 色：素材ごとの数でいちばん多いもの（同数なら平均）
+            mid = np.array([hash((m, (d or {}).get("def"))) for m, d in zip(self.mats, self.devs)])
+            col = np.zeros((G, 3))
+            for g in range(G):
+                sel = np.nonzero(inv == g)[0]
+                u, cnt = np.unique(mid[sel], return_counts=True)
+                best = u[cnt == cnt.max()]
+                col[g] = cols[sel[np.isin(mid[sel], best)]].mean(0)
+            out = ((lo + hi) * 0.5, (hi - lo) * 0.5, col)
+        self._lod_cache = ((self.version, self.n_vox), out)
+        return out
+
     FIXED_INV = 1e-12             # 固定のブロックの、押し出しでの質量の逆数（ほぼ動かない。0 だと割り算できない）
 
     def collision_inv(self):
