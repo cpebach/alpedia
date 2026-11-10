@@ -481,7 +481,8 @@ class World:
         for c in list(self.constructs.values()):
             if c.id in far:
                 continue
-            if not c.has_devices and not c.dirty:   # 機器の無い物（建物・飾り）は機器・プログラムの処理を飛ばす
+            if (not c.has_devices or c.is_quiet()) and not c.dirty:
+                # 機器の無い物・固定されていて毎ティック処理する機器の無い物（建物・飾り・看板）は機器・プログラムの処理を飛ばす
                 c.force[:] = 0.0
                 continue
             devices.update(c, dt, frozenset(seats.get(c.id, ())), c.id in seats, ambient)

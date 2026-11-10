@@ -199,12 +199,13 @@ class WeaponsAddon(Addon):
     def _turrets(self, world):
         t = world.time
         for c in list(world.constructs.values()):
-            for i, d in enumerate(c.devs):
-                if not d:
-                    continue
+            if getattr(c, "_turret_ver", None) != c.version:          # 砲塔の番号（形が変わったときだけ数え直す）
+                c._turret_ver = c.version
+                c._turret_ids = [i for i, d in enumerate(c.devs)
+                                 if d and (c.reg.device(d["def"]) or {}).get("behavior") == "turret"]
+            for i in c._turret_ids:
+                d = c.devs[i]
                 dd = c.reg.device(d["def"])
-                if not dd or dd.get("behavior") != "turret":
-                    continue
                 data = d["state"].setdefault("data", {})
                 req = data.get("fire")
                 if req is None or t - float(req) > 0.2 or not self.turret_ready(c, i):

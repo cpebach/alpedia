@@ -401,6 +401,22 @@ class Construct:
         self._bnd_cache = (k, b)
         return b
 
+    PASSIVE_DEVICES = {"anchor", "pipe", "tank", "valve", "battery", "seat", "generator", "antenna", "computer"}
+
+    def is_quiet(self):
+        """止まっていて、毎ティック処理する機器が無い（固定された建物の看板・ソーラーパネルなど。動いているプログラムも無い）。"""
+        if not self.is_static:
+            return False
+        cache = getattr(self, "_quiet_cache", None)
+        if cache is None or cache[0] != (self.version, self.n_vox):
+            types = [(i, (self.reg.device(d["def"]) or {}).get("type")) for i, d in enumerate(self.devs) if d]
+            passive = all(t in self.PASSIVE_DEVICES for _, t in types)
+            comps = [i for i, t in types if t == "computer"]
+            cache = self._quiet_cache = ((self.version, self.n_vox), passive, comps)
+        if not cache[1]:
+            return False
+        return not any(self.devs[i]["state"].get("running") for i in cache[2])
+
     @property
     def has_devices(self):
         cache = getattr(self, "_hasdev", None)
