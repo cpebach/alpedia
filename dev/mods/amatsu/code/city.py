@@ -84,9 +84,8 @@ def build(center):
             s.raw(d.point(x, j * 10.0, 0.08), R, (0.3, 0.08, 1.2), color=OFF, glow=CYAN, blink=2.4, collide=False)
     for j in range(-4, 5):                                                                # 甲板の線
         s.raw(d.point(0, j * 22.0, 0.02), R, (DECK_W / 2 - 2, 0.02, 0.25), color=(0.45, 0.47, 0.52), collide=False)
-    for x, z in ((-22, -70), (22, -40), (-18, 30), (20, 75), (-24, 80)):                  # 甲板の構造物
-        s.raw(d.point(x, z, 2.0), R, (3.0, 2.0, 5.0), color=(0.55, 0.58, 0.62))
-        s.raw(d.point(x, z, 4.1), R, (2.0, 0.1, 4.0), color=OFF, glow=WARM, collide=False)
+    for x, z in ((-22, -70), (22, -40), (-18, 30), (20, 75), (-24, 80)):   # 甲板の建物はブロック（blocks.py）。屋根の明かり
+        s.raw(d.point(x, z, 4.1), R, (2.0, 0.08, 4.0), color=OFF, glow=WARM, collide=False)
     # 非常灯（落ちていく間、赤く点く：lights の group）
     for j in range(-8, 9):
         for x in (-DECK_W / 2 + 3.0, DECK_W / 2 - 3.0):

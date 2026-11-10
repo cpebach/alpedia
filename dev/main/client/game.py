@@ -516,11 +516,8 @@ class Game:
         eye = w.player.eye()
         out = {"thruster_loop": 0.0, "motor_loop": 0.0, "jetpack_loop": 0.0}
         lit = set()
-        for c in w.constructs.values():
-            if not c.n_vox or not any(c.devs):
-                continue
-            d0 = float(np.linalg.norm(c.center_of_mass() - eye))
-            if d0 > 150.0:
+        for c in w.constructs_near(eye, 150.0):
+            if not c.n_vox or not c.has_devices:
                 continue
             for i, d in enumerate(c.devs):
                 if not d:
@@ -568,7 +565,7 @@ class Game:
         return any(a.aim(hit) for a in self.addons)
 
     # 近くのボタンに出さない機器（E で使うことがほとんど無い）
-    QUIET_DEVICES = {"pipe", "battery"}
+    QUIET_DEVICES = {"pipe", "battery", "anchor"}         # 近くの物の一覧に出さない（E で触るほどの物ではない）
 
     def nearby_targets(self, radius=2.6):
         """近くにある、触れるもの（使う順）：[{"label", "hit", "kind": "e", "settings": 設定を開けるか, "icon", "dist"}]
@@ -583,11 +580,8 @@ class Game:
         names = {"seat": "座る", "computer": "起動・停止", "tank": "燃料を入れる" if surv else "中身を切り替える",
                  "actuator": "動かす", "processor": "原料を入れる・受け取る" if surv else "ON/OFF",
                  "thruster": "点火", "valve": "開閉", "crank": "回す"}
-        for c in w.constructs.values():
-            if not c.n_vox or not any(c.devs):
-                continue
-            lo, hi = c.pos.min(0) - radius, c.pos.max(0) + radius
-            if np.any(eye < lo) or np.any(eye > hi):
+        for c in w.constructs_near(eye, radius):
+            if not c.n_vox or not c.has_devices:
                 continue
             for i, d in enumerate(c.devs):
                 if not d:

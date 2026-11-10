@@ -122,49 +122,30 @@ def build_terra(planet):
                        (-8.0, 62.0, 13.0, 2.4), (8.0, 62.0, 13.0, 2.4), (-7.0, 92.0, 14.0, 3.0),
                        (0.0, 118.0, 2.6, 30.0)):
         s.box(x, z, w, 0.18, d, color=CONC, sink=0.25)                 # 道
-    # 本館（明かりは発電を始めると点く）
-    s.box(10.0, 52.0, 9.0, 4.6, 7.0, color=(0.70, 0.71, 0.70))
-    s.box(10.0, 52.0, 9.6, 0.4, 7.6, y0=4.6, color=DARK)
+    # 本館はブロック（buildings.main_hall）。窓の明かり・扉の上の明かり・アンテナの灯（発電を始めると点く）
     for k in range(4):
-        s.box(6.2 + k * 2.4, 48.45, 1.4, 1.1, 0.12, y0=2.4, color=OFF, glow=WARM, group="base")
-    s.box(10.0, 48.45, 1.6, 2.2, 0.12, y0=0.0, color=DARK, glow=(0.95, 0.75, 0.35), group="base")  # 扉
-    s.box(12.5, 54.0, 0.3, 4.0, 0.3, y0=5.0, color=METAL)                                    # 屋根のアンテナ
-    s.box(12.5, 54.0, 0.5, 0.5, 0.5, y0=9.0, color=OFF, glow=REDL, group="base", blink=1.2)
+        s.box(6.2 + k * 2.4, 48.42, 1.4, 1.1, 0.06, y0=2.4, color=OFF, glow=WARM, group="base", collide=False)
+    s.box(10.0, 48.42, 1.4, 0.2, 0.06, y0=2.05, color=OFF, glow=(0.95, 0.75, 0.35), group="base", collide=False)
+    s.box(12.25, 53.75, 0.5, 0.5, 0.5, y0=9.0, color=OFF, glow=REDL, group="base", blink=1.2, collide=False)
     s.box(10.0, 48.42, 6.0, 0.6, 0.1, y0=3.6, color=OFF, glow=CYAN, group="base")             # 看板の光
-    # 電源設備の小屋（屋根だけ）
-    s.box(-11.0, 53.0, 8.0, 0.3, 5.0, y0=3.2, color=DARK)
-    for x, z in ((-14.8, 50.7), (-7.2, 50.7), (-14.8, 55.3), (-7.2, 55.3)):
-        s.box(x, z, 0.3, 3.2, 0.3, color=METAL)
-    # 試験台の作業小屋（屋根と柱）
-    s.box(-12.5, 65.5, 12.0, 0.3, 7.0, y0=5.6, color=(0.30, 0.34, 0.40))
-    for x, z in ((-18.3, 62.3), (-6.7, 62.3), (-18.3, 68.7), (-6.7, 68.7)):
-        s.box(x, z, 0.3, 5.6, 0.3, color=METAL)
-    s.box(-12.5, 62.1, 11.0, 0.15, 0.1, y0=5.5, color=OFF, glow=WARM, group="base")
+    # 電源設備の小屋・試験台の作業小屋はブロック（buildings）。作業小屋のはりの下の明かり
+    s.box(-12.5, 62.25, 11.0, 0.12, 0.3, y0=4.85, color=OFF, glow=WARM, group="base", collide=False)
     # ドローン発着場
     s.box(12.0, 72.0, 4.0, 0.15, 4.0, color=DARK, sink=0.2)
     for x, z in ((10.1, 70.1), (13.9, 70.1), (10.1, 73.9), (13.9, 73.9)):
         s.box(x, z, 0.3, 0.12, 0.3, y0=0.15, color=OFF, glow=LIME, group="base", collide=False)
-    # 電波塔と、ドローンでくぐる輪
+    # 電波塔はブロック（buildings.radio_tower）。上の灯と、ドローンでくぐる輪
     tx, tz = 20.0, 80.0
-    for dx, dz in ((-1.2, -1.2), (1.2, -1.2), (-1.2, 1.2), (1.2, 1.2)):
-        s.box(tx + dx, tz + dz, 0.35, 20.0, 0.35, color=METAL, roll=-dx * 2.2, pitch=dz * 2.2)
-    for y in (5.0, 10.0, 15.0):
-        s.box(tx, tz, 2.4, 0.25, 2.4, y0=y, color=METAL)
-    s.box(tx, tz, 0.3, 4.0, 0.3, y0=20.0, color=METAL)
-    s.box(tx, tz, 0.6, 0.6, 0.6, y0=24.0, color=OFF, glow=REDL, blink=1.0)
+    s.box(tx + 0.25, tz + 0.25, 0.6, 0.6, 0.6, y0=24.0, color=OFF, glow=REDL, blink=1.0, collide=False)
     rx, rz, ry = RING
     for k in range(24):
         a = 2 * np.pi * k / 24
         s.box(rx + np.cos(a) * RING_R, rz + np.sin(a) * RING_R, 0.7, 0.3, 0.3, y0=ry, yaw=-np.degrees(a) + 90,
               color=OFF, glow=CYAN, collide=False, blink=2.0, ground=True)
     s.point("ring", rx, rz, ry + 0.1)
-    # 格納庫（正面は +Z の側。入口に遮断機）
+    # 格納庫（正面は +Z の側。入口に遮断機）：壁と屋根はブロック（buildings.hangar）。床と入口の明かり
     hx, hz = -13.0, 86.0
-    s.box(hx - 4.3, hz, 0.5, 5.0, 12.0, color=(0.56, 0.60, 0.66))
-    s.box(hx + 4.3, hz, 0.5, 5.0, 12.0, color=(0.56, 0.60, 0.66))
-    s.box(hx, hz - 6.0, 9.1, 5.0, 0.5, color=(0.56, 0.60, 0.66))
-    s.box(hx, hz, 9.6, 0.5, 12.6, y0=5.0, color=DARK)
-    s.box(hx, hz + 6.15, 8.0, 0.25, 0.1, y0=4.6, color=OFF, glow=(1.0, 0.75, 0.2), group="base")
+    s.box(hx, hz + 6.4, 8.0, 0.25, 0.1, y0=4.6, color=OFF, glow=(1.0, 0.75, 0.2), group="base", collide=False)
     s.box(hx, hz, 8.0, 0.1, 11.0, color=(0.40, 0.42, 0.45), sink=0.2)
     # 遮断機の横の柵はブロック（decorations）
     # 街灯の明かり（柱はブロック：decorations。電源が入ると点く）。ソーラーパネルもブロック
@@ -172,7 +153,7 @@ def build_terra(planet):
         s.box(x, z, 0.45, 0.3, 0.45, y0=(LAMP_H + 1) * 0.5 + 0.02, color=OFF, glow=WARM, group="base", collide=False)
     s.point("ring_view", 12.0, 66.0, 1.6)
     # 本館の古い端末（第2章：ミカガの声がする）と、壁の「N」の印（N 財団の旧施設）
-    s.box(13.6, 48.3, 1.2, 1.4, 0.5, color=(0.25, 0.3, 0.28), glow=(0.35, 1.0, 0.45), group="base", tag="terminal")
+    s.box(13.6, 48.18, 1.2, 1.4, 0.5, color=(0.25, 0.3, 0.28), glow=(0.35, 1.0, 0.45), group="base", tag="terminal")
     s.point("terminal", 13.6, 47.0, 1.0)
     for k, (dx, dy) in enumerate(((0.0, 0.0), (0.0, 0.6), (0.0, 1.2), (0.0, 1.8), (0.35, 1.5), (0.7, 1.0), (1.05, 0.5),
                                   (1.4, 0.0), (1.4, 0.6), (1.4, 1.2), (1.4, 1.8))):
@@ -180,16 +161,14 @@ def build_terra(planet):
     # 搬入クレーンの置き場（第3章）：倉庫と荷台
     cx, cz = CRANE
     s.box(cx, cz, 9.0, 0.18, 9.0, color=CONC, sink=0.25)
-    s.box(cx + 6.5, cz + 2.0, 3.0, 3.0, 4.0, color=(0.62, 0.55, 0.42))                       # 倉庫
-    s.box(cx + 6.5, cz - 1.0, 2.6, 0.2, 0.1, y0=2.6, color=OFF, glow=WARM, group="base", collide=False)
+    # 倉庫はブロック（buildings.crane_warehouse）。扉の上の明かり
+    s.box(cx + 6.5, cz - 0.08, 2.6, 0.2, 0.1, y0=2.6, color=OFF, glow=WARM, group="base", collide=False)
     s.box(cx - 3.0, cz + 5.0, 3.0, 0.9, 2.0, color=(0.30, 0.42, 0.58))                       # 荷台
     s.box(cx - 3.0, cz + 5.0, 3.2, 0.12, 2.2, y0=0.9, color=OFF, glow=CYAN, group="base", collide=False)
     s.point("crane", cx, cz - 4.0, 1.0)
     # 工場（第6章）の屋根と、採掘場の露頭
     fx, fz = FACTORY
-    s.box(fx, fz, 7.0, 0.3, 9.0, y0=3.6, color=(0.32, 0.30, 0.28))
-    for x, z in ((fx - 3.3, fz - 4.3), (fx + 3.3, fz - 4.3), (fx - 3.3, fz + 4.3), (fx + 3.3, fz + 4.3)):
-        s.box(x, z, 0.3, 3.6, 0.3, color=METAL)
+    # 工場の屋根と柱はブロック（buildings.factory_roof）
     s.box(fx + 3.7, fz, 0.15, 1.2, 1.6, y0=1.2, color=(0.3, 0.32, 0.3), glow=(0.95, 0.85, 0.6), tag="photo")
     s.point("photo", fx + 4.6, fz, 1.0)
     s.box(-10.0 - 9.0, 69.0, 18.0, 0.16, 2.6, color=CONC, sink=0.25)                         # 工場への道
@@ -210,12 +189,7 @@ def build_terra(planet):
         a = np.pi / 4 + k * np.pi / 2
         s.box(lx + np.cos(a) * 4.0, lz + np.sin(a) * 4.0, 0.6, 0.12, 0.6, y0=0.3, color=OFF, glow=REDL,
               collide=False, blink=1.2)
-    gx = lx + 3.4                                                                         # 整備塔（エレベーター）
-    for dz in (-0.8, 0.8):
-        for dx in (-0.8, 0.8):
-            s.box(gx + dx, lz + dz, 0.18, 8.2, 0.18, color=RED)
-    for y in (2.0, 4.0, 6.0, 8.0):
-        s.box(gx, lz, 1.8, 0.14, 1.8, y0=y, color=RED)
+    gx = lx + 3.4                                                    # 整備塔はブロック（buildings.service_tower）
     s.box(gx - 1.15, lz, 0.5, 0.12, 0.6, y0=5.4, color=METAL)                              # 乗り口への橋
     s.box(gx, lz - 1.25, 1.0, 1.3, 0.12, y0=0.4, color=DARK, glow=LIME, tag="rocket")    # 乗り口の操作盤
     s.point("rocket", gx, lz - 1.6, 1.0)
@@ -229,60 +203,7 @@ def build_terra(planet):
 # ---------------------------------------------------------------------------
 # アンカー：動かない構築物は、足もとの下にアンカーのブロックを足して地面に埋める（惑星に固定・物理計算なし）
 # ---------------------------------------------------------------------------
-ANCHOR = {"def": "anchor", "dir": 2, "name": "アンカー"}
-_N6 = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
-
-
-def root_cells(V):
-    """アクチュエーターに動かされない部分（どのアクチュエーターの出力の先でもない部分）のセルの集合。"""
-    cells = {tuple(c) for c, _, _ in V}
-    outs = {}
-    for c, _, d in V:
-        if d and d.get("def") in ("actuator", "piston", "hinge"):
-            n = _N6[int(d.get("dir", 2))]
-            outs[tuple(c)] = (c[0] + n[0], c[1] + n[1], c[2] + n[2])
-    cut = {frozenset((a, b)) for a, b in outs.items()}
-    parent = {c: c for c in cells}
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-    for c in cells:
-        for n in _N6:
-            nb = (c[0] + n[0], c[1] + n[1], c[2] + n[2])
-            if nb in cells and frozenset((c, nb)) not in cut:
-                parent[find(c)] = find(nb)
-    driven = {find(b) for b in outs.values() if b in cells}
-    return {c for c in cells if find(c) not in driven}
-
-
-def anchor_cells(V, step=2):
-    """V の足もと（いちばん下の段で、アクチュエーターに動かされない部分）の下に置くアンカーのセル。
-    step ごと（と四隅）に1つ。"""
-    root = root_cells(V)
-    if not root:
-        return []
-    y0 = min(c[1] for c in root)
-    foot = sorted(c for c in root if c[1] == y0)
-    xs, zs = [c[0] for c in foot], [c[2] for c in foot]
-    pick = {c for c in foot if (c[0] - min(xs)) % step == 0 and (c[2] - min(zs)) % step == 0}
-    for cx in (min(xs), max(xs)):                     # 四隅にいちばん近い足もと
-        for cz in (min(zs), max(zs)):
-            pick.add(min(foot, key=lambda c: (c[0] - cx) ** 2 + (c[2] - cz) ** 2))
-    return [(x, y - 1, z) for x, y, z in sorted(pick)]
-
-
-def anchored(V, step=2):
-    """V にアンカーを足したもの（足もとの下に埋める）。"""
-    return list(V) + [(c, "steel", dict(ANCHOR)) for c in anchor_cells(V, step)]
-
-
-def anchored_inside(V, cells):
-    """V の中のセル cells をアンカーに置き換えたもの（宇宙の構築物など、下に地面がないとき）。"""
-    cells = {tuple(c) for c in cells}
-    return [((c, "steel", dict(ANCHOR)) if tuple(c) in cells and not d else (c, m, d)) for c, m, d in V]
+from main.buildkit import ANCHOR, _N6, anchor_cells, anchored, anchored_inside, root_cells  # noqa: E402,F401
 
 
 def without_base(V):
@@ -456,6 +377,9 @@ def ship_voxels(broken=False):
     V += [((x, 3, z), "hull_white", None) for x in (0, 4) for z in (1, 2, 3)]
     V += [((x, 3, 0), "hull_white", None) for x in (1, 2, 3)]
     V.append(((2, 4, 0), "hull_red", None))
+    # 金の飾り（重さを変えないように、色だけ塗り替える：飛ぶプログラムがこの重さで作ってある）
+    gold = {(0, 3, 4), (4, 3, 4), (2, 4, 0), (-1, 0, 2), (5, 0, 2)}
+    V = [(c, "hull_gold" if c in gold and not d else m, d) for c, m, d in V]
     # ひれ
     V += [((-1, 0, 2), "hull_red", None), ((5, 0, 2), "hull_red", None), ((2, 0, -1), "hull_red", None),
           ((2, 0, 5), "hull_red", None), ((-1, 1, 2), "hull_white", None), ((5, 1, 2), "hull_white", None)]

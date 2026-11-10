@@ -34,6 +34,22 @@ class AmatsuAddon(SceneryHost, Addon):
         self.points = dict(s.points)
         self.deck = s.deck
         self.active = True
+        self._ensure_blocks()
+
+    def _ensure_blocks(self):
+        """甲板の上の建物（ブロック。アンカーで固定）が無ければ作る（ワールドに1回だけ）。"""
+        from main import buildkit
+
+        from . import blocks
+        d = self.deck
+
+        def maker(x, z, kind):
+            return lambda: buildkit.spawn(self.world, blocks.hut(kind), d.point(x, z, 0.0), d.frame(0.0),
+                                          name="アマツの建物", center=True)
+        made = buildkit.ensure(self.world, "amatsu", [(f"hut{k}", maker(x, z, kind))
+                                                       for k, (x, z, kind) in enumerate(blocks.HUTS)])
+        if made:
+            L.info("アマツの建物を作りました（%d）", len(made))
 
     def net_state(self, world):
         return {"alert": bool(self.alert)} if self.active else None

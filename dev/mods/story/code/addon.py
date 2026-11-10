@@ -24,7 +24,7 @@ from main.geom import box_sdf
 from main.hooks import Addon
 from main.scenery import SceneryHost
 
-from . import script, sites, space
+from . import buildings, script, sites, space
 
 L = log.get("story")
 
@@ -128,6 +128,7 @@ class StoryAddon(SceneryHost, Addon):
                 c = self.con(role)
                 if c is not None:
                     self.weapons.protected.add(c.id)
+            self._fleet_ignore()
         self._stage()
 
     def on_save(self, world):
@@ -266,16 +267,19 @@ class StoryAddon(SceneryHost, Addon):
                 (-4.0, -14.0, 180.0, 0.05), self.lmap)
         put("crane", "搬入クレーン", A(sites.crane_voxels()), P["crane"])
         put("factory", "工場", A(sites.factory_voxels()), P["factory"])
-        for role, name, vox, place, sink in sites.decorations():          # まわりの飾り（ブロック）
-            put(role, name, vox, place, center=True, sink=sink)
+        for role, name, vox, place, sink in sites.decorations() + buildings.terra_buildings(sites.LAUNCH):
+            put(role, name, vox, place, center=True, sink=sink)               # まわりの飾り・建物（ブロック）
         if self.deck is not None:
             d = self.deck
-            self._put_space("interceptor", "連盟の迎撃艦", sites.anchored_inside(space.interceptor_voxels(), space.SHIP_ANCHORS),
+            self._put_space("interceptor", "連盟の迎撃艦",
+                            buildings.with_extra(sites.anchored_inside(space.interceptor_voxels(), space.SHIP_ANCHORS),
+                                                 buildings.union_interceptor_extra()),
                             space.fleet_origin(d), d.frame(0.0), (6.0, 0.0, 12.0))
             # トワのロボット（変形ロボット ツバメ）は第12章の始めに迎撃艦の甲板へ出す（_launch_robot）
             kx, kz = space.KROBOT_START
             self._put_space("krobot", "キンギのロボット", space.krobot_voxels(), d.point(kx, kz, 0.6), d.frame(180.0),
                             (1.5, 0.0, 2.5))
+            self._put_fleet(d)
             ux, uz = space.UNIT_AT
             self._put_space("unit", "再加速の作業台", A(space.unit_voxels()), d.point(ux, uz, 0.05), d.frame(0.0),
                             (4.0, 0.0, 4.0))
@@ -286,12 +290,38 @@ class StoryAddon(SceneryHost, Addon):
             self._write_scripts(only_missing=True)
             L.info("構築物を作りました: %s", made)
 
-    def _put_space(self, role, name, vox, pos, R, pivot, links=None):
+    def _put_fleet(self, d):
+        """艦隊（2 m のブロック。遠くに浮かぶ。ミサイルは当たらない）：連盟は箱っぽく無骨、帝国は流線型。"""
+        S = buildings.FLEET_BLOCK
+        R = d.R
+        rx, up, fw = R[:, 0], R[:, 1], R[:, 2]
+        o = space.fleet_origin(d)
+        for k, p in enumerate(space.empire_points(d)):
+            L_ = 110.0 if k == 2 else 70.0
+            Rk = np.stack([-rx, up, -fw], axis=1)                 # 帝国艦はこちらを向く
+            n = int(L_ / S)
+            self._put_space(f"fleet_empire{k}", "帝国の艦", buildings.empire_ship(n, n * 0.15, airship=k % 2 == 1),
+                            p, Rk, (0.5, 0.5, 0.5), size=S)
+        for k, (x, y, z) in enumerate(space.UNION_SHIPS):
+            self._put_space(f"fleet_union{k}", "連盟の艦", buildings.union_ship(30, 7), o + rx * x + up * y + fw * z, R,
+                            (0.5, 2.0, 15.0), size=S)
+        self._put_space("fleet_artemis", "旗艦アルテミス", buildings.union_ship(56, 11, flagship=True),
+                        o + up * 25.0 + fw * 160.0, R, (0.5, 2.0, 28.0), size=S)
+        self._fleet_ignore()
+
+    def _fleet_ignore(self):
+        if self.weapons is not None:
+            for role, cid in self.st["ids"].items():
+                if role.startswith("fleet_"):
+                    self.weapons.ignore.add(cid)
+                    self.weapons.protected.add(cid)
+
+    def _put_space(self, role, name, vox, pos, R, pivot, links=None, size=None):
         """宇宙の構築物：ボクセルの (pivot) が pos に来るように置く。"""
         ids = self.st["ids"]
         if ids.get(role) in self.world.constructs:
             return None
-        size = float(self.world.settings.get("voxel_size", 0.5))
+        size = float(size or self.world.settings.get("voxel_size", 0.5))
         origin = np.asarray(pos, float) - R @ (np.asarray(pivot, float) * size)
         c = Construct.from_voxels(self.world.registry, vox, origin, R, size=size, name=name, links=links)
         self.world.add_construct(c)
@@ -353,35 +383,11 @@ class StoryAddon(SceneryHost, Addon):
             L.info("アンカーを足しました: %s（%d）", c.name, len(c.anchor_index()))
 
     def _spawn(self, vox, place, m, name, id_=None, center=False, sink=False):
-        """地図の場所に構築物を置く。地面（くぼ地の丸みなど）にめり込まないように、角がすべて地面より上になるまで持ち上げる
-        （アンカーのブロックは地面に埋まっていてよい）。center：足もとの真ん中を場所に合わせる。sink：持ち上げない。"""
-        w = self.world
-        x, z, yaw, lift = place
-        p, _ = m.ground(x, z, lift)
-        R = m.frame(x, z, yaw)
-        size = float(w.settings.get("voxel_size", 0.5))
-        if center:
-            body = [cl for cl, _, d in vox if not (d and d.get("def") == "anchor")] or [cl for cl, _, _ in vox]
-            y0 = min(cl[1] for cl in body)
-            foot = np.array([cl for cl in body if cl[1] == y0], float)
-            p = p - R @ (np.array([foot[:, 0].mean() + 0.5, y0, foot[:, 2].mean() + 0.5]) * size)
-        c = Construct.from_voxels(w.registry, vox, p, R, size=size, name=name, id_=id_)
+        """地図の場所に構築物を置く（main.buildkit.spawn_on_map：地面・景色の箱にめり込まないように持ち上げ、
+        center なら足もとの真ん中を場所に合わせて坂の浮きを土台で埋める。sink：持ち上げない）。"""
+        from main import buildkit
         scenes = self.scenes + (self.port.scenes if m is self.lmap else [])
-        anc = c.anchor_index()
-        rows = np.setdiff1d(np.arange(c.n_vert), (8 * anc[:, None] + np.arange(8)[None]).ravel()) if len(anc) \
-            else np.arange(c.n_vert)
-        for _ in range(0 if sink else 8):          # 地面と景色の箱（床・台）の上に出るまで持ち上げる
-            P = c.pos[rows]
-            dmin = float(m.pl.sdf(P).min())
-            for sc in scenes:
-                if sc.map is not None and np.linalg.norm(c.pos[0] - sc.center) < sc.radius + 10:
-                    d, _, _ = box_sdf(P, sc.C[sc.col], sc.A[sc.col], sc.E[sc.col])
-                    dmin = min(dmin, float(d.min()))
-            if dmin >= 0.03:
-                break
-            c.pos += R[:, 1] * (0.03 - dmin + 0.01)
-        w.add_construct(c)
-        return c
+        return buildkit.spawn_on_map(self.world, vox, m, place, name, scenes, center=center, sink=sink, id_=id_)
 
     # ------------------------------------------------------------------
     # 構築物・場所

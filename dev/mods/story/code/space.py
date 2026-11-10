@@ -53,20 +53,22 @@ def _ship(s, c, R, length, width, colors, glow):
 
 
 def build_fleet(deck):
-    """艦隊の張りぼて（当たり判定なし）。"""
+    """艦隊の推進の光（当たり判定なし）。艦はブロック（buildings.union_ship・empire_ship、addon._put_fleet）。"""
     s = Scenery("fleet", None)
     R = deck.R
     o = fleet_origin(deck)
     rx, up, fw = R[:, 0], R[:, 1], R[:, 2]
     for k, p in enumerate(empire_points(deck)):
         L_ = 110.0 if k == 2 else 70.0
-        Rk = np.stack([-rx, up, -fw], axis=1)                 # 帝国艦はこちらを向く
-        _ship(s, p, Rk, L_, L_ * 0.22, (BLACK, RED), REDL)
+        Rk = np.stack([-rx, up, -fw], axis=1)
+        s.raw(p + fw * (L_ / 2 + 3.0), Rk, (1.5, 1.5, 0.4), color=OFF, glow=REDL, collide=False)
     for x, y, z in UNION_SHIPS:
-        _ship(s, o + rx * x + up * y + fw * z, R, 60.0, 13.0, (WHITE, NAVY), CYAN)
-    s.raw(o + rx * 0.0 + up * 25.0 + fw * 160.0, R, (14.0, 4.0, 60.0), color=WHITE, collide=False)     # 旗艦アルテミス
-    s.raw(o + up * 31.0 + fw * 150.0, R, (6.0, 4.0, 10.0), color=NAVY, collide=False)
-    s.raw(o + up * 25.0 + fw * 99.0, R, (8.0, 2.0, 0.6), color=OFF, glow=CYAN, collide=False)
+        c = o + rx * x + up * y + fw * z
+        for k in (-1, 1):
+            s.raw(c - fw * 39.0 + rx * k * 3.0 + up * 1.0, R, (1.2, 1.2, 0.4), color=OFF, glow=CYAN, collide=False)
+    for k in (-1, 1):
+        s.raw(o + up * 24.0 + fw * (160.0 - 65.0) + rx * k * 5.0, R, (1.6, 1.6, 0.4), color=OFF, glow=CYAN,
+              collide=False)
     s.point_raw("fleet", o)
     return s.finish()
 

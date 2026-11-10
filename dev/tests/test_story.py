@@ -122,7 +122,9 @@ class StoryCase(unittest.TestCase):
         self.assertEqual(self.ch(), "wake")
         self.assertEqual(s.st["movies"], ["01_prologue"], "序章のムービーを流す")
         self.assertEqual(w.player.defn["id"], "towa", "見た目はトワ")
-        self.assertEqual(len(w.constructs), len(s.st["ids"]))
+        mod_blocks = sum(len(v) for v in w.settings.get("blocks", {}).values())     # 場所の MOD の建物（ブロック）
+        self.assertGreater(mod_blocks, 10, "ルナ・ポートなどの建物もブロック")
+        self.assertEqual(len(w.constructs), len(s.st["ids"]) + mod_blocks)
         counts = {}
         space_roles = {"interceptor", "robot", "krobot", "unit"}
         statics = 0
@@ -136,14 +138,17 @@ class StoryCase(unittest.TestCase):
             if role.startswith("deco_debris"):
                 self.assertTrue(c.anchored)
                 continue
-            self.assertGreater(float(pl.sdf(c.pos.reshape(-1, 8, 3)[body].reshape(-1, 3)).min()), 0.0,
+            # 建物・飾りの土台（坂のすき間を埋めるブロック）は地面に少しかかってよい
+            lim = -c.size if role.startswith(("deco_", "bld_")) else 0.0
+            self.assertGreater(float(pl.sdf(c.pos.reshape(-1, 8, 3)[body].reshape(-1, 3)).min()), lim,
                                f"{role} が地面にめり込んでいる")
             P = c.voxel_centers()[body]
             for sc in s.scenes + s.port.scenes + (s.amatsu.scenes if role in space_roles else []):
                 if not sc.col.any():
                     continue
                 d, _, _ = box_sdf(P, sc.C[sc.col], sc.A[sc.col], sc.E[sc.col])
-                self.assertGreater(float(d.min()), c.size * 0.5 - 0.01, f"{role} が景色の箱にめり込んでいる")
+                self.assertGreater(float(d.min()), c.size * 0.5 - 0.01 if lim == 0 else -c.size,
+                                   f"{role} が景色の箱にめり込んでいる")
         for role in ("pod", "beacon", "power", "gate", "crane", "factory", "sign_base", "interceptor", "unit", "booth"):
             self.assertTrue(s.con(role).anchored, f"{role} はアンカーで固定")
         self.assertGreater(statics, 30, "まわりの飾りもアンカーで固定したブロック")

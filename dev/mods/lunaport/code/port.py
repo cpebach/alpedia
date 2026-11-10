@@ -88,57 +88,28 @@ def build(planet, terra):
     # 発着場までの誘導灯
     for k in range(6):
         s.box(0.0, -PAD_HALF - 2.0 - k * 2.5, 0.4, 0.3, 0.4, color=OFF, glow=REDL, blink=0.8, collide=False)
-    # 管制塔（受付に管制官がいる）
+    # 管制塔（受付に管制官がいる）：塔はブロック（blocks.tower）。上の灯・入口の上の明かり
     tx, tz = -15.0, 2.0
-    s.box(tx, tz, 6.0, 4.0, 6.0, color=(0.80, 0.82, 0.85))
-    s.box(tx, tz, 3.0, 12.0, 3.0, y0=4.0, color=(0.75, 0.77, 0.80))
-    s.box(tx, tz, 7.0, 3.0, 7.0, y0=16.0, color=(0.25, 0.27, 0.32))
-    s.box(tx, tz, 7.2, 1.4, 7.2, y0=16.8, color=OFF, glow=CYAN, collide=False)
-    s.box(tx, tz, 7.6, 0.4, 7.6, y0=19.0, color=WHITE)
-    s.box(tx, tz, 0.4, 3.0, 0.4, y0=19.4, color=METAL)
-    s.box(tx, tz, 0.6, 0.6, 0.6, y0=22.4, color=OFF, glow=REDL, blink=1.0)
-    s.box(tx + 3.05, tz, 0.15, 2.4, 2.0, color=DARK, glow=(0.95, 0.8, 0.5))          # 入口
+    s.box(tx + 0.25, tz + 0.25, 0.6, 0.6, 0.6, y0=22.6, color=OFF, glow=REDL, blink=1.0, collide=False)
+    s.box(tx + 3.06, tz + 0.25, 0.08, 0.2, 1.4, y0=2.1, color=OFF, glow=(0.95, 0.8, 0.5), collide=False)
     s.box(tx + 3.3, tz + 2.0, 0.6, 1.1, 0.8, color=(0.25, 0.3, 0.4), glow=(0.5, 0.95, 1.0), tag="desk")  # 受付
     s.point("desk", tx + 4.2, tz + 2.0, 0.0)
     s.point("plaza", 6.0, -2.0, 0.0)
     s.box(tx + 3.1, tz, 0.1, 0.6, 5.0, y0=3.0, color=OFF, glow=PINK)                  # 看板の光
-    # ドーム（居住・温室・研究）
-    _dome(s, 14.0, 8.0, 7.0, (0.70, 0.84, 0.92), CYAN)
-    _dome(s, 4.0, 22.0, 9.0, (0.62, 0.86, 0.66), GREEN)
-    _dome(s, -14.0, 20.0, 5.5, (0.88, 0.80, 0.92), PINK)
+    # ドーム（居住・温室・研究）・住居・通路・ソーラーパネル・電波の皿・探査車はブロック（blocks.py）
     # 温室の中が見えるように、ドームの前に光る畑
     for k in range(4):
         s.box(-1.0 + k * 3.3, 12.4, 2.6, 0.25, 1.0, color=(0.2, 0.35, 0.18), glow=(0.35, 0.9, 0.35), collide=False)
-    # 住居ブロックと通路
+    # 住居の窓の明かり・通路の天井の明かり・電波の皿の灯
     for k, (x, z) in enumerate(((20.0, -6.0), (26.0, 2.0), (22.0, 16.0))):
-        s.box(x, z, 5.0, 3.0, 4.0, color=(0.78, 0.79, 0.80))
-        s.box(x, z - 2.05, 3.6, 0.6, 0.1, y0=1.5, color=OFF, glow=(WARM, CYAN, PINK)[k])
-        s.box(x, z, 5.4, 0.3, 4.4, y0=3.0, color=DARK)
+        s.box(x + 0.25, z - 2.06, 1.0, 0.2, 0.06, y0=2.55, color=OFF, glow=(WARM, CYAN, PINK)[k], collide=False)
     for (x0, z0), (x1, z1) in (((14.0, 1.0), (20.0, -4.0)), ((21.0, 8.0), (26.0, 4.0)), ((18.0, 12.0), (21.0, 14.0)),
                                ((8.0, 14.0), (8.5, 10.0)), ((-9.0, 18.0), (-3.0, 18.0)), ((-12.0, 5.0), (-13.0, 15.0))):
         cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
         L_ = float(np.hypot(x1 - x0, z1 - z0))
         yaw = -np.degrees(np.arctan2(x1 - x0, z1 - z0))
-        s.box(cx, cz, 1.6, 1.8, L_, yaw=yaw, color=(0.85, 0.86, 0.88))
-        s.box(cx, cz, 0.2, 0.15, L_, y0=1.8, yaw=yaw, color=OFF, glow=CYAN, collide=False)
-    # ソーラーパネルと電波の皿
-    for k in range(5):
-        s.box(-26.0, -10.0 + k * 4.2, 3.4, 0.1, 2.2, y0=1.2, color=NAVY, pitch=30)
-        s.box(-26.0, -10.0 + k * 4.2, 0.15, 1.2, 0.15, color=METAL)
-    s.box(10.0, -16.0, 0.4, 4.0, 0.4, color=METAL)
-    s.box(10.0, -16.0, 4.0, 0.3, 4.0, y0=4.0, pitch=35, color=WHITE)
-    s.box(10.0, -16.0, 0.3, 0.3, 0.3, y0=5.4, color=OFF, glow=REDL, blink=1.4)
-    # 止めてある探査車（ローバー）
-    for k, (x, z, yaw) in enumerate(((6.0, -10.0, 30.0), (-6.0, -11.0, -20.0))):
-        R = m.frame(x, z, yaw)
-        s.box(x, z, 2.0, 0.8, 3.0, y0=0.55, yaw=yaw, color=(ORANGE, WHITE)[k])
-        s.box(x, z, 1.6, 0.6, 1.2, y0=1.35, yaw=yaw, color=GLASS)
-        for dx, dz in ((-1.1, -1.0), (1.1, -1.0), (-1.1, 1.0), (1.1, 1.0)):
-            off = R[:, 0] * dx + R[:, 2] * dz
-            wx = x + float(off @ m.right0)
-            wz = z + float(off @ m.fwd0)
-            s.box(wx, wz, 0.35, 0.9, 0.9, yaw=yaw, color=(0.1, 0.1, 0.1))
-        s.box(x, z, 0.3, 0.15, 0.1, y0=1.2, yaw=yaw, color=OFF, glow=WARM)
+        s.box(cx, cz, 0.2, 0.06, L_, y0=2.02, yaw=yaw, color=OFF, glow=CYAN, collide=False)
+    s.box(10.25, -15.75, 0.3, 0.3, 0.3, y0=5.5, color=OFF, glow=REDL, blink=1.4, collide=False)
     # 岩
     for k in range(14):
         a = rng.uniform(0, 2 * np.pi)

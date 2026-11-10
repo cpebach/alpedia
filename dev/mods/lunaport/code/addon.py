@@ -36,6 +36,22 @@ class LunaPortAddon(SceneryHost, Addon):
         self.scenes = [s]
         self.points = dict(s.points)
         self.active = True
+        self._ensure_blocks()
+
+    def _ensure_blocks(self):
+        """建物（ブロック。アンカーで月に固定）が無ければ作る（ワールドに1回だけ）。"""
+        from main import buildkit
+
+        from . import blocks
+
+        def maker(vox, place, name, size, sink):
+            return lambda: buildkit.spawn_on_map(self.world, vox, self.map, place, name, self.scenes, size=size,
+                                                 center=True, sink=sink, foundation=None if size >= 1.0 else "auto")
+        items = [(role, maker(vox, place, name, size, role.endswith("_inside")))
+                 for role, name, vox, place, size in blocks.items()]
+        made = buildkit.ensure(self.world, "lunaport", items)
+        if made:
+            L.info("ルナ・ポートの建物を作りました（%d）", len(made))
 
     def talk(self, tag):
         """景色の触れる物（受付）を E。"""
