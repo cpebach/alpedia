@@ -18,6 +18,7 @@ TYPE_NAMES = {
     "thruster": "推進機", "tank": "タンク", "pipe": "配管", "valve": "バルブ", "battery": "バッテリー",
     "generator": "発電機", "solar": "太陽光パネル", "crank": "手回し発電機", "computer": "コンピューター", "actuator": "アクチュエーター",
     "processor": "精錬機・加工機", "seat": "操縦席", "air_vent": "通気口", "antenna": "アンテナ",
+    "anchor": "アンカー（構築物を惑星に固定）",
 }
 
 

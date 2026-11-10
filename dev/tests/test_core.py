@@ -113,6 +113,103 @@ class TestPhysics(CoreCase):
         self.assertEqual(len(w.constructs), 1)
 
 
+class TestAnchor(CoreCase):
+    """アンカー：つながっている構築物は惑星に固定（物理計算しない・当たり判定はある）。
+    アクチュエーターの先は動く。両側にアンカーがあれば動かない。アンカーと離れた部分は動く。"""
+
+    def tower(self, w, soft=False):
+        pl = w.planets[0]
+        p, up = self.ground(w, 0.0)
+        V = [((0, -1, 0), "steel", {"def": "anchor", "dir": 2})]             # 地面にめり込ませたアンカー
+        V += [((0, y, 0), "steel", None) for y in range(4)]
+        V += [((0, 4, 0), "steel", {"def": "actuator", "dir": 0, "name": "肩"}),
+              ((0, 0, 1), "steel", {"def": "battery", "dir": 2})]
+        V += [((x, 4, 0), "steel", None) for x in (1, 2, 3)] + [((1, 5, 0), "steel", None), ((1, 6, 0), "steel", None)]
+        c = Construct.from_voxels(w.registry, V, p - np.array([0.25, 0.0, 0.25]), np.eye(3), size=0.5, name="塔")
+        w.add_construct(c)
+        self.assertLess(float(pl.sdf(c.voxel_center(0)[None])[0]), 0.0)      # アンカーは地面の中
+        return c
+
+    def test_anchored_stays_and_arm_moves(self):
+        from main import actuator as act
+        for full in (True, False):
+            w = self.world(full_rigid=full)
+            c = self.tower(w)
+            P0 = c.pos.copy()
+            self.run_for(w, 1.0)
+            self.assertTrue(c.is_static)
+            self.assertEqual(float(np.abs(c.pos - P0).max()), 0.0, "固定：動かない（地面にめり込んでいても押し出されない）")
+            i = c.index[(0, 4, 0)]
+            base, tip = c.voxel_center(c.index[(0, 1, 0)]), c.voxel_center(c.index[(1, 6, 0)])
+            act.cmd_rotate(c, i, 90, absolute=True)
+            self.run_for(w, 2.0)
+            self.assertLess(float(np.linalg.norm(c.voxel_center(c.index[(0, 1, 0)]) - base)), 1e-9, "土台は動かない")
+            d = c.voxel_center(c.index[(1, 6, 0)]) - tip
+            self.assertTrue(np.allclose(d, [0.0, -1.0, 1.0], atol=0.05), f"アクチュエーターの先は回る {d}")
+            self.assertTrue(c.is_static, "止まったらまた固定")
+
+    def test_both_sides_anchored_cannot_move(self):
+        from main import actuator as act
+        w = self.world(full_rigid=True)
+        c = self.tower(w)
+        self.assertTrue(w.place({"kind": "voxel", "construct": c, "index": c.index[(3, 4, 0)], "face": 0},
+                                ("device", "anchor"), 2, np.array([0, 0, 1.0])))
+        i = c.index[(0, 4, 0)]
+        self.assertTrue(c.actuator_locked(i))
+        tip = c.voxel_center(c.index[(1, 6, 0)])
+        act.cmd_rotate(c, i, 90, absolute=True)
+        self.run_for(w, 1.5)
+        self.assertLess(float(np.linalg.norm(c.voxel_center(c.index[(1, 6, 0)]) - tip)), 1e-6)
+        self.assertAlmostEqual(float(c.devs[i]["state"]["angle"]), 0.0)
+        w.remove({"kind": "voxel", "construct": c, "index": c.index[(4, 4, 0)]})     # 先のアンカーを外す → 回る
+        self.assertFalse(c.actuator_locked(i))
+        act.cmd_rotate(c, i, 90, absolute=True)
+        self.run_for(w, 2.0)
+        self.assertGreater(float(np.linalg.norm(c.voxel_center(c.index[(1, 6, 0)]) - tip)), 1.0)
+
+    def test_losing_the_anchor_makes_it_move(self):
+        w = self.world(full_rigid=True)
+        c = self.tower(w)
+        self.run_for(w, 0.5)
+        w.remove({"kind": "voxel", "construct": c, "index": c.index[(0, -1, 0)]})
+        big = max(w.constructs.values(), key=lambda x: x.n_vox)
+        self.assertFalse(big.anchored)
+        x0 = big.center_of_mass()
+        self.run_for(w, 2.0)
+        self.assertGreater(float(np.linalg.norm(big.center_of_mass() - x0)), 0.3, "アンカーが無くなると動く（倒れる）")
+
+    def test_anchored_survives_save_and_load(self):
+        w = self.world(full_rigid=True)
+        c = self.tower(w)
+        P0 = c.pos.copy()
+        w2 = self.reload(w)
+        c2 = w2.constructs[c.id]
+        self.run_for(w2, 1.0)
+        self.assertTrue(c2.is_static)
+        self.assertLess(float(np.abs(c2.pos - P0).max()), 1e-6)
+
+    def test_attach_aligns_the_free_side(self):
+        """固定された構築物と固定されていない構築物をアクチュエーターで結合：固定されていない側が合わせられる。"""
+        from main import actuator as act
+        w = self.world(full_rigid=True)
+        c = self.tower(w)
+        P0 = c.pos.copy()
+        tip = c.voxel_center(c.index[(3, 4, 0)])
+        V = [((0, 0, 0), "steel", {"def": "actuator", "dir": 1, "name": "手"}), ((1, 0, 0), "steel", None)]
+        fr = Construct.from_voxels(w.registry, V, tip + np.array([0.55, 0.04, 0.03]) - 0.25, np.eye(3), size=0.5,
+                                   name="自由")
+        w.add_construct(fr)
+        self.assertEqual(act.cmd_attach(w, fr, fr.index[(0, 0, 0)]), "結合しました")
+        m = w.constructs[fr.id]
+        self.assertTrue(m.anchored and m.is_static)
+        tower = [m.index[x] for x in m.cells if x not in ((0, 0, 0), (1, 0, 0))]
+        R, t = m.rigid_fit(tower)
+        self.assertLess(float(np.abs(m.pos.reshape(-1, 8, 3)[tower].reshape(-1, 3) - P0).max()), 1e-6,
+                        "固定されている側は動かない")
+        hand = m.voxel_center(m.index[(0, 0, 0)])
+        self.assertLess(float(np.linalg.norm(hand - (tip + np.array([0.5, 0.0, 0.0])))), 1e-6, "格子の位置に合わせる")
+
+
 class TestScripts(CoreCase):
     def test_script_ignites_and_sets_valve(self):
         w = self.world()

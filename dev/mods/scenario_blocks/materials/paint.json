@@ -4,5 +4,10 @@
   {"id": "hull_orange", "extends": "aluminum", "name": "橙の外装", "color": [0.98, 0.5, 0.12]},
   {"id": "hull_blue", "extends": "aluminum", "name": "青い外装", "color": [0.2, 0.42, 0.85]},
   {"id": "bar_red", "extends": "wood", "name": "赤く塗った木", "color": [0.85, 0.2, 0.15]},
-  {"id": "bar_white", "extends": "wood", "name": "白く塗った木", "color": [0.92, 0.92, 0.9]}
+  {"id": "bar_white", "extends": "wood", "name": "白く塗った木", "color": [0.92, 0.92, 0.9]},
+  {"id": "hull_dark", "extends": "aluminum", "name": "濃い灰色の外装", "color": [0.22, 0.23, 0.26]},
+  {"id": "hull_yellow", "extends": "aluminum", "name": "黄色い外装", "color": [0.95, 0.8, 0.15]},
+  {"id": "hull_green", "extends": "aluminum", "name": "緑の外装", "color": [0.3, 0.75, 0.35]},
+  {"id": "hull_pink", "extends": "aluminum", "name": "桃色の外装", "color": [0.95, 0.5, 0.7]},
+  {"id": "solar_navy", "extends": "glass", "name": "太陽電池の板", "color": [0.14, 0.2, 0.45]}
 ]

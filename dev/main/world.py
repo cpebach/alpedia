@@ -444,8 +444,14 @@ class World:
         return True
 
     def merge_constructs(self, c, other, cell_map, xform=None):
-        """other を c に取り込む（座っているプレイヤーの参照も付け替える）。"""
+        """other を c に取り込む（座っているプレイヤーの参照も付け替える）。
+        片方だけがアンカーで固定されているときは、固定されていない側を、固定されている側の格子の位置に合わせる
+        （固定されている側は動かない）。"""
+        n0 = c.n_vox
+        ca, oa = c.anchored, other.anchored
         c.absorb(other, cell_map, xform)
+        if ca != oa:
+            c.snap_to_lattice(np.arange(n0) if ca else np.arange(n0, c.n_vox))
         for p in self.all_players():
             if p.seated and p.seated[0] == other.id:
                 p.seated = (c.id, cell_map[p.seated[1]])
@@ -501,6 +507,11 @@ class World:
             c._touch_moving = False
             # 軽量化：剛体化・レール（遠方）の切り替え
             c.update_mode(dt, self)
+        # アンカーで固定された構築物（アクチュエーターが止まっている間）も物理計算しない。ほかの物には当たる
+        for c in self.constructs.values():
+            if c.n_vox and c.id not in anchored_ids and c.is_static:
+                anchored_ids.add(c.id)
+                c.vel[:] = 0.0
         # レールに乗っている構築物は重心の軌道だけを進める
         for c in self.constructs.values():
             if c.mode == "rails" and not c.asleep and c.id not in anchored_ids:
@@ -511,11 +522,14 @@ class World:
         for c in cons:
             self._prep_ext(c, dt)
         broken = set()
+        fixed_pos = [(c, c.pos.copy()) for c in sleeping if c.is_static]      # アンカーで固定：押されても戻す
         for _ in range(self.substeps):
             gs = float(self.settings.get("gravity_scale", 1.0))
             self._each(cons, lambda c: c.substep_begin(h, self.iters, self.gravity, self.planets, gs))
             woke = self._voxel_collisions(cons, sleeping)
             woke = [c for c in woke if c.id not in anchored_ids]
+            for c, p0 in fixed_pos:
+                c.pos[:] = p0
             ends = self._each(cons, lambda c: c.substep_end(h))
             for c, b in zip(cons, ends):
                 if b:
@@ -690,7 +704,7 @@ class World:
             flag = np.zeros(P, bool)
             flag[:n] = True
             is_ctr.append(flag)
-            vinv = c.inv_mass[::8]
+            vinv = c.collision_inv()
             inv.append(W @ vinv)
             sizes.append(np.full(P, c.size))
         offs = np.cumsum([0] + [len(x) for x in pts])

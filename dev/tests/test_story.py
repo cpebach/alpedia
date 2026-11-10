@@ -125,17 +125,29 @@ class StoryCase(unittest.TestCase):
         self.assertEqual(len(w.constructs), len(s.st["ids"]))
         counts = {}
         space_roles = {"interceptor", "robot", "krobot", "unit"}
+        statics = 0
         for role, cid in s.st["ids"].items():
             c = w.constructs[cid]
             pl = w.nearest_planet(c.pos.mean(0))
-            self.assertGreater(float(pl.sdf(c.pos).min()), 0.0, f"{role} が地面にめり込んでいる")
-            P = c.voxel_centers()
+            # アンカーのブロックは地面に埋めてある（地面に刺した破片は丸ごと）。それ以外はめり込まない
+            body = np.setdiff1d(np.arange(c.n_vox), c.anchor_index())
+            statics += c.anchored
+            counts[role] = c.n_vox
+            if role.startswith("deco_debris"):
+                self.assertTrue(c.anchored)
+                continue
+            self.assertGreater(float(pl.sdf(c.pos.reshape(-1, 8, 3)[body].reshape(-1, 3)).min()), 0.0,
+                               f"{role} が地面にめり込んでいる")
+            P = c.voxel_centers()[body]
             for sc in s.scenes + s.port.scenes + (s.amatsu.scenes if role in space_roles else []):
                 if not sc.col.any():
                     continue
                 d, _, _ = box_sdf(P, sc.C[sc.col], sc.A[sc.col], sc.E[sc.col])
                 self.assertGreater(float(d.min()), c.size * 0.5 - 0.01, f"{role} が景色の箱にめり込んでいる")
-            counts[role] = c.n_vox
+        for role in ("pod", "beacon", "power", "gate", "crane", "factory", "sign_base", "interceptor", "unit", "booth"):
+            self.assertTrue(s.con(role).anchored, f"{role} はアンカーで固定")
+        self.assertGreater(statics, 30, "まわりの飾りもアンカーで固定したブロック")
+        self.assertFalse(s.con("ship").anchored or s.con("bike").anchored, "乗り物は固定しない")
         self.run_for(2.0)
         for role, cid in s.st["ids"].items():
             self.assertEqual(w.constructs[cid].n_vox, counts[role], f"{role} が壊れた")
@@ -565,6 +577,27 @@ class StoryCase(unittest.TestCase):
         self.assertEqual(self.script.CHAPTER_IDS[s2.st["ch"]], "bike")
         for role in ("crane", "factory", "interceptor", "krobot", "unit"):
             self.assertIsNotNone(s2.con(role), role)
+
+    def test_old_save_gets_anchors(self):
+        """アンカーの無い前の版（v2）のセーブ：動かない構築物にアンカーを足して固定する。"""
+        s, w = self.s, self.w
+        for role in ("power", "beacon", "interceptor"):
+            c = s.con(role)
+            c.remove_voxels(list(c.anchor_index()))
+            self.assertFalse(c.anchored)
+        s.st["v"] = 2
+        w.save()
+        modcode.reset()
+        w2 = World(NAME, CFG).load()
+        s2 = w2.addon("story")
+        for role in ("power", "beacon", "interceptor"):
+            c = s2.con(role)
+            self.assertTrue(c.anchored, role)
+        P0 = s2.con("power").pos.copy()
+        for _ in range(60):
+            w2.step(1 / 60)
+        self.assertTrue(s2.con("power").is_static)
+        self.assertLess(float(np.abs(s2.con("power").pos - P0).max()), 1e-9)
 
     def test_chapter_autosave_and_restore(self):
         """章の始めに自動で保存（chapters/<番号>/）して、章の一覧の「保存から」で戻せる。"""

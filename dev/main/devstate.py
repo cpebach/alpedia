@@ -69,6 +69,7 @@ SCHEMA = {
                   "store": F("dict", {}),                       # 中にある物（原料と、作った物）
                   "working": F("bool", optional=True, saved=False)},
     "seat": {},
+    "anchor": {},                                              # アンカー：状態なし（あれば構築物ごと固定）
     "air_vent": {"mode": F("str", _p("mode", "fill")), "enabled": F("bool", True),
                  "cavity": F("bool", optional=True, saved=False)},
     "antenna": {"enabled": F("bool", True)},

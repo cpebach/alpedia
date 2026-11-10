@@ -464,6 +464,14 @@ def step(c, i, dd, dt, powered, ratio):
     st = c.devs[i]["state"]
     init_state(st, dd["params"])
     moving = False
+    if powered and c.anchored and c.actuator_locked(i):
+        # 両側ともアンカーで固定：動かせない（角度・伸びはそのまま）
+        st["angle_target"], st["ext_target"] = st["angle"], st["ext"]
+        if not st.get("error"):
+            st["error"] = "両側ともアンカーで固定されていて動かせません"
+        powered = False
+    elif st.get("error") == "両側ともアンカーで固定されていて動かせません":
+        st.pop("error", None)
     if powered:
         e, et = st["ext"], st["ext_target"]
         if abs(et - e) > 1e-4:

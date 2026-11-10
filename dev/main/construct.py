@@ -330,6 +330,57 @@ class Construct:
     def total_mass(self):
         return float(self.mass.sum())
 
+    # ------------------------------------------------------------------
+    # アンカー：アンカーのブロックがある構築物は惑星（ワールド）に固定。物理計算しない（当たり判定はある）。
+    # アクチュエーターの先の部分は動ける（アンカーのある部分だけが固定）。アンカーを失えば普通に動く
+    # ------------------------------------------------------------------
+    def anchor_index(self):
+        """アンカーのブロックの番号の配列（形が変わったときだけ数え直す）。"""
+        cache = getattr(self, "_anchor_cache", None)
+        if cache is None or cache[0] != (self.version, self.n_vox):
+            idx = [i for i, d in enumerate(self.devs)
+                   if d and (self.reg.device(d["def"]) or {}).get("type") == "anchor"]
+            cache = self._anchor_cache = ((self.version, self.n_vox), np.array(idx, dtype=np.int64))
+        return cache[1]
+
+    @property
+    def anchored(self):
+        return len(self.anchor_index()) > 0
+
+    def actuator_locked(self, i):
+        """アクチュエーター i の両側（本体の部分と出力の先の部分）が、どちらもアンカーで固定されている（動かせない）か。"""
+        anc = self.anchor_index()
+        if not len(anc) or not self.devs[i]:
+            return False
+        from .actuator import output_cell
+        j = self.index.get(output_cell(self, i))
+        if j is None:
+            return False
+        self.part_of(i)                                  # 部分の番号を最新に
+        label = self._part_cache[1]
+        fixed = set(label[anc].tolist())
+        return int(label[i]) in fixed and int(label[j]) in fixed
+
+    FIXED_INV = 1e-12             # 固定のブロックの、押し出しでの質量の逆数（ほぼ動かない。0 だと割り算できない）
+
+    def collision_inv(self):
+        """構築物どうしの押し出しに使う、ブロックごとの質量の逆数。アンカーで固定されたブロックはほぼ 0。"""
+        v = self.inv_mass[::8]
+        if not self.anchored:
+            return v
+        v = v.copy()
+        a = getattr(self, "art", None)
+        if self.mode == "art" and a is not None and a.get("n") == self.n_vox and a["fixed"].any():
+            v[a["fixed"][a["gid"]]] = self.FIXED_INV
+        else:
+            v[:] = self.FIXED_INV
+        return v
+
+    @property
+    def is_static(self):
+        """物理計算をせず、その場に止まっている（アンカーで固定・アクチュエーターも止まっている）。"""
+        return self.anchored and self.mode != "art"
+
     def voxel_center(self, i):
         """ブロック i の中心（ワールド座標）。"""
         return self.pos[8 * i:8 * i + 8].mean(0)
@@ -707,7 +758,8 @@ class Construct:
 
     def native_proxy(self):
         """構築物どうしの押し出しに使う Rust の Proxy（形が変わったら作り直す）。"""
-        key = (self.version, self.n_vox, id(native_core()))
+        vinv = self.collision_inv()
+        key = (self.version, self.n_vox, id(native_core()), vinv.tobytes() if self.anchored else None)
         px = getattr(self, "_nproxy", None)
         if px is not None and px[0] == key:
             return px[1]
@@ -720,7 +772,7 @@ class Construct:
             if ia is not None and ib is not None:
                 pairs.append((ia, ib))
         links = np.asarray(pairs, np.int64).reshape(-1, 2)
-        inv = np.ascontiguousarray(W @ self.inv_mass[::8], dtype=np.float64)
+        inv = np.ascontiguousarray(W @ vinv, dtype=np.float64)
         obj = native_core().Proxy(n, float(self.size), np.ascontiguousarray(W.indptr, dtype=np.int64),
                                   np.ascontiguousarray(W.indices, dtype=np.int64),
                                   np.ascontiguousarray(W.data, dtype=np.float64), inv, links,
@@ -1170,6 +1222,8 @@ class Construct:
         phys = world.cfg.get("physics", {})
         # 完全剛体モードでも soft_ok の構築物（物語の見せ場の落石・木箱など）は、曲がる・ちぎれる
         self._full_rigid = bool(world.settings.get("full_rigid", False)) and not getattr(self, "soft_ok", False)
+        if self.anchored:                    # アンカーで固定：柔らかいブロックのモードでも剛体（＋関節）として扱う
+            self._full_rigid = True
         if self._full_rigid:
             return self._update_full_rigid(world, phys, dt)
         if self.mode == "art":                      # 完全剛体モードを切ったとき
@@ -1232,6 +1286,10 @@ class Construct:
             return
         if self.mode in ("soft", "art"):
             self.enter_rigid()
+        if self.anchored:
+            if self.mode == "rails":
+                self.leave_rails()
+            return
         if self.mode == "rigid" and phys.get("rails_enabled", True):
             if self._rails_ok(world, float(phys.get("rails_distance", 400.0))):
                 self.enter_rails()
@@ -1298,10 +1356,15 @@ class Construct:
                 nb = self.pos[rows].mean(0) - self.pos[8 * i:8 * i + 8].mean(0)
                 nb /= max(np.linalg.norm(nb), 1e-9)
                 exts.append((i, rows, nb, float(d["state"].get("ext", 0.0))))
+        # アンカーのある部分は固定（動かない）。固定どうしをつなぐアクチュエーターは動かせない
+        fixed = np.zeros(G, bool)
+        anc = self.anchor_index()
+        if len(anc):
+            fixed[np.unique(gid[anc])] = True
         ra, rb, A, B, C, devs, HK = [], [], [], [], [], [], []
         for r in self.rotors:
             a, b = int(gid[r["a"]]), int(gid[r["b"]])
-            if a == b:
+            if a == b or (fixed[a] and fixed[b]):
                 continue                 # 輪になっていて回せない（固定されたまま）
             pairs = JOINT_PAIRS[r["d"]]
             ra.append(a); rb.append(b)
@@ -1319,8 +1382,15 @@ class Construct:
                     "applied": np.array([float(d["state"].get("angle", 0.0)) for d in devs]),
                     "ext_applied": np.array([e[3] for e in exts], dtype=np.float64),
                     "gv": np.arange(len(vg), dtype=np.int64),
-                    "HK": np.array(HK, np.int64).reshape(-1, 2)}
-        self.art["nat"] = self._native_art_topo()       # ヒンジも Rust で（古い Rust ならヒンジのときは None）
+                    "HK": np.array(HK, np.int64).reshape(-1, 2), "fixed": fixed}
+        if fixed.any():
+            # 固定の部分は質量・慣性を無限大として解く（関節は動く側だけを動かす）。今の姿勢をそのまま保つ
+            self.art["invM_s"] = np.where(fixed, 0.0, self.art["invM"])
+            self.art["IinvB_s"] = np.where(fixed[:, None, None], 0.0, IinvB)
+            self.art["Xfix"] = X.copy()
+            self.art["nat"] = None                      # 固定の部分のある関節は Python（＋Rust の関節計算）で解く
+        else:
+            self.art["nat"] = self._native_art_topo()   # ヒンジも Rust で（古い Rust ならヒンジのときは None）
 
     def enter_art(self):
         self._art_build()
@@ -1385,6 +1455,7 @@ class Construct:
                 m = self.mass
                 M = 1.0 / a["invM"]
                 lbar = np.stack([np.bincount(vg, weights=m * vl[:, k], minlength=G) for k in range(3)], 1) / M[:, None]
+                lbar[a["fixed"]] = 0.0          # 固定の部分は基準点ごと動かさない（押し出した面だけが動く）
                 vl -= lbar[vg]
             d = vl - a["vl"]
             rows = np.nonzero(np.abs(d).max(1) > 0)[0]
@@ -1402,6 +1473,13 @@ class Construct:
         Lg = np.stack([np.bincount(vg, weights=Lm[:, k], minlength=G) for k in range(3)], 1)
         Iinv_w = R @ a["IinvB"] @ np.transpose(R, (0, 2, 1))
         w = np.einsum("gij,gj->gi", Iinv_w, Lg)
+        fx = a["fixed"]
+        if fx.any():                                    # 固定の部分は動かない（重力も効かない）
+            v[fx] = 0.0
+            w[fx] = 0.0
+            X = X.copy()
+            X[fx] = a["Xfix"][fx]
+            R[fx] = np.eye(3)
         self._prev = self.pos.copy()
         a["X"] = X + v * h
         for g in range(G):
@@ -1429,6 +1507,9 @@ class Construct:
         if P:
             P, D, N = np.concatenate(P), np.concatenate(D), np.concatenate(N)
             VS, CI = np.concatenate(VS), np.concatenate(CI)
+            if fx.any():                                # 固定の部分は地面にめり込んでいてよい（接触を解かない）
+                k_ = ~fx[vg[P]]
+                P, D, N, VS, CI = P[k_], D[k_], N[k_], VS[k_], CI[k_]
             cg = vg[P]
             order = np.lexsort((-D, cg))                 # 部分ごとに深い順
             P, D, N, VS, CI, cg = P[order], D[order], N[order], VS[order], CI[order], cg[order]
@@ -1459,7 +1540,8 @@ class Construct:
             ang = np.zeros(0)
             cap = np.zeros(0)
         lamN = np.zeros(len(P))
-        fastphys.art_solve(X, R, a["invM"], a["IinvB"], a["ra"], a["rb"], np.ascontiguousarray(LA),
+        fastphys.art_solve(X, R, a.get("invM_s", a["invM"]), a.get("IinvB_s", a["IinvB"]), a["ra"], a["rb"],
+                           np.ascontiguousarray(LA),
                            np.ascontiguousarray(LB), np.ascontiguousarray(LC), ang, cap, cg.astype(np.int64),
                            np.ascontiguousarray(cl), np.ascontiguousarray(N, dtype=np.float64),
                            np.ascontiguousarray(D, dtype=np.float64), self.pos[P].copy(), self._prev[P].copy(),
@@ -1479,8 +1561,14 @@ class Construct:
         """ほかの構築物に押された分なども部分ごとの剛体の動きに直してから、速度を求める。"""
         a = self.art
         self._art_fit()
+        fx = a.get("fixed")
+        if fx is not None and fx.any():                 # ほかの構築物に押されても、固定の部分は元の姿勢のまま
+            a["X"][fx] = a["Xfix"][fx]
+            a["R"][fx] = np.eye(3)
         self._art_write()
         self.vel = (self.pos - self._prev) / h
+        if fx is not None and fx.any():
+            self.vel[fx[a["vg"]]] = 0.0
         # 押し出しによる形の変化は速度に含めない（含めると、部分全体の運動量として毎サブステップ積み上がってしまう）
         for rows, d in a.get("defo") or ():
             g = a["vg"][rows]
@@ -1498,7 +1586,11 @@ class Construct:
             Lm = fcross(r, self.vel - V[vg]) * m[:, None]
             Lg = np.stack([np.bincount(vg, weights=Lm[:, k], minlength=G) for k in range(3)], 1)
             W = np.einsum("gij,gj->gi", R @ a["IinvB"] @ np.transpose(R, (0, 2, 1)), Lg)
-            fastphys.art_contact_vel(V, W, X, R, a["invM"], a["IinvB"], ct[0], ct[1], ct[2], ct[3], 2)
+            fastphys.art_contact_vel(V, W, X, R, a.get("invM_s", a["invM"]), a.get("IinvB_s", a["IinvB"]),
+                                     ct[0], ct[1], ct[2], ct[3], 2)
+            if fx is not None and fx.any():
+                V[fx] = 0.0
+                W[fx] = 0.0
             self.vel = V[vg] + fcross(W[vg], r)
         a["contacts"] = None
 
@@ -1778,6 +1870,32 @@ class Construct:
             self.cavity_air[cell_map.get(k, k)] = v
         self.force = np.zeros((self.n_vert, 3))
         self.rebuild()
+
+    def snap_to_lattice(self, keep):
+        """ブロック keep（番号の配列）の今の位置から格子（ローカル座標）の置き方を求め、残りのブロックを
+        その格子の位置に置き直す（アンカーで固定された側に、固定されていない側を合わせる）。
+        格子から離れた所に取り込んだブロック（格子がずれていた結合）はそのまま。"""
+        keep = np.asarray(keep, dtype=np.int64)
+        if not len(keep) or len(keep) == self.n_vox:
+            return
+        fit = keep
+        anc = np.intersect1d(self.anchor_index(), keep)
+        if len(anc):                    # 固定されている部分（アクチュエーターの先で回っている所は除く）で格子を求める
+            fit = np.unique(np.concatenate([self.part_of(int(i)) for i in anc]))
+        R, t = self.rigid_fit(fit)
+        cells = np.asarray(self.cells, dtype=np.float64)
+        span = np.abs(cells[keep]).max() + 50
+        others = np.setdiff1d(np.arange(self.n_vox), keep)
+        others = others[np.abs(cells[others]).max(1) < span]
+        if not len(others):
+            return
+        local = ((cells[others][:, None, :] + CORNER_BITS[None]) * self.size).reshape(-1, 3)
+        rows = (8 * others[:, None] + np.arange(8)[None]).ravel()
+        self.pos[rows] = local @ R.T + t
+        self.vel[rows] = 0.0
+        if getattr(self, "_prev", None) is not None and self._prev.shape == self.pos.shape:
+            self._prev[rows] = self.pos[rows]
+        self.wake(soft=True)
 
     def _reorient(self, xform):
         """ボクセルの頂点番号と向きを、指定の回転で並べ替える（格子に揃えるため）。"""

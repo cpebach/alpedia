@@ -30,10 +30,13 @@ L = log.get("story")
 
 CHECK_EVERY = 0.2          # 目標を調べる間隔（秒・ワールド時刻）
 HINT_AFTER = 75.0          # 目標が済まないとき、この秒数でヒントのセリフ
-VERSION = 2
+VERSION = 3                  # 3：動かない構築物をアンカーで固定（前の版のセーブにはアンカーを足す）
+STATIC_ROLES = ("pod", "beacon", "power", "model", "task", "console", "gate", "sign_base", "sign_luna", "crane",
+                "factory", "interceptor", "unit", "booth")
 ROBOT_BLUEPRINT = "transformer_robot.alp.json"     # 第12章のトワのロボット（sauce/blueprints の設計図）
 ROBOT_NAME = "変形ロボット ツバメ"
-ANCHORED = ("interceptor", "krobot", "unit", "kdrone", "cart", "booth", "rocket")
+# 拡張が位置を決める（物理計算しない）構築物。動かない物はアンカーのブロックで固定する（sites.anchored）
+ANCHORED = ("krobot", "kdrone", "cart", "rocket")
 # 旅立ちのロケットの打ち上げ（エピローグ。シナリオが位置を決める）
 COUNTDOWN = 5.0
 LIFT_T1 = 4.0                # まっすぐ上へ（加速 LIFT_A）
@@ -147,6 +150,8 @@ class StoryAddon(SceneryHost, Addon):
                 st["flags"]["landed"] = True
             L.info("前の版のシナリオのセーブを読み替えました（%s → %s）", old, new)
             self.world.message("シナリオが新しくなりました（ストーリー vol.1）。続きから遊べます（J で章の一覧）")
+        if int(st.get("v") or 0) < 3:
+            self._anchor_statics()
         st["v"] = VERSION
 
     # ------------------------------------------------------------------
@@ -230,47 +235,52 @@ class StoryAddon(SceneryHost, Addon):
         P = sites.PLACES
         made = []
 
-        def put(role, name, vox, place, m=None):
+        def put(role, name, vox, place, m=None, center=False, sink=False):
             if ids.get(role) in self.world.constructs:
                 return
-            c = self._spawn(vox, place, m or self.map, name)
+            c = self._spawn(vox, place, m or self.map, name, center=center, sink=sink)
             ids[role] = c.id
             made.append(role)
             return c
+        A = sites.anchored                   # 動かない物はアンカーで地面に固定（物理計算しない・吹き飛ばない）
 
-        put("pod", "脱出ポッド", sites.pod_voxels(), P["pod"])
-        put("beacon", "救難ビーコン", sites.beacon_voxels(), P["beacon"])
+        put("pod", "脱出ポッド", A(sites.pod_voxels()), P["pod"])
+        put("beacon", "救難ビーコン", A(sites.without_base(sites.beacon_voxels()), 1), P["beacon"])
         if "rocks" not in ids:
             c = put("rocks", "落石", sites.rock_voxels(5, 13, 6, 3), (-3.25, 27.0, 0.0, 0.05))
             self.st["rocks0"] = len(c.cells)
-        put("power", "観測基地の電源", sites.power_voxels(), P["power"])
-        put("model", "お手本の装置", rod.apparatus("お手本", "otehon.blocks.json", "otehon.py"), P["model"])
-        put("task", "課題の装置", rod.apparatus("課題", "kadai.blocks.json", "kadai.py"), P["task"])
-        put("console", "ドローンの操縦台", drone.remote_voxels(), P["console"])
+        put("power", "観測基地の電源", A(sites.power_voxels()), P["power"])
+        put("model", "お手本の装置", A(rod.apparatus("お手本", "otehon.blocks.json", "otehon.py")), P["model"])
+        put("task", "課題の装置", A(rod.apparatus("課題", "kadai.blocks.json", "kadai.py")), P["task"])
+        put("console", "ドローンの操縦台", A(drone.remote_voxels()), P["console"])
         put("drone", "ドローン", drone.drone_voxels(), P["drone"])
-        put("gate", "格納庫の遮断機", sites.gate_voxels(), P["gate"])
+        put("gate", "格納庫の遮断機", A(sites.without_base(sites.gate_voxels()), 1), P["gate"])
         put("bike", "ホバーバイク", sites.bike_voxels(), P["bike"])
         if "ship" not in ids:
             put("ship", "ルミナス号", sites.ship_voxels(broken=True), P["ship"])
-        put("sign_base", "看板", sites.sign_voxels("観測基地 ALP-7\n（無人・電源停止中）", width=2.4), P["sign_base"])
+        put("sign_base", "看板", A(sites.without_base(sites.sign_voxels("観測基地 ALP-7\n（無人・電源停止中）", width=2.4)), 1),
+            P["sign_base"])
         if "sign_luna" not in ids:
-            put("sign_luna", "看板", sites.sign_voxels("ようこそ\n自由港ルナ・ポートへ", width=2.6, color=(0.6, 1.0, 1.0)),
+            put("sign_luna", "看板", A(sites.without_base(
+                sites.sign_voxels("ようこそ\n自由港ルナ・ポートへ", width=2.6, color=(0.6, 1.0, 1.0))), 1),
                 (-4.0, -14.0, 180.0, 0.05), self.lmap)
-        put("crane", "搬入クレーン", sites.crane_voxels(), P["crane"])
-        put("factory", "工場", sites.factory_voxels(), P["factory"])
+        put("crane", "搬入クレーン", A(sites.crane_voxels()), P["crane"])
+        put("factory", "工場", A(sites.factory_voxels()), P["factory"])
+        for role, name, vox, place, sink in sites.decorations():          # まわりの飾り（ブロック）
+            put(role, name, vox, place, center=True, sink=sink)
         if self.deck is not None:
             d = self.deck
-            self._put_space("interceptor", "連盟の迎撃艦", space.interceptor_voxels(),
+            self._put_space("interceptor", "連盟の迎撃艦", sites.anchored_inside(space.interceptor_voxels(), space.SHIP_ANCHORS),
                             space.fleet_origin(d), d.frame(0.0), (6.0, 0.0, 12.0))
             # トワのロボット（変形ロボット ツバメ）は第12章の始めに迎撃艦の甲板へ出す（_launch_robot）
             kx, kz = space.KROBOT_START
             self._put_space("krobot", "キンギのロボット", space.krobot_voxels(), d.point(kx, kz, 0.6), d.frame(180.0),
                             (1.5, 0.0, 2.5))
             ux, uz = space.UNIT_AT
-            self._put_space("unit", "再加速の作業台", space.unit_voxels(), d.point(ux, uz, 0.05), d.frame(0.0),
+            self._put_space("unit", "再加速の作業台", A(space.unit_voxels()), d.point(ux, uz, 0.05), d.frame(0.0),
                             (4.0, 0.0, 4.0))
             bx, bz = space.BOOTH_AT
-            self._put_space("booth", "作業台の管制室", space.booth_voxels(), d.point(bx, bz, 0.05), d.frame(0.0),
+            self._put_space("booth", "作業台の管制室", A(space.booth_voxels()), d.point(bx, bz, 0.05), d.frame(0.0),
                             (4.0, 0.0, 3.0))
         if made:
             self._write_scripts(only_missing=True)
@@ -316,20 +326,56 @@ class StoryAddon(SceneryHost, Addon):
             (sd / f"{base}.py").write_text(B.to_python(prog, f"{base}.blocks.json"), encoding="utf-8")
         self._sign_target()
 
-    def _spawn(self, vox, place, m, name, id_=None):
-        """地図の場所に構築物を置く。地面（くぼ地の丸みなど）にめり込まないように、角がすべて地面より上になるまで持ち上げる。"""
+    def _anchor_statics(self):
+        """前の版のセーブ：動かない構築物にアンカーを足す（足もとの下に。迎撃艦は艦橋の床をアンカーに）。"""
+        from main.construct import CORNER_BITS
+        for role in STATIC_ROLES:
+            c = self.con(role)
+            if c is None or c.anchored:
+                continue
+            if role == "interceptor":
+                R, t = c.rigid_fit()
+                for cell in space.SHIP_ANCHORS:
+                    i = c.index.get(tuple(cell))
+                    if i is None:
+                        c.add_voxel(cell, "steel", dict(sites.ANCHOR),
+                                    ((np.asarray(cell, float)[None] + CORNER_BITS) * c.size) @ R.T + t)
+                    elif not c.devs[i]:
+                        c.devs[i] = c._init_device(dict(sites.ANCHOR))
+                c.rebuild()
+                continue
+            V = [(cl, m, d) for cl, m, d in zip(c.cells, c.mats, c.devs)]
+            root = sites.root_cells(V)
+            R, t = c.rigid_fit([c.index[cl] for cl in root] or None)
+            for cell in sites.anchor_cells(V, 1 if c.n_vox < 30 else 2):
+                verts = ((np.asarray(cell, float)[None] + CORNER_BITS) * c.size) @ R.T + t
+                c.add_voxel(cell, "steel", dict(sites.ANCHOR), verts)
+            L.info("アンカーを足しました: %s（%d）", c.name, len(c.anchor_index()))
+
+    def _spawn(self, vox, place, m, name, id_=None, center=False, sink=False):
+        """地図の場所に構築物を置く。地面（くぼ地の丸みなど）にめり込まないように、角がすべて地面より上になるまで持ち上げる
+        （アンカーのブロックは地面に埋まっていてよい）。center：足もとの真ん中を場所に合わせる。sink：持ち上げない。"""
         w = self.world
         x, z, yaw, lift = place
         p, _ = m.ground(x, z, lift)
         R = m.frame(x, z, yaw)
-        c = Construct.from_voxels(w.registry, vox, p, R, size=float(w.settings.get("voxel_size", 0.5)), name=name,
-                                  id_=id_)
+        size = float(w.settings.get("voxel_size", 0.5))
+        if center:
+            body = [cl for cl, _, d in vox if not (d and d.get("def") == "anchor")] or [cl for cl, _, _ in vox]
+            y0 = min(cl[1] for cl in body)
+            foot = np.array([cl for cl in body if cl[1] == y0], float)
+            p = p - R @ (np.array([foot[:, 0].mean() + 0.5, y0, foot[:, 2].mean() + 0.5]) * size)
+        c = Construct.from_voxels(w.registry, vox, p, R, size=size, name=name, id_=id_)
         scenes = self.scenes + (self.port.scenes if m is self.lmap else [])
-        for _ in range(8):                 # 地面と景色の箱（床・台）の上に出るまで持ち上げる
-            dmin = float(m.pl.sdf(c.pos).min())
+        anc = c.anchor_index()
+        rows = np.setdiff1d(np.arange(c.n_vert), (8 * anc[:, None] + np.arange(8)[None]).ravel()) if len(anc) \
+            else np.arange(c.n_vert)
+        for _ in range(0 if sink else 8):          # 地面と景色の箱（床・台）の上に出るまで持ち上げる
+            P = c.pos[rows]
+            dmin = float(m.pl.sdf(P).min())
             for sc in scenes:
                 if sc.map is not None and np.linalg.norm(c.pos[0] - sc.center) < sc.radius + 10:
-                    d, _, _ = box_sdf(c.pos, sc.C[sc.col], sc.A[sc.col], sc.E[sc.col])
+                    d, _, _ = box_sdf(P, sc.C[sc.col], sc.A[sc.col], sc.E[sc.col])
                     dmin = min(dmin, float(d.min()))
             if dmin >= 0.03:
                 break

@@ -42,5 +42,7 @@
    "power": "electric", "power_use": 500, "pipe_port": true,
    "params": {"rate": 2.0, "target_kpa": 101.3, "mode": "fill"}, "cost": {"iron": 6, "parts": 1}},
   {"id": "antenna", "name": "アンテナ", "type": "antenna", "material": "aluminum", "color": [0.82, 0.84, 0.9],
-   "power": "electric", "power_use": 100, "params": {"range": 3000.0}, "cost": {"iron": 4, "parts": 2}}
+   "power": "electric", "power_use": 100, "params": {"range": 3000.0}, "cost": {"iron": 4, "parts": 2}},
+  {"id": "anchor", "name": "アンカー", "type": "anchor", "material": "steel", "color": [0.42, 0.4, 0.36],
+   "cost": {"iron": 8}}
 ]

@@ -647,6 +647,9 @@ def interact(c, i, player=None):
         else:
             st["open"] = float(st.get("set", 1.0)) or 1.0
         return f"{d['name']}: " + ("閉" if st["open"] <= 0 else f"開（{st['open']:.0%}。開き具合は P で）")
+    if t == "anchor":
+        return (f"{d['name']}: {c.name} を惑星に固定しています（ブロック {c.n_vox} 個。"
+                "アクチュエーターの先は動けます。アンカーとはなれた部分は動きます）")
     if t == "crank":
         e = float(dd["params"].get("energy_per_use", 5000))
         st["pending"] = st.get("pending", 0.0) + e

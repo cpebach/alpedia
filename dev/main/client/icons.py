@@ -125,6 +125,13 @@ def _mark(img, kind, col=(255, 255, 255, 230)):
         d.polygon([P(-0.3, 0.06), P(-0.04, 0.06), P(-0.04, -0.26), P(-0.3, -0.26)], fill=col)
         d.polygon([P(0.04, 0.06), P(0.12, 0.3), P(0.34, 0.22), P(0.26, -0.02)], fill=col)
         d.ellipse([P(-0.08, 0.1), P(0.08, -0.06)], fill=(255, 190, 70, 245))
+    elif kind == "anchor":                     # アンカー：いかり（輪・軸・横棒・下の弧と爪）
+        d.ellipse([P(-0.07, 0.38), P(0.07, 0.24)], outline=col, width=w)
+        d.line([P(0.0, 0.24), P(0.0, -0.3)], fill=col, width=w)
+        d.line([P(-0.16, 0.14), P(0.16, 0.14)], fill=col, width=w)
+        d.arc([P(-0.3, 0.0), P(0.3, -0.36)], start=0, end=180, fill=col, width=w)
+        d.polygon([P(-0.36, -0.1), P(-0.24, -0.12), P(-0.3, -0.22)], fill=col)
+        d.polygon([P(0.36, -0.1), P(0.24, -0.12), P(0.3, -0.22)], fill=col)
     elif kind == "bend":                       # ヒンジの曲がる側：曲がった矢印
         d.arc([P(-0.28, 0.28), P(0.28, -0.28)], start=180, end=300, fill=col, width=w + 1)
         d.polygon([P(0.1, -0.34), P(0.3, -0.22), P(0.08, -0.12)], fill=(255, 190, 70, 245))
@@ -227,7 +234,8 @@ def item_name(reg, item):
 # 機器ブロックの表面に貼る記号（デカール）
 # ---------------------------------------------------------------------------
 DECAL_TYPES = ["thruster", "tank", "pipe", "valve", "battery", "generator", "solar", "crank", "computer", "actuator",
-               "processor", "seat", "air_vent", "antenna", "turret", "radar", "launcher", "pump", "hinge", "bend", "piston", "other"]
+               "processor", "seat", "air_vent", "antenna", "turret", "radar", "launcher", "pump", "hinge", "bend", "piston",
+               "anchor", "other"]
 DECAL_VARIANTS = ["plain", "side", "front", "back"]
 DECAL_CELL = 128
 _atlas = None

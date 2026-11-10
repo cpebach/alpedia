@@ -166,16 +166,10 @@ def build_terra(planet):
     s.box(hx, hz, 9.6, 0.5, 12.6, y0=5.0, color=DARK)
     s.box(hx, hz + 6.15, 8.0, 0.25, 0.1, y0=4.6, color=OFF, glow=(1.0, 0.75, 0.2), group="base")
     s.box(hx, hz, 8.0, 0.1, 11.0, color=(0.40, 0.42, 0.45), sink=0.2)
-    s.box(-10.0, 94.75, 2.2, 2.0, 0.4, color=(0.85, 0.75, 0.2))            # 遮断機の横の柵
-    # 街灯
-    for x, z in ((2.2, 50.0), (-2.2, 58.0), (2.2, 66.0), (-2.2, 74.0), (2.2, 82.0), (-2.2, 90.0),
-                 (1.8, 104.0), (-1.8, 118.0), (1.8, 132.0)):
-        s.box(x, z, 0.18, 3.4, 0.18, color=METAL)
-        s.box(x, z, 0.45, 0.3, 0.45, y0=3.4, color=OFF, glow=WARM, group="base")
-    # ソーラーパネル
-    for k in range(4):
-        s.box(-22.0, 48.0 + k * 4.0, 3.0, 0.1, 2.0, y0=1.0, color=NAVY, pitch=-25)
-        s.box(-22.0, 48.0 + k * 4.0, 0.15, 1.0, 0.15, color=METAL)
+    # 遮断機の横の柵はブロック（decorations）
+    # 街灯の明かり（柱はブロック：decorations。電源が入ると点く）。ソーラーパネルもブロック
+    for x, z in LAMPS:
+        s.box(x, z, 0.45, 0.3, 0.45, y0=(LAMP_H + 1) * 0.5 + 0.02, color=OFF, glow=WARM, group="base", collide=False)
     s.point("ring_view", 12.0, 66.0, 1.6)
     # 本館の古い端末（第2章：ミカガの声がする）と、壁の「N」の印（N 財団の旧施設）
     s.box(13.6, 48.3, 1.2, 1.4, 0.5, color=(0.25, 0.3, 0.28), glow=(0.35, 1.0, 0.45), group="base", tag="terminal")
@@ -207,21 +201,8 @@ def build_terra(planet):
             sz = rng.uniform(1.0, 2.2)
             s.box(qx + np.cos(a) * r, qz + np.sin(a) * r, sz, sz * 0.8, sz * 1.2, yaw=rng.uniform(0, 90), color=col,
                   pitch=rng.uniform(-10, 10))
-        s.box(qx, qz - QUARRY_R - 2.0, 0.2, 2.0, 0.2, color=METAL)
-        s.box(qx, qz - QUARRY_R - 2.0, 1.4, 0.7, 0.1, y0=1.6, color=col, glow=tuple(min(1.0, c * 1.2) for c in col),
-              collide=False)
-        s.point(tag, qx, qz, 0.5)
-    # --- ルミナス号の墜落地点：飛び散った破片と、焦げた跡 ---
-    sx, sz = SHIP
-    for k in range(9):
-        a = rng.uniform(-1.2, 1.2) + (np.pi if k % 3 == 0 else 0)
-        r = rng.uniform(5.5, 11)
-        col = (RED, WHITE, DARK)[k % 3]
-        s.box(sx + np.sin(a) * r, sz + np.cos(a) * r, rng.uniform(0.4, 1.0), rng.uniform(0.06, 0.2),
-              rng.uniform(0.3, 0.9), yaw=rng.uniform(0, 180), pitch=rng.uniform(-25, 25), roll=rng.uniform(-25, 25),
-              color=col, sink=0.15)
-    s.box(sx + 7.5, sz - 3.0, 0.2, 2.0, 0.2, color=METAL)                             # 目印の旗
-    s.box(sx + 7.5, sz - 3.0, 0.05, 0.6, 1.0, y0=1.4, color=ORANGE)
+        s.point(tag, qx, qz, 0.5)                    # 立て札はブロック（decorations）
+    # --- ルミナス号の墜落地点：飛び散った破片と目印の旗はブロック（decorations） ---
     # --- エピローグ：発射台と、みんなが集まる広場 ---
     lx, lz = LAUNCH
     s.box(lx, lz, 9.0, 0.3, 9.0, color=CONC, sink=0.3)                               # 発射台
@@ -240,14 +221,183 @@ def build_terra(planet):
     s.point("rocket", gx, lz - 1.6, 1.0)
     px, pz = LPLAZA
     s.box(px, pz, 12.0, 0.16, 9.0, color=(0.55, 0.52, 0.46), sink=0.25)                  # 広場
-    for k, col in enumerate((ORANGE, CYAN, PINK, LIME, WARM)):                           # 旗
-        x = px - 5.0 + k * 2.5
-        s.box(x, pz + 5.2, 0.12, 3.0, 0.12, color=METAL)
-        s.box(x + 0.4, pz + 5.2, 0.7, 0.45, 0.04, y0=2.4, color=col)
-    s.box(px - 4.5, pz - 2.5, 2.4, 0.8, 1.0, color=(0.6, 0.45, 0.3))                        # 机と荷物
-    s.box(px - 4.5, pz - 2.5, 0.4, 0.3, 0.3, y0=0.8, color=ORANGE)
+    # 旗・机と荷物はブロック（decorations）
     s.point("lplaza", px, pz, 1.0)
     return s.finish()
+
+
+# ---------------------------------------------------------------------------
+# アンカー：動かない構築物は、足もとの下にアンカーのブロックを足して地面に埋める（惑星に固定・物理計算なし）
+# ---------------------------------------------------------------------------
+ANCHOR = {"def": "anchor", "dir": 2, "name": "アンカー"}
+_N6 = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+
+
+def root_cells(V):
+    """アクチュエーターに動かされない部分（どのアクチュエーターの出力の先でもない部分）のセルの集合。"""
+    cells = {tuple(c) for c, _, _ in V}
+    outs = {}
+    for c, _, d in V:
+        if d and d.get("def") in ("actuator", "piston", "hinge"):
+            n = _N6[int(d.get("dir", 2))]
+            outs[tuple(c)] = (c[0] + n[0], c[1] + n[1], c[2] + n[2])
+    cut = {frozenset((a, b)) for a, b in outs.items()}
+    parent = {c: c for c in cells}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for c in cells:
+        for n in _N6:
+            nb = (c[0] + n[0], c[1] + n[1], c[2] + n[2])
+            if nb in cells and frozenset((c, nb)) not in cut:
+                parent[find(c)] = find(nb)
+    driven = {find(b) for b in outs.values() if b in cells}
+    return {c for c in cells if find(c) not in driven}
+
+
+def anchor_cells(V, step=2):
+    """V の足もと（いちばん下の段で、アクチュエーターに動かされない部分）の下に置くアンカーのセル。
+    step ごと（と四隅）に1つ。"""
+    root = root_cells(V)
+    if not root:
+        return []
+    y0 = min(c[1] for c in root)
+    foot = sorted(c for c in root if c[1] == y0)
+    xs, zs = [c[0] for c in foot], [c[2] for c in foot]
+    pick = {c for c in foot if (c[0] - min(xs)) % step == 0 and (c[2] - min(zs)) % step == 0}
+    for cx in (min(xs), max(xs)):                     # 四隅にいちばん近い足もと
+        for cz in (min(zs), max(zs)):
+            pick.add(min(foot, key=lambda c: (c[0] - cx) ** 2 + (c[2] - cz) ** 2))
+    return [(x, y - 1, z) for x, y, z in sorted(pick)]
+
+
+def anchored(V, step=2):
+    """V にアンカーを足したもの（足もとの下に埋める）。"""
+    return list(V) + [(c, "steel", dict(ANCHOR)) for c in anchor_cells(V, step)]
+
+
+def anchored_inside(V, cells):
+    """V の中のセル cells をアンカーに置き換えたもの（宇宙の構築物など、下に地面がないとき）。"""
+    cells = {tuple(c) for c in cells}
+    return [((c, "steel", dict(ANCHOR)) if tuple(c) in cells and not d else (c, m, d)) for c, m, d in V]
+
+
+def without_base(V):
+    """岩の台（倒れないための重し）を外して1段下げたもの。アンカーで固定するので台はいらない（軽くなる）。"""
+    rest = [(c, m, d) for c, m, d in V if not (c[1] == 0 and m == "rock" and not d)]
+    return [((c[0], c[1] - 1, c[2]), m, d) for c, m, d in rest]
+
+
+# ---------------------------------------------------------------------------
+# まわりの飾り（ブロック。アンカーで地面に固定）
+# ---------------------------------------------------------------------------
+LAMPS = ((2.2, 50.0), (-2.2, 58.0), (2.2, 66.0), (-2.2, 74.0), (2.2, 82.0), (-2.2, 90.0),
+         (1.8, 104.0), (-1.8, 118.0), (1.8, 132.0))
+LAMP_H = 7                       # 街灯の柱の高さ（ブロック）。明かりは景色の箱（電源が入ると点く）
+
+
+def lamp_voxels():
+    return [((0, y, 0), "steel", None) for y in range(LAMP_H)] + [((0, LAMP_H, 0), "hull_dark", None)]
+
+
+def solar_stand_voxels():
+    """ソーラーパネルの台：柱 2 本と、太陽光パネル 3 枚（本物の機器）。"""
+    V = [((x, y, 0), "steel", None) for x in (-1, 1) for y in (0, 1)]
+    V += [((x, 2, 0), "glass", {"def": "solar_panel", "dir": 2, "name": "太陽光パネル"}) for x in (-1, 0, 1)]
+    V += [((x, 2, 1), "solar_navy", None) for x in (-1, 0, 1)]
+    return V
+
+
+def flag_voxels(cloth, h=6, w=2):
+    """旗：柱と、上の布（w×2）。"""
+    V = [((0, y, 0), "steel", None) for y in range(h)]
+    V += [((x, y, 0), cloth, None) for x in range(1, w + 1) for y in (h - 2, h - 1)]
+    return V
+
+
+def signpost_voxels(board):
+    """立て札：柱 3 段と板 3×2。"""
+    V = [((0, y, 0), "steel", None) for y in range(3)]
+    V += [((x, y, 0), board, None) for x in (-1, 0, 1) for y in (3, 4)]
+    return V
+
+
+def debris_voxels(seed):
+    """ルミナス号の破片（地面に刺さったまま）。下の1つがアンカー。"""
+    rng = _rng(seed)
+    mat = ("hull_red", "hull_white", "hull_dark")[seed % 3]
+    V = [((0, 0, 0), mat, None)]
+    for k in range(int(rng.integers(1, 4))):
+        c = V[-1][0]
+        n = _N6[int(rng.choice([0, 1, 2, 4, 5]))]
+        nb = (c[0] + n[0], max(0, c[1] + n[1]), c[2] + n[2])
+        if all(nb != v[0] for v in V):
+            V.append((nb, mat, None))
+    return V + [((0, -1, 0), "steel", dict(ANCHOR))]
+
+
+def fence_voxels(w=4, h=4):
+    return [((x, y, 0), "bar_red" if (x + y) % 2 == 0 else "bar_white", None) for x in range(w) for y in range(h)]
+
+
+def crates_voxels(n=3):
+    """木箱の山（2×2×2 を n 個）。"""
+    V = []
+    spots = ((0, 0, 0), (2, 0, 0), (1, 2, 0), (0, 0, 2))[:n]
+    for ox, oy, oz in spots:
+        V += [((ox + x, oy + y, oz + z), "wood", None) for x in (0, 1) for y in (0, 1) for z in (0, 1)]
+    return V
+
+
+def barrels_voxels():
+    """ドラム缶（赤・青、2 段）。"""
+    return [((x, y, z), "hull_red" if (x + z) % 2 else "hull_blue", None) for x in (0, 1) for z in (0, 1) for y in (0, 1)]
+
+
+def desk_voxels():
+    """広場の机と荷物。"""
+    V = [((x, 1, z), "wood", None) for x in range(4) for z in (0, 1)]
+    V += [((x, 0, z), "wood", None) for x in (0, 3) for z in (0, 1)]
+    V += [((1, 2, 0), "hull_orange", None), ((2, 2, 1), "hull_blue", None)]
+    return V
+
+
+def decorations():
+    """[(役, 名前, ボクセル（アンカーつき）, 地図の場所 (x, z, 向き, 高さ), 地面に刺す)]。
+    地面に刺す物（破片）は持ち上げずに置く。"""
+    out = []
+    for k, (x, z) in enumerate(LAMPS):
+        out.append((f"deco_lamp{k}", "街灯", anchored(lamp_voxels()), (x, z, 0.0, 0.0), False))
+    for k in range(4):
+        out.append((f"deco_solar{k}", "ソーラーパネル", anchored(solar_stand_voxels(), 1), (-22.0, 48.0 + k * 4.0, 0.0, 0.0),
+                    False))
+    sx, sz = SHIP
+    out.append(("deco_flag_ship", "目印の旗", anchored(flag_voxels("hull_orange", 4)), (sx + 7.5, sz - 3.0, 0.0, 0.0),
+                False))
+    rng = _rng(31)
+    for k in range(9):
+        a = rng.uniform(-1.2, 1.2) + (np.pi if k % 3 == 0 else 0)
+        r = rng.uniform(5.5, 11)
+        out.append((f"deco_debris{k}", "ルミナス号の破片", debris_voxels(k),
+                    (sx + np.sin(a) * r, sz + np.cos(a) * r, float(rng.uniform(0, 180)), -0.2), True))
+    for (qx, qz), board, tag in ((QUARRY_ORE, "rock", "ore"), (QUARRY_SULFUR, "hull_yellow", "sulfur")):
+        out.append((f"deco_sign_{tag}", "採掘場の立て札", anchored(signpost_voxels(board)),
+                    (qx, qz - QUARRY_R - 2.0, 0.0, 0.0), False))
+    px, pz = LPLAZA
+    for k, cloth in enumerate(("hull_orange", "hull_blue", "hull_pink", "hull_green", "hull_yellow")):
+        out.append((f"deco_flag{k}", "広場の旗", anchored(flag_voxels(cloth)), (px - 5.0 + k * 2.5, pz + 5.2, 0.0, 0.0),
+                    False))
+    out.append(("deco_desk", "机と荷物", anchored(desk_voxels()), (px - 4.5, pz - 2.5, 0.0, 0.0), False))
+    out.append(("deco_fence", "格納庫の柵", anchored(fence_voxels(), 1), (-10.0, 94.75, 0.0, 0.0), False))
+    fx, fz = FACTORY
+    out.append(("deco_crates_factory", "木箱", anchored(crates_voxels(3)), (fx - 5.5, fz + 6.0, 20.0, 0.0), False))
+    out.append(("deco_barrels_factory", "ドラム缶", anchored(barrels_voxels(), 1), (fx + 5.0, fz - 6.0, 0.0, 0.0), False))
+    cx, cz = CRANE
+    out.append(("deco_crates_crane", "木箱", anchored(crates_voxels(4)), (cx + 6.5, cz - 4.0, -15.0, 0.0), False))
+    return out
 
 
 # ---------------------------------------------------------------------------
