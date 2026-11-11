@@ -616,6 +616,30 @@ class TestScripts(CoreCase):
         self.assertTrue(st["display"]["text"].startswith("g=("))
 
 
+class TestLight(CoreCase):
+    """ライト：バッテリーの電気で光る（enabled のときだけ）。まとまり（group）で点けたり消したりできる。"""
+
+    def test_light_needs_power_and_group(self):
+        from main import buildkit
+        w = self.world()
+        lit = self.put(w, [((0, 0, 0), "steel", {"def": "battery", "dir": 2, "state": {"charge": 1.0e6}}),
+                           ((1, 0, 0), "glass", {"def": "light", "dir": 2, "state": {"enabled": True, "group": "g"}})])
+        dark = self.put(w, [((0, 0, 0), "glass", {"def": "light", "dir": 2, "state": {"enabled": True}})], extra=8.0)
+        self.run_for(w, 0.3)
+        L1 = next(d for d in lit.devs if d and d["def"] == "light")
+        L2 = next(d for d in dark.devs if d and d["def"] == "light")
+        bat = next(d for d in lit.devs if d and d["def"] == "battery")
+        self.assertTrue(L1["state"].get("active"), "バッテリーがあれば光る")
+        self.assertFalse(L2["state"].get("active"), "電気が無ければ光らない")
+        self.assertLess(bat["state"]["charge"], 1.0e6, "電気を使う")
+        self.assertEqual(buildkit.set_light_group(w, "g", False), 1)
+        self.run_for(w, 0.1)
+        self.assertFalse(L1["state"].get("active"), "消すと光らない")
+        c0 = bat["state"]["charge"]
+        self.run_for(w, 0.3)
+        self.assertAlmostEqual(bat["state"]["charge"], c0, delta=1e-6)
+
+
 class TestRadio(CoreCase):
     def _station(self, w, offset, script, antenna=True):
         vox = [((0, 0, 0), "steel", {"def": "battery", "dir": 2}),

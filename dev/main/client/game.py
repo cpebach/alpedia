@@ -1284,6 +1284,9 @@ class Game:
             v.update_decals(origin, origin, decal_dist)
             v.update_displays(origin, far)
         self._lod.update(lod_list, origin)
+        if not hasattr(self, "_lights"):
+            self._lights = render.LightLayer(self.scene_root)
+        self._lights.update([w.constructs[k] for k in self._loaded if k in w.constructs], origin, float(w.time))
         for a in self.addons:
             a.update(origin, far)
         npl = w.nearest_planet(w.player.pos)

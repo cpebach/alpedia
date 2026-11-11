@@ -2,7 +2,7 @@
 住居ブロック・通路・ソーラーパネル・電波の皿・止めてある探査車。
 
 大きな殻（ドーム）は 1 m のブロック、中の家具は 0.5 m のブロック（別の構築物）。
-明かり・受付（触れる物）・発着場は景色の箱のまま（port.build）。
+受付（触れる物）・発着場の台は景色の箱のまま（port.build）。明かりはライトのブロック（バッテリーで光る）。
 """
 import numpy as np
 
@@ -12,6 +12,11 @@ TOWER = (-15.0, 2.0)
 DOMES = ((14.0, 8.0, 7.0, "hull_teal", "hab"), (4.0, 22.0, 9.0, "hull_green", "green"),
          (-14.0, 20.0, 5.5, "hull_pink", "lab"))
 HOUSES = ((20.0, -6.0), (26.0, 2.0), (22.0, 16.0))
+HOUSE_LIGHTS = ((1.0, 0.86, 0.55), (0.5, 0.95, 1.0), (1.0, 0.55, 0.8))
+CYAN = (0.5, 0.95, 1.0)
+RED = (1.0, 0.25, 0.2)
+PINK = (1.0, 0.45, 0.75)
+WARM = (1.0, 0.86, 0.55)
 TUBES = (((14.0, 1.0), (20.0, -4.0)), ((21.0, 8.0), (26.0, 4.0)), ((18.0, 12.0), (21.0, 14.0)),
          ((8.0, 14.0), (8.5, 10.0)), ((-9.0, 18.0), (-3.0, 18.0)), ((-12.0, 5.0), (-13.0, 15.0)))
 ROVERS = ((6.0, -10.0, 30.0, "hull_orange"), (-6.0, -11.0, -20.0, "hull_white"))
@@ -48,7 +53,18 @@ def tower():
         k.console(x, 33, z, f, text="", mat="hull_navy")
     k.desk(4, 33, 6, "+z", w=4, mat="hull_navy")
     k.chair(5, 33, 8, "-z", mat="carpet_blue")
-    k.fill(5, 39, 5, 5, 44, 5, "steel")                                    # 柱（上に灯：景色の箱）
+    k.fill(5, 39, 5, 5, 44, 5, "steel")                                    # 柱
+    # 明かり（ライトのブロック。電源は受付の隅のバッテリー）
+    k.battery(10, 1, 1)
+    k.light(5, 45, 5, RED, blink=1.0, name="塔の上の灯")
+    k.light(11, 5, 5, WARM, name="入口の明かり")
+    k.light(11, 5, 6, WARM, name="入口の明かり")
+    for z in range(1, 11):
+        if z not in (5, 6):
+            k.light(12, 6, z, PINK, name="看板の光")
+    for x, z in ((3, 3), (8, 3), (3, 8), (8, 8)):
+        k.light(x, 7, z, WARM, name="天井の明かり")
+    k.light(5, 37, 5, WARM, name="管制室の明かり")
     return anchored(k.voxels(), 3)
 
 
@@ -92,8 +108,8 @@ def dome_inside(r, kind):
     return anchored(k.voxels(), 3)
 
 
-def house():
-    """住居ブロック（5 m × 4 m、高さ 3 m）：入口（-Z）・窓・ベッド・机・棚。"""
+def house(color=WARM):
+    """住居ブロック（5 m × 4 m、高さ 3 m）：入口（-Z）・窓・ベッド・机・棚・天井と入口の上の明かり。"""
     k = Kit()
     k.shell(0, 0, 0, 9, 5, 7, "hull_cream", floor="wood", roof=False)
     k.fill(-1, 6, -1, 10, 6, 8, "hull_dark")
@@ -106,11 +122,16 @@ def house():
     k.chair(7, 1, 4, "-z")
     k.shelf(1, 1, 6, "-z", w=2, h=3)
     k.planter(8, 1, 1, w=1, d=1, h=2)
+    k.battery(8, 1, 6)
+    for x in (2, 7):
+        k.light(x, 5, 3, color, name="天井の明かり")
+    k.light(4, 5, -1, color, name="入口の明かり")
+    k.light(5, 5, -1, color, name="入口の明かり")
     return anchored(k.voxels(), 3)
 
 
 def tube(length):
-    """通路（幅 2 m・高さ 2 m の四角い筒。両端は開いている）。前 = +Z。"""
+    """通路（幅 2 m・高さ 2 m の四角い筒。両端は開いている。天井に明かり）。前 = +Z。"""
     k = Kit()
     n = max(2, int(round(length / 0.5)))
     for z in range(n):
@@ -121,6 +142,9 @@ def tube(length):
         if z % 4 == 2:
             k.windows(-2, 1, z, -2, 2, z)
             k.windows(1, 1, z, 1, 2, z)
+        if z % 4 == 0:
+            k.light(-1, 3, z, CYAN, name="天井の明かり")
+    k.battery(-2, 0, 0)
     return anchored(k.voxels(), 4)
 
 
@@ -135,7 +159,7 @@ def solar_stand():
 
 
 def dish():
-    """電波の皿：柱と、上の皿・灯（景色の箱）。"""
+    """電波の皿：柱と、上の皿・赤い灯（ライト。柱の下にバッテリー）。"""
     k = Kit()
     k.fill(0, 0, 0, 0, 7, 0, "steel")
     for x in range(-3, 4):
@@ -143,6 +167,17 @@ def dish():
             if x * x + z * z <= 10:
                 k.put(x, 8 + (1 if x * x + z * z > 5 else 0), z, "hull_white")
     k.fill(0, 9, 0, 0, 10, 0, "steel")
+    k.battery(0, 1, 0)
+    k.light(0, 11, 0, RED, blink=1.4, name="皿の灯")
+    return anchored(k.voxels(), 1)
+
+
+def light_post(color, blink=None, h=2):
+    """発着場の灯：バッテリーの台・柱・上にライト。"""
+    k = Kit()
+    k.battery(0, 0, 0)
+    k.fill(0, 1, 0, 0, h, 0, "steel")
+    k.light(0, h + 1, 0, color, blink=blink, name="発着場の灯")
     return anchored(k.voxels(), 1)
 
 
@@ -166,7 +201,7 @@ def items():
         out.append((f"dome_{kind}", "ドーム", dome(r, mat, kind), (x, z, 0.0, 0.0), 1.0))
         out.append((f"dome_{kind}_inside", "ドームの中", dome_inside(r, kind), (x, z, 0.0, 0.0), 0.5))
     for k, (x, z) in enumerate(HOUSES):
-        out.append((f"house{k}", "住居ブロック", house(), (x, z, 0.0, 0.0), 0.5))
+        out.append((f"house{k}", "住居ブロック", house(HOUSE_LIGHTS[k % 3]), (x, z, 0.0, 0.0), 0.5))
     for k, ((x0, z0), (x1, z1)) in enumerate(TUBES):
         L_ = float(np.hypot(x1 - x0, z1 - z0))
         yaw = -np.degrees(np.arctan2(x1 - x0, z1 - z0))
@@ -174,6 +209,11 @@ def items():
     for k in range(5):
         out.append((f"solar{k}", "ソーラーパネル", solar_stand(), (-26.0, -10.0 + k * 4.2, 0.0, 0.0), 0.5))
     out.append(("dish", "電波の皿", dish(), (10.0, -16.0, 0.0, 0.0), 0.5))
+    e = 6.0 + 0.9                                                         # 発着場（PAD_HALF）のふちの外
+    for k, (x, z) in enumerate(((-e, -e), (e, -e), (-e, e), (e, e))):
+        out.append((f"padlight{k}", "発着場の灯", light_post(CYAN, 1.6, h=2), (x, z, 0.0, 0.0), 0.5))
+    for k in range(6):                                                     # 発着場までの誘導灯
+        out.append((f"guide{k}", "誘導灯", light_post(RED, 0.8, h=0), (0.0, -6.0 - 2.0 - k * 2.5, 0.0, 0.0), 0.5))
     for k, (x, z, yaw, col) in enumerate(ROVERS):
         out.append((f"rover{k}", "探査車", rover(col), (x, z, yaw, 0.0), 0.5))
     return out

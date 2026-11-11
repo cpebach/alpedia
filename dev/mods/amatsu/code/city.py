@@ -79,18 +79,9 @@ def build(center):
     # 上の甲板（広い外壁の作業場）
     d = Deck(c, R)
     s.raw(d.point(0, 0, -1.0), R, (DECK_W / 2, 1.0, DECK_L / 2), color=(0.70, 0.72, 0.75))
-    for x in (-DECK_W / 2 + 0.6, DECK_W / 2 - 0.6):                                       # 縁の明かり
-        for j in range(-9, 10):
-            s.raw(d.point(x, j * 10.0, 0.08), R, (0.3, 0.08, 1.2), color=OFF, glow=CYAN, blink=2.4, collide=False)
     for j in range(-4, 5):                                                                # 甲板の線
         s.raw(d.point(0, j * 22.0, 0.02), R, (DECK_W / 2 - 2, 0.02, 0.25), color=(0.45, 0.47, 0.52), collide=False)
-    for x, z in ((-22, -70), (22, -40), (-18, 30), (20, 75), (-24, 80)):   # 甲板の建物はブロック（blocks.py）。屋根の明かり
-        s.raw(d.point(x, z, 4.1), R, (2.0, 0.08, 4.0), color=OFF, glow=WARM, collide=False)
-    # 非常灯（落ちていく間、赤く点く：lights の group）
-    for j in range(-8, 9):
-        for x in (-DECK_W / 2 + 3.0, DECK_W / 2 - 3.0):
-            s.raw(d.point(x, j * 12.0 + 6.0, 0.4), R, (0.4, 0.4, 0.4), color=OFF, glow=REDL, group="alert",
-                  collide=False)
+    # 甲板の建物・縁の明かり・非常灯（落ちていく間、赤く点く）はブロック（blocks.py。ライト）
     s.point_raw("center", c)
     s.point_raw("deck", d.top)
     s.point_raw("deck_up", up)

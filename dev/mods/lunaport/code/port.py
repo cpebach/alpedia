@@ -6,8 +6,7 @@
 """
 import numpy as np
 
-from main.scenery import (CYAN, DARK, GLASS, GREEN, METAL, MOON_G, NAVY, OFF, ORANGE, PINK, REDL, WARM, WHITE,
-                          Map, Scenery, unit as _unit)
+from main.scenery import DARK, MOON_G, OFF, Map, Scenery, unit as _unit
 
 
 def _rng(seed):
@@ -79,37 +78,18 @@ def build(planet, terra):
     s.raw(T - up * depth / 2, R, (PAD_HALF, depth / 2, PAD_HALF), color=(0.30, 0.31, 0.34))
     s.raw(T + up * 0.03, R, (3.0, 0.03, 0.25), color=OFF, glow=(1.0, 0.85, 0.2), collide=False)
     s.raw(T + up * 0.03, R, (0.25, 0.03, 3.0), color=OFF, glow=(1.0, 0.85, 0.2), collide=False)
-    for k in range(12):
-        a = 2 * np.pi * k / 12
-        c = T + up * 0.06 + R[:, 0] * np.cos(a) * (PAD_HALF - 0.6) + R[:, 2] * np.sin(a) * (PAD_HALF - 0.6)
-        s.raw(c, R, (0.18, 0.06, 0.18), color=OFF, glow=CYAN, blink=1.6, collide=False)
     s.points["pad"] = T
     s.points["pad_up"] = up
-    # 発着場までの誘導灯
-    for k in range(6):
-        s.box(0.0, -PAD_HALF - 2.0 - k * 2.5, 0.4, 0.3, 0.4, color=OFF, glow=REDL, blink=0.8, collide=False)
-    # 管制塔（受付に管制官がいる）：塔はブロック（blocks.tower）。上の灯・入口の上の明かり
+    # 発着場の灯・誘導灯・建物の明かりはライトのブロック（blocks.py。バッテリーで光る）
+    # 管制塔（受付に管制官がいる）：塔はブロック（blocks.tower）
     tx, tz = -15.0, 2.0
-    s.box(tx + 0.25, tz + 0.25, 0.6, 0.6, 0.6, y0=22.6, color=OFF, glow=REDL, blink=1.0, collide=False)
-    s.box(tx + 3.06, tz + 0.25, 0.08, 0.2, 1.4, y0=2.1, color=OFF, glow=(0.95, 0.8, 0.5), collide=False)
     s.box(tx + 3.3, tz + 2.0, 0.6, 1.1, 0.8, color=(0.25, 0.3, 0.4), glow=(0.5, 0.95, 1.0), tag="desk")  # 受付
     s.point("desk", tx + 4.2, tz + 2.0, 0.0)
     s.point("plaza", 6.0, -2.0, 0.0)
-    s.box(tx + 3.1, tz, 0.1, 0.6, 5.0, y0=3.0, color=OFF, glow=PINK)                  # 看板の光
     # ドーム（居住・温室・研究）・住居・通路・ソーラーパネル・電波の皿・探査車はブロック（blocks.py）
     # 温室の中が見えるように、ドームの前に光る畑
     for k in range(4):
         s.box(-1.0 + k * 3.3, 12.4, 2.6, 0.25, 1.0, color=(0.2, 0.35, 0.18), glow=(0.35, 0.9, 0.35), collide=False)
-    # 住居の窓の明かり・通路の天井の明かり・電波の皿の灯
-    for k, (x, z) in enumerate(((20.0, -6.0), (26.0, 2.0), (22.0, 16.0))):
-        s.box(x + 0.25, z - 2.06, 1.0, 0.2, 0.06, y0=2.55, color=OFF, glow=(WARM, CYAN, PINK)[k], collide=False)
-    for (x0, z0), (x1, z1) in (((14.0, 1.0), (20.0, -4.0)), ((21.0, 8.0), (26.0, 4.0)), ((18.0, 12.0), (21.0, 14.0)),
-                               ((8.0, 14.0), (8.5, 10.0)), ((-9.0, 18.0), (-3.0, 18.0)), ((-12.0, 5.0), (-13.0, 15.0))):
-        cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
-        L_ = float(np.hypot(x1 - x0, z1 - z0))
-        yaw = -np.degrees(np.arctan2(x1 - x0, z1 - z0))
-        s.box(cx, cz, 0.2, 0.06, L_, y0=2.02, yaw=yaw, color=OFF, glow=CYAN, collide=False)
-    s.box(10.25, -15.75, 0.3, 0.3, 0.3, y0=5.5, color=OFF, glow=REDL, blink=1.4, collide=False)
     # 岩
     for k in range(14):
         a = rng.uniform(0, 2 * np.pi)

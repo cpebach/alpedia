@@ -44,5 +44,7 @@
   {"id": "antenna", "name": "アンテナ", "type": "antenna", "material": "aluminum", "color": [0.82, 0.84, 0.9],
    "power": "electric", "power_use": 100, "params": {"range": 3000.0}, "cost": {"iron": 4, "parts": 2}},
   {"id": "anchor", "name": "アンカー", "type": "anchor", "material": "steel", "color": [0.42, 0.4, 0.36],
-   "cost": {"iron": 8}}
+   "cost": {"iron": 8}},
+  {"id": "light", "name": "ライト", "type": "light", "material": "glass", "color": [0.62, 0.58, 0.46],
+   "power": "electric", "power_use": 40, "params": {"color": [1.0, 0.86, 0.55]}, "cost": {"iron": 2, "silica": 2}}
 ]

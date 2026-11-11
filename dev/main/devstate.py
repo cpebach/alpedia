@@ -69,7 +69,11 @@ SCHEMA = {
                   "store": F("dict", {}),                       # 中にある物（原料と、作った物）
                   "working": F("bool", optional=True, saved=False)},
     "seat": {},
-    "anchor": {},                                              # アンカー：状態なし（あれば構築物ごと固定）
+    "anchor": {},
+    # ライト：enabled＝点ける（E で切り替え）。color＝光の色（無ければ機器の params）。blink＝点滅の周期（秒）。
+    # group＝明かりのまとまり（MOD が group ごとに点けたり消したりする。例：基地の明かり・非常灯）
+    "light": {"enabled": F("bool", True), "color": F("list", optional=True), "blink": F("float", optional=True),
+              "group": F("str", optional=True)},                                              # アンカー：状態なし（あれば構築物ごと固定）
     "air_vent": {"mode": F("str", _p("mode", "fill")), "enabled": F("bool", True),
                  "cavity": F("bool", optional=True, saved=False)},
     "antenna": {"enabled": F("bool", True)},

@@ -319,6 +319,11 @@ def remote_program():
 SHIP_VALVE_NAMES = {(0, 0): "バルブ 後左", (2, 0): "バルブ 後", (4, 0): "バルブ 後右", (0, 2): "バルブ 左",
                     (4, 2): "バルブ 右", (0, 4): "バルブ 前左", (2, 4): "バルブ 前", (4, 4): "バルブ 前右"}
 SHIP_THRUST = 150000.0 * 8   # 推進機8つの最大推力 (N)
+BOOSTER_THRUST = 150000.0 * 2  # ブースター1つ（推進機2つ）の最大推力 (N)
+
+
+def attached(dev):
+    return {"type": "devbool", "dev": dev, "prop": "結合している"}
 SHIP_KEEP = 0.01
 CRUISE = 70.0                # 巡航の速さ (m/s)
 BRAKE = 2.5                  # 減速の強さ (m/s²)
@@ -347,7 +352,14 @@ def moon_program(pad, pad_up):
         # 誰も座っていなければ待つ
         iff(both(cmp("<", V("段階"), N(ASCENT)), {"type": "not", "a": seated()}),
             [setv("段階", N(WAIT)), setv("時刻0", S("time"))]),
-        setv("最大加速", div(N(SHIP_THRUST), S("mass"))),
+        # 多段式：ブースター（前・後）がついていれば、その推進機の分も足す。燃料が無くなったら切り離す
+        setv("推力", N(SHIP_THRUST)),
+    ] + [iff(attached(f"ブースターの留め具 {side}"), [chg("推力", N(BOOSTER_THRUST))]) for side in ("前", "後")] + [
+        iff(both(attached("ブースターの留め具 前"),
+                 cmp("<", {"type": "devval", "dev": "ブースター前のタンク", "prop": "燃料"}, N(8))),
+            [stmt("act_detach", dev="ブースターの留め具 前"), stmt("act_detach", dev="ブースターの留め具 後"),
+             say("ブースターを切り離しました（第1段 → 第2段）")]),
+        setv("最大加速", div(V("推力"), S("mass"))),
         setvv("発着場へ", vto(pad)),
         setv("高さ", mul(vdot(VV("発着場へ"), PADUP), N(-1))),
         setvv("行きたい速度", vec(0, 0, 0)),
@@ -434,6 +446,11 @@ def moon_program(pad, pad_up):
         if ox:
             terms.append(mul(V("左右"), N(ox * 0.5)))
         fly.append(valve(name, add(fn("マイナスなら0", add(*terms)), N(SHIP_KEEP))))
+    for side in ("前", "後"):                         # ブースターは同じ出力で（前後に1つずつなので、傾きは変わらない）
+        for k in (1, 2):
+            fly.append(if_else(attached(f"ブースターの留め具 {side}"),
+                               [valve(f"バルブ ブースター{side}{k}", add(V("出力"), N(SHIP_KEEP)))],
+                               [valve(f"バルブ ブースター{side}{k}", N(0))]))
     fly += [
         stmt("ignite", dev="*"),
         # 矢印を見せる：緑＝行きたい速度、黄＝推力の向き、赤＝重力

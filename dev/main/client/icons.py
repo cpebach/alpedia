@@ -125,6 +125,13 @@ def _mark(img, kind, col=(255, 255, 255, 230)):
         d.polygon([P(-0.3, 0.06), P(-0.04, 0.06), P(-0.04, -0.26), P(-0.3, -0.26)], fill=col)
         d.polygon([P(0.04, 0.06), P(0.12, 0.3), P(0.34, 0.22), P(0.26, -0.02)], fill=col)
         d.ellipse([P(-0.08, 0.1), P(0.08, -0.06)], fill=(255, 190, 70, 245))
+    elif kind == "light":                      # ライト：電球と光
+        d.ellipse([P(-0.16, 0.26), P(0.16, -0.06)], fill=(255, 230, 150, 240))
+        d.rectangle([P(-0.08, -0.06), P(0.08, -0.2)], fill=col)
+        for k in range(7):
+            a = math.pi * (0.15 + 0.7 * k / 6)
+            d.line([P(0.24 * math.cos(a), 0.1 + 0.24 * math.sin(a)), P(0.34 * math.cos(a), 0.1 + 0.34 * math.sin(a))],
+                   fill=(255, 230, 150, 230), width=w)
     elif kind == "anchor":                     # アンカー：いかり（輪・軸・横棒・下の弧と爪）
         d.ellipse([P(-0.07, 0.38), P(0.07, 0.24)], outline=col, width=w)
         d.line([P(0.0, 0.24), P(0.0, -0.3)], fill=col, width=w)
@@ -235,7 +242,7 @@ def item_name(reg, item):
 # ---------------------------------------------------------------------------
 DECAL_TYPES = ["thruster", "tank", "pipe", "valve", "battery", "generator", "solar", "crank", "computer", "actuator",
                "processor", "seat", "air_vent", "antenna", "turret", "radar", "launcher", "pump", "hinge", "bend", "piston",
-               "anchor", "other"]
+               "anchor", "light", "other"]
 DECAL_VARIANTS = ["plain", "side", "front", "back"]
 DECAL_CELL = 128
 _atlas = None

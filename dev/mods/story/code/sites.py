@@ -122,35 +122,23 @@ def build_terra(planet):
                        (-8.0, 62.0, 13.0, 2.4), (8.0, 62.0, 13.0, 2.4), (-7.0, 92.0, 14.0, 3.0),
                        (0.0, 118.0, 2.6, 30.0)):
         s.box(x, z, w, 0.18, d, color=CONC, sink=0.25)                 # 道
-    # 本館はブロック（buildings.main_hall）。窓の明かり・扉の上の明かり・アンテナの灯（発電を始めると点く）
-    for k in range(4):
-        s.box(6.2 + k * 2.4, 48.42, 1.4, 1.1, 0.06, y0=2.4, color=OFF, glow=WARM, group="base", collide=False)
-    s.box(10.0, 48.42, 1.4, 0.2, 0.06, y0=2.05, color=OFF, glow=(0.95, 0.75, 0.35), group="base", collide=False)
-    s.box(12.25, 53.75, 0.5, 0.5, 0.5, y0=9.0, color=OFF, glow=REDL, group="base", blink=1.2, collide=False)
+    # 本館はブロック（buildings.main_hall）。明かりはライトのブロック（発電を始めると点く）
     s.box(10.0, 48.42, 6.0, 0.6, 0.1, y0=3.6, color=OFF, glow=CYAN, group="base")             # 看板の光
-    # 電源設備の小屋・試験台の作業小屋はブロック（buildings）。作業小屋のはりの下の明かり
-    s.box(-12.5, 62.25, 11.0, 0.12, 0.3, y0=4.85, color=OFF, glow=WARM, group="base", collide=False)
-    # ドローン発着場
+    # 電源設備の小屋・試験台の作業小屋はブロック（buildings。明かりはライト）
+    # ドローン発着場（ふちと四隅の明かりはブロック：buildings.drone_pad_frame）
     s.box(12.0, 72.0, 4.0, 0.15, 4.0, color=DARK, sink=0.2)
-    for x, z in ((10.1, 70.1), (13.9, 70.1), (10.1, 73.9), (13.9, 73.9)):
-        s.box(x, z, 0.3, 0.12, 0.3, y0=0.15, color=OFF, glow=LIME, group="base", collide=False)
-    # 電波塔はブロック（buildings.radio_tower）。上の灯と、ドローンでくぐる輪
-    tx, tz = 20.0, 80.0
-    s.box(tx + 0.25, tz + 0.25, 0.6, 0.6, 0.6, y0=24.0, color=OFF, glow=REDL, blink=1.0, collide=False)
+    # 電波塔はブロック（buildings.radio_tower。上の赤い灯はライト）と、ドローンでくぐる輪
     rx, rz, ry = RING
     for k in range(24):
         a = 2 * np.pi * k / 24
         s.box(rx + np.cos(a) * RING_R, rz + np.sin(a) * RING_R, 0.7, 0.3, 0.3, y0=ry, yaw=-np.degrees(a) + 90,
               color=OFF, glow=CYAN, collide=False, blink=2.0, ground=True)
     s.point("ring", rx, rz, ry + 0.1)
-    # 格納庫（正面は +Z の側。入口に遮断機）：壁と屋根はブロック（buildings.hangar）。床と入口の明かり
+    # 格納庫（正面は +Z の側。入口に遮断機）：壁と屋根・明かりはブロック（buildings.hangar）。床
     hx, hz = -13.0, 86.0
-    s.box(hx, hz + 6.4, 8.0, 0.25, 0.1, y0=4.6, color=OFF, glow=(1.0, 0.75, 0.2), group="base", collide=False)
     s.box(hx, hz, 8.0, 0.1, 11.0, color=(0.40, 0.42, 0.45), sink=0.2)
     # 遮断機の横の柵はブロック（decorations）
-    # 街灯の明かり（柱はブロック：decorations。電源が入ると点く）。ソーラーパネルもブロック
-    for x, z in LAMPS:
-        s.box(x, z, 0.45, 0.3, 0.45, y0=(LAMP_H + 1) * 0.5 + 0.02, color=OFF, glow=WARM, group="base", collide=False)
+    # 街灯・ソーラーパネルはブロック（decorations。明かりはライトのブロック）
     s.point("ring_view", 12.0, 66.0, 1.6)
     # 本館の古い端末（第2章：ミカガの声がする）と、壁の「N」の印（N 財団の旧施設）
     s.box(13.6, 48.18, 1.2, 1.4, 0.5, color=(0.25, 0.3, 0.28), glow=(0.35, 1.0, 0.45), group="base", tag="terminal")
@@ -161,8 +149,7 @@ def build_terra(planet):
     # 搬入クレーンの置き場（第3章）：倉庫と荷台
     cx, cz = CRANE
     s.box(cx, cz, 9.0, 0.18, 9.0, color=CONC, sink=0.25)
-    # 倉庫はブロック（buildings.crane_warehouse）。扉の上の明かり
-    s.box(cx + 6.5, cz - 0.08, 2.6, 0.2, 0.1, y0=2.6, color=OFF, glow=WARM, group="base", collide=False)
+    # 倉庫はブロック（buildings.crane_warehouse。扉の上の明かりはライト）
     s.box(cx - 3.0, cz + 5.0, 3.0, 0.9, 2.0, color=(0.30, 0.42, 0.58))                       # 荷台
     s.box(cx - 3.0, cz + 5.0, 3.2, 0.12, 2.2, y0=0.9, color=OFF, glow=CYAN, group="base", collide=False)
     s.point("crane", cx, cz - 4.0, 1.0)
@@ -185,10 +172,7 @@ def build_terra(planet):
     # --- エピローグ：発射台と、みんなが集まる広場 ---
     lx, lz = LAUNCH
     s.box(lx, lz, 9.0, 0.3, 9.0, color=CONC, sink=0.3)                               # 発射台
-    for k in range(4):
-        a = np.pi / 4 + k * np.pi / 2
-        s.box(lx + np.cos(a) * 4.0, lz + np.sin(a) * 4.0, 0.6, 0.12, 0.6, y0=0.3, color=OFF, glow=REDL,
-              collide=False, blink=1.2)
+    # 発射台の四隅の赤い灯はブロック（buildings.pad_light_post）
     gx = lx + 3.4                                                    # 整備塔はブロック（buildings.service_tower）
     s.box(gx - 1.15, lz, 0.5, 0.12, 0.6, y0=5.4, color=METAL)                              # 乗り口への橋
     s.box(gx, lz - 1.25, 1.0, 1.3, 0.12, y0=0.4, color=DARK, glow=LIME, tag="rocket")    # 乗り口の操作盤
@@ -221,7 +205,12 @@ LAMP_H = 7                       # 街灯の柱の高さ（ブロック）。明
 
 
 def lamp_voxels():
-    return [((0, y, 0), "steel", None) for y in range(LAMP_H)] + [((0, LAMP_H, 0), "hull_dark", None)]
+    """街灯：柱（いちばん下はバッテリー）と、上のライト（基地の電源が入ると点く）。"""
+    V = [((0, 0, 0), "steel", {"def": "battery", "dir": 2, "name": "バッテリー", "state": {"charge": 2.0e7}})]
+    V += [((0, y, 0), "steel", None) for y in range(1, LAMP_H)]
+    V.append(((0, LAMP_H, 0), "glass", {"def": "light", "dir": 2, "name": "街灯",
+                                        "state": {"enabled": True, "color": list(WARM), "group": "base"}}))
+    return V
 
 
 def solar_stand_voxels():
@@ -341,7 +330,35 @@ CART_PUMP = (9, 2, 1)
 SHIP_TANK_CELLS = [(x, 1, z) for x in (1, 2, 3) for z in (1, 2, 3)]
 
 
-def ship_voxels(broken=False):
+# 多段式：前と後ろのブースター（留め具＝アクチュエーター。燃料が無くなったら航法プログラムが切り離す）
+BOOSTER_CLAMPS = {"前": ((2, 2, 5), 4), "後": ((2, 2, -1), 5)}   # 留め具のセルと向き（出力の面の先がブースター）
+BOOSTER_FUEL = 45.0              # ブースターのタンク 1 つの燃料（kg）：上昇の終わりごろに使い切って切り離す
+
+
+def booster_cells(side):
+    """ブースター side（"前"・"後"）のボクセル：つなぎの1ブロックと、3 列（推進機・バルブ・タンク）。"""
+    (cx, cy, cz), d = BOOSTER_CLAMPS[side]
+    s = 1 if side == "前" else -1
+    zc, zb = cz + s, cz + 2 * s                     # つなぎ・本体の列
+    V = [((cx, cy, zc), "hull_orange", None)]
+    for k, x in enumerate((1, 3)):
+        V += [((x, 0, zb), "steel", {"def": "thruster", "dir": 2, "name": f"ブースター{side}の推進機"}),
+              ((x, 1, zb), "steel", {"def": "valve", "dir": 2, "name": f"バルブ ブースター{side}{k + 1}",
+                                     "state": {"open": 0.0, "set": 1.0}}),
+              ((x, 2, zb), "steel", {"def": "tank", "dir": 2, "name": f"ブースター{side}のタンク",
+                                     "state": {"contents": {"fuel": BOOSTER_FUEL}}})]
+    V += [((2, y, zb), "hull_orange" if y != 1 else "hull_white", None) for y in range(3)]
+    V += [((x, 3, zb), "hull_red", None) for x in (1, 2, 3)]
+    return V
+
+
+def booster_clamp(side):
+    (c, d) = BOOSTER_CLAMPS[side]
+    return (c, "steel", {"def": "actuator", "dir": d, "name": f"ブースターの留め具 {side}",
+                         "state": {"preset": {"action": "none"}}})
+
+
+def ship_voxels(broken=False, boosters=True):
     V = []
     for x in range(5):
         for z in range(5):
@@ -377,9 +394,18 @@ def ship_voxels(broken=False):
     V += [((x, 3, z), "hull_white", None) for x in (0, 4) for z in (1, 2, 3)]
     V += [((x, 3, 0), "hull_white", None) for x in (1, 2, 3)]
     V.append(((2, 4, 0), "hull_red", None))
-    # 金の飾り（重さを変えないように、色だけ塗り替える：飛ぶプログラムがこの重さで作ってある）
+    # 操縦室の屋根（前と上はガラス、縁は金）
+    V += [((x, 4, z), "hull_white", None) for x in (0, 4) for z in (1, 2, 3)]
+    V += [((x, 4, 0), "hull_white", None) for x in (1, 3)]
+    V += [((x, 4, 4), "glass", None) for x in (1, 2, 3)]
+    V += [((x, 5, z), "glass", None) for x in (1, 2, 3) for z in (1, 2, 3)]
+    V += [((x, 5, z), "hull_gold", None) for x in (0, 4) for z in (1, 2, 3)]
     gold = {(0, 3, 4), (4, 3, 4), (2, 4, 0), (-1, 0, 2), (5, 0, 2)}
     V = [(c, "hull_gold" if c in gold and not d else m, d) for c, m, d in V]
+    if boosters:                                   # 多段式：前後のブースター（直す所ではない。最初から燃料入り）
+        for side in BOOSTER_CLAMPS:
+            V.append(booster_clamp(side))
+            V += booster_cells(side)
     # ひれ
     V += [((-1, 0, 2), "hull_red", None), ((5, 0, 2), "hull_red", None), ((2, 0, -1), "hull_red", None),
           ((2, 0, 5), "hull_red", None), ((-1, 1, 2), "hull_white", None), ((5, 1, 2), "hull_white", None)]

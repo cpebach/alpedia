@@ -310,7 +310,7 @@ class StoryCase(unittest.TestCase):
         self.sit("ship")
         self.run_for(8.0, 1 / 30)
         ship = s.con("ship")
-        self.assertEqual(ship.n_vox, n_ship, "発進で給油口を切り離す")
+        self.assertIn(ship.n_vox, (n_ship, len(sites.ship_voxels(boosters=False))), "発進で給油口を切り離す")
         self.assertFalse(s.port_attached())
         self.assertGreater(float(ship.velocity() @ s.terra.up(ship.center_of_mass())), 3.0, "上がっていく")
         cart = [c for c in w.constructs.values() if any(d and d["def"] == "fuel_pump" for d in c.devs)]
@@ -334,7 +334,10 @@ class StoryCase(unittest.TestCase):
         self.assertIn("04_launch", s.st["movies"], "発進のムービー")
         self.assertTrue(self.until("launch", 170, 1 / 30))
         self.assertEqual(self.ch(), "port")
-        self.assertEqual(s.con("ship").n_vox, len(sites.ship_voxels()))
+        self.assertEqual(s.con("ship").n_vox, len(sites.ship_voxels(boosters=False)) + len(sites.BOOSTER_CLAMPS),
+                         "ブースターは途中で切り離す（留め具は本体に残る）")
+        boosters = [c for c in w.constructs.values() if any(d and "のタンク" in d["name"] and "ブースター" in d["name"] for d in c.devs)]
+        self.assertEqual(len(boosters), 2, "切り離したブースター（前・後）")
         said = " ".join(x[2] for x in s.st["log"])
         for k in ("lift", "space", "rutero", "half", "near"):
             self.assertIn(self.script.CHAPTERS[self.idx("launch")]["events"][k][1], said, k)

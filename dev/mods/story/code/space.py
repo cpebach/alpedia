@@ -4,9 +4,6 @@
 と、そこからの向き（deck.R の列が 右・上・前）で決める。
 艦隊の位置：迎撃艦は甲板の後ろの上空、帝国艦隊はその先の遠く。
 """
-import numpy as np
-
-from main.scenery import CYAN, OFF, REDL, WHITE, Scenery
 
 NAVY = (0.14, 0.2, 0.42)
 BLACK = (0.12, 0.12, 0.14)
@@ -35,42 +32,6 @@ def empire_points(deck):
     o = fleet_origin(deck)
     R = deck.R
     return [o + R[:, 2] * (EMPIRE_BACK + 40 * k) + R[:, 0] * x + R[:, 1] * y for k, (x, y) in enumerate(EMPIRE_SHIPS)]
-
-
-def _ship(s, c, R, length, width, colors, glow):
-    """箱の船（張りぼて）：胴・艦橋・砲塔・推進の光。"""
-    body, band = colors
-    rx, up, fw = R[:, 0], R[:, 1], R[:, 2]
-    s.raw(c, R, (width / 2, width * 0.18, length / 2), color=body, collide=False)
-    s.raw(c + up * width * 0.22, R, (width * 0.3, width * 0.1, length * 0.42), color=band, collide=False)
-    s.raw(c + up * width * 0.4 - fw * length * 0.15, R, (width * 0.12, width * 0.16, length * 0.08), color=body,
-          collide=False)
-    s.raw(c + up * width * 0.45 - fw * length * 0.15, R, (width * 0.13, width * 0.03, length * 0.02), color=OFF,
-          glow=glow, collide=False)
-    for k in (-1, 1):
-        s.raw(c - fw * (length / 2 + 0.6) + rx * k * width * 0.25, R, (width * 0.1, width * 0.1, 0.4), color=OFF,
-              glow=glow, collide=False)
-
-
-def build_fleet(deck):
-    """艦隊の推進の光（当たり判定なし）。艦はブロック（buildings.union_ship・empire_ship、addon._put_fleet）。"""
-    s = Scenery("fleet", None)
-    R = deck.R
-    o = fleet_origin(deck)
-    rx, up, fw = R[:, 0], R[:, 1], R[:, 2]
-    for k, p in enumerate(empire_points(deck)):
-        L_ = 110.0 if k == 2 else 70.0
-        Rk = np.stack([-rx, up, -fw], axis=1)
-        s.raw(p + fw * (L_ / 2 + 3.0), Rk, (1.5, 1.5, 0.4), color=OFF, glow=REDL, collide=False)
-    for x, y, z in UNION_SHIPS:
-        c = o + rx * x + up * y + fw * z
-        for k in (-1, 1):
-            s.raw(c - fw * 39.0 + rx * k * 3.0 + up * 1.0, R, (1.2, 1.2, 0.4), color=OFF, glow=CYAN, collide=False)
-    for k in (-1, 1):
-        s.raw(o + up * 24.0 + fw * (160.0 - 65.0) + rx * k * 5.0, R, (1.6, 1.6, 0.4), color=OFF, glow=CYAN,
-              collide=False)
-    s.point_raw("fleet", o)
-    return s.finish()
 
 
 # ---------------------------------------------------------------------------

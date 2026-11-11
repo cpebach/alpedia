@@ -205,6 +205,23 @@ class Kit:
             self.put(x + dx, y + dy, z + dz, mat)
         return self
 
+    def light(self, x, y, z, color=None, group=None, blink=None, on=True, name="明かり"):
+        """ライト（電力で光るブロック）。color：光の色、group：まとめて点ける名前、blink：点滅の周期（秒）。
+        同じ構築物にバッテリーが要る（battery で置く）。"""
+        st = {"enabled": bool(on)}
+        if color is not None:
+            st["color"] = [float(v) for v in color]
+        if group:
+            st["group"] = group
+        if blink:
+            st["blink"] = float(blink)
+        return self.put(x, y, z, "glass", {"def": "light", "dir": 2, "name": name, "state": st})
+
+    def battery(self, x, y, z, charge=2.0e7):
+        """明かりなどの電源（満タンのバッテリー）。"""
+        return self.put(x, y, z, "steel", {"def": "battery", "dir": 2, "name": "バッテリー",
+                                           "state": {"charge": float(charge)}})
+
     def rug(self, x0, y, z0, x1, z1, mat="carpet_red"):
         return self.fill(x0, y, z0, x1, y, z1, mat)
 
@@ -420,3 +437,27 @@ def spawn_on_map(world, vox, m, place, name, scenes=(), size=None, center=False,
         c = Construct.from_voxels(world.registry, vox2, tl, Rl, size=size, name=name, id_=id_)
     world.add_construct(c)
     return c
+
+
+# ---------------------------------------------------------------------------
+# 明かりのまとまり
+# ---------------------------------------------------------------------------
+def light_devices(c, group=None):
+    """構築物 c のライト（group が名前ならそのまとまりだけ）の機器のリスト。"""
+    cache = getattr(c, "_lgrp_cache", None)
+    if cache is None or cache[0] != (c.version, c.n_vox):
+        ids = [i for i, d in enumerate(c.devs) if d and (c.reg.device(d["def"]) or {}).get("type") == "light"]
+        cache = c._lgrp_cache = ((c.version, c.n_vox), ids)
+    out = [c.devs[i] for i in cache[1]]
+    return [d for d in out if group is None or d["state"].get("group") == group]
+
+
+def set_light_group(world, group, on):
+    """まとまり group のライトを全部点ける・消す（物語の「基地の明かり」・アマツの非常灯など）。"""
+    n = 0
+    for c in world.constructs.values():
+        for d in light_devices(c, group):
+            if bool(d["state"].get("enabled", True)) != bool(on):
+                d["state"]["enabled"] = bool(on)
+                n += 1
+    return n

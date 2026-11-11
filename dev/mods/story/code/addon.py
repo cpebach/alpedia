@@ -91,11 +91,11 @@ class StoryAddon(SceneryHost, Addon):
         self.lmap = self.port.map
         self.scenes = [sites.build_terra(self.terra)]
         self.deck = self.amatsu.deck if self.amatsu is not None and self.amatsu.active else None
-        if self.deck is not None:
-            self.scenes.append(space.build_fleet(self.deck))
         self.points = {}
         for s in self.scenes:
             self.points.update(s.points)
+        if self.deck is not None:                                 # 艦隊（艦はブロック、推進の光はライト）の目印
+            self.points["fleet"] = space.fleet_origin(self.deck)
         self.points.update({k: v for k, v in self.port.points.items()})
         if "desk" in self.points and "pad" in self.points:       # 第10章：ミカガの机の横の端末（ポッドの記録）
             d = np.asarray(self.points["desk"], float)
@@ -1245,6 +1245,10 @@ class StoryAddon(SceneryHost, Addon):
         if not self.active or not self.st.get("built"):
             return set()
         anchored = self._anchored()
+        if self.st.get("lights") != getattr(self, "_lights_on", None):      # 基地の明かり（ライトのまとまり base）
+            from main import buildkit
+            self._lights_on = self.st.get("lights")
+            buildkit.set_light_group(world, "base", bool(self._lights_on))
         self._watch_look()
         self._watch_rod(dt)
         self._watch_crane()
@@ -1873,7 +1877,8 @@ class StoryAddon(SceneryHost, Addon):
                     pl.seated = None
             del w.constructs[old.id]
         if on_pad:
-            c = self._spawn(sites.ship_voxels(broken=False), (0.0, 0.0, 0.0, 0.1), self.lmap, "ルミナス号", id_=cid)
+            c = self._spawn(sites.ship_voxels(broken=False, boosters=False), (0.0, 0.0, 0.0, 0.1), self.lmap, "ルミナス号",
+                            id_=cid)                                     # 月の上：ブースターはもう切り離した
         else:
             c = self._spawn(sites.ship_voxels(broken=False), sites.PLACES["ship"], self.map, "ルミナス号", id_=cid)
         self.st["ids"]["ship"] = c.id

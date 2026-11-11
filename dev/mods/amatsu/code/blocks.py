@@ -1,10 +1,17 @@
 """軌道都市アマツの甲板の上の建物（ブロック。アンカーで固定）：機関室・倉庫・詰め所。
 
-甲板・円筒・港の塔は大きいので景色の箱のまま（city.build）。屋根の上の明かりも景色の箱。
+甲板・円筒・港の塔は大きいので景色の箱のまま（city.build）。屋根の明かり・甲板の縁の明かり・非常灯（赤。まとまり
+alert）はライトのブロック（バッテリーで光る）。
 """
 from main.buildkit import Kit, anchored
 
 HUTS = ((-22, -70, "engine"), (22, -40, "store"), (-18, 30, "guard"), (20, 75, "engine"), (-24, 80, "store"))
+WARM = (1.0, 0.86, 0.55)
+CYAN = (0.5, 0.95, 1.0)
+RED = (1.0, 0.25, 0.2)
+RAIL_X = 31.4                     # 甲板の縁（DECK_W / 2 - 0.6）
+RAIL_LEN = 40.0                   # 縁の1本の長さ m（甲板 200 m を 5 本で）
+RAIL_ZS = (-80.0, -40.0, 0.0, 40.0, 80.0)
 
 
 def hut(kind):
@@ -35,4 +42,22 @@ def hut(kind):
         k.bed(1, 0, 13, "+z")
         k.bed(9, 0, 13, "+z")
         k.table(4, 0, 9, w=3, d=2)
+    k.battery(10, 0, 1)
+    for x in (4, 7):                                       # 屋根の明かり
+        for z in (6, 13):
+            k.light(x, 8, z, WARM, name="屋根の明かり")
     return anchored(k.voxels(), 3)
+
+
+def rail():
+    """甲板の縁石（0.5 m のブロック、長さ RAIL_LEN、前 = +Z）：10 m ごとに水色の点滅灯、12 m ごとに非常灯（赤。まとまり
+    alert。ふだんは消えている）。"""
+    k = Kit()
+    n = int(round(RAIL_LEN / 0.5))
+    k.fill(0, 0, 0, 0, 0, n - 1, "hull_dark")
+    k.battery(0, 0, n // 2)
+    for z in range(10, n, 20):
+        k.light(0, 1, z, CYAN, blink=2.4, name="縁の明かり")
+    for z in range(4, n, 24):
+        k.light(0, 1, z, RED, group="alert", on=False, name="非常灯")
+    return anchored(k.voxels(), 4)

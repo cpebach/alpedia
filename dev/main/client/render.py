@@ -113,6 +113,66 @@ def lod_vertices(c, base):
     return out
 
 
+def light_ids(c):
+    """構築物 c のライトの番号（形が変わったときだけ数え直す）。"""
+    cache = getattr(c, "_light_cache", None)
+    if cache is None or cache[0] != (c.version, c.n_vox):
+        ids = [i for i, d in enumerate(c.devs) if d and (c.reg.device(d["def"]) or {}).get("type") == "light"]
+        cache = c._light_cache = ((c.version, c.n_vox), ids)
+    return cache[1]
+
+
+class LightLayer:
+    """ライト（電力で光るブロック）：点いている物の上に、影をつけない明るい色の箱を重ねる（少し大きく）。
+    点滅（blink）もここで。読み込み済み（近く）の構築物だけ。"""
+
+    GROW = 1.06
+
+    def __init__(self, parent):
+        from panda3d.core import TransparencyAttrib
+        self.mesh = DynamicMesh(parent, "lights")
+        self.mesh.np.setTransparency(TransparencyAttrib.MAlpha)
+        self.mesh.np.setDepthOffset(1)
+        self.n = -1
+
+    def update(self, constructs, origin, now):
+        P, Cc = [], []
+        for c in constructs:
+            ids = light_ids(c)
+            if not ids:
+                continue
+            for i in ids:
+                d = c.devs[i]
+                st = d["state"]
+                if not st.get("active"):
+                    continue
+                bl = st.get("blink")
+                if bl and (now % float(bl)) > float(bl) * 0.5:
+                    continue
+                dd = c.reg.device(d["def"]) or {}
+                col = st.get("color") or dd.get("params", {}).get("color") or [1.0, 0.86, 0.55]
+                V8 = c.pos[8 * i:8 * i + 8]
+                ctr = V8.mean(0)
+                P.append((V8 - ctr) * self.GROW + ctr - origin)
+                Cc.append(col)
+        if not P:
+            if self.n:
+                self.mesh.set(np.zeros((0, 12), np.float32))
+                self.n = 0
+            return
+        P = np.asarray(P)                                        # (k,8,3)
+        q = P[:, _BOX_FACES]                                     # (k,6,4,3)
+        out = np.zeros((len(P) * 24, 12), np.float32)
+        out[:, 0:3] = q.reshape(-1, 3)
+        out[:, 6:9] = np.repeat(np.asarray(Cc, float), 24, axis=0)
+        out[:, 9] = 0.92
+        self.mesh.set(out, quad_tris(len(P) * 6) if len(P) != self.n else None)
+        self.n = len(P)
+
+    def remove(self):
+        self.mesh.remove()
+
+
 class LodLayer:
     """読み込み距離より遠い構築物を、それっぽい色の箱でまとめて描く（ブロックのメッシュを作らない・記号も看板も出さない）。
     止まっている物は1つのメッシュにまとめ（入れ替わったときだけ作り直す）、動いている物は毎フレーム作る。"""

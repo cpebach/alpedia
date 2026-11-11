@@ -46,10 +46,24 @@ class AmatsuAddon(SceneryHost, Addon):
         def maker(x, z, kind):
             return lambda: buildkit.spawn(self.world, blocks.hut(kind), d.point(x, z, 0.0), d.frame(0.0),
                                           name="アマツの建物", center=True)
+
+        def rmaker(x, z):
+            return lambda: buildkit.spawn(self.world, blocks.rail(), d.point(x, z, 0.0), d.frame(0.0),
+                                          name="甲板の縁", center=True)
         made = buildkit.ensure(self.world, "amatsu", [(f"hut{k}", maker(x, z, kind))
-                                                       for k, (x, z, kind) in enumerate(blocks.HUTS)])
+                                                       for k, (x, z, kind) in enumerate(blocks.HUTS)] +
+                              [(f"rail{j}_{i}", rmaker(sx * blocks.RAIL_X, z))
+                               for j, sx in enumerate((-1, 1)) for i, z in enumerate(blocks.RAIL_ZS)])
         if made:
             L.info("アマツの建物を作りました（%d）", len(made))
+
+    def before_physics(self, world, dt):
+        """非常灯（ライトのまとまり alert）を alert に合わせる。"""
+        if self.active and self.alert != getattr(self, "_alert_on", None):
+            from main import buildkit
+            self._alert_on = self.alert
+            buildkit.set_light_group(world, "alert", bool(self.alert))
+        return set()
 
     def net_state(self, world):
         return {"alert": bool(self.alert)} if self.active else None
