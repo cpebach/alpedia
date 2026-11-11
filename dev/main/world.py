@@ -113,6 +113,22 @@ def missing_references(reg, settings, cons, mods):
     return out
 
 
+
+def _limit_dv(c, v0, rb0, cap):
+    """結合した直後：1サブステップの速さの変化を cap（m/s）までにする。変化を全体で同じ割合に縮めるので、
+    剛体の動き（並進＋回転）は剛体のまま。押し出した位置はそのまま（位置だけ直して、勢いにはしない）。"""
+    if c.vel.shape != v0.shape:
+        return
+    dv = c.vel - v0
+    m = float(np.sqrt((dv * dv).sum(1).max())) if len(dv) else 0.0
+    if m <= cap:
+        return
+    k = cap / m
+    c.vel[:] = v0 + dv * k
+    if rb0 and c.rb is not None and c.mode == "rigid":
+        c.rb["v"] = rb0[0] + (c.rb["v"] - rb0[0]) * k
+        c.rb["w"] = rb0[1] + (c.rb["w"] - rb0[1]) * k
+
 class World:
     def __init__(self, name, cfg, addons=None, directory=None):
         self.name = name
@@ -452,6 +468,8 @@ class World:
         c.absorb(other, cell_map, xform)
         if ca != oa:
             c.snap_to_lattice(np.arange(n0) if ca else np.arange(n0, c.n_vox))
+        # 結合した直後は、めり込み（地面・相手）の押し出しで吹き飛ばないように、しばらく速さの変化をおさえる
+        c._settle = max(float(getattr(c, "_settle", 0.0)), float(self.cfg.get("physics", {}).get("merge_settle_time", 1.0)))
         for p in self.all_players():
             if p.seated and p.seated[0] == other.id:
                 p.seated = (c.id, cell_map[p.seated[1]])
@@ -535,14 +553,19 @@ class World:
         sleeping = self._sleeping_near(cons, sleeping, dt)
         broken = set()
         fixed_pos = [(c, c.pos.copy()) for c in sleeping if c.is_static]      # アンカーで固定：押されても戻す
+        settle_acc = float(self.cfg.get("physics", {}).get("merge_settle_acc", 30.0))
         for _ in range(self.substeps):
             gs = float(self.settings.get("gravity_scale", 1.0))
+            settling = [(c, c.vel.copy(), c.rb and (c.rb["v"].copy(), c.rb["w"].copy())) for c in cons
+                        if c.__dict__.get("_settle", 0.0) > 0.0 and c.vel.shape == c.pos.shape]
             self._each(cons, lambda c: c.substep_begin(h, self.iters, self.gravity, self.planets, gs))
             woke = self._voxel_collisions(cons, sleeping)
             woke = [c for c in woke if c.id not in anchored_ids]
             for c, p0 in fixed_pos:
                 c.pos[:] = p0
             ends = self._each(cons, lambda c: c.substep_end(h))
+            for c, v0, rb0 in settling:
+                _limit_dv(c, v0, rb0, settle_acc * h)
             for c, b in zip(cons, ends):
                 if b:
                     broken.add(c.id)
@@ -555,6 +578,8 @@ class World:
                 sleeping = [c for c in sleeping if c.asleep or c.id in anchored_ids]
         for c in cons:
             c.update_sleep(dt)
+            if c.__dict__.get("_settle", 0.0) > 0.0:
+                c._settle = max(0.0, c._settle - dt)
         self._bnd = None
         for a in self.addons:
             a.after_physics(self, cons)

@@ -31,6 +31,9 @@ DEFAULTS = {
                 "rigid_enabled": True, "rails_enabled": True, "rails_distance": 400.0,
                 # 機能処理の距離（m）：どのプレイヤーからもこれより遠い構築物は、機器・プログラム・物理を止める。0 = 全部処理する
                 "process_distance": 1500.0,
+                # 結合した直後（merge_settle_time 秒）は、めり込みの押し出しを速度にしない（速さの変化を
+                # merge_settle_acc m/s² までにする。給油車などをつないだ瞬間に吹き飛ばないように）
+                "merge_settle_time": 1.0, "merge_settle_acc": 30.0,
                 # 構築物ごとの計算に使うスレッド数（0 = 自動）
                 "threads": 0,
                 # 物理コア："auto"（Rust の alpedia_core があれば使う）/ "rust"（必須）/ "python"（numba）

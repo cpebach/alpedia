@@ -616,6 +616,34 @@ class TestScripts(CoreCase):
         self.assertTrue(st["display"]["text"].startswith("g=("))
 
 
+class TestMergeSettle(CoreCase):
+    """地面にめり込んだ物を、動く構築物に結合しても吹き飛ばない（押し出しを速度にしない）。"""
+
+    def merged_speed(self, settle):
+        from main import actuator as act
+        w = self.world(full_rigid=True)
+        w.cfg = json.loads(json.dumps(w.cfg))
+        w.cfg["physics"]["merge_settle_time"] = settle
+        p, _ = self.ground(w, 0.0)
+        a = Construct.from_voxels(w.registry, [((x, y, z), "steel", None) for x in range(4) for y in range(2)
+                                               for z in range(2)], p, np.eye(3), size=0.5, name="車")
+        b = Construct.from_voxels(w.registry, [((4, y, z), "steel", None) for y in range(-2, 1) for z in range(2)],
+                                  p, np.eye(3), size=0.5, name="めり込んだ物")
+        w.add_construct(a)
+        w.add_construct(b)
+        cell_map, xform = act._merge_map(a, b)
+        w.merge_constructs(a, b, cell_map, xform)
+        vmax = 0.0
+        for _ in range(60):
+            w.step(DT)
+            vmax = max(vmax, float(np.abs(a.vel).max()))
+        return vmax
+
+    def test_buried_merge_does_not_launch(self):
+        v = self.merged_speed(1.0)
+        self.assertLess(v, 3.0, f"結合した直後に吹き飛ばない {v:.1f} m/s")
+
+
 class TestLight(CoreCase):
     """ライト：バッテリーの電気で光る（enabled のときだけ）。まとまり（group）で点けたり消したりできる。"""
 
