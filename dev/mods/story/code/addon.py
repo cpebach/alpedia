@@ -520,14 +520,17 @@ class StoryAddon(SceneryHost, Addon):
         if any(self.map_xz(p.pos)[1] > 33.0 and abs(self.map_xz(p.pos)[0]) < 20 for p in self._players()):
             return True
         bins = np.zeros(28, bool)                     # x: -3.5〜3.5 を 0.25 m ごと
-        for c in self.world.constructs.values():
-            if not c.n_vox:
-                continue
-            P = c.voxel_centers()
-            for p in P:
-                x, z = self.map_xz(p)
-                if not (24.0 < z < 32.0 and abs(x) < 3.6):
-                    continue
+        g0, _ = self.map.ground(0.0, 28.0)
+        for c in self.world.constructs_near(g0, 8.0):  # 谷の通り道（x ±3.6・z 24〜32）にかかる物だけ
+            P = c.centers_cached()
+            d = P - self.terra.center
+            d /= np.linalg.norm(d, axis=1, keepdims=True)
+            m = self.map
+            k = m.pl.radius / np.maximum(d @ m.up0, 1e-6)
+            X, Z = (d @ m.right0) * k, (d @ m.fwd0) * k
+            sel = np.nonzero((Z > 24.0) & (Z < 32.0) & (np.abs(X) < 3.6))[0]
+            for j in sel:
+                p, x, z = P[j], float(X[j]), float(Z[j])
                 g, up = self.map.ground(x, z)
                 h = float((p - g) @ up)
                 if h > 1.9:

@@ -317,12 +317,27 @@ def update(c, dt, input_keys=frozenset(), seated=False, ambient_kpa=0.0):
     if not c.n_vox:
         return
     frames = None
+    key = (c.version, len(c.cells))
+    cache = c.__dict__.get("_bytype_cache")
+    if cache is None or cache[0] != key:                 # 種類ごとの機器の番号（形が変わったときだけ数え直す）
+        idx = {}
+        for i, d in enumerate(c.devs):
+            if d:
+                dd = c.reg.device(d["def"])
+                if dd:
+                    idx.setdefault(dd["type"], []).append(i)
+        cache = c._bytype_cache = (key, idx)
+    devs = c.devs
     by_type = {}
-    for i, d in enumerate(c.devs):
-        if d:
-            dd = c.reg.device(d["def"])
+    for t, ids in cache[1].items():
+        lst = []
+        for i in ids:
+            d = devs[i] if i < len(devs) else None
+            dd = c.reg.device(d["def"]) if d else None
             if dd:
-                by_type.setdefault(dd["type"], []).append((i, d, dd))
+                lst.append((i, d, dd))
+        if lst:
+            by_type[t] = lst
     if c.storage and by_type.get("processor"):
         # 古いセーブ：構築物で共有していた資源は、最初の精錬機・加工機に入れる
         st0 = by_type["processor"][0][1]["state"].setdefault("store", {})

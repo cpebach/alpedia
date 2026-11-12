@@ -34,6 +34,29 @@ pub struct ArtTopo {
     pub max_contacts: usize,
     pub motor_step_x: f64,
     pub motor_hold_deg: f64,
+    /// アンカーで固定された部分（動かない。地面にめり込んでいてよい）。空なら無し
+    pub fixed: Vec<bool>,
+    /// 固定の部分の基準点（固定した時の X、(G,3)）。姿勢は単位行列のまま
+    pub xfix: Vec<f64>,
+    /// 解くときの逆質量・逆慣性（固定の部分は 0）
+    pub inv_m_s: Vec<f64>,
+    pub iinv_b_s: Vec<f64>,
+}
+
+impl ArtTopo {
+    fn is_fixed(&self, k: usize) -> bool {
+        !self.fixed.is_empty() && self.fixed[k]
+    }
+
+    /// 固定の部分を、固定した時の姿勢に戻す
+    fn hold_fixed(&self, x: &mut [f64], r: &mut [f64]) {
+        for k in 0..self.g {
+            if self.is_fixed(k) {
+                x[3 * k..3 * k + 3].copy_from_slice(&self.xfix[3 * k..3 * k + 3]);
+                r[9 * k..9 * k + 9].copy_from_slice(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+            }
+        }
+    }
 }
 
 /// 部分ごとの姿勢の、今の頂点の位置への最適な当てはめ（construct._art_fit）
@@ -173,7 +196,8 @@ pub fn predict(
             for k in 0..at.g {
                 let m = 1.0 / at.inv_m[k];
                 for a in 0..3 {
-                    lbar[3 * k + a] /= m;
+                    // 固定の部分は基準点ごと動かさない（押し出した面だけが動く）
+                    lbar[3 * k + a] = if at.is_fixed(k) { 0.0 } else { lbar[3 * k + a] / m };
                 }
             }
             for i in 0..nv {
@@ -194,7 +218,15 @@ pub fn predict(
             vl.copy_from_slice(&nvl);
         }
     }
-    let (v, w) = part_velocity(pos, vel, x, r, &t.mass, at);
+    let (mut v, mut w) = part_velocity(pos, vel, x, r, &t.mass, at);
+    for k in 0..at.g {
+        if at.is_fixed(k) {
+            // 固定の部分は動かない（重力も効かない）
+            v[3 * k..3 * k + 3].fill(0.0);
+            w[3 * k..3 * k + 3].fill(0.0);
+        }
+    }
+    at.hold_fixed(x, r);
     prev.copy_from_slice(pos);
     for k in 0..at.g {
         for a in 0..3 {
@@ -236,6 +268,10 @@ pub fn solve(
         cs.extend(hit.into_iter().map(|(i, d, n)| Contact { p: i, d: -d, n, vs: [0.0; 3], ci: -1 }));
     }
     cs.extend_from_slice(boxes);
+    if !at.fixed.is_empty() {
+        // 固定の部分は地面にめり込んでいてよい（接触を解かない）
+        cs.retain(|c| !at.is_fixed(at.vg[c.p] as usize));
+    }
     // 部分ごとに深い順、上限まで
     let mut idx: Vec<usize> = (0..cs.len()).collect();
     idx.sort_by(|&i, &j| {
@@ -305,7 +341,7 @@ pub fn solve(
     let cmu: Vec<f64> = kept.iter().map(|c| t.fric[c.p].clamp(0.0, 1.0)).collect();
     let mut lam = vec![0.0; nc];
     art::art_solve(
-        x, r, &at.inv_m, &at.iinv_b, &at.ra, &at.rb, &la, &lb, &lc, &ang, &cap, &cg, &cl, &cn, &cd, &cp, &cprev, &cvs,
+        x, r, &at.inv_m_s, &at.iinv_b_s, &at.ra, &at.rb, &la, &lb, &lc, &ang, &cap, &cg, &cl, &cn, &cd, &cp, &cprev, &cvs,
         &cmu, h, at.iters, &mut lam, &at.hk,
     );
     write(pos, x, r, vl, at);
@@ -319,9 +355,17 @@ pub fn end(
     defo: &[(usize, [f64; 3])], cg: &[i64], cl: &[f64], cn: &[f64], lam: &[f64], h: f64,
 ) {
     fit(pos, x, r, vl, &t.mass, at);
+    at.hold_fixed(x, r); // ほかの構築物に押されても、固定の部分は元の姿勢のまま
     write(pos, x, r, vl, at);
     for i in 0..pos.len() {
         vel[i] = (pos[i] - prev[i]) / h;
+    }
+    if !at.fixed.is_empty() {
+        for i in 0..t.mass.len() {
+            if at.is_fixed(at.vg[i] as usize) {
+                vel[3 * i..3 * i + 3].fill(0.0);
+            }
+        }
     }
     // 押し出しによる形の変化は速度に含めない
     for &(row, d) in defo {
@@ -336,7 +380,13 @@ pub fn end(
     }
     // 部分ごとの速度に直し、地面から離れる向きの余計な速度を消してから頂点の速度に戻す
     let (mut v, mut w) = part_velocity(pos, vel, x, r, &t.mass, at);
-    art::art_contact_vel(&mut v, &mut w, r, &at.inv_m, &at.iinv_b, cg, cl, cn, lam, 2);
+    art::art_contact_vel(&mut v, &mut w, r, &at.inv_m_s, &at.iinv_b_s, cg, cl, cn, lam, 2);
+    for k in 0..at.g {
+        if at.is_fixed(k) {
+            v[3 * k..3 * k + 3].fill(0.0);
+            w[3 * k..3 * k + 3].fill(0.0);
+        }
+    }
     for i in 0..t.mass.len() {
         let g = at.vg[i] as usize;
         let ri = [pos[3 * i] - x[3 * g], pos[3 * i + 1] - x[3 * g + 1], pos[3 * i + 2] - x[3 * g + 2]];

@@ -461,9 +461,15 @@ class ScriptRunner:
         return code
 
     def tick(self, c, dt):
-        for i, d in enumerate(c.devs):
-            if not d:
+        key = (c.version, len(c.cells))
+        cache = c.__dict__.get("_comp_cache")
+        if cache is None or cache[0] != key:      # コンピューターの番号（形が変わったときだけ数え直す）
+            cache = c._comp_cache = (key, [i for i, d in enumerate(c.devs)
+                                           if d and (c.reg.device(d["def"]) or {}).get("type") == "computer"])
+        for i in cache[1]:
+            if i >= len(c.devs) or not c.devs[i]:
                 continue
+            d = c.devs[i]
             dd = c.reg.device(d["def"])
             if not dd or dd["type"] != "computer":
                 continue

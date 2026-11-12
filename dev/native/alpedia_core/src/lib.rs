@@ -731,10 +731,11 @@ impl ArtTopo {
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (vg, inv_m, iinv_b, ra, rb, a, b, c, ext_rows, ext_nb, ext_e0, iters, max_contacts, motor_step_x,
-                        motor_hold_deg, hk=None))]
+                        motor_hold_deg, hk=None, fixed=None, xfix=None))]
     fn new(
         vg: RoI, inv_m: RoF, iinv_b: RoF, ra: RoI, rb: RoI, a: RoI, b: RoI, c: RoI, ext_rows: RoI, ext_nb: RoF, ext_e0: RoF,
-        iters: i64, max_contacts: usize, motor_step_x: f64, motor_hold_deg: f64, hk: Option<RoI>,
+        iters: i64, max_contacts: usize, motor_step_x: f64, motor_hold_deg: f64, hk: Option<RoI>, fixed: Option<RoI>,
+        xfix: Option<RoF>,
     ) -> PyResult<Self> {
         let vgv = ro(&vg, "vg")?.to_vec();
         let im = ro(&inv_m, "inv_m")?.to_vec();
@@ -759,11 +760,24 @@ impl ArtTopo {
                 e0: e0[k],
             })
             .collect();
+        // fixed (G,)：アンカーで固定された部分（0/1）、xfix (G,3)：その基準点
+        let fx: Vec<bool> = match &fixed {
+            Some(f) => ro(f, "fixed")?.iter().map(|&q| q != 0).collect(),
+            None => Vec::new(),
+        };
+        need(fx.is_empty() || fx.len() == g, "ArtTopo fixed")?;
+        let xf: Vec<f64> = match &xfix {
+            Some(q) => ro(q, "xfix")?.to_vec(),
+            None => Vec::new(),
+        };
+        need(fx.is_empty() || xf.len() == 3 * g, "ArtTopo xfix")?;
+        let ims: Vec<f64> = (0..g).map(|k| if !fx.is_empty() && fx[k] { 0.0 } else { im[k] }).collect();
+        let ibs: Vec<f64> = (0..9 * g).map(|j| if !fx.is_empty() && fx[j / 9] { 0.0 } else { ib[j] }).collect();
         Ok(ArtTopo {
             at: artstep::ArtTopo {
                 g, vg: vgv, inv_m: im, iinv_b: ib, ra: rav, rb: rbv, a: av, b: bv, c: cv, exts, hk: hinge_rows(&hk, nr)?, iters,
                 max_contacts,
-                motor_step_x, motor_hold_deg,
+                motor_step_x, motor_hold_deg, fixed: fx, xfix: xf, inv_m_s: ims, iinv_b_s: ibs,
             },
         })
     }
@@ -1031,6 +1045,7 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(vertex_normals, m)?)?;
     m.add_function(wrap_pyfunction!(box_sdf, m)?)?;
     m.add("HINGE", true)?; // ヒンジの関節（hk）を解ける版
+    m.add("ART_FIXED", true)?; // アンカーで固定された部分のある関節つき剛体（fixed・xfix）を解ける版
     m.add_function(wrap_pyfunction!(art_solve, m)?)?;
     m.add_function(wrap_pyfunction!(art_contact_vel, m)?)?;
     m.add_function(wrap_pyfunction!(art_write, m)?)?;

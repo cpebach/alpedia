@@ -403,17 +403,22 @@ class Construct:
 
     PASSIVE_DEVICES = {"anchor", "pipe", "tank", "valve", "battery", "seat", "generator", "antenna", "computer"}
 
-    def is_quiet(self):
-        """止まっていて、毎ティック処理する機器が無い（固定された建物の看板・ソーラーパネルなど。動いているプログラムも無い）。"""
+    # 固定された物では、ときどき（0.25 秒ごと）まとめて処理すれば足りる機器（ライト：点いているか・電気の消費だけ）
+    SLOW_DEVICES = {"light"}
+
+    def is_quiet(self, slow_ok=False):
+        """止まっていて、毎ティック処理する機器が無い（固定された建物の看板・ソーラーパネルなど。動いているプログラムも無い）。
+        slow_ok：ライトのように、ときどきまとめて処理すれば足りる機器だけなら True。"""
         if not self.is_static:
             return False
         cache = getattr(self, "_quiet_cache", None)
         if cache is None or cache[0] != (self.version, self.n_vox):
             types = [(i, (self.reg.device(d["def"]) or {}).get("type")) for i, d in enumerate(self.devs) if d]
             passive = all(t in self.PASSIVE_DEVICES for _, t in types)
+            slow = all(t in self.PASSIVE_DEVICES or t in self.SLOW_DEVICES for _, t in types)
             comps = [i for i, t in types if t == "computer"]
-            cache = self._quiet_cache = ((self.version, self.n_vox), passive, comps)
-        if not cache[1]:
+            cache = self._quiet_cache = ((self.version, self.n_vox), passive, comps, slow)
+        if not (cache[3] if slow_ok else cache[1]):
             return False
         return not any(self.devs[i]["state"].get("running") for i in cache[2])
 
@@ -965,7 +970,8 @@ class Construct:
                             i64([e[1] for e in ex]).reshape(-1, 4), f64([e[2] for e in ex]).reshape(-1, 3),
                             f64([e[3] for e in ex]), int(self.ART_ITERS), int(self.ART_CONTACTS),
                             float(self.MOTOR_STEP_X), float(self.MOTOR_HOLD_DEG),
-                            *((i64(a["HK"]).reshape(-1, 2),) if new else ()))
+                            *((i64(a["HK"]).reshape(-1, 2),) if new else ()),
+                            **({"fixed": i64(a["fixed"]), "xfix": f64(a["Xfix"])} if a["fixed"].any() else {}))
 
     def _art_contig(self):
         a = self.art
@@ -1373,10 +1379,20 @@ class Construct:
             if not self._rails_ok(world, float(phys.get("rails_distance", 400.0)) * 0.9):
                 self.leave_rails()
 
+    def actuator_indices(self):
+        """アクチュエーター（ヒンジなども）の番号（形が変わったときだけ数え直す）。"""
+        cache = self.__dict__.get("_act_cache")
+        key = (self.version, len(self.cells))
+        if cache is None or cache[0] != key:
+            cache = self._act_cache = (key, [i for i, d in enumerate(self.devs)
+                                             if d and (self.reg.device(d["def"]) or {}).get("type") == "actuator"])
+        return cache[1]
+
     def _actuator_busy(self):
         from . import actuator as act
-        for d in self.devs:
-            if d and (self.reg.device(d["def"]) or {}).get("type") == "actuator" and act.busy(d["state"]):
+        devs = self.devs
+        for i in self.actuator_indices():
+            if act.busy(devs[i]["state"]):
                 return True
         return False
 
@@ -1502,7 +1518,8 @@ class Construct:
             self.art["invM_s"] = np.where(fixed, 0.0, self.art["invM"])
             self.art["IinvB_s"] = np.where(fixed[:, None, None], 0.0, IinvB)
             self.art["Xfix"] = X.copy()
-            self.art["nat"] = None                      # 固定の部分のある関節は Python（＋Rust の関節計算）で解く
+            # 固定の部分のある関節も Rust で（古い Rust なら Python ＋ Rust の関節計算で解く）
+            self.art["nat"] = self._native_art_topo() if getattr(native_core(), "ART_FIXED", False) else None
         else:
             self.art["nat"] = self._native_art_topo()   # ヒンジも Rust で（古い Rust ならヒンジのときは None）
 

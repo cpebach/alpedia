@@ -503,12 +503,20 @@ class World:
                 # 機器の無い物・固定されていて毎ティック処理する機器の無い物（建物・飾り・看板）は機器・プログラムの処理を飛ばす
                 c.force[:] = 0.0
                 continue
-            devices.update(c, dt, frozenset(seats.get(c.id, ())), c.id in seats, ambient)
+            cdt = dt
+            if not c.dirty and c.id not in seats and c.is_quiet(slow_ok=True):
+                # 明かりだけの固定された建物：0.25 秒ごとにまとめて（点いているか・電気の消費）
+                c.force[:] = 0.0
+                c._slow_dt = c.__dict__.get("_slow_dt", 0.0) + dt
+                if c._slow_dt < 0.25:
+                    continue
+                cdt, c._slow_dt = c._slow_dt, 0.0
+            devices.update(c, cdt, frozenset(seats.get(c.id, ())), c.id in seats, ambient)
             if c.__dict__.get("notes"):
                 for n in c.notes:
                     self.message(n)
                 c.notes = []
-            self.runner.tick(c, dt)
+            self.runner.tick(c, cdt)
         self.player.update(self, dt, move, jump, thrust_dir)
         for p in self.remote.values():          # 参加者の体は参加者の PC が動かす。ジェットパックの燃料と体重だけここで
             if p.flying and p.jetpack:
@@ -530,6 +538,10 @@ class World:
         anchored_ids |= frozen
         for c in self.constructs.values():
             if c.id in anchored_ids:
+                continue
+            if c.mode == "rigid" and c.anchored and not c._actuator_busy():
+                # アンカーで固定されて止まっている物（建物など）：切り替えるものが無い
+                c._touch_moving = False
                 continue
             if c.asleep and np.any(c.force):
                 c.wake()
@@ -933,12 +945,9 @@ class World:
         lim = self.process_distance()
         if lim <= 0 or not self.constructs:
             return set()
-        cs = [c for c in self.constructs.values() if c.n_vox]
+        cs, C, Rr = self._bounds()                  # 外側の球（このティックの押し出しの相手探しでも使い回す）
         if not cs:
             return set()
-        bb = [c.bounds() for c in cs]
-        C = np.array([b[0] for b in bb])
-        Rr = np.array([b[1] for b in bb])
         P = np.array([p.pos for p in self.all_players()])
         d = np.linalg.norm(C[:, None, :] - P[None], axis=2).min(1) - Rr
         seated = {p.seated[0] for p in self.all_players() if p.seated}
@@ -961,12 +970,12 @@ class World:
         A = [c.bounds() for c in cons]
         AC = np.array([b[0] for b in A])
         AR = np.array([b[1] + float(np.abs(c.vel).max()) * dt * 2 + c.size * 2 for b, c in zip(A, cons)])
-        out = []
-        for c in sleeping:
-            cc, rr = c.bounds()
-            if (np.linalg.norm(AC - cc, axis=1) < AR + rr).any():
-                out.append(c)
-        return out
+        B = [c.bounds() for c in sleeping]
+        BC = np.array([b[0] for b in B])
+        BR = np.array([b[1] for b in B])
+        d = np.sqrt(((BC[:, None, :] - AC[None, :, :]) ** 2).sum(2))          # (止まっている物, 動いている物)
+        hit = (d < AR[None, :] + BR[:, None]).any(1)
+        return [c for c, h_ in zip(sleeping, hit) if h_]
 
     def constructs_near(self, p, r):
         """点 p から r 以内に外側の球がかかる構築物。"""

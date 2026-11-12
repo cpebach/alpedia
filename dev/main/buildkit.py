@@ -459,5 +459,6 @@ def set_light_group(world, group, on):
         for d in light_devices(c, group):
             if bool(d["state"].get("enabled", True)) != bool(on):
                 d["state"]["enabled"] = bool(on)
+                c._slow_dt = 1.0                 # 明かりだけの建物も、次のティックで点く・消える
                 n += 1
     return n
