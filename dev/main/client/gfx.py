@@ -207,3 +207,127 @@ class RsDynamicMesh:
 
     def remove(self):
         self.np.removeNode()
+
+
+# ---------------------------------------------------------------------------
+# 文字・板（画面の上の 2D と、ワールドの中の看板）
+# ---------------------------------------------------------------------------
+_font_ok = None
+
+
+def font(path=None):
+    """フォントを読む（1回だけ）。path が無ければ、いつもの候補から探す。"""
+    global _font_ok
+    if _font_ok is not None:
+        return _font_ok
+    from pathlib import Path
+    from .game import FONT_CANDIDATES
+    for f in ([path] if path else []) + FONT_CANDIDATES:
+        if f and Path(f).exists():
+            try:
+                VIEW.font_load(str(f), 0, 40.0)
+                _font_ok = True
+                return True
+            except Exception:  # noqa: BLE001
+                continue
+    _font_ok = False
+    return False
+
+
+def quad(mesh, x0, y0, x1, y1, rgba, z=0.0):
+    """メッシュに色の四角を1つ（文字の下地など）。"""
+    import numpy as np
+    v = np.zeros((4, 12), np.float32)
+    v[:, 0:3] = [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]]
+    v[:, 5] = -1.0
+    v[:, 6:10] = rgba
+    mesh.set(v, np.array([[0, 1, 2], [0, 2, 3]], np.int64))
+    VIEW.mesh_props(mesh.mid, rgba[3] < 0.999, True, True, 0, 0)
+
+
+class RsText:
+    """文字（と下地）。overlay なら画面の上（縦の高さ 1、真ん中が原点）、そうでなければ親ノードの座標で。"""
+
+    def __init__(self, parent=None, overlay=True, bg=None, bin=0):
+        self.node = RsNode(parent) if parent is not None else RsNode(None, "text")
+        self.bg = RsDynamicMesh(self.node, "bg") if bg is not None else None
+        self.text = RsDynamicMesh(self.node, "text")
+        self.overlay = overlay
+        self.bgc = bg
+        self.bin = bin
+        for m in (self.bg, self.text):
+            if m is not None:
+                VIEW.mesh_overlay(m.mid, overlay)
+        self.key = None
+        self.size = (0.0, 0.0)
+
+    def set(self, text, size=0.025, color=(1, 1, 1, 1), max_width=0.0, align=0, pad=0.008):
+        """文字を変える（同じなら何もしない）。戻り値 (幅, 高さ)。"""
+        key = (text, size, tuple(color), max_width, align)
+        if key == self.key:
+            return self.size
+        self.key = key
+        if not font() or not text:
+            VIEW.mesh_set(self.text.mid, __import__("numpy").zeros((0, 12), "float32"), __import__("numpy").zeros((0, 3), "int64"))
+            if self.bg is not None:
+                self.bg.np.hide()
+            self.size = (0.0, 0.0)
+            return self.size
+        w, h = VIEW.text_mesh(self.text.mid, str(text), float(size), [float(x) for x in color], float(max_width), int(align))
+        VIEW.mesh_props(self.text.mid, True, False, True, 2 if not self.overlay else 0, self.bin + 1)
+        if self.bg is not None:
+            self.bg.np.show()
+            quad(self.bg, -pad, pad, w + pad, -h - pad, self.bgc)
+            VIEW.mesh_props(self.bg.mid, self.bgc[3] < 0.999, not self.overlay, True, 0, self.bin)
+        self.size = (w, h)
+        return self.size
+
+    def place(self, x, y):
+        self.node.setPos(float(x), float(y), 0.0)
+
+    def show(self, on=True):
+        (self.node.show if on else self.node.hide)()
+
+    def remove(self):
+        self.node.removeNode()
+
+
+class RsDisplayView:
+    """コンピューターの表示（看板）の Rust の画面版（render.DisplayView と同じ大きさ・置き方）。"""
+
+    def __init__(self, parent):
+        self.root = RsNode(parent)
+        self.inner = RsNode(self.root)
+        self.bg = RsDynamicMesh(self.root, "display_bg")
+        self.txt = RsText(self.inner, overlay=False)
+        self.key = None
+        self.placed = None
+
+    def set(self, disp, voxel_size):
+        key = (disp["text"], disp.get("width"), tuple(disp.get("color", ())), tuple(disp.get("background", ())), voxel_size)
+        if key == self.key:
+            return
+        self.key = key
+        col = disp.get("color", [1, 1, 1])
+        bgc = disp.get("background", [0.04, 0.05, 0.08, 0.92])
+        tw, th = self.txt.set(disp["text"], 1.0, (col[0], col[1], col[2], 1.0))
+        tw, th = max(tw, 1e-6), max(th, 1e-6)
+        w_target = float(disp.get("width") or voxel_size * 0.96)
+        k = w_target * 0.9 / tw
+        h = th * k / 0.88
+        if disp.get("width") is None:
+            if h > voxel_size * 0.96:
+                k *= voxel_size * 0.96 / h
+                h = voxel_size * 0.96
+            h = max(h, voxel_size * 0.96)
+        # 文字：左揃え・全体は中央（文字の座標は 1行目の上が 0、下へ負）。看板の表は -Z の向き（Panda3D 版と同じ）
+        M = [k, 0, 0, 0, 0, k, 0, 0, 0, 0, k, 0, -tw * k / 2, th * k / 2, -0.004, 1]
+        self.inner.setMat(M)
+        quad(self.bg, -w_target / 2, -h / 2, w_target / 2, h / 2, (bgc[0], bgc[1], bgc[2], 1.0))
+
+    def place(self, center, right, up, fwd):
+        self.root.setMat([right[0], right[1], right[2], 0, up[0], up[1], up[2], 0, fwd[0], fwd[1], fwd[2], 0,
+                          center[0], center[1], center[2], 1])
+
+    def remove(self):
+        self.root.removeNode()

@@ -615,8 +615,6 @@ class ConstructView:
 
     def update_displays(self, origin, far):
         """コンピューターの表示（看板）。"""
-        if gfx.active():
-            return                          # Rust の画面：文字はまだ（次の段で）
         c = self.c
         want = {}
         lim2 = min(far, 400.0) ** 2
@@ -642,7 +640,7 @@ class ConstructView:
         for (i, f), disp in want.items():
             v = self.displays.get((i, f))
             if v is None:
-                v = self.displays[(i, f)] = DisplayView(self.root)
+                v = self.displays[(i, f)] = gfx.RsDisplayView(self.root) if gfx.active() else DisplayView(self.root)
             v.set(disp, c.size)
             if L is not None:
                 if v.placed == key:

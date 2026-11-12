@@ -50,6 +50,13 @@ class Viewer:
                     self.scenes.append((a, SceneView(self.root, s)))
                 except Exception:  # noqa: BLE001
                     L.exception("景色を描けません: %s", getattr(a, "name", a))
+        # 画面の上：左上の状態・左下の知らせ・照準
+        gfx.font(g.get("font"))
+        self.hud = gfx.RsText(None, overlay=True, bg=(0.02, 0.03, 0.05, 0.55), bin=10)
+        self.msg = gfx.RsText(None, overlay=True, bg=(0.02, 0.03, 0.05, 0.55), bin=10)
+        self.cross = gfx.RsDynamicMesh(gfx.RsNode(None, "cross"), "cross")
+        gfx.VIEW.mesh_overlay(self.cross.mid, True)
+        gfx.quad(self.cross, -0.003, 0.003, 0.003, -0.003, (1, 1, 1, 0.9))
         self.held = set()
         self.yaw_fwd = None
         self.pitch = 0.0
@@ -152,6 +159,7 @@ class Viewer:
         hfov = np.radians(float(g.get("fov", 80)))           # Panda3D と同じく横の視野角
         vfov = float(np.degrees(2 * np.arctan(np.tan(hfov / 2) * hh / max(ww, 1))))
         self.view.camera([0.0, 0.0, 0.0], [float(x) for x in look], [float(x) for x in up], vfov, 0.05)
+        self._overlay(ww, hh)
         self.view.render()
         t2 = time.perf_counter()
         pf = self.perf
@@ -165,8 +173,34 @@ class Viewer:
             txt = (f"Alpedia（Rust の画面）  fps {f / el:.0f}  物理 {pf['phys'] / max(pf['ticks'], 1) * 1000:.1f} ms/回"
                    f"  描画 {pf['rend'] / f * 1000:.1f} ms")
             self.view.set_title(txt)
+            self.fps_text = txt.split("  ", 1)[1]
             L.info("重さ: %s（構築物 %d）", txt, len(w.constructs))
             self.perf = {"frames": 0, "t": t2, "phys": 0.0, "rend": 0.0, "ticks": 0}
+
+    def _overlay(self, ww, hh):
+        """画面の上の文字（左上：場所・高度・速度・重さ、左下：知らせ）。"""
+        w = self.w
+        p = w.player
+        pl = w.nearest_planet(p.pos)
+        alt = float(pl.sdf(p.pos[None])[0]) if pl else 0.0
+        lines = [f"{pl.name if pl else '宇宙'}  高度 {alt:.1f} m  速度 {float(np.linalg.norm(p.vel)):.1f} m/s"]
+        if p.jetpack:
+            lines.append("ジェットパック ON")
+        if p.seated and p.seated[0] in w.constructs:
+            c = w.constructs[p.seated[0]]
+            lines.append(f"操縦中: {c.name}  速度 {float(np.linalg.norm(c.velocity())):.1f} m/s")
+        if getattr(self, "fps_text", ""):
+            lines.append(self.fps_text)
+        if not self.grabbed:
+            lines.append("クリックで操作（マウスで見回す）・Esc で終わる")
+        aspect = ww / max(hh, 1)
+        self.hud.set("\n".join(lines), 0.026)
+        self.hud.place(-aspect / 2 + 0.015, 0.5 - 0.015)
+        now = time.time()
+        msgs = [t for ts, t in list(w.msgs)[-5:] if now - ts < 8.0]
+        _, h = self.msg.set("\n".join(msgs), 0.024, max_width=aspect * 0.6)
+        self.msg.show(bool(msgs))
+        self.msg.place(-aspect / 2 + 0.015, -0.5 + 0.03 + h)
 
     def _render(self, origin):
         w = self.w
@@ -186,6 +220,7 @@ class Viewer:
         D = np.sqrt(((C - origin) ** 2).sum(1)) - R if len(cs) else np.zeros(0)
         seat = w.player.seated[0] if w.player.seated else None
         lod_list = []
+        self.frame_no = getattr(self, "frame_no", 0) + 1
         budget = time.perf_counter() + 0.008
         from .. import shape
         for c, dist in zip(cs, D.tolist()):
@@ -226,6 +261,8 @@ class Viewer:
                 else:
                     v.update(origin)
                 v.update_decals(origin, origin, decal_dist)
+            if key is None or (self.frame_no + hash(cid)) % 6 == 0:     # 看板（止まっている物は6フレームに1回）
+                v.update_displays(origin, far)
         self.lod.update(lod_list, origin)
         self.lights.update([w.constructs[k] for k in self.loaded if k in w.constructs], origin, float(w.time))
         npl = w.nearest_planet(w.player.pos)

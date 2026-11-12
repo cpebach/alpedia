@@ -60,6 +60,7 @@ struct Mesh {
     depth_offset: i32,
     bin: i32,
     alive: bool,
+    overlay: bool,
 }
 
 struct Tex {
@@ -68,7 +69,35 @@ struct Tex {
     rgba: Vec<u8>,
     gpu: Option<wgpu::TextureView>,
     nearest: bool,
+    dirty: bool,
 }
+
+/// 文字の形（文字の置き場の中の位置と、ずらし・送り。ラスタの画素単位）
+#[derive(Clone, Copy)]
+struct Glyph {
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    xmin: f32,
+    ymin: f32,
+    adv: f32,
+}
+
+/// フォントと文字の置き場（テクスチャ）
+struct Font {
+    font: fontdue::Font,
+    px: f32,
+    tex: usize,
+    glyphs: HashMap<char, Glyph>,
+    cx: u32,
+    cy: u32,
+    row_h: u32,
+    line_h: f32,
+    ascent: f32,
+}
+
+const ATLAS: u32 = 2048;
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 struct PipeKey {
@@ -76,6 +105,7 @@ struct PipeKey {
     depth_write: bool,
     cull: bool,
     offset: i32,
+    overlay: bool,
 }
 
 struct Gfx {
@@ -90,6 +120,8 @@ struct Gfx {
     pipes: HashMap<PipeKey, wgpu::RenderPipeline>,
     cam_buf: wgpu::Buffer,
     cam_bg: wgpu::BindGroup,
+    ui_buf: wgpu::Buffer,
+    ui_bg: wgpu::BindGroup,
     model_bgl: wgpu::BindGroupLayout,
     model_buf: Option<(wgpu::Buffer, u64, wgpu::BindGroup)>,
     tex_bgl: wgpu::BindGroupLayout,
@@ -192,6 +224,17 @@ impl Gfx {
             layout: &cam_bgl,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: cam_buf.as_entire_binding() }],
         });
+        let ui_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ui_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &cam_bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: ui_buf.as_entire_binding() }],
+        });
         let mk_sampler = |f: wgpu::FilterMode| device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
@@ -204,7 +247,7 @@ impl Gfx {
         let sampler_near = mk_sampler(wgpu::FilterMode::Nearest);
         let white = Self::upload_tex(&device, &queue, 1, 1, &[255, 255, 255, 255]);
         Ok(Gfx {
-            window, surface, device, queue, config, depth, shader, layout, pipes: HashMap::new(), cam_buf, cam_bg, model_bgl,
+            window, surface, device, queue, config, depth, shader, layout, pipes: HashMap::new(), cam_buf, cam_bg, ui_buf, ui_bg, model_bgl,
             model_buf: None, tex_bgl, sampler_lin, sampler_near, white, tex_bg: HashMap::new(),
         })
     }
@@ -281,8 +324,9 @@ impl Gfx {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH,
-                    depth_write_enabled: k.depth_write,
-                    depth_compare: wgpu::CompareFunction::GreaterEqual, // 奥行きは逆向き（近い＝1）
+                    depth_write_enabled: k.depth_write && !k.overlay,
+                    // 奥行きは逆向き（近い＝1）。画面の上の文字・板（overlay）は奥行きを見ない
+                    depth_compare: if k.overlay { wgpu::CompareFunction::Always } else { wgpu::CompareFunction::GreaterEqual },
                     stencil: Default::default(),
                     bias: wgpu::DepthBiasState { constant: k.offset * 8, slope_scale: k.offset as f32 * 1.0, clamp: 0.0 },
                 }),
@@ -404,6 +448,7 @@ struct View {
     view_proj: [f32; 16],
     clear: [f64; 3],
     capture: Option<String>,
+    font: Option<Font>,
 }
 
 fn ro<'a, T: numpy::Element>(a: &'a PyReadonlyArrayDyn<'_, T>, name: &str) -> PyResult<&'a [T]> {
@@ -461,6 +506,7 @@ impl View {
             view_proj: IDENT,
             clear: [0.45, 0.65, 0.9],
             capture: None,
+            font: None,
         };
         // 窓ができるまで回す
         for _ in 0..200 {
@@ -646,7 +692,7 @@ impl View {
         self.check_node(node)?;
         let m = Mesh {
             node, verts: vec![], idx: vec![], dirty_v: false, dirty_i: false, vbuf: None, ibuf: None, n_idx: 0, tex: [None, None],
-            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true,
+            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false,
         };
         Ok(if let Some(k) = self.free_meshes.pop() {
             self.meshes[k] = m;
@@ -729,11 +775,135 @@ impl View {
                 // Panda3D と同じく v は下から上（画像の行を上下逆に）
                 let rgba = image::imageops::flip_vertical(&img.to_rgba8());
                 let (w, h) = rgba.dimensions();
-                self.textures.push(Tex { w, h, rgba: rgba.into_raw(), gpu: None, nearest });
+                self.textures.push(Tex { w, h, rgba: rgba.into_raw(), gpu: None, nearest, dirty: false });
                 self.textures.len() as i64 - 1
             }
             Err(_) => -1,
         }
+    }
+
+    /// 画面の上（2D、奥行きなし・最後に描く）に置くか。座標は縦の高さが 1、真ん中が原点、x 右・y 上
+    fn mesh_overlay(&mut self, m: usize, on: bool) -> PyResult<()> {
+        self.check_mesh(m)?;
+        self.meshes[m].overlay = on;
+        Ok(())
+    }
+
+    /// フォント（.ttf / .ttc。index は .ttc の中の番号）を読む
+    #[pyo3(signature = (path, index=0, px=40.0))]
+    fn font_load(&mut self, path: &str, index: u32, px: f32) -> PyResult<()> {
+        let data = std::fs::read(path).map_err(|e| PyValueError::new_err(format!("フォントを読めません: {e}")))?;
+        let font = fontdue::Font::from_bytes(data, fontdue::FontSettings { collection_index: index, scale: px, ..Default::default() })
+            .map_err(|e| PyValueError::new_err(format!("フォントを読めません: {e}")))?;
+        let lm = font.horizontal_line_metrics(px);
+        let (ascent, line_h) = match lm {
+            Some(l) => (l.ascent, l.new_line_size),
+            None => (px * 0.9, px * 1.25),
+        };
+        self.textures.push(Tex { w: ATLAS, h: ATLAS, rgba: vec![0; (ATLAS * ATLAS * 4) as usize], gpu: None, nearest: false, dirty: false });
+        let tex = self.textures.len() - 1;
+        self.font = Some(Font { font, px, tex, glyphs: HashMap::new(), cx: 1, cy: 1, row_h: 0, line_h, ascent });
+        Ok(())
+    }
+
+    /// 文字のメッシュを作る（メッシュ m の頂点・三角形・テクスチャを置きかえる）。座標は size が1行の高さになる単位で、
+    /// 1行目の上が y=0（下へ負）、x は右へ。align：0 左・1 中央・2 右。max_width > 0 なら折り返す。戻り値 (幅, 高さ)
+    #[pyo3(signature = (m, text, size, color, max_width=0.0, align=0, line_height=1.25))]
+    fn text_mesh(&mut self, m: usize, text: &str, size: f32, color: [f32; 4], max_width: f32, align: i32, line_height: f32)
+        -> PyResult<(f32, f32)> {
+        self.check_mesh(m)?;
+        let View { font, textures, meshes, .. } = self;
+        let f = font.as_mut().ok_or_else(|| PyValueError::new_err("フォントがありません（font_load）"))?;
+        let k = size / f.px;
+        // 行に分ける（折り返し）
+        let mut lines: Vec<Vec<char>> = vec![vec![]];
+        let mut wline = 0.0f32;
+        for ch in text.chars() {
+            if ch == '\n' {
+                lines.push(vec![]);
+                wline = 0.0;
+                continue;
+            }
+            let adv = f.font.metrics(ch, f.px).advance_width * k;
+            if max_width > 0.0 && wline + adv > max_width && !lines.last().unwrap().is_empty() {
+                lines.push(vec![]);
+                wline = 0.0;
+            }
+            lines.last_mut().unwrap().push(ch);
+            wline += adv;
+        }
+        let mut verts: Vec<f32> = Vec::new();
+        let mut idx: Vec<u32> = Vec::new();
+        let lh = size * line_height;
+        let mut maxw = 0.0f32;
+        let widths: Vec<f32> = lines.iter().map(|l| l.iter().map(|&c| f.font.metrics(c, f.px).advance_width * k).sum()).collect();
+        for w in &widths {
+            maxw = maxw.max(*w);
+        }
+        let atlas = &mut textures[f.tex];
+        for (li, line) in lines.iter().enumerate() {
+            let mut x = match align {
+                1 => (maxw - widths[li]) * 0.5,
+                2 => maxw - widths[li],
+                _ => 0.0,
+            };
+            let base = -(li as f32) * lh - f.ascent * k;
+            for &ch in line {
+                let g = match f.glyphs.get(&ch) {
+                    Some(g) => *g,
+                    None => {
+                        let (mt, bmp) = f.font.rasterize(ch, f.px);
+                        let (w, h) = (mt.width as u32, mt.height as u32);
+                        if f.cx + w + 1 >= ATLAS {
+                            f.cx = 1;
+                            f.cy += f.row_h + 1;
+                            f.row_h = 0;
+                        }
+                        if f.cy + h + 1 >= ATLAS {
+                            // 置き場がいっぱい：最初から（前の文字は次に使うとき描き直す）
+                            f.glyphs.clear();
+                            f.cx = 1;
+                            f.cy = 1;
+                            f.row_h = 0;
+                        }
+                        for yy in 0..h {
+                            for xx in 0..w {
+                                let a = bmp[(yy * w + xx) as usize];
+                                let o = (((f.cy + yy) * ATLAS + f.cx + xx) * 4) as usize;
+                                atlas.rgba[o..o + 4].copy_from_slice(&[255, 255, 255, a]);
+                            }
+                        }
+                        atlas.dirty = true;
+                        let g = Glyph { x: f.cx, y: f.cy, w, h, xmin: mt.xmin as f32, ymin: mt.ymin as f32, adv: mt.advance_width };
+                        f.cx += w + 1;
+                        f.row_h = f.row_h.max(h);
+                        f.glyphs.insert(ch, g);
+                        g
+                    }
+                };
+                if g.w > 0 && g.h > 0 {
+                    let x0 = x + g.xmin * k;
+                    let y0 = base + g.ymin * k;
+                    let (x1, y1) = (x0 + g.w as f32 * k, y0 + g.h as f32 * k);
+                    let (u0, v0) = (g.x as f32 / ATLAS as f32, g.y as f32 / ATLAS as f32);
+                    let (u1, v1) = ((g.x + g.w) as f32 / ATLAS as f32, (g.y + g.h) as f32 / ATLAS as f32);
+                    let n = (verts.len() / 12) as u32;
+                    for (px, py, u, v) in [(x0, y0, u0, v1), (x1, y0, u1, v1), (x1, y1, u1, v0), (x0, y1, u0, v0)] {
+                        verts.extend_from_slice(&[px, py, 0.0, 0.0, 0.0, -1.0, color[0], color[1], color[2], color[3], u, v]);
+                    }
+                    idx.extend_from_slice(&[n, n + 1, n + 2, n, n + 2, n + 3]);
+                }
+                x += g.adv * k;
+            }
+        }
+        let mesh = &mut meshes[m];
+        mesh.verts = verts;
+        mesh.idx = idx;
+        mesh.dirty_v = true;
+        mesh.dirty_i = true;
+        mesh.tex = [Some(f.tex), None];
+        mesh.blend = true;
+        Ok((maxw, lines.len() as f32 * lh))
     }
 
     /// 次に描く画面を PNG に保存する
@@ -751,7 +921,7 @@ impl View {
         for y in (0..h as usize).rev() {
             flipped.extend_from_slice(&rgba[y * w as usize * 4..(y + 1) * w as usize * 4]);
         }
-        self.textures.push(Tex { w, h, rgba: flipped, gpu: None, nearest });
+        self.textures.push(Tex { w, h, rgba: flipped, gpu: None, nearest, dirty: false });
         Ok(self.textures.len() as i64 - 1)
     }
 
@@ -770,7 +940,7 @@ impl View {
             }
         }
         // 半透明は後に（描く順 bin で）
-        draw.sort_by_key(|&(k, _, _)| (self.meshes[k].blend, self.meshes[k].bin));
+        draw.sort_by_key(|&(k, _, _)| (self.meshes[k].overlay, self.meshes[k].blend, self.meshes[k].bin));
         let View { app, meshes, textures, view_proj, clear, capture, .. } = self;
         let g = match app.gfx.as_mut() {
             Some(g) => g,
@@ -778,6 +948,11 @@ impl View {
         };
         // テクスチャ・頂点を GPU へ
         for t in textures.iter_mut() {
+            if t.dirty {
+                t.dirty = false;
+                t.gpu = None;
+                g.tex_bg.clear();
+            }
             if t.gpu.is_none() {
                 t.gpu = Some(Gfx::upload_tex(&g.device, &g.queue, t.w, t.h, &t.rgba));
             }
@@ -839,6 +1014,10 @@ impl View {
         }
         g.queue.write_buffer(&g.model_buf.as_ref().unwrap().0, 0, &data);
         g.queue.write_buffer(&g.cam_buf, 0, bytemuck::cast_slice(view_proj));
+        // 画面の上（overlay）：縦の高さが 1、真ん中が原点、x 右・y 上
+        let aspect = g.config.width as f32 / g.config.height.max(1) as f32;
+        let ui: [f32; 16] = [2.0 / aspect, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0];
+        g.queue.write_buffer(&g.ui_buf, 0, bytemuck::cast_slice(&ui));
         // テクスチャの組の bind group
         for &(k, _, _) in &draw {
             let key = (meshes[k].tex[0].map(|x| x as i64).unwrap_or(-1), meshes[k].tex[1].map(|x| x as i64).unwrap_or(-1));
@@ -863,7 +1042,7 @@ impl View {
         }
         for &(k, _, _) in &draw {
             let m = &meshes[k];
-            let pk = PipeKey { blend: m.blend, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset };
+            let pk = PipeKey { blend: m.blend, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset, overlay: m.overlay };
             g.pipe(pk);
         }
         let frame = match g.surface.get_current_texture() {
@@ -903,8 +1082,9 @@ impl View {
                     (Some(v), Some(i)) => (&v.0, &i.0),
                     _ => continue,
                 };
-                let pk = PipeKey { blend: m.blend, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset };
+                let pk = PipeKey { blend: m.blend, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset, overlay: m.overlay };
                 rp.set_pipeline(&g.pipes[&pk]);
+                rp.set_bind_group(0, if m.overlay { &g.ui_bg } else { &g.cam_bg }, &[]);
                 rp.set_bind_group(1, mbg, &[(q as u64 * MODEL_STRIDE) as u32]);
                 let key = (m.tex[0].map(|x| x as i64).unwrap_or(-1), m.tex[1].map(|x| x as i64).unwrap_or(-1));
                 rp.set_bind_group(2, &g.tex_bg[&key], &[]);
