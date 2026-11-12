@@ -26,6 +26,8 @@ class Viewer:
         self.cfg = cfg
         g = cfg["graphics"]
         win = cfg.get("window", {})
+        from . import ursina_shim
+        ursina_shim.install()            # 今までの画面の部品（ursina）を、この画面で動かす
         self.view = gfx.start(win.get("width", 1280), win.get("height", 720), "Alpedia（Rust の画面）", win.get("vsync", True))
         from .. import paths as _paths
         render.STYLE = {"edges": bool(g.get("block_edges", True)), "ao": bool(g.get("block_ao", True))}
@@ -68,6 +70,10 @@ class Viewer:
         self.bodies = {}
         from .ui import UI
         self.ui = UI(self.view)
+        from . import ursina_shim
+        self.shim = ursina_shim
+        self.editor = None             # 今までの画面の部品（ursina のまね）で開いている画面（プログラムなど）
+        self.game = GameAdapter(self)
         self.hotbar = None
         self.held = set()
         self.yaw_fwd = None
@@ -96,6 +102,8 @@ class Viewer:
         c = self.cfg["controls"]
         dx = dy = 0.0
         for kind, a, b, n in self.view.pump():
+            if self.editor is not None and self.shim.event(self.view, kind, a, b, n):
+                continue
             if self.ui.event(kind, a, b, n):
                 continue
             if kind == "close":
@@ -174,16 +182,28 @@ class Viewer:
             return
         c, i = h["construct"], h["index"]
         dd = c.reg.device(c.devs[i]["def"]) or {}
-        if dd.get("type") == "computer":
-            w.message("プログラムの画面は Rust の画面ではまだ使えません（今までの画面で開いてください）")
-            return
         self.held.clear()
+        if dd.get("type") == "computer":
+            self.open_program(c, i)
+            return
         self.grabbed = False
         self.view.grab(False)
         if act.is_actuator(c, i):
             self.ui.open(screens_dev.ActuatorPanel, self, c, i)
         else:
             self.ui.open(screens_dev.DevicePanel, self, c, i)
+
+    def open_program(self, c, i):
+        """コンピューターのプログラムの画面（今までの画面の ScriptPanel・BlockEditor を ursina のまねで動かす）。"""
+        self.grabbed = False
+        self.view.grab(False)
+        self.game.ui_root.enabled = False
+        if c.devs[i]["state"].get("blocks"):
+            from ..client.block_editor import BlockEditor
+            self.editor = BlockEditor(self.game, c, i)
+        else:
+            from ..client.script_panel import ScriptPanel
+            self.editor = ScriptPanel(self.game, c, i)
 
     def screen_closed(self):
         if not self.ui.stack:
@@ -229,7 +249,7 @@ class Viewer:
         w.local_player.look_fwd, w.local_player.pitch = fwd, self.pitch
         H = lambda k: 1 if k in self.held else 0  # noqa: E731
         move = np.zeros(3)
-        if not w.player.seated and not self.ui.stack:
+        if not w.player.seated and not self.ui.stack and self.editor is None:
             move += fwd * (H(c["forward"]) - H(c["back"])) + right * (H(c["right"]) - H(c["left"]))
             nm = np.linalg.norm(move)
             if nm > 1:
@@ -259,6 +279,7 @@ class Viewer:
         self.view.camera([0.0, 0.0, 0.0], [float(x) for x in look], [float(x) for x in up], vfov, 0.05)
         self._aim(origin, look)
         self._overlay(ww, hh)
+        self.shim.frame(self.view, dt)                # 今までの画面の部品（プログラムの画面など）
         self.view.render()
         t2 = time.perf_counter()
         pf = self.perf
@@ -340,11 +361,23 @@ class Viewer:
             t = gfx.RsText(root, overlay=True, bin=11)
             t.set(str(k + 1), 0.0138, (1, 1, 1, 0.8))
             t.place(x - sw / 2 + 0.005, y + sw / 2 - 0.003)
+        if not getattr(self, "_hud_shown", True):
+            root.hide()
         self.hotbar = (state, root)
 
     def _overlay(self, ww, hh):
-        """画面の上の文字（左上：場所・高度・速度・重さ、左下：知らせ）。"""
+        """画面の上の文字（左上：場所・高度・速度・重さ、左下：知らせ）。プログラムなどの画面を開いている間は隠す。"""
         w = self.w
+        shown = self.editor is None
+        if shown != getattr(self, "_hud_shown", True):
+            self._hud_shown = shown
+            for t in (self.hud, self.msg, self.aim_text, self.item_text):
+                t.show(shown)
+            (self.cross.np.show if shown else self.cross.np.hide)()
+            if self.hotbar is not None:
+                (self.hotbar[1].show if shown else self.hotbar[1].hide)()
+        if not shown:
+            return
         p = w.player
         pl = w.nearest_planet(p.pos)
         alt = float(pl.sdf(p.pos[None])[0]) if pl else 0.0
@@ -487,3 +520,45 @@ def run(cfg, world_name, frames=None, shot=None):
             v.view.screenshot(str(shot))
         v.frame(dt)
     return v
+
+
+class GameAdapter:
+    """今までの画面の部品（ScriptPanel・BlockEditor・DevicePanel など）が使う game のまね。"""
+
+    def __init__(self, viewer):
+        from . import ursina_shim as U
+        self.v = viewer
+        self.world = viewer.w
+        self.cfg = viewer.cfg
+        self.U = dict(Entity=U.Entity, Text=U.Text, Button=U.Button, camera=U.camera, window=U.window, color=U.color,
+                      held_keys=U.held_keys, mouse=U.mouse, utime=U.time, application=U.application)
+        self.ui_root = U.Entity(parent=U.camera.ui)
+        self.editor = None
+
+    @property
+    def sel(self):
+        return self.v.sel
+
+    @sel.setter
+    def sel(self, k):
+        self.v.sel = k
+
+    @property
+    def editor(self):
+        return self.v.editor
+
+    @editor.setter
+    def editor(self, e):
+        self.v.editor = e
+
+    def editor_closed(self):
+        self.v.editor = None
+        self.ui_root.enabled = True
+        self.v.screen_closed()
+
+    def set_mouse_capture(self, on):
+        self.v.grabbed = bool(on)
+        self.v.view.grab(bool(on))
+
+    def sfx(self, *a, **k):
+        pass
