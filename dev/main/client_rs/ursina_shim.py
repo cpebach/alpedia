@@ -674,7 +674,9 @@ class Text(Entity):
         if self._txt is None:
             self._txt = gfx.RsText(self.node(), overlay=True)
         s = self._wrap(self._text)
-        w, h = self._txt.set(s, TEXT_SIZE * FONT_K, tuple(self._color)) if s else (0.0, 0.0)
+        ox = self._origin[0]
+        al = 0 if ox <= -0.25 else (2 if ox >= 0.25 else 1)     # ursina と同じく、行ごとに origin の x でそろえる
+        w, h = self._txt.set(s, TEXT_SIZE * FONT_K, tuple(self._color), 0.0, al) if s else (0.0, 0.0)
         if not s:
             self._txt.set("", TEXT_SIZE * FONT_K)
         self._wh = (w, h)
@@ -698,7 +700,7 @@ class Text(Entity):
     @Entity.origin.setter
     def origin(self, v):
         self._origin = (float(v[0]), float(v[1]) if len(v) > 1 else 0.0)
-        self._place() if getattr(self, "_txt", None) is not None else None
+        self._render() if getattr(self, "_txt", None) is not None else None
         self._touch()
 
     width = property(lambda s: s._wh[0])
@@ -953,7 +955,28 @@ class _App:
     asset_folder = None
 
 
+class _Lens:
+    def getFov(self):
+        return camera.fov_pair
+
+
+class _CamNode:
+    def getLens(self):
+        return _Lens()
+
+
+class _Cam:
+    def node(self):
+        return _CamNode()
+
+
+class _Base:
+    """application.base のまね（MOD が画面の視野角を読む：base.cam.node().getLens().getFov()）。"""
+    cam = _Cam()
+
+
 application = _App()
+application.base = _Base()
 
 
 class _Scene(Entity):
@@ -983,6 +1006,7 @@ class _Camera:
         self.ui = _Scene()
         self.ui.name = "ui"
         self.fov = 80
+        self.fov_pair = (80.0, 50.0)        # (横, 縦) の視野角（Rust の画面が毎フレーム入れる）
         self.position = Vec3()
         self.clip_plane_near = 0.05
         self.clip_plane_far = 10000

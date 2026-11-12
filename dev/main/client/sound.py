@@ -21,7 +21,8 @@ def get(cfg=None):
     """ゲーム全体で1つの音の係。画面（ursina）を作ったあとで呼ぶ。"""
     global _SYS
     if _SYS is None:
-        _SYS = SoundSystem()
+        from . import gfx
+        _SYS = _Silent() if gfx.active() else SoundSystem()     # Rust の画面：音はまだ鳴らさない
     if cfg is not None:
         _SYS.apply(cfg)
     return _SYS
@@ -50,6 +51,31 @@ def library():
         except Exception:  # noqa: BLE001
             continue
     return out
+
+
+class _Silent:
+    """音を鳴らさない係（Rust の画面。呼び出し口だけ同じ）。"""
+
+    def apply(self, cfg):
+        pass
+
+    def sfx(self, name, volume=1.0):
+        pass
+
+    def loop(self, name, volume):
+        pass
+
+    def stop_loops(self):
+        pass
+
+    def set_bgm(self, want):
+        pass
+
+    def set_override(self, want):
+        pass
+
+    def update(self, dt):
+        pass
 
 
 class SoundSystem:

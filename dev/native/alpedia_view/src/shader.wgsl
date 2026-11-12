@@ -8,7 +8,7 @@ struct Camera {
 struct Model {
     model: mat4x4<f32>,
     tint: vec4<f32>,      // 色を掛ける（ノードの色）
-    flags: vec4<f32>,     // x：2枚目のテクスチャを使う、y：テクスチャを使う
+    flags: vec4<f32>,     // x：2枚目のテクスチャを使う、y：テクスチャを使う、z：不透明さがこれ未満は描かない
 };
 @group(1) @binding(0) var<uniform> mdl: Model;
 
@@ -48,7 +48,7 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
     if (mdl.flags.x > 0.5) {
         c = c * textureSample(tex1, samp, i.uv);
     }
-    if (c.a < 0.01) {
+    if (c.a < max(mdl.flags.z, 0.01)) {
         discard;
     }
     return c;

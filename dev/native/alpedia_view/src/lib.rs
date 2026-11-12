@@ -61,6 +61,32 @@ struct Mesh {
     bin: i32,
     alive: bool,
     overlay: bool,
+    cutoff: f32,
+}
+
+/// 骨で曲げる形（VRM の人物など）：もとの頂点。体ごとの部品（SkinPart）がこれを共有する。
+struct SkinGeom {
+    pos: Vec<f32>,
+    nrm: Vec<f32>,
+    joints: Vec<u32>,
+    weights: Vec<f32>,
+    morph: Vec<f32>,
+    alive: bool,
+}
+
+/// 体の部品（材質ごと）：使う頂点だけを取り出したメッシュ。骨の行列を受け取ると CPU で曲げて書き込む。
+struct SkinPart {
+    geom: usize,
+    mesh: usize,
+    src: Vec<u32>,
+    color: [f32; 4],
+    shade: [f32; 3],
+    alive: bool,
+}
+
+fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 struct Tex {
@@ -70,6 +96,7 @@ struct Tex {
     gpu: Option<wgpu::TextureView>,
     nearest: bool,
     dirty: bool,
+    enc: Option<Vec<u8>>,     // 画像ファイルの中身（初めて描くときに読み解き、GPU に送ったら画素は捨てる）
 }
 
 /// 文字の形（文字の置き場の中の位置と、ずらし・送り。ラスタの画素単位）
@@ -98,6 +125,7 @@ struct Font {
 }
 
 const ATLAS: u32 = 2048;
+const GPAD: u32 = 4;          // 文字と文字のすき間（縮小した段でにじまないように）
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 struct PipeKey {
@@ -240,12 +268,12 @@ impl Gfx {
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: f,
             min_filter: f,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: f,
             ..Default::default()
         });
         let sampler_lin = mk_sampler(wgpu::FilterMode::Linear);
         let sampler_near = mk_sampler(wgpu::FilterMode::Nearest);
-        let white = Self::upload_tex(&device, &queue, 1, 1, &[255, 255, 255, 255]);
+        let white = Self::upload_tex(&device, &queue, 1, 1, &[255, 255, 255, 255], false);
         Ok(Gfx {
             window, surface, device, queue, config, depth, shader, layout, pipes: HashMap::new(), cam_buf, cam_bg, ui_buf, ui_bg, model_bgl,
             model_buf: None, tex_bgl, sampler_lin, sampler_near, white, tex_bg: HashMap::new(),
@@ -267,13 +295,54 @@ impl Gfx {
             .create_view(&Default::default())
     }
 
-    fn upload_tex(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8]) -> wgpu::TextureView {
+    /// 縮小した段（ミップマップ）：文字・アイコンを小さく描いても細い線が消えないように。
+    /// 色は不透明さで重みを付けて平均する（透明な所の色がにじまないように）。
+    fn mip_chain(w: u32, h: u32, rgba: &[u8], levels: u32) -> Vec<u8> {
+        let mut out = rgba.to_vec();
+        let (mut cw, mut ch) = (w, h);
+        let mut cur = rgba.to_vec();
+        for _ in 1..levels {
+            let (nw, nh) = ((cw / 2).max(1), (ch / 2).max(1));
+            let mut nxt = vec![0u8; (nw * nh * 4) as usize];
+            for y in 0..nh {
+                for x in 0..nw {
+                    let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
+                    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        let sx = (x * 2 + dx).min(cw - 1);
+                        let sy = (y * 2 + dy).min(ch - 1);
+                        let o = ((sy * cw + sx) * 4) as usize;
+                        let al = cur[o + 3] as u32;
+                        r += cur[o] as u32 * al;
+                        g += cur[o + 1] as u32 * al;
+                        b += cur[o + 2] as u32 * al;
+                        a += al;
+                    }
+                    let o = ((y * nw + x) * 4) as usize;
+                    if a > 0 {
+                        nxt[o] = (r / a) as u8;
+                        nxt[o + 1] = (g / a) as u8;
+                        nxt[o + 2] = (b / a) as u8;
+                    }
+                    nxt[o + 3] = ((a + 2) / 4) as u8;
+                }
+            }
+            out.extend_from_slice(&nxt);
+            cur = nxt;
+            cw = nw;
+            ch = nh;
+        }
+        out
+    }
+
+    fn upload_tex(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, rgba: &[u8], mips: bool) -> wgpu::TextureView {
+        let levels = if mips { (32 - w.min(h).max(1).leading_zeros()).min(4) } else { 1 };
+        let data = if levels > 1 { Self::mip_chain(w, h, rgba, levels) } else { rgba.to_vec() };
         let t = device.create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
                 label: None,
                 size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                mip_level_count: 1,
+                mip_level_count: levels,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8Unorm,
@@ -281,7 +350,7 @@ impl Gfx {
                 view_formats: &[],
             },
             wgpu::util::TextureDataOrder::LayerMajor,
-            rgba,
+            &data,
         );
         t.create_view(&Default::default())
     }
@@ -462,6 +531,8 @@ struct View {
     clear: [f64; 3],
     capture: Option<String>,
     font: Option<Font>,
+    skins: Vec<SkinGeom>,
+    parts: Vec<SkinPart>,
 }
 
 fn ro<'a, T: numpy::Element>(a: &'a PyReadonlyArrayDyn<'_, T>, name: &str) -> PyResult<&'a [T]> {
@@ -520,6 +591,8 @@ impl View {
             clear: [0.45, 0.65, 0.9],
             capture: None,
             font: None,
+            skins: vec![],
+            parts: vec![],
         };
         // 窓ができるまで回す
         for _ in 0..200 {
@@ -705,7 +778,7 @@ impl View {
         self.check_node(node)?;
         let m = Mesh {
             node, verts: vec![], idx: vec![], dirty_v: false, dirty_i: false, vbuf: None, ibuf: None, n_idx: 0, tex: [None, None],
-            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false,
+            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false, cutoff: 0.0,
         };
         Ok(if let Some(k) = self.free_meshes.pop() {
             self.meshes[k] = m;
@@ -766,6 +839,142 @@ impl View {
         Ok(())
     }
 
+    /// 不透明さがこれより小さい所は描かない（VRM の MASK）
+    fn mesh_cutoff(&mut self, m: usize, cutoff: f32) -> PyResult<()> {
+        self.check_mesh(m)?;
+        self.meshes[m].cutoff = cutoff;
+        Ok(())
+    }
+
+    // ---- 骨で曲げる形（VRM） ----
+    /// もとの頂点：位置 (n,3)・法線 (n,3)・骨の番号 (n,4)・重み (n,4)・まばたきのずれ (n,3)。戻り値は形の番号。
+    fn skin_geom(&mut self, pos: PyReadonlyArrayDyn<'_, f32>, nrm: PyReadonlyArrayDyn<'_, f32>, joints: PyReadonlyArrayDyn<'_, f32>,
+                 weights: PyReadonlyArrayDyn<'_, f32>, morph: PyReadonlyArrayDyn<'_, f32>) -> PyResult<usize> {
+        let (p, n, j, w, mo) = (ro(&pos, "pos")?, ro(&nrm, "nrm")?, ro(&joints, "joints")?, ro(&weights, "weights")?, ro(&morph, "morph")?);
+        let nv = p.len() / 3;
+        if n.len() != nv * 3 || j.len() != nv * 4 || w.len() != nv * 4 || mo.len() != nv * 3 {
+            return Err(PyValueError::new_err("skin_geom: 配列の大きさが合いません"));
+        }
+        self.skins.push(SkinGeom {
+            pos: p.to_vec(), nrm: n.to_vec(), joints: j.iter().map(|&x| x.max(0.0).round() as u32).collect(),
+            weights: w.to_vec(), morph: mo.to_vec(), alive: true,
+        });
+        Ok(self.skins.len() - 1)
+    }
+
+    /// 体の部品：形 geom の三角形 idx（頂点の番号、平らな配列）を mesh に描く。uv (n,2) は形の頂点ごと。戻り値は部品の番号。
+    fn skin_part(&mut self, geom: usize, mesh: usize, idx: PyReadonlyArrayDyn<'_, i64>, uv: PyReadonlyArrayDyn<'_, f32>,
+                 color: [f32; 4], shade: [f32; 3]) -> PyResult<usize> {
+        self.check_mesh(mesh)?;
+        if geom >= self.skins.len() || !self.skins[geom].alive {
+            return Err(PyValueError::new_err("形がありません"));
+        }
+        let (ix, uvs) = (ro(&idx, "idx")?, ro(&uv, "uv")?);
+        let nv = self.skins[geom].pos.len() / 3;
+        if uvs.len() != nv * 2 {
+            return Err(PyValueError::new_err("skin_part: uv の大きさが合いません"));
+        }
+        let mut map: HashMap<u32, u32> = HashMap::new();
+        let mut src: Vec<u32> = Vec::new();
+        let mut tri: Vec<u32> = Vec::with_capacity(ix.len());
+        for &i in ix {
+            if i < 0 || i as usize >= nv {
+                return Err(PyValueError::new_err("skin_part: 頂点の番号が範囲の外です"));
+            }
+            let k = *map.entry(i as u32).or_insert_with(|| {
+                src.push(i as u32);
+                (src.len() - 1) as u32
+            });
+            tri.push(k);
+        }
+        let mut verts = vec![0f32; src.len() * 12];
+        for (k, &i) in src.iter().enumerate() {
+            verts[k * 12 + 9] = color[3];
+            verts[k * 12 + 10] = uvs[i as usize * 2];
+            verts[k * 12 + 11] = uvs[i as usize * 2 + 1];
+        }
+        let m = &mut self.meshes[mesh];
+        m.verts = verts;
+        m.idx = tri;
+        m.dirty_v = true;
+        m.dirty_i = true;
+        self.parts.push(SkinPart { geom, mesh, src, color, shade, alive: true });
+        Ok(self.parts.len() - 1)
+    }
+
+    /// 骨の行列 bones（(J,3,4) を平らに：p' = M[:, :3] p + M[:, 3]）で部品を曲げる。blink：まばたき（0〜1）、
+    /// sun：光の向き（形の座標）。陰影はトゥーン調（明るい面と影の面）で頂点の色に焼き込む。
+    fn skin_pose(&mut self, parts: Vec<usize>, bones: PyReadonlyArrayDyn<'_, f32>, blink: f32, sun: [f32; 3]) -> PyResult<()> {
+        let b = ro(&bones, "bones")?;
+        let nb = b.len() / 12;
+        let sl = (sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]).sqrt().max(1e-9);
+        let sd = [sun[0] / sl, sun[1] / sl, sun[2] / sl];
+        for &pi in &parts {
+            if pi >= self.parts.len() || !self.parts[pi].alive {
+                continue;
+            }
+            let part = &self.parts[pi];
+            let g = &self.skins[part.geom];
+            if part.mesh >= self.meshes.len() || !self.meshes[part.mesh].alive {
+                continue;
+            }
+            let mesh = &mut self.meshes[part.mesh];
+            if mesh.verts.len() != part.src.len() * 12 {
+                continue;
+            }
+            for (k, &i) in part.src.iter().enumerate() {
+                let i = i as usize;
+                let mut m = [0f32; 12];
+                for t in 0..4 {
+                    let w = g.weights[i * 4 + t];
+                    if w == 0.0 {
+                        continue;
+                    }
+                    let j = (g.joints[i * 4 + t] as usize).min(nb.saturating_sub(1));
+                    let bj = &b[j * 12..j * 12 + 12];
+                    for q in 0..12 {
+                        m[q] += bj[q] * w;
+                    }
+                }
+                let p = [g.pos[i * 3] + g.morph[i * 3] * blink, g.pos[i * 3 + 1] + g.morph[i * 3 + 1] * blink,
+                         g.pos[i * 3 + 2] + g.morph[i * 3 + 2] * blink];
+                let n = [g.nrm[i * 3], g.nrm[i * 3 + 1], g.nrm[i * 3 + 2]];
+                let o = &mut mesh.verts[k * 12..k * 12 + 12];
+                for r in 0..3 {
+                    o[r] = m[r * 4] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3];
+                    o[3 + r] = m[r * 4] * n[0] + m[r * 4 + 1] * n[1] + m[r * 4 + 2] * n[2];
+                }
+                let nl = (o[3] * o[3] + o[4] * o[4] + o[5] * o[5]).sqrt();
+                let ndl = if nl > 1e-6 { (o[3] * sd[0] + o[4] * sd[1] + o[5] * sd[2]) / nl } else { 1.0 };
+                let kk = smoothstep(-0.1, 0.2, ndl);
+                for c in 0..3 {
+                    o[6 + c] = part.color[c] * (part.shade[c] + (1.0 - part.shade[c]) * kk);
+                }
+            }
+            mesh.dirty_v = true;
+        }
+        Ok(())
+    }
+
+    fn skin_part_remove(&mut self, part: usize) {
+        if part < self.parts.len() && self.parts[part].alive {
+            self.parts[part].alive = false;
+            self.parts[part].src = Vec::new();
+        }
+    }
+
+    fn skin_geom_remove(&mut self, geom: usize) {
+        if geom < self.skins.len() {
+            let g = &mut self.skins[geom];
+            g.alive = false;
+            g.pos = Vec::new();
+            g.nrm = Vec::new();
+            g.joints = Vec::new();
+            g.weights = Vec::new();
+            g.morph = Vec::new();
+        }
+    }
+
     fn mesh_remove(&mut self, m: usize) -> PyResult<()> {
         if m < self.meshes.len() && self.meshes[m].alive {
             let x = &mut self.meshes[m];
@@ -788,10 +997,22 @@ impl View {
                 // Panda3D と同じく v は下から上（画像の行を上下逆に）
                 let rgba = image::imageops::flip_vertical(&img.to_rgba8());
                 let (w, h) = rgba.dimensions();
-                self.textures.push(Tex { w, h, rgba: rgba.into_raw(), gpu: None, nearest, dirty: false });
+                self.textures.push(Tex { w, h, rgba: rgba.into_raw(), gpu: None, nearest, dirty: false, enc: None });
                 self.textures.len() as i64 - 1
             }
             Err(_) => -1,
+        }
+    }
+
+    /// 画像ファイルの中身（PNG・JPEG）からテクスチャ。読み解くのは初めて描くとき（使わない物は画素を持たない）。
+    #[pyo3(signature = (data, nearest=false))]
+    fn tex_bytes(&mut self, data: Vec<u8>, nearest: bool) -> i64 {
+        match image::ImageReader::new(std::io::Cursor::new(&data)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok()) {
+            Some((w, h)) if w > 0 && h > 0 => {
+                self.textures.push(Tex { w, h, rgba: Vec::new(), gpu: None, nearest, dirty: false, enc: Some(data) });
+                self.textures.len() as i64 - 1
+            }
+            _ => -1,
         }
     }
 
@@ -813,9 +1034,9 @@ impl View {
             Some(l) => (l.ascent, l.new_line_size),
             None => (px * 0.9, px * 1.25),
         };
-        self.textures.push(Tex { w: ATLAS, h: ATLAS, rgba: vec![0; (ATLAS * ATLAS * 4) as usize], gpu: None, nearest: false, dirty: false });
+        self.textures.push(Tex { w: ATLAS, h: ATLAS, rgba: vec![0; (ATLAS * ATLAS * 4) as usize], gpu: None, nearest: false, dirty: false, enc: None });
         let tex = self.textures.len() - 1;
-        self.font = Some(Font { font, px, tex, glyphs: HashMap::new(), cx: 1, cy: 1, row_h: 0, line_h, ascent });
+        self.font = Some(Font { font, px, tex, glyphs: HashMap::new(), cx: GPAD, cy: GPAD, row_h: 0, line_h, ascent });
         Ok(())
     }
 
@@ -867,16 +1088,17 @@ impl View {
                     None => {
                         let (mt, bmp) = f.font.rasterize(ch, f.px);
                         let (w, h) = (mt.width as u32, mt.height as u32);
-                        if f.cx + w + 1 >= ATLAS {
-                            f.cx = 1;
-                            f.cy += f.row_h + 1;
+                        if f.cx + w + GPAD >= ATLAS {
+                            f.cx = GPAD;
+                            f.cy += f.row_h + GPAD;
                             f.row_h = 0;
                         }
-                        if f.cy + h + 1 >= ATLAS {
+                        if f.cy + h + GPAD >= ATLAS {
                             // 置き場がいっぱい：最初から（前の文字は次に使うとき描き直す）
                             f.glyphs.clear();
-                            f.cx = 1;
-                            f.cy = 1;
+                            atlas.rgba.iter_mut().for_each(|b| *b = 0);
+                            f.cx = GPAD;
+                            f.cy = GPAD;
                             f.row_h = 0;
                         }
                         for yy in 0..h {
@@ -888,7 +1110,7 @@ impl View {
                         }
                         atlas.dirty = true;
                         let g = Glyph { x: f.cx, y: f.cy, w, h, xmin: mt.xmin as f32, ymin: mt.ymin as f32, adv: mt.advance_width };
-                        f.cx += w + 1;
+                        f.cx += w + GPAD;
                         f.row_h = f.row_h.max(h);
                         f.glyphs.insert(ch, g);
                         g
@@ -943,7 +1165,7 @@ impl View {
         for y in (0..h as usize).rev() {
             flipped.extend_from_slice(&rgba[y * w as usize * 4..(y + 1) * w as usize * 4]);
         }
-        self.textures.push(Tex { w, h, rgba: flipped, gpu: None, nearest, dirty: false });
+        self.textures.push(Tex { w, h, rgba: flipped, gpu: None, nearest, dirty: false, enc: None });
         Ok(self.textures.len() as i64 - 1)
     }
 
@@ -968,15 +1190,33 @@ impl View {
             Some(g) => g,
             None => return Ok(0),
         };
-        // テクスチャ・頂点を GPU へ
-        for t in textures.iter_mut() {
+        // テクスチャ・頂点を GPU へ（描くメッシュが使う物だけ）
+        let mut used = vec![false; textures.len()];
+        for &(k, _, _) in &draw {
+            for t in meshes[k].tex.iter().flatten() {
+                if *t < used.len() {
+                    used[*t] = true;
+                }
+            }
+        }
+        for (ti, t) in textures.iter_mut().enumerate() {
             if t.dirty {
                 t.dirty = false;
                 t.gpu = None;
                 g.tex_bg.clear();
             }
-            if t.gpu.is_none() {
-                t.gpu = Some(Gfx::upload_tex(&g.device, &g.queue, t.w, t.h, &t.rgba));
+            if t.gpu.is_none() && used[ti] {
+                if t.rgba.is_empty() {
+                    if let Some(img) = t.enc.as_ref().and_then(|e| image::load_from_memory(e).ok()) {
+                        t.rgba = image::imageops::flip_vertical(&img.to_rgba8()).into_raw();
+                    } else {
+                        t.rgba = vec![255; (t.w * t.h * 4) as usize];
+                    }
+                }
+                t.gpu = Some(Gfx::upload_tex(&g.device, &g.queue, t.w, t.h, &t.rgba, !t.nearest));
+                if t.enc.is_some() {
+                    t.rgba = Vec::new();
+                }
             }
         }
         for &(k, _, _) in &draw {
@@ -1028,7 +1268,7 @@ impl View {
         let mut data = vec![0u8; need as usize];
         for (q, &(k, w, tint)) in draw.iter().enumerate() {
             let m = &meshes[k];
-            let flags = [if m.tex[1].is_some() { 1.0f32 } else { 0.0 }, if m.tex[0].is_some() { 1.0 } else { 0.0 }, 0.0, 0.0];
+            let flags = [if m.tex[1].is_some() { 1.0f32 } else { 0.0 }, if m.tex[0].is_some() { 1.0 } else { 0.0 }, m.cutoff, 0.0];
             let o = q * MODEL_STRIDE as usize;
             data[o..o + 64].copy_from_slice(bytemuck::cast_slice(&w));
             data[o + 64..o + 80].copy_from_slice(bytemuck::cast_slice(&tint));

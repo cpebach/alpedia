@@ -60,17 +60,30 @@ class Client:
         self.viewer = Viewer(world, self.cfg)
 
     def leave(self):
+        """ワールドを出る。MOD が決めた行き先（leave_action）：("menu"・"play:名前", 保存するか, 知らせ)。"""
         v = self.viewer
         self.viewer = None
-        try:
-            v.w.save()
-        except Exception:  # noqa: BLE001
-            L.exception("保存に失敗しました")
+        action, save, status = getattr(v, "leave_action", None) or ("menu", True, "")
+        net = getattr(v.w, "net", None)
+        if save and not (net is not None and net.role == "client"):
+            try:
+                v.w.save()
+            except Exception:  # noqa: BLE001
+                L.exception("保存に失敗しました")
+        if net is not None:
+            try:
+                net.close()
+            except Exception:  # noqa: BLE001
+                L.exception("マルチプレイの終了でエラー")
         v.destroy()
         if getattr(v, "close_app", False):
             self.running = False
+        elif action.startswith("play:"):
+            self.play(action[5:])
+            if self.viewer is None and self.menu is None:
+                self.open_menu(status)
         else:
-            self.open_menu()
+            self.open_menu(status)
 
     # ---- まわす ----
     def frame(self, dt):

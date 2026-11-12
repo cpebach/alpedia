@@ -46,13 +46,6 @@ class Viewer:
         self.static_root = gfx.RsNode(self.root, "static")
         self.anchor, self.anchor_ver = None, 0
         self.loaded = set()
-        self.scenes = []
-        for a in world.addons:
-            for s in getattr(a, "scenes", None) or []:
-                try:
-                    self.scenes.append((a, SceneView(self.root, s)))
-                except Exception:  # noqa: BLE001
-                    L.exception("景色を描けません: %s", getattr(a, "name", a))
         # 画面の上：左上の状態・左下の知らせ・照準
         gfx.font(g.get("font"))
         self.hud = gfx.RsText(None, overlay=True, bg=(0.02, 0.03, 0.05, 0.55), bin=10)
@@ -75,6 +68,19 @@ class Viewer:
         self.shim = ursina_shim
         self.editor = None             # 今までの画面の部品（ursina のまね）で開いている画面（プログラムなど）
         self.game = GameAdapter(self)
+        self.addons = self._load_addons()
+        # 画面側の MOD が描かない拡張の景色の箱（画面側の無い MOD）はここで描く
+        own = {id(getattr(a, "pack", None)) for a in self.addons}
+        self.scenes = []
+        for a in world.addons:
+            if id(a) in own:
+                continue
+            for s in getattr(a, "scenes", None) or []:
+                try:
+                    self.scenes.append((a, SceneView(self.root, s)))
+                except Exception:  # noqa: BLE001
+                    L.exception("景色を描けません: %s", getattr(a, "name", a))
+        self._addon_err = set()
         self.hotbar = None
         self.held = set()
         self.yaw_fwd = None
@@ -83,6 +89,81 @@ class Viewer:
         self.acc = 0.0
         self.quit = False
         self.perf = {"frames": 0, "t": time.perf_counter(), "phys": 0.0, "rend": 0.0, "ticks": 0}
+
+    # ---- MOD の画面側 ----
+    def _load_addons(self):
+        """MOD の画面側（ClientAddon）を作る（今までの画面と同じ modcode.client_addons）。"""
+        from ..modcode import client_addons, load_client
+        errors = []
+        load_client(errors)
+        out = client_addons(self.game, errors)
+        w = self.w
+        if w.addon("survival") is not None and getattr(w.addon("survival"), "mod_id", None) is None:
+            try:
+                from ..client.survival_ui import SurvivalClient
+                out.insert(0, SurvivalClient(self.game))
+            except Exception:  # noqa: BLE001
+                L.exception("サバイバルの目標を出せません")
+        for a in out:
+            try:
+                self.game.emotes.update(a.emotes() or {})
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"MOD '{getattr(a, 'name', '?')}' のモーションを読めません: {e}")
+        for e in errors:
+            w.message("⚠ " + e.splitlines()[0])
+        self.load_errors = errors
+        return out
+
+    def _each_addon(self, fn, first=False):
+        """MOD の口を順に呼ぶ（エラーは1回だけ記録して続ける）。first：最初に真を返した物の値。"""
+        for a in self.addons:
+            try:
+                r = fn(a)
+            except Exception:  # noqa: BLE001
+                key = (getattr(a, "name", "?"), getattr(fn, "__name__", ""))
+                if key not in self._addon_err:
+                    self._addon_err.add(key)
+                    L.exception("MOD '%s' の画面側でエラー", key[0])
+                    self.w.message(f"⚠ MOD '{key[0]}' の画面でエラー（logs/latest.log）")
+                r = None
+            if first and r:
+                return r
+        return None
+
+    def _usable(self, hit):
+        if not hit:
+            return False
+        if hit["kind"] == "voxel":
+            return bool(hit["construct"].devs[hit["index"]]) or bool(self._each_addon(lambda a: a.aim(hit), True))
+        return bool(self._each_addon(lambda a: a.aim(hit), True))
+
+    def nearby_targets(self, radius=2.6):
+        """近くの MOD の触れる物（お店・NPC・受付など）：近い順（MOD の nearby_priority で並べ替え）。"""
+        p = self.w.player
+        out = []
+        for a in self.addons:
+            try:
+                out += a.nearby(p.pos, radius) or []
+            except Exception:  # noqa: BLE001
+                pass
+
+        def prio(t):
+            s = 0.0
+            for a in self.addons:
+                fn = getattr(a, "nearby_priority", None)
+                if fn is not None:
+                    try:
+                        s += float(fn(t) or 0.0)
+                    except Exception:  # noqa: BLE001
+                        pass
+            return (s, t.get("dist", 0.0))
+        out.sort(key=prio)
+        return out
+
+    def do_interact(self, hit):
+        """E：MOD が使わなければワールドの interact（機器・席）。"""
+        if not self._each_addon(lambda a: a.interact(hit), True):
+            self.w.interact(hit)
 
     # ---- 視点 ----
     def look_vectors(self):
@@ -105,6 +186,12 @@ class Viewer:
         for kind, a, b, n in self.view.pump():
             if self.editor is not None and self.shim.event(self.view, kind, a, b, n):
                 continue
+            if self.editor is None and not self.grabbed and not self.ui.stack:     # MOD の画面の上のボタン（目標の欄など）
+                if kind == "cursor":
+                    self.shim.event(self.view, kind, a, b, n)
+                elif kind == "button" and a and n == 0 and self.shim._hit(self.shim.mouse.x, self.shim.mouse.y):
+                    self.shim.event(self.view, kind, a, b, n)
+                    continue
             if self.ui.event(kind, a, b, n):
                 continue
             if kind == "close":
@@ -221,14 +308,21 @@ class Viewer:
                 w.key_pressed(kk)
             if k == c["interact"]:
                 w.interact(None)
+            elif kk not in SEAT_KEYS:
+                self._each_addon(lambda a: a.on_key(kk), True)        # MOD のキー（座っている間も使えるもの）
             return
         if k in "123456789" and len(k) == 1:
             self.sel = int(k) - 1
         elif k == c["rotate"]:
             self.dir_index = (self.dir_index + 1) % 6
         elif k == c["interact"]:
-            if self.hit is not None:
-                w.interact(self.hit)
+            hit = self.hit
+            if not self._usable(hit):          # 見ている物が使えなければ、近くの MOD の物（受付・お店など）
+                near = next((t for t in self.nearby_targets() if t.get("kind") == "e"), None)
+                if near is not None:
+                    hit = near["hit"]
+            if hit is not None:
+                self.do_interact(hit)
         elif k == c["new_construct"]:
             self._place(None)
         if k == "escape":
@@ -241,6 +335,8 @@ class Viewer:
             w.player.jetpack = not w.player.jetpack
         elif k == c.get("save", "f5"):
             w.save()
+        elif k not in (c["forward"], c["back"], c["left"], c["right"], c["jump"]):
+            self._each_addon(lambda a: a.on_key(k), True)
 
     # ---- 1フレーム ----
     def frame(self, dt):
@@ -251,7 +347,7 @@ class Viewer:
         w.local_player.look_fwd, w.local_player.pitch = fwd, self.pitch
         H = lambda k: 1 if k in self.held else 0  # noqa: E731
         move = np.zeros(3)
-        if not w.player.seated and not self.ui.stack and self.editor is None:
+        if not w.player.seated and not self.ui.stack and self.editor is None and not self.game.hold:
             move += fwd * (H(c["forward"]) - H(c["back"])) + right * (H(c["right"]) - H(c["left"]))
             nm = np.linalg.norm(move)
             if nm > 1:
@@ -264,6 +360,9 @@ class Viewer:
         self.acc += dt
         n = 0
         t0 = time.perf_counter()
+        net = getattr(w, "net", None)
+        if self.game.hold and net is None:        # MOD が世界の時間を止めている（ムービーなど）
+            self.acc = 0.0
         while self.acc >= tick and n < 3:
             w.step(tick, move, jump and n == 0, thrust)
             self.acc -= tick
@@ -279,6 +378,9 @@ class Viewer:
         hfov = np.radians(float(g.get("fov", 80)))           # Panda3D と同じく横の視野角
         vfov = float(np.degrees(2 * np.arctan(np.tan(hfov / 2) * hh / max(ww, 1))))
         self.view.camera([0.0, 0.0, 0.0], [float(x) for x in look], [float(x) for x in up], vfov, 0.05)
+        self.shim.camera.fov_pair = (float(np.degrees(hfov)), vfov)
+        far = float(g.get("view_distance", 3000))
+        self._each_addon(lambda a: a.update(origin, far))
         self._aim(origin, look)
         self._overlay(ww, hh)
         self.shim.frame(self.view, dt)                # 今までの画面の部品（プログラムの画面など）
@@ -305,6 +407,24 @@ class Viewer:
         w = self.w
         p = w.player
         self.hit = None if p.seated else w.raycast(p.eye(), look, float(p.defn.get("reach", 8.0)))
+        h = self.hit
+        if h and h["kind"] not in ("voxel", "terrain", "water"):
+            r = self._each_addon(lambda a_: a_.aim(h), True)       # MOD の物（街の建物・NPC など）
+            if r:
+                txt, placeable = r
+                self.highlight.hide()
+                if placeable:
+                    size = float(w.settings.get("voxel_size", 0.5))
+                    fwd, right, up, _ = self.look_vectors()
+                    gfx.set_box(self.ghost, h["point"] + h["normal"] * size * 0.55 - origin,
+                                np.stack([right, h["normal"], fwd]), np.full(3, size))
+                    self.ghost.show()
+                else:
+                    self.ghost.hide()
+                self._aim_txt = txt
+                if placeable:
+                    h["placeable"] = True
+                return
         a = play.aim(w, self.hit, self.look_vectors())
         for node, box in ((self.highlight, a["highlight"]), (self.ghost, a["ghost"])):
             if box is None:
@@ -315,28 +435,28 @@ class Viewer:
         self._aim_txt = a["text"]
 
     def _bodies(self, origin):
-        """ほかの人（マルチプレイ）の体：定義の色の箱。"""
+        """ほかの人（マルチプレイ）の体：MOD（VRM の見た目など）か、定義の色の箱。"""
         w = self.w
         seen = set()
         for key, p in list(getattr(w, "remote", {}).items()):
             seen.add(key)
             b = self.bodies.get(key)
             if b is None:
-                node = gfx.RsNode(self.root, "body")
-                m = gfx.RsDynamicMesh(node, "body")
-                col = p.defn.get("color", [1, 1, 1])
-                v, t = gfx.box_vertices((col[0], col[1], col[2], 1.0))
-                m.set(v, t)
-                b = self.bodies[key] = node
-            up = p.up
-            f = np.asarray(p.look_fwd, float)
-            f = f - up * (f @ up)
-            f = f / np.linalg.norm(f) if np.linalg.norm(f) > 1e-6 else np.cross(up, [1.0, 0, 0])
-            r = np.cross(up, f)
-            gfx.set_box(b, p.pos + up * (p.height / 2 - p.radius) - origin, np.stack([r, up, f]),
-                        np.array([p.radius * 2, p.height, p.radius * 1.4]))
+                mb = self._each_addon(lambda a: a.player_body(p), True)      # MOD が体の見た目を引き受ける
+                if mb is not None:
+                    self.bodies[key] = mb
+                    b = mb
+            if b is None:
+                from ..client.game import BoxBody
+                b = self.bodies[key] = BoxBody(self.game, p)            # MOD が引き受けなければ定義の色の箱
+            try:
+                b.update(origin, True, 1 / 60)
+            except Exception:  # noqa: BLE001
+                if ("body", type(b).__name__) not in self._addon_err:
+                    self._addon_err.add(("body", type(b).__name__))
+                    L.exception("体の見た目でエラー")
         for key in [k for k in self.bodies if k not in seen]:
-            self.bodies.pop(key).removeNode()
+            self.bodies.pop(key).destroy()
 
     def _hotbar(self):
         """画面下のアイテムバー（アイコン・選んでいる枠は黄色。今までの画面と同じ並べ方）。"""
@@ -393,6 +513,11 @@ class Viewer:
             lines.append(self.fps_text)
         if not self.grabbed and not self.ui.stack:
             lines.append("クリックで操作（マウスで見回す）・Esc でメニュー・I でインベントリ")
+        if self.frame_no % 10 == 0:
+            near = None
+            if not p.seated and not self._usable(self.hit):
+                near = next((t for t in self.nearby_targets() if t.get("kind") == "e"), None)
+            self._near_txt = f"［E］{near['label']}" if near is not None else ""
         aspect = ww / max(hh, 1)
         self.hud.set("\n".join(lines), 0.026)
         self.hud.place(-aspect / 2 + 0.015, 0.5 - 0.015)
@@ -401,8 +526,9 @@ class Viewer:
         _, h = self.msg.set("\n".join(msgs), 0.024, max_width=aspect * 0.6)
         self.msg.show(bool(msgs))
         self.msg.place(-aspect / 2 + 0.015, -0.5 + 0.03 + h)
-        tw, th = self.aim_text.set(getattr(self, "_aim_txt", ""), 0.022, max_width=aspect * 0.5)
-        self.aim_text.show(bool(getattr(self, "_aim_txt", "")))
+        at = getattr(self, "_aim_txt", "") or getattr(self, "_near_txt", "")     # 何も狙っていなければ近くの MOD の物
+        tw, th = self.aim_text.set(at, 0.022, max_width=aspect * 0.5)
+        self.aim_text.show(bool(at))
         self.aim_text.place(-tw / 2, -0.03)
         from ..client import play
         it = play.item_text(w, p.hotbar[self.sel], self.sel, self.dir_index)
@@ -492,6 +618,14 @@ class Viewer:
 
     def destroy(self):
         """画面から消す（メニューに戻るとき）。"""
+        self._each_addon(lambda a: a.destroy())
+        self.addons = []
+        for b in self.bodies.values():
+            try:
+                b.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        self.bodies = {}
         for v in self.views.values():
             v.remove()
         self.views = {}
@@ -554,7 +688,51 @@ class GameAdapter:
         self.U = dict(Entity=U.Entity, Text=U.Text, Button=U.Button, camera=U.camera, window=U.window, color=U.color,
                       held_keys=U.held_keys, mouse=U.mouse, utime=U.time, application=U.application)
         self.ui_root = U.Entity(parent=U.camera.ui)
-        self.editor = None
+        self.scene_root = viewer.root          # MOD の 3D の物（DynamicMesh・SceneView）を付ける所
+        self.hold = False                      # MOD が世界の時間を止める（ムービーなど）
+        self.cam_mode = None
+        self.emotes = {}
+        self.leaving = False
+        self.load_errors = []
+
+    @property
+    def addons(self):
+        return getattr(self.v, "addons", [])
+
+    @property
+    def paused(self):
+        return bool(self.v.ui.stack)
+
+    def look_vectors(self):
+        return self.v.look_vectors()
+
+    def exit_camera(self):
+        pass
+
+    def _open_panel(self, make):
+        """MOD の画面（今までの ursina の部品）を開く。"""
+        self.set_mouse_capture(False)
+        self.v.held.clear()
+        self.ui_root.enabled = False
+        try:
+            self.editor = make()
+        except Exception as e:  # noqa: BLE001
+            L.exception("画面を開けませんでした")
+            root = getattr(getattr(self, "editor", None), "root", None)
+            self.editor = None
+            if root is not None:
+                from . import ursina_shim
+                ursina_shim.destroy(root)
+            self.editor_closed()
+            self.world.message(f"⚠ 画面を開けませんでした: {e}")
+
+    def _leave(self, action, save=True, status=""):
+        """ワールドを出る（action："menu"・"play:名前"）。"""
+        if self.leaving:
+            return
+        self.leaving = True
+        self.v.leave_action = (action, save, status)
+        self.v.quit = True
 
     @property
     def sel(self):

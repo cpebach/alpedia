@@ -47,6 +47,14 @@ class BoxBody:
         U = game.U
         col = player.defn.get("color", [1, 1, 1])
         self.game, self.player = game, player
+        from . import gfx
+        if gfx.active():                     # Rust の画面：色の箱
+            c = [x / 255.0 for x in col] if max(col) > 1 else list(col)
+            self.e = gfx.RsNode(game.scene_root, "body")
+            v, t = gfx.box_vertices((c[0], c[1], c[2], 1.0))
+            gfx.RsDynamicMesh(self.e, "body").set(v, t)
+            self.e.hide()
+            return
         self.e = U["Entity"](model=model or "cube", parent=game.scene_root,
                              color=U["color"].rgb(*col) if max(col) <= 1 else U["color"].rgb32(*col))
         self.e.hide()
@@ -62,10 +70,19 @@ class BoxBody:
         f = f / np.linalg.norm(f) if np.linalg.norm(f) > 1e-6 else np.cross(up, [1.0, 0, 0])
         right = np.cross(up, f)
         center = p.pos + up * (p.height / 2 - p.radius) - origin
-        self.game._set_box(self.e, center, np.stack([right, up, f]), np.array([p.radius * 2, p.height, p.radius * 1.4]))
+        size = np.array([p.radius * 2, p.height, p.radius * 1.4])
+        from . import gfx
+        if gfx.active():
+            gfx.set_box(self.e, center, np.stack([right, up, f]), size)
+        else:
+            self.game._set_box(self.e, center, np.stack([right, up, f]), size)
         self.e.show()
 
     def destroy(self):
+        from . import gfx
+        if gfx.active():
+            self.e.removeNode()
+            return
         from .ui_destroy import destroy
         destroy(self.e)
 

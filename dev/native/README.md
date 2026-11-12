@@ -88,3 +88,9 @@ Rust が無ければ、このテストは飛ばされます。
 `main/client/render.py`・`scenery_view.py` の描画は `main/client/gfx.py`（NodePath のまね）を通して両方の画面で動きます。
 入口は `main/client_rs/viewer.py`（`python run.py --view rust`）。`build_windows.bat` が `lib/alpedia_view.pyd` も作ります
 （作れなくてもゲームは今までどおり動きます）。
+
+- 骨で曲げる形（VRM）：`skin_geom`（位置・法線・骨の番号・重み・まばたき）を1回、体ごとに `skin_part`（材質ごとに使う頂点だけ取り出した
+  メッシュ）、毎フレーム `skin_pose`（骨の行列 (J,3,4)・まばたき・光の向き）で CPU で曲げ、トゥーン調の陰影を頂点の色に焼き込む。
+  `mesh_cutoff` は不透明さの切り捨て（MASK）。
+- テクスチャ：`tex_bytes`（PNG・JPEG のファイルの中身）は初めて描くときに読み解き、GPU に送ったら画素は捨てる。
+  描くメッシュが使うテクスチャだけ GPU に送る。線形のテクスチャ（文字・アイコン・VRM）は縮小した段（ミップマップ）も作る。

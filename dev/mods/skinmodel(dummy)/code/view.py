@@ -1,4 +1,5 @@
-"""VRM のモデルを Panda3D で描く（骨での変形はシェーダーで行う＝GPU スキニング）。
+"""VRM のモデルを描く。今までの画面（Panda3D）では骨での変形をシェーダーで行う（GPU スキニング）。
+Rust の画面（--view rust）では RsVRMModel・RsVRMBody：骨の行列を Rust に渡して曲げる（陰影も同じトゥーン調）。
 
 ワールドを始めるときに、メッシュ・テクスチャ・シェーダーを全部作っておく（プレイ中にファイルを読まない）。
 毎フレームの仕事は、モーションから骨の行列を求めてテクスチャ（バッファ）に書くことと、置く位置を決めることだけ。
@@ -164,6 +165,11 @@ class VRMBody:
     """プレイヤー1人の体（VRM）。game が毎フレーム update(origin, shown, dt) を呼ぶ。
     player の pos・up・vel・look_fwd（見ている向き）・pitch などを読んで動く（自分も、ほかの参加者も同じ）。"""
 
+    def __new__(cls, game, player, model):
+        if cls is VRMBody and isinstance(model, RsVRMModel):       # Rust の画面
+            return object.__new__(RsVRMBody)
+        return object.__new__(cls)
+
     def __init__(self, game, player, model):
         self.game, self.player, self.model, self.v = game, player, model, model.v
         vrm = model.v
@@ -260,11 +266,98 @@ class VRMBody:
         drop = (self.motion.hips_h * self.scale - 0.08) * seat
         place = feet - up * drop                         # ワールドでの足元（座ると下げる）
         M = self.v.pose(rot, hips, (self.spring, rows.T, place, dt))
+        self._draw(M, float(blink), rows, place - origin)
+
+    def _draw(self, M, blink, rows, t):
         self._write_bones(M)
-        self.root.setShaderInput("blink", float(blink))
-        t = place - origin
+        self.root.setShaderInput("blink", blink)
         self.root.setMat(LMatrix4f(*rows[0], 0, *rows[1], 0, *rows[2], 0, *[float(x) for x in t], 1))
         self.root.show()
 
     def destroy(self):
+        self.root.removeNode()
+
+
+# ---------------------------------------------------------------------------
+# Rust の画面
+# ---------------------------------------------------------------------------
+class RsVRMModel:
+    """VRMModel の Rust の画面版：形（頂点・骨の重み）とテクスチャを1回だけ Rust に渡す。体ごとに部品を作る。"""
+
+    def __init__(self, defn, vrm, sun):
+        from main.client import gfx
+        self.v = vrm
+        self.scale = float(defn.get("model_scale", 1.0))
+        self.sun = np.asarray(sun, np.float64)
+        self.texs = {}           # 画像はファイルの中身のまま渡す（読み解くのは初めて描くとき）
+        for m in vrm.materials:
+            ti = m["texture"]
+            if ti is not None and ti not in self.texs:
+                data, _ = vrm.image_bytes(ti)
+                tid = gfx.VIEW.tex_bytes(data, False)
+                if tid < 0:
+                    raise RuntimeError(f"テクスチャ {ti} を読めません")
+                self.texs[ti] = gfx.RsTex(tid, f"vrm_tex{ti}")
+        self.geoms = []          # [(形の番号, メッシュ)]
+        for mesh in vrm.meshes:
+            gid = gfx.VIEW.skin_geom(np.ascontiguousarray(mesh.pos, np.float32), np.ascontiguousarray(mesh.nrm, np.float32),
+                                     np.ascontiguousarray(mesh.joints, np.float32), np.ascontiguousarray(mesh.weights, np.float32),
+                                     np.ascontiguousarray(mesh.morph, np.float32))
+            self.geoms.append((gid, mesh))
+
+
+class RsVRMBody(VRMBody):
+    """VRMBody の Rust の画面版：動き（Motion・Spring）は同じ。骨の行列で Rust が頂点を曲げる。"""
+
+    def __init__(self, game, player, model):
+        from main.client import gfx
+        self.game, self.player, self.model, self.v = game, player, model, model.v
+        self.scale = model.scale
+        self.motion = Motion(model.v)
+        self.spring = Spring(model.v)
+        self.shown = False
+        self.face = None
+        self.root = gfx.RsNode(game.scene_root, "vrm_player")
+        self.parts = []
+        self.meshes = []
+        for gid, mesh in model.geoms:
+            uvs = {}
+            for idx, mat_i in mesh.parts:
+                mt = self.v.materials[mat_i] if 0 <= mat_i < len(self.v.materials) else None
+                mt = mt or {"texture": None, "color": [1, 1, 1, 1], "shade": [0.7, 0.7, 0.75], "alpha": "OPAQUE",
+                            "cutoff": 0.5, "double": False, "uv": ((0.0, 0.0), (1.0, 1.0))}
+                uvt = mt.get("uv") or ((0.0, 0.0), (1.0, 1.0))
+                uv = uvs.get(uvt)
+                if uv is None:
+                    (ox, oy), (sx, sy) = uvt
+                    uv = np.empty((len(mesh.pos), 2), np.float32)
+                    uv[:, 0] = mesh.uv[:, 0] * sx + ox
+                    uv[:, 1] = 1.0 - (mesh.uv[:, 1] * sy + oy)     # 今までの画面と同じ向き（テクスチャは上下を返して渡す）
+                    uvs[uvt] = uv
+                m = gfx.RsDynamicMesh(self.root, "vrm")
+                pid = gfx.VIEW.skin_part(gid, m.mid, np.ascontiguousarray(idx, np.int64), uv,
+                                         [float(x) for x in mt["color"]], [float(x) for x in mt["shade"]])
+                blend = mt["alpha"] == "BLEND"
+                gfx.VIEW.mesh_props(m.mid, blend, not blend, bool(mt["double"]), 0, 10 if blend else 0)
+                tex = model.texs.get(mt["texture"])
+                if tex is not None:
+                    gfx.VIEW.mesh_tex(m.mid, 0, tex.id)
+                if mt["alpha"] == "MASK":
+                    gfx.VIEW.mesh_cutoff(m.mid, float(mt["cutoff"]))
+                self.parts.append(pid)
+                self.meshes.append(m)
+        self.root.hide()
+
+    def _draw(self, M, blink, rows, t):
+        from main.client import gfx
+        sun = rows @ self.model.sun                       # 光の向きを形の座標へ（行ベクトルにかける形の逆）
+        gfx.VIEW.skin_pose(self.parts, np.ascontiguousarray(M, np.float32).reshape(-1), blink, [float(x) for x in sun])
+        self.root.setMat([*rows[0], 0, *rows[1], 0, *rows[2], 0, *[float(x) for x in t], 1])
+        self.root.show()
+
+    def destroy(self):
+        from main.client import gfx
+        for pid in self.parts:
+            gfx.VIEW.skin_part_remove(pid)
+        self.parts = []
         self.root.removeNode()
