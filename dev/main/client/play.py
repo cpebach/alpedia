@@ -80,3 +80,46 @@ def item_text(w, item, sel, dir_index):
     dd = w.registry.device(id_) or {}
     extra = f"  向き {DIR_NAMES[dir_index]}" if dd.get("directional") else ""
     return f"[{sel + 1}] 機器: {dd.get('name', id_)}{extra}"
+
+
+def camera_clip(w, eye, offset):
+    """三人称のカメラが壁・地面・建物の向こうに入らないように、手前で止める（乗っている乗り物は通り抜ける）。"""
+    n = float(np.linalg.norm(offset))
+    if n < 1e-6:
+        return eye
+    d = offset / n
+    own = w.player.seated[0] if w.player.seated else None
+    start, left = np.asarray(eye, dtype=np.float64), n
+    for _ in range(4):
+        try:
+            h = w.raycast(start, d, left)
+        except Exception:  # noqa: BLE001
+            return eye + offset
+        if h is None:
+            return eye + offset
+        if h.get("kind") == "voxel" and own is not None and h["construct"].id == own:
+            step = float(h["t"]) + 0.05       # 自分の乗り物：その先から調べ直す
+            start, left = start + d * step, left - step
+            if left <= 0:
+                return eye + offset
+            continue
+        t = float(np.linalg.norm(start + d * float(h["t"]) - eye))
+        return eye + d * max(t - 0.4, 0.3)
+    return eye + offset
+
+
+def seat_follow(w, addons):
+    """座っている席が遠隔操作なら、操っている構築物を後ろから映す：(重心, 距離) か None。MOD の seat_camera() が決める。"""
+    p = w.player
+    if not p.seated:
+        return None
+    c = w.constructs.get(p.seated[0])
+    if c is None:
+        return None
+    for a in addons:
+        fn = getattr(a, "seat_camera", None)
+        t = fn(c) if fn else None
+        if t is not None and t.n_vox:
+            ext = float(np.linalg.norm(t.pos.max(0) - t.pos.min(0)))
+            return t.center_of_mass(), float(np.clip(ext * 2.0, 4.0, 30.0))
+    return None

@@ -955,7 +955,8 @@ class _Window:
 
 
 window = _Window()
-held_keys = {}
+import collections as _collections
+held_keys = _collections.defaultdict(int)       # 押していないキーは 0（ursina と同じ）
 
 
 class _Time:

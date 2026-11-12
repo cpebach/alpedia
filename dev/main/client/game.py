@@ -1147,29 +1147,8 @@ class Game:
 
     def _camera_clip(self, eye, offset):
         """三人称のカメラが壁・地面・建物の向こうに入らないように、手前で止める（乗っている乗り物は通り抜ける）。"""
-        w = self.world
-        n = float(np.linalg.norm(offset))
-        if n < 1e-6:
-            return eye
-        d = offset / n
-        own = w.player.seated[0] if w.player.seated else None
-        start, left = np.asarray(eye, dtype=np.float64), n
-        for _ in range(4):
-            try:
-                h = w.raycast(start, d, left)
-            except Exception:  # noqa: BLE001
-                return eye + offset
-            if h is None:
-                return eye + offset
-            if h.get("kind") == "voxel" and own is not None and h["construct"].id == own:
-                step = float(h["t"]) + 0.05       # 自分の乗り物：その先から調べ直す
-                start, left = start + d * step, left - step
-                if left <= 0:
-                    return eye + offset
-                continue
-            t = float(np.linalg.norm(start + d * float(h["t"]) - eye))
-            return eye + d * max(t - 0.4, 0.3)
-        return eye + offset
+        from . import play
+        return play.camera_clip(self.world, eye, offset)
 
     def _seat_view(self):
         """座ったら三人称（一人称では乗り物の中しか見えないため）。降りたら元の視点に戻す。V でいつでも切り替え。"""
@@ -1184,19 +1163,10 @@ class Game:
 
     def _seat_follow(self):
         """座っている席が遠隔操作なら、操っている構築物を後ろから映す：(重心, 距離) か None。MOD の seat_camera() が決める。"""
-        p = self.world.player
-        if not p.seated or not self.third_person:
+        if not self.third_person:
             return None
-        c = self.world.constructs.get(p.seated[0])
-        if c is None:
-            return None
-        for a in self.addons:
-            fn = getattr(a, "seat_camera", None)
-            t = fn(c) if fn else None
-            if t is not None and t.n_vox:
-                ext = float(np.linalg.norm(t.pos.max(0) - t.pos.min(0)))
-                return t.center_of_mass(), float(np.clip(ext * 2.0, 4.0, 30.0))
-        return None
+        from . import play
+        return play.seat_follow(self.world, self.addons)
 
     def _perf_frame(self, real_dt):
         """処理の重さの内訳を数秒ごとにまとめる（画面左上と、10秒ごとにログ）。"""

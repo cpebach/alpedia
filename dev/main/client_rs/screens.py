@@ -27,15 +27,77 @@ class Pause(U.Screen):
                      ("保存せずにメニューへ", lambda: g._leave("menu", save=False)), ("保存して終了", lambda: g._leave("quit")))
             if net is None:
                 items += (("LAN に公開（マルチプレイ）", self.host),)
-        top = 0.08 + len(items) * 0.045
-        self.panel(-0.27, top + 0.1, 0.27, top - len(items) * 0.09 - 0.02 - (0.06 if net is not None and not client else 0))
-        self.text("一時停止", 0, top + 0.06, 0.034, anchor=(0.5, 0))
+        top = 0.3
+        n_right = 7
+        bottom = top - max(len(items), n_right) * 0.08 - 0.05 - (0.05 if net is not None and not client else 0)
+        self.panel(-0.62, top + 0.1, 0.62, bottom)
+        self.text("一時停止", 0, top + 0.07, 0.034, anchor=(0.5, 0))
+        xl, xr = -0.31, 0.31
         for k, (label, fn) in enumerate(items):
-            self.button(label, 0, top - 0.04 - k * 0.09, 0.44, 0.065, fn,
-                        color=(0.2, 0.45, 0.3, 1) if k == 0 else (0.22, 0.25, 0.32, 1), size=0.024)
+            self.button(label, xl, top - 0.04 - k * 0.08, 0.5, 0.06, fn,
+                        color=(0.2, 0.45, 0.3, 1) if k == 0 else (0.22, 0.25, 0.32, 1), size=0.023)
         if net is not None and not client:
-            self.text("LAN に公開中: " + "  ".join(net.addresses()[:2]), 0, top - 0.04 - len(items) * 0.09 + 0.01,
+            self.text("LAN に公開中: " + "  ".join(net.addresses()[:2]), xl, top - 0.04 - len(items) * 0.08 + 0.01,
                       0.02, anchor=(0.5, 0))
+        # 右の列：キー設定・読み込み・出力・音量・見た目・リスポーン（今までの画面の一時停止メニューと同じ）
+        au = self.v.cfg.setdefault("audio", {"bgm": 60, "sfx": 80})
+        blue = (0.22, 0.3, 0.42, 1)
+        right = [("操作とキー設定", lambda: self.later(g.open_keys)),
+                 ("読み込み（設計図・OBJ）", lambda: self.later(g.open_import)),
+                 ("見ている構築物を OBJ で出力", lambda: self.later(self.v.export_obj)),
+                 (f"BGM {int(au.get('bgm', 0))} %（押すと +10）", lambda: self.volume("bgm")),
+                 (f"効果音 {int(au.get('sfx', 0))} %（押すと +10）", lambda: self.volume("sfx"))]
+        for k, (label, fn) in enumerate(right):
+            self.button(label, xr, top - 0.04 - k * 0.08, 0.5, 0.06, fn, color=blue, size=0.022)
+        y = top - 0.04 - len(right) * 0.08
+        cur = self.v.w.local_player.defn
+        self.text(f"見た目: {cur.get('name', cur.get('id'))}", xr, y, 0.022, anchor=(0.5, 0.5))
+        if len(self.v.w.registry.defs["players"]) > 1:
+            for dx, d, txt in ((-0.22, -1, "◀"), (0.22, 1, "▶")):
+                self.button(txt, xr + dx, y, 0.045, 0.045, (lambda d=d: self.skin(d)), color=blue, size=0.02)
+        if not client:
+            self.armed = getattr(self, "armed", False)
+            self.button("もう一度：資源をなくして戻る" if self.armed else "リスポーン（戻る）", xr, y - 0.08, 0.5, 0.06,
+                        self.respawn, color=(0.6, 0.3, 0.2, 1) if self.armed else (0.4, 0.3, 0.2, 1), size=0.022)
+
+    def later(self, fn):
+        """一時停止メニューを閉じてから開く（キー設定・読み込みの画面など）。"""
+        self.close()
+        fn()
+
+    def volume(self, key):
+        au = self.v.cfg.setdefault("audio", {"bgm": 60, "sfx": 80})
+        v = int(au.get(key, 0))
+        au[key] = 0 if v >= 100 else min(100, (v // 10 + 1) * 10)
+        if self.v.snd is not None:
+            self.v.snd.apply(self.v.cfg)
+        if key == "sfx":
+            self.v.sfx("click")
+        try:
+            from ..client.menu import save_config
+            save_config(self.v.cfg)
+        except Exception:  # noqa: BLE001
+            pass
+        self.build()
+
+    def skin(self, step):
+        """見た目を変える（ワールドに入っている MOD の見た目から）。"""
+        w = self.v.w
+        ids = list(w.registry.defs["players"])
+        cur = w.local_player.defn.get("id")
+        i = ids.index(cur) if cur in ids else 0
+        w.local_player.defn = w.player_def(ids[(i + step) % len(ids)])
+        w.message(f"見た目: {w.local_player.defn.get('name')}")
+        self.build()
+
+    def respawn(self):
+        """リスポーン（宇宙に飛ばされた・出られない ときに）。サバイバルは手持ちの資源をなくすので2回押す。"""
+        if not self.v.w.creative and not self.armed:
+            self.armed = True
+            self.build()
+            return
+        self.close()
+        self.v.w.respawn()
 
     def host(self):
         self.v.start_hosting()

@@ -63,6 +63,8 @@ class Viewer:
         self.dir_index = 0
         self.bodies = {}
         self.labels = {}
+        self.third_person = False
+        self._was_seated = False
         from .ui import UI
         self.ui = UI(self.view)
         from . import ursina_shim
@@ -219,6 +221,24 @@ class Viewer:
         c = self.cfg["controls"]
         dx = dy = 0.0
         for kind, a, b, n in self.view.pump():
+            cm = self.game.cam_mode
+            if cm is not None and self.editor is None and not self.ui.stack:
+                # カメラモード：パネルのボタン・ドラッグは ursina のまねへ、キーとホイールはカメラモードへ
+                self.shim.event(self.view, kind, a, b, n)
+                if kind.startswith("key:"):
+                    k = kind[4:]
+                    if a:
+                        self.held.add(k)
+                        if not n:
+                            cm.on_key(self.KEYMAP.get(k, k))
+                    else:
+                        self.held.discard(k)
+                elif kind == "wheel" and a:
+                    cm.on_key("scroll up" if a > 0 else "scroll down")
+                elif kind == "close":
+                    self.quit = True
+                    self.close_app = True
+                continue
             if self.editor is not None and self.shim.event(self.view, kind, a, b, n):
                 continue
             if self.editor is None and not self.grabbed and not self.ui.stack:     # MOD の画面の上のボタン（目標の欄など）
@@ -296,6 +316,7 @@ class Viewer:
         self.held.clear()
         self.grabbed = False
         self.view.grab(False)
+        self.game.ui_root.enabled = False          # MOD の画面の部品（目標の欄など）は隠す
         self.ui.open({"pause": screens.Pause, "inventory": screens.Inventory}[name], self)
 
     def open_editor(self):
@@ -315,6 +336,7 @@ class Viewer:
             return
         self.grabbed = False
         self.view.grab(False)
+        self.game.ui_root.enabled = False
         if act.is_actuator(c, i):
             self.ui.open(screens_dev.ActuatorPanel, self, c, i)
         else:
@@ -345,6 +367,8 @@ class Viewer:
                        + "（参加する人はメニューの「マルチプレイ」から）")
 
     def screen_closed(self):
+        if not self.ui.stack and self.editor is None and self.game.cam_mode is None:
+            self.game.ui_root.enabled = True
         if not self.ui.stack:
             self.grabbed = True
             self.view.grab(True)
@@ -359,6 +383,12 @@ class Viewer:
             if k == c["interact"]:
                 w.interact(None)
                 self.sfx("seat")
+            elif k == c.get("third_person", "v"):
+                self.third_person = not self.third_person
+            elif k == c.get("save", "f5"):
+                w.save()
+            elif k == c.get("export", "f9"):
+                self.export_obj()
             elif kk not in SEAT_KEYS:
                 self._each_addon(lambda a: a.on_key(kk), True)        # MOD のキー（座っている間も使えるもの）
             return
@@ -386,6 +416,14 @@ class Viewer:
             w.player.jetpack = not w.player.jetpack
         elif k == c.get("save", "f5"):
             w.save()
+        elif k == c.get("third_person", "v"):
+            self.third_person = not self.third_person
+        elif k == c.get("camera_mode", "c"):
+            self.game.enter_camera()
+        elif k == c.get("export", "f9"):
+            self.export_obj()
+        elif k == c.get("import", "f8"):
+            self.game.open_import()
         elif k not in (c["forward"], c["back"], c["left"], c["right"], c["jump"]):
             self._each_addon(lambda a: a.on_key(k), True)
 
@@ -398,13 +436,14 @@ class Viewer:
         w.local_player.look_fwd, w.local_player.pitch = fwd, self.pitch
         H = lambda k: 1 if k in self.held else 0  # noqa: E731
         move = np.zeros(3)
-        if not w.player.seated and not self.ui.stack and self.editor is None and not self.game.hold:
+        cam_mode = self.game.cam_mode
+        if not w.player.seated and not self.ui.stack and self.editor is None and not self.game.hold and cam_mode is None:
             move += fwd * (H(c["forward"]) - H(c["back"])) + right * (H(c["right"]) - H(c["left"]))
             nm = np.linalg.norm(move)
             if nm > 1:
                 move /= nm
-        jump = bool(H(c["jump"])) and not w.player.seated
-        thrust = move * 0.6 + up * (H(c["jump"]) - H("control"))
+        jump = bool(H(c["jump"])) and not w.player.seated and cam_mode is None
+        thrust = (move * 0.6 + up * (H(c["jump"]) - H("control"))) if cam_mode is None else np.zeros(3)
         from ..client.game import SEAT_KEYS
         w.input_keys = {self.KEYMAP.get(k, k) for k in self.held} & set(SEAT_KEYS) if w.player.seated else set()
         tick = 1.0 / float(self.cfg["physics"].get("tick_rate", 60))
@@ -435,18 +474,25 @@ class Viewer:
         if net is not None and not client:
             net.tick(dt)                           # 参加者へ送る・参加者の操作を行う
         t1 = time.perf_counter()
-        origin = w.player.eye()
+        origin, cam_look, cam_up = self._camera(dt, look, up)
         self._render(origin)
         self._bodies(origin)
         g = self.cfg["graphics"]
         ww, hh = self.view.size()
-        hfov = np.radians(float(g.get("fov", 80)))           # Panda3D と同じく横の視野角
+        fov = float(self.shim.camera.fov) if cam_mode is not None else float(g.get("fov", 80))
+        hfov = np.radians(fov)                                # Panda3D と同じく横の視野角
         vfov = float(np.degrees(2 * np.arctan(np.tan(hfov / 2) * hh / max(ww, 1))))
-        self.view.camera([0.0, 0.0, 0.0], [float(x) for x in look], [float(x) for x in up], vfov, 0.05)
+        self.view.camera([0.0, 0.0, 0.0], [float(x) for x in cam_look], [float(x) for x in cam_up], vfov, 0.05)
         self.shim.camera.fov_pair = (float(np.degrees(hfov)), vfov)
         far = float(g.get("view_distance", 3000))
         self._each_addon(lambda a: a.update(origin, far))
-        self._aim(origin, look)
+        if cam_mode is not None and not cam_mode.frame_on:
+            self.hit = None
+            self.highlight.hide()
+            self.ghost.hide()
+            self._aim_txt = ""
+        else:
+            self._aim(origin, look)
         self._overlay(ww, hh)
         self.shim.frame(self.view, dt)                # 今までの画面の部品（プログラムの画面など）
         self._update_sound(dt)
@@ -466,6 +512,54 @@ class Viewer:
             self.fps_text = txt.split("  ", 1)[1]
             L.info("重さ: %s（構築物 %d）", txt, len(w.constructs))
             self.perf = {"frames": 0, "t": t2, "phys": 0.0, "rend": 0.0, "ticks": 0}
+
+    def _camera(self, dt, look, up):
+        """カメラの位置・視線・上（今までの画面と同じ：カメラモード・遠隔操作・三人称・一人称）。"""
+        from ..client import play
+        w = self.w
+        origin = w.player.eye()
+        seated = w.player.seated is not None             # 座ったら三人称（降りたら元に）。V でいつでも切り替え
+        if seated and not self._was_seated:
+            self._third_before_seat = self.third_person
+            self.third_person = True
+        elif self._was_seated and not seated:
+            self.third_person = getattr(self, "_third_before_seat", False)
+        self._was_seated = seated
+        cm = self.game.cam_mode
+        if cm is not None:
+            cm.update(dt, _Held(self), {}, np.zeros(2))
+            pos, cl, cu, _ = cm.camera()
+            return pos, cl, cu
+        follow = play.seat_follow(w, self.addons) if self.third_person else None
+        if follow is not None:                           # 遠隔操作：操っている物（ドローンなど）の後ろから
+            com, dist = follow
+            return com - look * dist + up * dist * 0.25, look, up
+        if self.third_person:
+            dist = 5.0
+            if seated:                                   # 乗り物の大きさに合わせて離れる
+                c = w.constructs.get(w.player.seated[0])
+                if c is not None and c.n_vox:
+                    ext = float(np.linalg.norm(c.pos.max(0) - c.pos.min(0)))
+                    dist = float(np.clip(ext * 1.3, 5.0, 40.0))
+            origin = play.camera_clip(w, origin, -look * dist + up * (0.8 + dist * 0.1))
+        return origin, look, up
+
+    def export_obj(self):
+        """F9：見ている（座っている）構築物を OBJ で出力。"""
+        w = self.w
+        target = None
+        if w.player.seated:
+            target = w.constructs.get(w.player.seated[0])
+        elif self.hit and self.hit["kind"] == "voxel":
+            target = self.hit["construct"]
+        if target is None:
+            w.message("出力する構築物を見てください")
+            return
+        try:
+            w.export_obj(target)
+        except Exception as e:  # noqa: BLE001
+            L.exception("OBJ 出力失敗")
+            w.message(f"OBJ 出力失敗: {e}")
 
     def _aim(self, origin, look):
         """狙っている物：枠と説明（今までの画面と同じ play.aim）。"""
@@ -508,10 +602,12 @@ class Viewer:
         others = []
         if net is not None:
             others = net.others() if callable(getattr(net, "others", None)) else list(net.others.values())
-        for p in others:
-            key = f"p{p.pid}"
+        for key, p in [("me", w.local_player)] + [(f"p{p.pid}", p) for p in others]:
             seen.add(key)
             b = self.bodies.get(key)
+            if b is not None and (b._defid if hasattr(b, "_defid") else None) not in (None, p.defn.get("id")):
+                b.destroy()                       # 見た目を変えた：作り直す
+                b = self.bodies[key] = None
             if b is None:
                 mb = self._each_addon(lambda a: a.player_body(p), True)      # MOD が体の見た目を引き受ける
                 if mb is not None:
@@ -520,9 +616,17 @@ class Viewer:
             if b is None:
                 from ..client.game import BoxBody
                 b = self.bodies[key] = BoxBody(self.game, p)            # MOD が引き受けなければ定義の色の箱
-            q = p.pos - origin
-            shown = float(q @ q) < 500.0 ** 2
-            self._label(key, p, origin, shown)
+            if not hasattr(b, "_defid"):
+                try:
+                    b._defid = p.defn.get("id")
+                except AttributeError:
+                    pass
+            if key == "me":                       # 自分：三人称・カメラモードのときだけ
+                shown = self.third_person or self.game.cam_mode is not None
+            else:
+                q = p.pos - origin
+                shown = float(q @ q) < 500.0 ** 2
+                self._label(key, p, origin, shown)
             try:
                 b.update(origin, shown, 1 / 60)
             except Exception:  # noqa: BLE001
@@ -531,7 +635,7 @@ class Viewer:
                     L.exception("体の見た目でエラー")
         for key in [k for k in self.bodies if k not in seen]:
             self.bodies.pop(key).destroy()
-        for key in [k for k in self.labels if k not in seen]:
+        for key in [k for k in self.labels if k not in seen or k == "me"]:
             self.labels.pop(key).remove()
 
     def _label(self, key, p, origin, shown):
@@ -581,7 +685,8 @@ class Viewer:
     def _overlay(self, ww, hh):
         """画面の上の文字（左上：場所・高度・速度・重さ、左下：知らせ）。プログラムなどの画面を開いている間は隠す。"""
         w = self.w
-        shown = self.editor is None
+        cm = self.game.cam_mode
+        shown = self.editor is None and (cm is None or cm.ui_on)
         if shown != getattr(self, "_hud_shown", True):
             self._hud_shown = shown
             for t in (self.hud, self.msg, self.aim_text, self.item_text):
@@ -781,6 +886,32 @@ def run(cfg, world_name, frames=None, shot=None):
     return v
 
 
+class _Held:
+    """カメラモードに渡す「押しているキー」（ursina の held_keys の形）。"""
+
+    def __init__(self, v):
+        self.keys = {v.KEYMAP.get(k, k) for k in v.held}
+
+    def __getitem__(self, k):
+        return 1 if k in self.keys else 0
+
+
+class _Pointers:
+    """カメラモードのドラッグ：マウスの左ボタンを押している間、指1本として位置を返す。"""
+
+    def current(self):
+        from . import ursina_shim as U
+        return {0: (U.mouse.x, U.mouse.y)} if U.mouse.left else {}
+
+
+class _TouchStub:
+    def __init__(self):
+        self.ptr = _Pointers()
+
+    def _release_all(self):
+        pass
+
+
 class GameAdapter:
     """今までの画面の部品（ScriptPanel・BlockEditor・DevicePanel など）が使う game のまね。"""
 
@@ -798,10 +929,42 @@ class GameAdapter:
         self.emotes = {}
         self.leaving = False
         self.load_errors = []
+        self.touch_hud = _TouchStub()
 
     @property
     def addons(self):
         return getattr(self.v, "addons", [])
+
+    @property
+    def third_person(self):
+        return self.v.third_person
+
+    @third_person.setter
+    def third_person(self, on):
+        self.v.third_person = bool(on)
+
+    def _camera_hook(self, on):
+        self.v._each_addon(lambda a: a.on_camera(on))
+
+    def enter_camera(self):
+        """C：カメラモード（今までの画面の CameraMode を ursina のまねで）。"""
+        if self.cam_mode is not None or self.editor is not None or self.v.ui.stack or self.world.player.seated:
+            return
+        from ..client.camera_mode import CameraMode
+        self.v.held.clear()
+        self.cam_mode = CameraMode(self)
+        self._camera_hook(True)
+
+    def open_import(self):
+        """F8：読み込み（設計図・OBJ）。"""
+        from ..client.import_ui import ImportPanel
+        self._open_panel(lambda: ImportPanel(self))
+
+    def open_keys(self):
+        """操作とキー設定。"""
+        from ..client.keys_panel import KeysPanel
+        extra = [a.help_text for a in self.addons if a.help_text]
+        self._open_panel(lambda: KeysPanel(self.U, self.cfg, self.ui_root.parent, self.editor_closed, extra))
 
     @property
     def paused(self):
@@ -811,7 +974,13 @@ class GameAdapter:
         return self.v.look_vectors()
 
     def exit_camera(self):
-        pass
+        if self.cam_mode is None:
+            return
+        self.cam_mode.destroy()
+        self.cam_mode = None
+        self._camera_hook(False)
+        self.ui_root.enabled = True
+        self.set_mouse_capture(True)
 
     def _open_panel(self, make):
         """MOD の画面（今までの ursina の部品）を開く。"""
