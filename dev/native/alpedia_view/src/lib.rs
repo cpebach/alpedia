@@ -382,7 +382,7 @@ impl ApplicationHandler for App {
             .with_title(self.title.clone())
             .with_inner_size(winit::dpi::LogicalSize::new(self.size.0, self.size.1));
         match el.create_window(attrs) {
-            Ok(w) => match Gfx::new(Arc::new(w), self.vsync) {
+            Ok(w) => match Gfx::new(Arc::new({ w.set_ime_allowed(true); w }), self.vsync) {
                 Ok(g) => self.gfx = Some(g),
                 Err(e) => self.err = Some(e),
             },
@@ -399,7 +399,19 @@ impl ApplicationHandler for App {
                 }
                 self.events.push(("resize".into(), s.width as f64, s.height as f64, 0));
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.events.push(("cursor".into(), position.x, position.y, 0));
+            }
             WindowEvent::KeyboardInput { event, .. } => {
+                // 文字の入力（名前・プログラムなど）
+                if event.state == ElementState::Pressed {
+                    if let Some(t) = &event.text {
+                        let t = t.as_str();
+                        if !t.chars().any(|c| c.is_control()) {
+                            self.events.push((format!("text:{t}"), 0.0, 0.0, 0));
+                        }
+                    }
+                }
                 let name = key_name(&event.logical_key);
                 if !name.is_empty() {
                     let down = event.state == ElementState::Pressed;
@@ -422,6 +434,7 @@ impl ApplicationHandler for App {
                 };
                 self.events.push(("wheel".into(), dy, 0.0, 0));
             }
+            WindowEvent::Ime(winit::event::Ime::Commit(t)) => self.events.push((format!("text:{t}"), 0.0, 0.0, 0)),
             WindowEvent::Focused(f) => self.events.push(("focus".into(), if f { 1.0 } else { 0.0 }, 0.0, 0)),
             _ => {}
         }
@@ -904,6 +917,15 @@ impl View {
         mesh.tex = [Some(f.tex), None];
         mesh.blend = true;
         Ok((maxw, lines.len() as f32 * lh))
+    }
+
+    /// 調べる用：生きているメッシュ (番号, ノード, overlay, 半透明, 描く順, 三角形の数, 見えるか)
+    fn debug_meshes(&self) -> Vec<(usize, usize, bool, bool, i32, usize, bool)> {
+        let mut cache: Vec<Option<([f32; 16], bool)>> = vec![None; self.nodes.len()];
+        self.meshes.iter().enumerate().filter(|(_, m)| m.alive).map(|(k, m)| {
+            let vis = m.node < self.nodes.len() && self.nodes[m.node].alive && self.world(m.node, &mut cache).1;
+            (k, m.node, m.overlay, m.blend, m.bin, m.idx.len() / 3, vis)
+        }).collect()
     }
 
     /// 次に描く画面を PNG に保存する

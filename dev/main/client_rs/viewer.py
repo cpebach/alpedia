@@ -66,6 +66,9 @@ class Viewer:
         self.sel = 0
         self.dir_index = 0
         self.bodies = {}
+        from .ui import UI
+        self.ui = UI(self.view)
+        self.hotbar = None
         self.held = set()
         self.yaw_fwd = None
         self.pitch = 0.0
@@ -93,6 +96,8 @@ class Viewer:
         c = self.cfg["controls"]
         dx = dy = 0.0
         for kind, a, b, n in self.view.pump():
+            if self.ui.event(kind, a, b, n):
+                continue
             if kind == "close":
                 self.quit = True
             elif kind.startswith("key:"):
@@ -150,6 +155,19 @@ class Viewer:
         _, _, _, look = self.look_vectors()
         w.place(hit, item, self.dir_index, look)
 
+    def open_screen(self, name):
+        """一時停止メニュー・インベントリを開く（マウスを出して、歩くのを止める）。"""
+        from . import screens
+        self.held.clear()
+        self.grabbed = False
+        self.view.grab(False)
+        self.ui.open({"pause": screens.Pause, "inventory": screens.Inventory}[name], self)
+
+    def screen_closed(self):
+        if not self.ui.stack:
+            self.grabbed = True
+            self.view.grab(True)
+
     def _key(self, k, c):
         w = self.w
         from ..client.game import SEAT_KEYS
@@ -170,11 +188,9 @@ class Viewer:
         elif k == c["new_construct"]:
             self._place(None)
         if k == "escape":
-            if self.grabbed:
-                self.grabbed = False
-                self.view.grab(False)
-            else:
-                self.quit = True
+            self.open_screen("pause")
+        elif k == c.get("inventory", "i"):
+            self.open_screen("inventory")
         elif k == c.get("jetpack", "f"):
             w.player.jetpack = not w.player.jetpack
         elif k == c.get("save", "f5"):
@@ -189,7 +205,7 @@ class Viewer:
         w.local_player.look_fwd, w.local_player.pitch = fwd, self.pitch
         H = lambda k: 1 if k in self.held else 0  # noqa: E731
         move = np.zeros(3)
-        if not w.player.seated:
+        if not w.player.seated and not self.ui.stack:
             move += fwd * (H(c["forward"]) - H(c["back"])) + right * (H(c["right"]) - H(c["left"]))
             nm = np.linalg.norm(move)
             if nm > 1:
@@ -275,6 +291,33 @@ class Viewer:
         for key in [k for k in self.bodies if k not in seen]:
             self.bodies.pop(key).removeNode()
 
+    def _hotbar(self):
+        """画面下のアイテムバー（アイコン・選んでいる枠は黄色。今までの画面と同じ並べ方）。"""
+        from ..client.inventory import SLOTS
+        from . import ui as U
+        w = self.w
+        hb = w.player.hotbar
+        state = (tuple(hb), self.sel, tuple(bool(it) and w.item_allowed(it) for it in hb))
+        if self.hotbar is not None and self.hotbar[0] == state:
+            return
+        if self.hotbar is not None:
+            self.hotbar[1].removeNode()
+        root = gfx.RsNode(None, "hotbar")
+        sw, gap, y = 0.07, 0.008, -0.448
+        for k in range(SLOTS):
+            x = (k - (SLOTS - 1) / 2) * (sw + gap)
+            s = sw * (1.12 if k == self.sel else 1.0)
+            U.rect_mesh(root, x - s / 2, y - s / 2, x + s / 2, y + s / 2,
+                        (1.0, 0.82, 0.25, 0.9) if k == self.sel else (0, 0, 0, 0.5))
+            if hb[k]:
+                m = U.rect_mesh(root, x - sw * 0.44, y - sw * 0.44, x + sw * 0.44, y + sw * 0.44,
+                                (1, 1, 1, 1.0 if state[2][k] else 0.18), U.item_tex(w.registry, hb[k]))
+                gfx.VIEW.mesh_props(m.mid, True, False, True, 0, 11)
+            t = gfx.RsText(root, overlay=True, bin=11)
+            t.set(str(k + 1), 0.0138, (1, 1, 1, 0.8))
+            t.place(x - sw / 2 + 0.005, y + sw / 2 - 0.003)
+        self.hotbar = (state, root)
+
     def _overlay(self, ww, hh):
         """画面の上の文字（左上：場所・高度・速度・重さ、左下：知らせ）。"""
         w = self.w
@@ -289,8 +332,8 @@ class Viewer:
             lines.append(f"操縦中: {c.name}  速度 {float(np.linalg.norm(c.velocity())):.1f} m/s")
         if getattr(self, "fps_text", ""):
             lines.append(self.fps_text)
-        if not self.grabbed:
-            lines.append("クリックで操作（マウスで見回す）・Esc で終わる")
+        if not self.grabbed and not self.ui.stack:
+            lines.append("クリックで操作（マウスで見回す）・Esc でメニュー・I でインベントリ")
         aspect = ww / max(hh, 1)
         self.hud.set("\n".join(lines), 0.026)
         self.hud.place(-aspect / 2 + 0.015, 0.5 - 0.015)
@@ -303,9 +346,12 @@ class Viewer:
         self.aim_text.show(bool(getattr(self, "_aim_txt", "")))
         self.aim_text.place(-tw / 2, -0.03)
         from ..client import play
-        it = play.item_text(w, p.hotbar[self.sel], self.sel, self.dir_index) + "   （1〜9・ホイールで選ぶ、R で向き）"
-        tw, th = self.item_text.set(it, 0.024)
-        self.item_text.place(-tw / 2, -0.5 + 0.03 + th)
+        it = play.item_text(w, p.hotbar[self.sel], self.sel, self.dir_index)
+        tw, th = self.item_text.set(it, 0.022)
+        self.item_text.place(-tw / 2, -0.5 + 0.13 + th)
+        self._hotbar()
+        for s_ in self.ui.stack:
+            s_.update(0.0)
 
     def _render(self, origin):
         w = self.w
