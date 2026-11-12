@@ -14,6 +14,7 @@ mod kernels;
 mod mesh;
 mod pairs;
 mod contacts;
+mod devices;
 mod planet;
 mod tick;
 
@@ -954,7 +955,7 @@ fn push_apart<'py>(
         let pv = rw(pos, "pos")?;
         let vl = ro(vel, "vel")?;
         need(pv.len() == 24 * p.n && vl.len() == 24 * p.n, "contacts")?;
-        list.push(contacts::Item { p, pos: pv, vel: vl, active: k < n_active, rigid: *rigid });
+        list.push(contacts::Item { p, pos: pv, vel: vl, active: k < n_active, rigid: *rigid, pts: None });
     }
     let na = n_active.min(list.len());
     let o = py.allow_threads(|| contacts::solve(&mut list, na));
@@ -1170,6 +1171,103 @@ fn step_tick<'py>(
 }
 
 // ---------------------------------------------------------------------------
+// 機器の1ティック（devices.update）
+// ---------------------------------------------------------------------------
+fn dget<'py, T: FromPyObject<'py>>(d: &Bound<'py, PyDict>, k: &str, dflt: T) -> PyResult<T> {
+    match d.get_item(k)? {
+        Some(v) if !v.is_none() => v.extract(),
+        _ => Ok(dflt),
+    }
+}
+
+/// 構築物1つの機器のまとめ（形が変わるまで変わらない：種類・数値の設定・配管の区画とバルブ）
+#[pyclass(frozen)]
+struct DevPlan {
+    p: devices::Plan,
+}
+
+#[pymethods]
+impl DevPlan {
+    /// devs：機器ごとの dict（vox, type, name, dir, electric, power_use, capacity, output, fuel, fuel_rate, thrust,
+    /// power_output, ignite_energy, max_flow, key, recipes [(in, out, time, power)], inputs [(物, 量)], outputs [物],
+    /// rate, target_kpa, cavity）。pipe_of {ボクセル: 区画}、pipes [[ボクセル]]、valve_adj [(バルブ, [(バルブか, 番号)])]、
+    /// seg_adj {区画: [バルブ]}、fluids [流れる物]、cav_volume [空洞の体積]
+    #[new]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        devs: Vec<Bound<'_, PyDict>>, pipe_of: HashMap<usize, usize>, pipes: Vec<Vec<usize>>,
+        valve_adj: Vec<(usize, Vec<(bool, usize)>)>, seg_adj: HashMap<usize, Vec<usize>>, fluids: Vec<String>,
+        cav_volume: Vec<f64>,
+    ) -> PyResult<Self> {
+        let mut out = Vec::with_capacity(devs.len());
+        let mut at = HashMap::new();
+        for (k, d) in devs.iter().enumerate() {
+            let rl: Vec<Bound<'_, PyAny>> = dget(d, "recipes", Vec::new())?;
+            let mut rs = Vec::new();
+            for r in rl {
+                let (i_, o_, t_, p_): (Vec<(String, f64)>, Vec<(String, f64)>, f64, Option<f64>) = r.extract()?;
+                rs.push(devices::Recipe { inp: i_, out: o_, time: t_, power: p_ });
+            }
+            let t: String = dget(d, "type", String::new())?;
+            let dv = devices::Dev {
+                vox: dget(d, "vox", 0usize)?,
+                t: devices::T::of(&t),
+                name: dget(d, "name", String::new())?,
+                dir: dget(d, "dir", 0i64)?,
+                electric: dget(d, "electric", false)?,
+                power_use: dget(d, "power_use", 0.0)?,
+                capacity: dget(d, "capacity", 0.0)?,
+                output: dget(d, "output", 0.0)?,
+                fuel: dget(d, "fuel", "fuel".to_string())?,
+                fuel_rate: dget(d, "fuel_rate", 0.0)?,
+                thrust: dget(d, "thrust", 0.0)?,
+                power_output: dget(d, "power_output", 0.0)?,
+                ignite_energy: dget(d, "ignite_energy", 0.0)?,
+                max_flow: dget(d, "max_flow", 6.0)?,
+                key: dget(d, "key", None)?,
+                recipes: rs,
+                inputs: dget(d, "inputs", Vec::new())?,
+                outputs: dget(d, "outputs", Vec::new())?,
+                rate: dget(d, "rate", 1.0)?,
+                target_kpa: dget(d, "target_kpa", 101.3)?,
+                cavity: dget(d, "cavity", None)?,
+            };
+            need(dv.cavity.map(|c| c < cav_volume.len()).unwrap_or(true), "DevPlan cavity")?;
+            at.insert(dv.vox, k);
+            out.push(dv);
+        }
+        need(pipe_of.values().all(|&s| s < pipes.len()), "DevPlan pipes")?;
+        let valves: Vec<usize> = valve_adj.iter().map(|x| x.0).collect();
+        let va = valve_adj
+            .into_iter()
+            .map(|(v, l)| (v, l.into_iter().map(|(isv, i)| if isv { devices::Node::V(i) } else { devices::Node::S(i) }).collect()))
+            .collect();
+        Ok(DevPlan {
+            p: devices::Plan { devs: out, at, pipe_of, pipes, valve_adj: va, valves, seg_adj, fluids: fluids.into_iter().collect(), cav_volume },
+        })
+    }
+
+    /// 1ティック。states：devs と同じ順の state の dict。force・cav_air は書き換える。
+    /// 戻り値 (production, demand, stored, capacity, ratio, 電力が来た機器のボクセル, 知らせ)
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn update(
+        &self, states: Vec<Bound<'_, PyDict>>, dt: f64, keys: Vec<String>, seated: bool, pos: RoF, mass: RoF, mut force: RwF,
+        mut cav_air: RwF,
+    ) -> PyResult<(f64, f64, f64, f64, f64, Vec<usize>, Vec<String>)> {
+        let p = &self.p;
+        need(states.len() == p.devs.len(), "DevPlan.update states")?;
+        let (ps, ms) = (ro(&pos, "pos")?, ro(&mass, "mass")?);
+        let f = rw(&mut force, "force")?;
+        let ca = rw(&mut cav_air, "cav_air")?;
+        need(ps.len() == 3 * ms.len() && f.len() == ps.len() && ca.len() == p.cav_volume.len()
+             && p.devs.iter().all(|d| 8 * d.vox + 8 <= ms.len()), "DevPlan.update")?;
+        let ks = keys.into_iter().collect();
+        let r = devices::update(p, &states, dt, &ks, seated, ps, ms, f, ca)?;
+        Ok((r.production, r.demand, r.stored, r.capacity, r.ratio, r.powered, r.notes))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 描画用のメッシュ
 // ---------------------------------------------------------------------------
 type MeshGroup<'py> = (RoI<'py>, RoF<'py>, PyReadonlyArrayDyn<'py, f32>, RoI<'py>);
@@ -1268,6 +1366,7 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mesh_pack, m)?)?;
     m.add_class::<Proxy>()?;
     m.add_function(wrap_pyfunction!(step_tick, m)?)?;
+    m.add_class::<DevPlan>()?;
     m.add_class::<ArtTopo>()?;
     m.add_function(wrap_pyfunction!(push_apart, m)?)?;
     Ok(())

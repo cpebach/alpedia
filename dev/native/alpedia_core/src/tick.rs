@@ -210,6 +210,8 @@ pub fn run(
     let ns = sleepers.len();
     let mut o = Outcome { touch: vec![false; nj + ns], want_soft: vec![false; nj + ns], ..Default::default() };
     let fixed0: Vec<Option<Vec<f64>>> = sleepers.iter().map(|s| if s.fixed { Some(s.pos.to_vec()) } else { None }).collect();
+    // 眠っている物の当たり判定の点はティックの間変わらない（押されて動いたら起きるので、そこで止める）
+    let spts: Vec<Vec<f64>> = sleepers.iter().map(|s| contacts::proxy_points_of(s.proxy, s.pos)).collect();
     let mut arts: Vec<ArtState> = (0..nj).map(|_| ArtState::default()).collect();
     for step in 0..substeps {
         // ---- 前半 ----
@@ -276,10 +278,10 @@ pub fn run(
         let woke = {
             let mut items: Vec<contacts::Item> = Vec::with_capacity(nj + ns);
             for j in jobs.iter_mut() {
-                items.push(contacts::Item { p: j.proxy, pos: &mut *j.pos, vel: &*j.vel, active: true, rigid: j.contact_rigid });
+                items.push(contacts::Item { p: j.proxy, pos: &mut *j.pos, vel: &*j.vel, active: true, rigid: j.contact_rigid, pts: None });
             }
-            for s in sleepers.iter_mut() {
-                items.push(contacts::Item { p: s.proxy, pos: &mut *s.pos, vel: s.vel, active: false, rigid: s.rigid });
+            for (s, sp) in sleepers.iter_mut().zip(spts.iter()) {
+                items.push(contacts::Item { p: s.proxy, pos: &mut *s.pos, vel: s.vel, active: false, rigid: s.rigid, pts: Some(sp) });
             }
             let r = contacts::solve(&mut items, nj);
             for (q, (&t_, &w)) in r.touch.iter().zip(r.want_soft.iter()).enumerate() {

@@ -494,8 +494,16 @@ class World:
             if p.seated:
                 seats.setdefault(p.seated[0], set()).update(
                     self.input_keys if p is self.local_player else p.input_keys)
-        self._bnd = None                         # 構築物の外側の球（このティックの問い合わせで使い回す）
-        far = self.far_ids()                     # 機能処理の距離より遠い物は、機器・プログラム・物理を止める
+        # 構築物の外側の球（問い合わせで使い回す）。動いた物は物理のあとに直すので、全部の作り直しは 0.25 秒ごと
+        # （拡張が止まっている物を直接動かしたときのため）
+        if self.time - self.__dict__.get("_bnd_t", -1.0) >= 0.25:
+            self._bnd_t = self.time
+            self._bnd = None
+        # 機能処理の距離より遠い物は、機器・プログラム・物理を止める（遠いかどうかは 0.25 秒ごとに見直す）
+        if self.time - getattr(self, "_far_t", -1.0) >= 0.25 or getattr(self, "_far_n", -1) != len(self.constructs):
+            self._far_t, self._far_n = self.time, len(self.constructs)
+            self._far = self.far_ids()
+        far = self._far
         for c in list(self.constructs.values()):
             if c.id in far:
                 continue
@@ -533,33 +541,41 @@ class World:
         anchored_ids = set()
         for a in self.addons:
             anchored_ids |= a.before_physics(self, dt) or set()
+        moved = [self.constructs[k] for k in anchored_ids if k in self.constructs]   # 拡張が動かした物
         # 機能処理の距離より遠い物は止めておく（当たり判定の相手にはなる）。レール（遠方の軌道）に乗っている物は軌道だけ進める
         frozen = {cid for cid in far if self.constructs[cid].mode != "rails"}
         anchored_ids |= frozen
+        # 1回まわすだけで：剛体・レールの切り替え、固定された物（アンカー）、レールの軌道、動く物と止まっている物の振り分け
+        cons, sleeping = [], []
         for c in self.constructs.values():
+            if not c.n_vox:
+                continue
             if c.id in anchored_ids:
+                sleeping.append(c)
                 continue
             if c.mode == "rigid" and c.anchored and not c._actuator_busy():
-                # アンカーで固定されて止まっている物（建物など）：切り替えるものが無い
+                # アンカーで固定されて止まっている物（建物など）：切り替えるものが無い。物理計算しない（ほかの物には当たる）
                 c._touch_moving = False
+                anchored_ids.add(c.id)
+                if c.vel.any():
+                    c.vel[:] = 0.0
+                sleeping.append(c)
                 continue
-            if c.asleep and np.any(c.force):
+            if c.asleep and c.force.any():
                 c.wake()
             c._touch_moving = False
-            # 軽量化：剛体化・レール（遠方）の切り替え
-            c.update_mode(dt, self)
-        # アンカーで固定された構築物（アクチュエーターが止まっている間）も物理計算しない。ほかの物には当たる
-        for c in self.constructs.values():
-            if c.n_vox and c.id not in anchored_ids and c.is_static:
+            c.update_mode(dt, self)                  # 軽量化：剛体化・レール（遠方）の切り替え
+            if c.is_static:                          # アンカーで固定（アクチュエーターが止まっている間）
                 anchored_ids.add(c.id)
                 c.vel[:] = 0.0
-        # レールに乗っている構築物は重心の軌道だけを進める
-        for c in self.constructs.values():
-            if c.mode == "rails" and not c.asleep and c.id not in anchored_ids:
-                c.rails_step(dt, self.gravity)
-        cons = [c for c in self.constructs.values() if c.n_vox and not c.asleep and c.mode != "rails"
-                and c.id not in anchored_ids]
-        sleeping = [c for c in self.constructs.values() if c.n_vox and (c.asleep or c.id in anchored_ids)]
+                sleeping.append(c)
+            elif c.asleep:
+                sleeping.append(c)
+            elif c.mode == "rails":
+                c.rails_step(dt, self.gravity)       # レールに乗っている構築物は重心の軌道だけを進める
+                moved.append(c)
+            else:
+                cons.append(c)
         for c in cons:
             self._prep_ext(c, dt)
         sleeping = self._sleeping_near(cons, sleeping, dt)
@@ -604,7 +620,7 @@ class World:
             c.update_sleep(dt)
             if c.__dict__.get("_settle", 0.0) > 0.0:
                 c._settle = max(0.0, c._settle - dt)
-        self._bnd = None
+        self._patch_bounds(cons + moved, broken)
         for a in self.addons:
             a.after_physics(self, cons)
         for c in cons:
@@ -1001,9 +1017,29 @@ class World:
             cs = [c for c in self.constructs.values() if c.n_vox]
             bb = [c.bounds() for c in cs]
             C = np.array([x[0] for x in bb]).reshape(-1, 3)
-            Rr = np.array([x[1] + c.size for x, c in zip(bb, cs)])
-            b = self._bnd = (len(self.constructs), cs, C, Rr)
+            R0 = np.array([x[1] for x in bb])
+            Rr = R0 + np.array([c.size for c in cs])
+            b = self._bnd = (len(self.constructs), cs, C, Rr, R0)
         return b[1], b[2], b[3]
+
+    def _patch_bounds(self, moved, broken):
+        """物理のあと：動いた物の外側の球だけ直す（全部を作り直さない）。形が変わった・ちぎれた物があれば作り直す。"""
+        b = self.__dict__.get("_bnd")
+        if b is None or broken or b[0] != len(self.constructs):
+            self._bnd = None
+            return
+        at = self.__dict__.get("_bnd_at")
+        if at is None or at[0] is not b[1]:
+            at = self._bnd_at = (b[1], {id(c): k for k, c in enumerate(b[1])})
+        for c in moved:
+            k = at[1].get(id(c))
+            if k is None or not c.n_vox:
+                self._bnd = None
+                return
+            ctr, r = c.bounds()
+            b[2][k] = ctr
+            b[4][k] = r
+            b[3][k] = r + c.size
 
     def process_distance(self):
         """機能処理の距離（m）。0 なら全部（距離に関係なく処理する）。"""
@@ -1039,9 +1075,18 @@ class World:
         A = [c.bounds() for c in cons]
         AC = np.array([b[0] for b in A])
         AR = np.array([b[1] + float(np.abs(c.vel).max()) * dt * 2 + c.size * 2 for b, c in zip(A, cons)])
-        B = [c.bounds() for c in sleeping]
-        BC = np.array([b[0] for b in B])
-        BR = np.array([b[1] for b in B])
+        cs, C, Rr = self._bounds()                  # このティックの外側の球（止まっている物はずっと同じ）
+        at = self.__dict__.get("_bnd_at")
+        if at is None or at[0] is not cs:
+            at = self._bnd_at = (cs, {id(c): k for k, c in enumerate(cs)})
+        ix = [at[1].get(id(c)) for c in sleeping]
+        if any(k is None for k in ix):
+            B = [c.bounds() for c in sleeping]
+            BC = np.array([b[0] for b in B])
+            BR = np.array([b[1] for b in B])
+        else:
+            ix = np.array(ix, np.int64)
+            BC, BR = C[ix], self._bnd[4][ix]
         d = np.sqrt(((BC[:, None, :] - AC[None, :, :]) ** 2).sum(2))          # (止まっている物, 動いている物)
         hit = (d < AR[None, :] + BR[:, None]).any(1)
         return [c for c, h_ in zip(sleeping, hit) if h_]

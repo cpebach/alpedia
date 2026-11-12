@@ -32,6 +32,8 @@ pub struct Item<'a> {
     pub vel: &'a [f64],
     pub active: bool,
     pub rigid: bool,
+    /// 当たり判定の点（先に計算してあれば。眠っている物はティックの間変わらない）
+    pub pts: Option<&'a [f64]>,
 }
 
 /// 結果：押し出されて起きる眠っていた構築物の番号、動いている物と触れているか、剛体のまま速くぶつかったか
@@ -60,6 +62,24 @@ fn velocity(it: &Item) -> [f64; 3] {
 }
 
 /// 当たり判定の点（W × ボクセル中心）
+pub fn proxy_points_of(p: &Proxy, pos: &[f64]) -> Vec<f64> {
+    let it = Item { p, pos: &mut pos.to_vec(), vel: &[], active: false, rigid: false, pts: None };
+    proxy_points(&it)
+}
+
+/// 外枠の中（r だけ広げた）にある点の番号と、その点
+fn points_in(x: &[f64], lo: [f64; 3], hi: [f64; 3], r: f64) -> (Vec<usize>, Vec<f64>) {
+    let mut idx = Vec::new();
+    let mut sub = Vec::new();
+    for (i, p) in x.chunks_exact(3).enumerate() {
+        if (0..3).all(|a| p[a] >= lo[a] - r && p[a] <= hi[a] + r) {
+            idx.push(i);
+            sub.extend_from_slice(p);
+        }
+    }
+    (idx, sub)
+}
+
 fn proxy_points(it: &Item) -> Vec<f64> {
     let p = it.p;
     let mut c = vec![0.0; 3 * p.n];
@@ -92,7 +112,10 @@ pub fn solve(items: &mut [Item], n_active: usize) -> Outcome {
     if n_active == 0 {
         return out;
     }
-    let pts: Vec<Vec<f64>> = items.iter().map(proxy_points).collect();
+    let pts: Vec<Vec<f64>> = items.iter().map(|it| match it.pts {
+        Some(x) => x.to_vec(),
+        None => proxy_points(it),
+    }).collect();
     if pts.iter().map(|x| x.len() / 3).sum::<usize>() < 2 {
         return out;
     }
@@ -133,8 +156,15 @@ pub fn solve(items: &mut [Item], n_active: usize) -> Outcome {
             if !(0..3).all(|a| l1[a] <= h2[a] + r && l2[a] <= h1[a] + r) {
                 continue;
             }
-            for (i, j) in pairs::between_sets(&pts[k1], &pts[k2], r) {
-                pr.push((k1, i, k2, j));
+            // 重なっている所の点だけで組を探す（大きな建物の全部の点を毎回調べない）
+            let (lo, hi) = ([l1[0].max(l2[0]), l1[1].max(l2[1]), l1[2].max(l2[2])], [h1[0].min(h2[0]), h1[1].min(h2[1]), h1[2].min(h2[2])]);
+            let (i1, s1) = points_in(&pts[k1], lo, hi, r);
+            let (i2, s2) = points_in(&pts[k2], lo, hi, r);
+            if i1.is_empty() || i2.is_empty() {
+                continue;
+            }
+            for (i, j) in pairs::between_sets(&s1, &s2, r) {
+                pr.push((k1, i1[i], k2, i2[j]));
             }
         }
     }

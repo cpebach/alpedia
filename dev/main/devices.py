@@ -344,6 +344,10 @@ def update(c, dt, input_keys=frozenset(), seated=False, ambient_kpa=0.0):
         for k, v in c.storage.items():
             st0[k] = st0.get(k, 0.0) + v
         c.storage = {}
+    plan = _native_plan(c, net, by_type)
+    if plan is not None:
+        _native_update(c, plan, net, by_type, dt, input_keys, seated)
+        return
     flow = Flow(c, dt)
 
     # ---- 電力（手回し・太陽光） ----
@@ -519,6 +523,78 @@ def update(c, dt, input_keys=frozenset(), seated=False, ambient_kpa=0.0):
             mv = min(rate, air)
             flow.put_tanks(i, "air", mv)  # 入りきらない分は外へ排気
             c.cavity_air[rep] = air - mv
+
+
+# ---------------------------------------------------------------------------
+# Rust 版（alpedia_core.DevPlan）：機器の1ティックをまとめて Rust で。アクチュエーターだけ Python
+# ---------------------------------------------------------------------------
+def _native_plan(c, net, by_type):
+    """この構築物の機器のまとめ（形が変わったときだけ作り直す）。Rust が無い・古いときは None。"""
+    from . import native
+    from .construct import NATIVE_STEP_OFF
+    core = native.core
+    if core is None or not hasattr(core, "DevPlan") or NATIVE_STEP_OFF:
+        return None
+    key = (c.version, len(c.cells), id(net))
+    cache = c.__dict__.get("_devplan")
+    if cache is not None and cache[0] == key:
+        return cache[1]
+    devs = []
+    order = []
+    for t, lst in by_type.items():
+        for i, d, dd in lst:
+            order.append(i)
+    order.sort()
+    outs_all = []
+    for i in order:
+        d = c.devs[i]
+        dd = c.reg.device(d["def"])
+        p = dd.get("params", {})
+        e = {"vox": i, "type": dd["type"], "name": d.get("name", ""), "dir": int(d.get("dir", 0)),
+             "electric": dd.get("power") == "electric", "power_use": float(dd.get("power_use", 0)),
+             "capacity": float(p.get("capacity", 400.0 if dd["type"] == "processor" else 0)),
+             "output": float(p.get("output", 0)), "fuel": p.get("fuel", "fuel"), "fuel_rate": float(p.get("fuel_rate", 0)),
+             "thrust": float(p.get("thrust", 0)), "power_output": float(p.get("power_output", 0.0)),
+             "ignite_energy": float(p.get("ignite_energy", 0.0)), "max_flow": float(p.get("max_flow", 6.0)),
+             "key": p.get("key") or None, "rate": float(p.get("rate", 1.0)), "target_kpa": float(p.get("target_kpa", 101.3))}
+        if dd["type"] == "processor":
+            e["recipes"] = [(list((k, float(v)) for k, v in r.get("in", {}).items()),
+                             list((k, float(v)) for k, v in r.get("out", {}).items()),
+                             float(r.get("time", 1.0)), float(r["power"]) if "power" in r else None)
+                            for r in p.get("recipes", [])]
+            e["inputs"] = list(proc_inputs(dd).items())
+            e["outputs"] = sorted(proc_outputs(dd))
+            outs_all += e["outputs"]
+        if dd["type"] == "air_vent":
+            e["cavity"] = _adjacent_cavity(c, i)
+        devs.append(e)
+    fluids = sorted({r for r in outs_all if is_fluid(c.reg, r)} | {"fuel", "air", "water"})
+    va = [(v, [(k == "v", x) for k, x in adj]) for v, adj in net.valve_adj.items()]
+    plan = core.DevPlan(devs, dict(net.pipe_of), [list(m) for m in net.pipes], va,
+                        {k: list(v) for k, v in net.seg_adj.items()}, fluids,
+                        [float(cv["volume"]) for cv in net.cavities])
+    c._devplan = (key, plan, order)
+    return plan
+
+
+def _native_update(c, plan, net, by_type, dt, input_keys, seated):
+    order = c._devplan[2]
+    states = [c.devs[i]["state"] for i in order]
+    reps = [cv["rep"] for cv in net.cavities]
+    cav = np.array([float(c.cavity_air.get(r, 0.0)) for r in reps], dtype=np.float64)
+    c._contig("pos", "force")
+    mass = c.mass if (c.mass.flags.c_contiguous and c.mass.dtype == np.float64) else np.ascontiguousarray(c.mass, np.float64)
+    production, demand, stored, capacity, ratio, powered, notes = plan.update(
+        states, float(dt), [str(k) for k in input_keys], bool(seated), c.pos, mass, c.force, cav)
+    for r, a in zip(reps, cav.tolist()):
+        c.cavity_air[r] = a
+    c.powered = stored > 1.0 or production > 0
+    c.status = {"production": production, "demand": demand, "stored": stored, "capacity": capacity, "ratio": ratio}
+    for n in notes:
+        _note(c, n)
+    pw = set(powered)
+    for i, d, dd in by_type.get("actuator", []):
+        actuator.step(c, i, dd, dt, i in pw, ratio)
 
 
 def _fluid_outputs(c, by_type):
