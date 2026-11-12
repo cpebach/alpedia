@@ -1220,9 +1220,15 @@ class Game:
         phys_tick = pf["phys"] / max(pf["ticks"], 1) * 1000
         other = max(pf["wall"] - pf["update"], 0.0) / f * 1000
         slow = pf["lost"] / pf["wall"] * 100
+        # CPU の使い方：メインのスレッドがどれだけ計算していたか（100% 近い ＝ 1つのコアで手一杯、低い ＝ 何かを待っている）
+        tt, pt = _time.thread_time(), _time.process_time()
+        t0 = getattr(self, "_perf_cpu0", None)
+        self._perf_cpu0 = (tt, pt)
+        cpu = "" if t0 is None else (f"  CPU メイン {(tt - t0[0]) / pf['wall'] * 100:.0f}%・全体 "
+                                     f"{(pt - t0[1]) / pf['wall'] * 100:.0f}%（1コア=100%）")
         self._perf_text = (f"fps {fps:.0f}  物理 {phys_tick:.1f} ms/回×{pf['ticks'] / f:.1f}  "
                            f"描画準備 {ms(pf['render']):.1f} ms  描画・待ち {other:.1f} ms"
-                           + (f"  遅れ {slow:.0f}%" if slow >= 1 else ""))
+                           + (f"  遅れ {slow:.0f}%" if slow >= 1 else "") + cpu)
         now = _time.monotonic()
         if now - self._perf_log_t >= 10.0:
             self._perf_log_t = now

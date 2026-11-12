@@ -691,7 +691,8 @@ class World:
         out = [None] * len(cons)
         small = []
         for k, c in enumerate(cons):
-            if c.n_vox >= fastphys.PARALLEL_MIN_VOXELS:
+            # 剛体・関節つき剛体（完全剛体モード）は Python の部分が多く、スレッドに分けても GIL の取り合いで遅くなるだけ
+            if c.n_vox >= fastphys.PARALLEL_MIN_VOXELS or c.mode != "soft":
                 out[k] = fn(c)
             else:
                 small.append(k)

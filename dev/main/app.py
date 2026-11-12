@@ -42,6 +42,8 @@ def main(args):
     paths.ensure_dirs()
     cfg = config.load()
     L = log.setup(cfg.get("log_level", "INFO"))
+    from . import winperf
+    winperf.boost(cfg)
     _start_warmup(L)
     if not args.headless:
         L.info("Alpedia 起動")
