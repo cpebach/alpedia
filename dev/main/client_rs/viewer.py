@@ -163,6 +163,28 @@ class Viewer:
         self.view.grab(False)
         self.ui.open({"pause": screens.Pause, "inventory": screens.Inventory}[name], self)
 
+    def open_editor(self):
+        """P：見ている機器の設定（アクチュエーター・ほかの機器）。コンピューターのプログラムの画面は次の段で。"""
+        from .. import actuator as act
+        from . import screens_dev
+        w = self.w
+        h = self.hit
+        if not (h and h["kind"] == "voxel" and h["construct"].devs[h["index"]]):
+            w.message("機器を見ながら P を押すと設定を開けます")
+            return
+        c, i = h["construct"], h["index"]
+        dd = c.reg.device(c.devs[i]["def"]) or {}
+        if dd.get("type") == "computer":
+            w.message("プログラムの画面は Rust の画面ではまだ使えません（今までの画面で開いてください）")
+            return
+        self.held.clear()
+        self.grabbed = False
+        self.view.grab(False)
+        if act.is_actuator(c, i):
+            self.ui.open(screens_dev.ActuatorPanel, self, c, i)
+        else:
+            self.ui.open(screens_dev.DevicePanel, self, c, i)
+
     def screen_closed(self):
         if not self.ui.stack:
             self.grabbed = True
@@ -191,6 +213,8 @@ class Viewer:
             self.open_screen("pause")
         elif k == c.get("inventory", "i"):
             self.open_screen("inventory")
+        elif k == c.get("edit_script", "p"):
+            self.open_editor()
         elif k == c.get("jetpack", "f"):
             w.player.jetpack = not w.player.jetpack
         elif k == c.get("save", "f5"):

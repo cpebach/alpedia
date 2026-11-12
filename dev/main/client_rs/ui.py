@@ -44,6 +44,7 @@ class Screen:
         self.root = gfx.RsNode(None, "screen")
         self.layer = 0
         self.widgets = []          # (x0, y0, x1, y1, on_click, on_right, 部品の情報)
+        self.fields = []
         self.hover = None
 
     # ---- 部品 ----
@@ -51,6 +52,7 @@ class Screen:
         self.root.removeNode()
         self.root = gfx.RsNode(None, "screen")
         self.widgets = []
+        self.fields = []
         self.hover = None
 
     def _bin(self, k):
@@ -82,6 +84,24 @@ class Screen:
         self.widgets.append({"box": (x - w / 2, y - h / 2, x + w / 2, y + h / 2), "click": on_click, "right": on_right,
                              "mesh": m, "color": color, "info": info})
         return m
+
+    def field(self, x, y, w, h, value="", limit=0, on_submit=None, size=0.024):
+        """文字の入力欄（左端が x、真ん中の高さが y）。クリックで選ぶ。"""
+        f = Field(self, x, y, w, h, value, limit, on_submit, size)
+        self.widgets.append({"box": (x, y - h / 2, x + w, y + h / 2), "click": lambda: self.focus_field(f), "right": None,
+                             "mesh": f.bg, "color": (0.12, 0.13, 0.17, 1), "info": None})
+        self.fields.append(f)
+        self.focus_field(f)
+        return f
+
+    def focus_field(self, f):
+        for g in self.fields:
+            g.focused = g is f
+            g.render()
+
+    @property
+    def focused(self):
+        return next((f for f in getattr(self, "fields", []) if f.focused), None)
 
     # ---- 入力 ----
     def hit(self, x, y):
@@ -127,6 +147,43 @@ class Screen:
         self.ui.closed(self)
 
 
+class Field:
+    """文字の入力欄：キーボード（日本語の変換も）で入力、Backspace で消す、Enter で決定。"""
+
+    def __init__(self, scr, x, y, w, h, value, limit, on_submit, size):
+        self.scr = scr
+        self.value = str(value)
+        self.limit = int(limit)
+        self.on_submit = on_submit
+        self.focused = False
+        self.bg = rect_mesh(scr.root, x, y - h / 2, x + w, y + h / 2, (0.12, 0.13, 0.17, 1))
+        gfx.VIEW.mesh_props(self.bg.mid, True, False, True, 0, scr._bin(1))
+        self.txt = gfx.RsText(scr.root, overlay=True, bin=scr._bin(3) - 1)
+        self.x, self.y, self.size = x, y, size
+        self.render()
+
+    def render(self):
+        s = self.value + ("｜" if self.focused else "")
+        w, h = self.txt.set(s, self.size)
+        self.txt.place(self.x + 0.01, self.y + h / 2)
+
+    def set(self, s):
+        self.value = s[:self.limit] if self.limit else s
+        self.render()
+
+    def type(self, t):
+        self.set(self.value + t)
+
+    def key(self, k):
+        if k == "backspace":
+            self.set(self.value[:-1])
+            return True
+        if k == "enter" and self.on_submit is not None:
+            self.on_submit()
+            return True
+        return False
+
+
 class UI:
     """画面の重なり（いちばん上が入力を受ける）とマウスの位置。"""
 
@@ -170,9 +227,16 @@ class UI:
             return True
         if kind.startswith("key:"):
             if a:
-                s.on_key(kind[4:])
+                f = s.focused
+                k = kind[4:]
+                if not (f is not None and (f.key(k) or len(k) == 1 or k == "space")):
+                    s.on_key(k)
             return True
         if kind.startswith("text:"):
-            s.on_text(kind[5:])
+            f = s.focused
+            if f is not None:
+                f.type(kind[5:])
+            else:
+                s.on_text(kind[5:])
             return True
         return kind in ("wheel", "mouse")
