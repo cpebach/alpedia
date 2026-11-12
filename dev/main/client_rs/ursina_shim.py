@@ -1,9 +1,7 @@
-"""ursina のまね（Rust の画面で、今までの ursina の画面の部品をそのまま動かす）。
+"""画面の上の部品（ursina と同じ書き方の Entity・Text・Button・InputField・mouse・camera.ui・color など）。
 
-今までの画面（ブロックプログラム・プログラム・メニューなど）と MOD の画面側は ursina の Entity・Text・Button・
-InputField・mouse・camera.ui・color などで作られている。Rust の画面のときはこのモジュールを sys.modules["ursina"] に
-入れておくと、そのコードがそのまま Rust の画面に描かれる。今まねているのは画面の上（camera.ui）の 2D の部品。
-
+プログラムの画面・メニュー・MOD の画面側は ursina の書き方で作られている（ursina 自体はもう使わない）。
+このモジュールを sys.modules["ursina"] に入れておくと（install）、そのコードが Rust の画面に描かれる。
 座標は ursina と同じ（画面の縦の高さが 1、真ん中が原点、x 右・y 上。z が小さいほど手前）。
 """
 import math

@@ -1,4 +1,4 @@
-"""必要最低限の描画：Panda3D の頂点データを毎フレーム numpy から書き換える。
+"""描画の材料：構築物・惑星・地表・看板などの頂点を numpy で作り、Rust の画面（gfx）のメッシュに渡す。
 
 浮動原点：全ての描画位置は「カメラ（プレイヤーの目）からの相対座標」にしてから
 float32 に変換するので、世界がどれだけ広くても精度が落ちない。
@@ -6,106 +6,22 @@ float32 に変換するので、世界がどれだけ広くても精度が落ち
 import numpy as np
 
 from . import gfx
-try:                          # 今までの画面（Panda3D）。Rust の画面だけなら無くてよい
-    from panda3d.core import (Geom, GeomEnums, GeomNode, GeomTriangles, GeomVertexArrayFormat, GeomVertexData,
-                              GeomVertexFormat, InternalName, OmniBoundingVolume, SamplerState, Texture)
-except ImportError:
-    Geom = None
 
 SUN = np.array([0.35, 0.85, 0.4])
 SUN /= np.linalg.norm(SUN)
 AMBIENT = 0.38
 
-_FORMAT = []
-
-
-def _format():
-    """Panda3D の頂点の形（位置・法線・色・UV）。"""
-    if not _FORMAT:
-        arr = GeomVertexArrayFormat()
-        arr.addColumn(InternalName.getVertex(), 3, Geom.NT_float32, Geom.C_point)
-        arr.addColumn(InternalName.getNormal(), 3, Geom.NT_float32, Geom.C_normal)
-        arr.addColumn(InternalName.getColor(), 4, Geom.NT_float32, Geom.C_color)
-        arr.addColumn(InternalName.getTexcoord(), 2, Geom.NT_float32, Geom.C_texcoord)
-        _FORMAT.append(GeomVertexFormat.registerFormat(GeomVertexFormat(arr)))
-    return _FORMAT[0]
-
-_tex_cache = {}
-
 
 def load_texture(loader, path):
+    """画像ファイルのテクスチャ（loader は昔の名残り。使わない）。"""
     if not path:
         return None
-    if gfx.active():
-        return gfx.tex(path)
-    if path in _tex_cache:
-        return _tex_cache[path]
-    from panda3d.core import Filename
-    try:
-        tex = loader.loadTexture(Filename.fromOsSpecific(path))
-        tex.setMagfilter(SamplerState.FT_nearest)
-        tex.setMinfilter(SamplerState.FT_linear_mipmap_linear)
-        tex.setWrapU(Texture.WM_repeat)
-        tex.setWrapV(Texture.WM_repeat)
-    except Exception:  # noqa: BLE001
-        tex = None
-    _tex_cache[path] = tex
-    return tex
+    return gfx.tex(path)
 
 
-class DynamicMesh:
-    """頂点（位置・法線・色・UV）と三角形を numpy 配列から設定できるメッシュ。
-    Rust の画面（gfx）を使っているときは gfx.RsDynamicMesh になる。"""
-
-    def __new__(cls, parent, name="mesh"):
-        if gfx.active():
-            return gfx.RsDynamicMesh(parent, name)
-        return super().__new__(cls)
-
-    def __init__(self, parent, name="mesh"):
-        self.node = GeomNode(name)
-        # 頂点を直接書き換えるので境界ボリュームは無限大にしてカリングさせない
-        self.node.setBounds(OmniBoundingVolume())
-        self.node.setFinal(True)
-        self.np = parent.attachNewNode(self.node)
-        self.np.setTwoSided(True)
-        self.np.setLightOff()
-        self.vdata = None
-        self.n_rows = -1
-        self.n_tris = -1
-
-    def set(self, verts, tris=None):
-        """verts: (N,12) float32 [x,y,z,nx,ny,nz,r,g,b,a,u,v]、tris: (M,3) 三角形（変わった時だけ）"""
-        verts = np.ascontiguousarray(verts, dtype=np.float32)
-        n = len(verts)
-        if n == 0:
-            self.node.removeAllGeoms()
-            self.vdata = None
-            self.n_rows = 0
-            return
-        if self.vdata is None or n != self.n_rows or tris is not None:
-            self.vdata = GeomVertexData("v", _format(), Geom.UH_dynamic)
-            self.vdata.uncleanSetNumRows(n)
-            self.n_rows = n
-            if tris is None:
-                raise ValueError("頂点数が変わる時は tris が必要です")
-            tris = np.ascontiguousarray(tris, dtype=np.uint32).ravel()
-            prim = GeomTriangles(Geom.UH_static)
-            prim.setIndexType(GeomEnums.NT_uint32)
-            parr = prim.modifyVertices()
-            parr.uncleanSetNumRows(len(tris))
-            memoryview(parr).cast("B")[:] = tris.tobytes()
-            geom = Geom(self.vdata)
-            geom.addPrimitive(prim)
-            self.node.removeAllGeoms()
-            self.node.addGeom(geom)
-            self.geom = geom
-            self.n_tris = len(tris) // 3
-        arr = self.geom.modifyVertexData().modifyArray(0)
-        memoryview(arr).cast("B")[:] = verts.tobytes()
-
-    def remove(self):
-        self.np.removeNode()
+def DynamicMesh(parent, name="mesh"):
+    """頂点（位置・法線・色・UV、(N,12) float32）と三角形を numpy 配列から設定できるメッシュ（gfx.RsDynamicMesh）。"""
+    return gfx.RsDynamicMesh(parent, name)
 
 
 _BOX_FACES = np.array([[1, 3, 7, 5], [0, 4, 6, 2], [2, 6, 7, 3], [0, 1, 5, 4], [4, 5, 7, 6], [0, 2, 3, 1]])
@@ -154,9 +70,8 @@ class LightLayer:
     GROW = 1.06
 
     def __init__(self, parent):
-        from panda3d.core import TransparencyAttrib
         self.mesh = DynamicMesh(parent, "lights")
-        self.mesh.np.setTransparency(TransparencyAttrib.MAlpha)
+        self.mesh.np.setTransparency(True)
         self.mesh.np.setDepthOffset(1)
         self.n = -1
 
@@ -264,20 +179,9 @@ def preload(loader, registry):
 STYLE = {"edges": True, "ao": True}
 EDGE_TEXTURE = None          # ブロックの輪郭の線のテクスチャ（game が sauce/textures/px_edge.png を入れる）
 DEVICE_TEXTURE = None        # テクスチャの無い機器の外板
-_edge_ts = None
-
-
 def _edge_stage():
     """輪郭の線を、本来のテクスチャに掛け合わせる2枚目のテクスチャの段。"""
-    global _edge_ts
-    if gfx.active():
-        return gfx.EDGES
-    if _edge_ts is None:
-        from panda3d.core import TextureStage
-        _edge_ts = TextureStage("block_edges")
-        _edge_ts.setMode(TextureStage.MModulate)
-        _edge_ts.setSort(20)
-    return _edge_ts
+    return gfx.EDGES
 
 
 def project_uv(p, axis):
@@ -351,17 +255,13 @@ class ConstructView:
 
     def __init__(self, parent, loader, construct):
         self.c = construct
-        if gfx.active():
-            self.root = gfx.RsNode(parent)
-        else:
-            from ursina import Entity
-            self.root = Entity(parent=parent)
+        self.root = gfx.RsNode(parent)
         self._parent0 = parent
         self.parent = self.root
         self.loader = loader
         self.version = -1
         self.groups = []   # [(mesh, face_rows, colors(F,3), tex)]
-        self.displays = {}  # (ボクセル, 面) → DisplayView
+        self.displays = {}  # (ボクセル, 面) → gfx.RsDisplayView
         self._devs_ver = None
         self._mat_key = None
         self.visible = True
@@ -392,18 +292,17 @@ class ConstructView:
 
     def _set_root_mat(self, M):
         """M：4x4（行ベクトル形式）か None（単位行列）。"""
-        from panda3d.core import LMatrix4f
         if M is None:
             if self._mat_key is None:
                 return
             self._mat_key = None
-            self.root.setMat(np.eye(4).ravel().tolist() if gfx.active() else LMatrix4f.identMat())
+            self.root.setMat(np.eye(4).ravel().tolist())
             return
         key = M.tobytes()
         if self._mat_key == key:
             return
         self._mat_key = key
-        self.root.setMat(M.ravel().tolist() if gfx.active() else LMatrix4f(*M.ravel().tolist()))
+        self.root.setMat(M.ravel().tolist())
 
     def _rebuild(self):
         """形のメッシュが作れない（ブロックが無い）とき：何も描かない。"""
@@ -463,8 +362,7 @@ class ConstructView:
             verts, axv = ukeys // 3, ukeys % 3
             mesh = DynamicMesh(self.root, f"c{c.id}")
             if alpha < 0.999:
-                from panda3d.core import TransparencyAttrib
-                mesh.np.setTransparency(TransparencyAttrib.MAlpha)
+                mesh.np.setTransparency(True)
                 mesh.np.setDepthWrite(False)
                 mesh.np.setBin("transparent", 4)
             t = load_texture(self.loader, tex)
@@ -650,7 +548,7 @@ class ConstructView:
         for (i, f), disp in want.items():
             v = self.displays.get((i, f))
             if v is None:
-                v = self.displays[(i, f)] = gfx.RsDisplayView(self.root) if gfx.active() else DisplayView(self.root)
+                v = self.displays[(i, f)] = gfx.RsDisplayView(self.root)
             v.set(disp, c.size)
             if L is not None:
                 if v.placed == key:
@@ -685,11 +583,10 @@ class DecalView:
     _uv = None
 
     def __init__(self, parent, construct, max_dist=30.0):
-        from panda3d.core import TransparencyAttrib
         self.c = construct
         self.max_dist = max_dist
         self.mesh = DynamicMesh(parent, f"decal{construct.id}")
-        self.mesh.np.setTransparency(TransparencyAttrib.MAlpha)
+        self.mesh.np.setTransparency(True)
         self.mesh.np.setDepthOffset(2)
         self.mesh.np.setDepthWrite(False)
         self.mesh.np.setBin("transparent", 5)
@@ -952,11 +849,10 @@ class TerrainPatch:
     """プレイヤー周辺の詳細な地表（掘削跡も反映）と水面。"""
 
     def __init__(self, parent, loader, cells=48, step=1.0):
-        from panda3d.core import TransparencyAttrib
         self.root = parent.attachNewNode("terrain_patch")
         self.mesh = DynamicMesh(self.root, "patch")
         self.water = DynamicMesh(self.root, "water")
-        self.water.np.setTransparency(TransparencyAttrib.MAlpha)
+        self.water.np.setTransparency(True)
         self.water.np.setDepthWrite(False)
         self.water.np.setBin("transparent", 10)
         self.loader = loader
@@ -1261,57 +1157,6 @@ class CarveView:
         if active != self.active:
             self.active = active
             self.version += 1
-
-
-class DisplayView:
-    """コンピューターの表面に表示する文字（看板）。"""
-
-    def __init__(self, parent):
-        from ursina import Entity, Text, color
-        self.root = Entity(parent=parent)
-        self.bg = Entity(parent=self.root, model="quad", color=color.black, z=0.0)
-        self.bg.setTwoSided(True)
-        self.text = Text(parent=self.root, text="", origin=(-0.5, 0), start_tag="\x01", end_tag="\x02", z=-0.004)
-        self.text.setDepthOffset(2)
-        self.key = None
-        self.placed = None
-        self.U_color = color
-
-    def set(self, disp, voxel_size):
-        key = (disp["text"], disp.get("width"), tuple(disp.get("color", ())), tuple(disp.get("background", ())),
-               voxel_size)
-        if key == self.key:
-            return
-        self.key = key
-        col = disp.get("color", [1, 1, 1])
-        bgc = disp.get("background", [0.04, 0.05, 0.08, 0.92])
-        self.text.text = disp["text"]
-        self.text.color = self.U_color.rgba(col[0], col[1], col[2], 1)
-        self.text.scale = 1
-        w_target = float(disp.get("width") or voxel_size * 0.96)
-        tw, th = max(self.text.width, 1e-6), max(self.text.height, 1e-6)
-        k = w_target * 0.9 / tw
-        h = th * k / 0.88
-        if disp.get("width") is None:  # ブロックの大きさに収める
-            if h > voxel_size * 0.96:
-                k *= voxel_size * 0.96 / h
-                h = voxel_size * 0.96
-            h = max(h, voxel_size * 0.96)
-        self.text.scale = k
-        self.text.y = 0
-        self.text.x = -tw * k / 2  # 左揃え・全体は中央
-        self.bg.scale = (w_target, h)
-        # 背景は不透明にして、奥の看板の文字が透けないようにする
-        self.bg.color = self.U_color.rgb(*bgc[:3])
-
-    def place(self, center, right, up, fwd):
-        from panda3d.core import LMatrix4f
-        self.root.setMat(LMatrix4f(right[0], right[1], right[2], 0, up[0], up[1], up[2], 0,
-                                   fwd[0], fwd[1], fwd[2], 0, center[0], center[1], center[2], 1))
-
-    def remove(self):
-        from .ui_destroy import destroy
-        destroy(self.root)
 
 
 def display_faces(c, i, disp):

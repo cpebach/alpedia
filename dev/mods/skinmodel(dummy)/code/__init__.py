@@ -3,7 +3,7 @@
 使い方は、この MOD のフォルダの README.md を参照。
     vrm.py     VRM（glTF バイナリ）を読む（numpy だけ）
     motion.py  手で書いた簡単なモーション（numpy だけ）
-    view.py    Panda3D で描く（骨での変形はシェーダー）
+    view.py    Rust の画面で描く（骨の行列を渡して Rust が曲げる）
     client.py  画面側の拡張（プレイヤーの体を引き受ける）
 """
 

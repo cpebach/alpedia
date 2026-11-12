@@ -64,6 +64,7 @@ struct Mesh {
     alive: bool,
     overlay: bool,
     cutoff: f32,
+    add: bool,                // 足し算で重ねる（光る物）
 }
 
 /// 骨で曲げる形（VRM の人物など）：もとの頂点。体ごとの部品（SkinPart）がこれを共有する。
@@ -133,6 +134,7 @@ const GPAD: u32 = 4;          // 文字と文字のすき間（縮小した段�
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 struct PipeKey {
     blend: bool,
+    add: bool,
     depth_write: bool,
     cull: bool,
     offset: i32,
@@ -385,7 +387,17 @@ impl Gfx {
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: self.config.format,
-                        blend: if k.blend { Some(wgpu::BlendState::ALPHA_BLENDING) } else { None },
+                        blend: if k.add {
+                            Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One,
+                                                             operation: wgpu::BlendOperation::Add },
+                                alpha: wgpu::BlendComponent::OVER,
+                            })
+                        } else if k.blend {
+                            Some(wgpu::BlendState::ALPHA_BLENDING)
+                        } else {
+                            None
+                        },
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: Default::default(),
@@ -639,6 +651,25 @@ impl View {
         }
     }
 
+    /// 窓のアイコン（PNG・ICO の画像ファイル）。読めなければ False
+    fn set_icon(&mut self, path: &str) -> bool {
+        let Some(g) = &self.app.gfx else { return false };
+        match image::open(path) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                match winit::window::Icon::from_rgba(rgba.into_raw(), w, h) {
+                    Ok(icon) => {
+                        g.window.set_window_icon(Some(icon));
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
     /// 全画面（枠なし、今のモニター）にするか、窓に戻す
     fn set_fullscreen(&mut self, on: bool) {
         if let Some(g) = &self.app.gfx {
@@ -808,7 +839,7 @@ impl View {
         self.check_node(node)?;
         let m = Mesh {
             node, verts: vec![], idx: vec![], dirty_v: false, dirty_i: false, vbuf: None, ibuf: None, n_idx: 0, tex: [None, None],
-            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false, cutoff: 0.0,
+            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false, cutoff: 0.0, add: false,
         };
         Ok(if let Some(k) = self.free_meshes.pop() {
             self.meshes[k] = m;
@@ -856,6 +887,13 @@ impl View {
         x.two_sided = two_sided;
         x.depth_offset = depth_offset.clamp(0, 8);
         x.bin = bin;
+        Ok(())
+    }
+
+    /// 足し算で重ねるか（光る物。半透明として後で描く）
+    fn mesh_add(&mut self, m: usize, on: bool) -> PyResult<()> {
+        self.check_mesh(m)?;
+        self.meshes[m].add = on;
         Ok(())
     }
 
@@ -1233,7 +1271,7 @@ impl View {
             }
         }
         // 半透明は後に（描く順 bin で）
-        draw.sort_by_key(|&(k, _, _)| (self.meshes[k].overlay, self.meshes[k].blend, self.meshes[k].bin));
+        draw.sort_by_key(|&(k, _, _)| (self.meshes[k].overlay, self.meshes[k].blend || self.meshes[k].add, self.meshes[k].bin));
         let View { app, meshes, textures, view_proj, clear, capture, .. } = self;
         let g = match app.gfx.as_mut() {
             Some(g) => g,
@@ -1353,7 +1391,7 @@ impl View {
         }
         for &(k, _, _) in &draw {
             let m = &meshes[k];
-            let pk = PipeKey { blend: m.blend, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset, overlay: m.overlay };
+            let pk = PipeKey { blend: m.blend, add: m.add, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset, overlay: m.overlay };
             g.pipe(pk);
         }
         let frame = match g.surface.get_current_texture() {
@@ -1393,7 +1431,7 @@ impl View {
                     (Some(v), Some(i)) => (&v.0, &i.0),
                     _ => continue,
                 };
-                let pk = PipeKey { blend: m.blend, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset, overlay: m.overlay };
+                let pk = PipeKey { blend: m.blend, add: m.add, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset, overlay: m.overlay };
                 rp.set_pipeline(&g.pipes[&pk]);
                 rp.set_bind_group(0, if m.overlay { &g.ui_bg } else { &g.cam_bg }, &[]);
                 rp.set_bind_group(1, mbg, &[(q as u64 * MODEL_STRIDE) as u32]);

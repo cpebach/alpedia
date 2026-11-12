@@ -14,7 +14,6 @@ def window_texture():
     global _window_tex
     if _window_tex is not None:
         return _window_tex
-    from PIL import Image
     rng = np.random.default_rng(7)
     S = 64
     img = np.zeros((S, S, 3), np.float32)
@@ -29,24 +28,9 @@ def window_texture():
             x0, y0 = gx * 16 + 3, gy * 16 + 5
             img[y0:y0 + 8, x0:x0 + 10] = c
 
-    if gfx.active():                  # Rust の画面
-        rgba = np.concatenate([np.clip(img * 255, 0, 255).astype(np.uint8), np.full((S, S, 1), 255, np.uint8)], axis=2)
-        _window_tex = gfx.tex_rgba(S, S, rgba.tobytes(), "windows", nearest=True)
-        return _window_tex
-    from panda3d.core import PNMImage, SamplerState, Texture
-    pnm = PNMImage(S, S)
-    for y in range(S):
-        for x in range(S):
-            r, g, b = img[y, x]
-            pnm.setXel(x, y, float(r), float(g), float(b))
-    t = Texture("windows")
-    t.load(pnm)
-    t.setMagfilter(SamplerState.FT_nearest)
-    t.setMinfilter(SamplerState.FT_linear_mipmap_linear)
-    t.setWrapU(Texture.WM_repeat)
-    t.setWrapV(Texture.WM_repeat)
-    _window_tex = t
-    return t
+    rgba = np.concatenate([np.clip(img * 255, 0, 255).astype(np.uint8), np.full((S, S, 1), 255, np.uint8)], axis=2)
+    _window_tex = gfx.tex_rgba(S, S, rgba.tobytes(), "windows", nearest=True)
+    return _window_tex
 
 
 FRONT_CW = True   # 表面の回り順（描画系の座標の向きに合わせる）
@@ -252,11 +236,7 @@ class CityView:
         M = np.eye(4)
         M[:3, :3] = R.T
         M[3, :3] = c.x - origin
-        if gfx.active():
-            mat = [float(x) for x in M.ravel()]
-        else:
-            from panda3d.core import LMatrix4f
-            mat = LMatrix4f(*[float(x) for x in M.ravel()])
+        mat = [float(x) for x in M.ravel()]
         for m in self._meshes(want):
             m.np.setMat(mat)
 

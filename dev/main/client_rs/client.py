@@ -17,8 +17,10 @@ class Client:
         self.U = ursina_shim.install()
         self.cfg = cfg
         win = cfg.get("window", {})
-        self.view = gfx.start(win.get("width", 1280), win.get("height", 720), "Alpedia（Rust の画面）", win.get("vsync", True))
+        self.view = gfx.start(win.get("width", 1280), win.get("height", 720), "Alpedia", win.get("vsync", True))
         gfx.font(cfg.get("graphics", {}).get("font"))
+        from .. import paths
+        self.view.set_icon(str(paths.SAUCE / "textures" / "alpedia.ico"))
         from ..client import sound
         sound.get(cfg)
         if win.get("fullscreen", False):

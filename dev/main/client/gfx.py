@@ -132,6 +132,7 @@ class RsNode:
         for m in self.meshes:
             VIEW.mesh_props(m, p.get("blend", False), p.get("depth_write", True), p.get("two_sided", True),
                             p.get("depth_offset", 0), p.get("bin", 0))
+            VIEW.mesh_add(m, bool(p.get("add", False)))
             for slot in (0, 1):
                 t = self._tex_eff(slot)
                 VIEW.mesh_tex(m, slot, t.id if t is not None else -1)
@@ -167,6 +168,16 @@ class RsNode:
     def setBin(self, name, n=0, *a):
         self._set(bin=(100 if name == "fixed" else 0) + int(n))
 
+    def setBlendAdd(self, on=True):
+        """足し算で重ねる（光る物）。"""
+        self._set(add=bool(on))
+
+    def setAttrib(self, attr, *a):
+        """Panda3D の ColorBlendAttrib.make(M_add, …) をまねる（足し算で重ねる）。ほかは何もしない。"""
+        args = getattr(attr, "args", None)
+        if args and args[0] == 1:
+            self.setBlendAdd(True)
+
     def setTexture(self, *args):
         if len(args) >= 2 and args[0] is EDGES:
             self.tex[1] = args[1]
@@ -182,7 +193,7 @@ class RsNode:
     def setLightOff(self, *a):
         pass
 
-    setShaderOff = setFinal = setBounds = clearBounds = setColor = setAttrib = setLightOff
+    setShaderOff = setFinal = setBounds = clearBounds = setColor = setLightOff
 
 
 class RsDynamicMesh:

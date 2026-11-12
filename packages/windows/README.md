@@ -14,41 +14,12 @@ Python やライブラリのインストールなしで遊べる版です。
 
 パッケージ版の保存先は `Alpedia/game/saves`、設定は `Alpedia/game/config/settings.json` です。開発版（`alpedia/dev`）の `saves` とは別なので、開発版のセーブには触れません。開発版のワールドで遊びたいときは、`alpedia/dev/saves/<ワールド名>` フォルダを `Alpedia/game/saves/` にコピーします。
 
-## GPU による高速化
+## 画面と物理（Rust）
 
-柔らかい構築物は毎フレーム形が変わります。その頂点の位置（スキニング）、法線、陰影の計算を GPU のシェーダーで行います。CPU は節点の位置（ボクセル数 × 8 点）を送るだけで済みます。
-
-| GPU の対応 | 使う方法 |
-|---|---|
-| OpenGL 4.3 以上（最近の GPU のほとんど） | コンピュートシェーダーで頂点位置を計算し、頂点シェーダーで法線を計算 |
-| OpenGL 3.3 | 頂点シェーダーだけで両方を計算 |
-| それ未満、またはエラーが出たとき | 元の CPU（numba）計算に自動で戻る |
-
-`Alpedia/game/config/settings.json` の `graphics.gpu` で切り替えます。
-
-- `"auto"`：既定。上の表のとおりに自動で選ぶ。
-- `"compute"`
-- `"vertex"`
-- `"off"`
-
-どれが使われたかは `game/logs/latest.log` の `alpedia.gpu` の行に出ます。
-
-- 剛体になって止まっている構築物は形の計算が要らないので、これまでどおり CPU 側で使い回します。
-- 物理計算そのもの（PBD の形合わせ）は CPU（numba、複数スレッド）のままです。構築物ごとの計算が小さく、GPU に送って結果を受け取る往復のほうが遅くなるためです。
-
-シェーダーは `Alpedia/alpedia_gpu/shaders/`（元は `build/overlay/alpedia_gpu/shaders/`）にあります。
-
-- `skin.comp`：コンピュートシェーダー。頂点位置を計算する。
-- `blob.vert`：頂点シェーダー。法線を計算する（GL 3.3 版ではスキニングも行う）。
-- `lit.frag`：陰影。CPU 版の `render.shade` と同じ式。
-
-ゲーム本体（`main/`）のコードは変えていません。起動時に `boot.py` が描画クラスの一部を差し替えます。
-
-## Rust の物理コア
-
-`game/lib/alpedia_core.pyd` があると、物理の重い部分を Rust で計算します（画面左上に「物理:Rust」）。
-開発版の `alpedia\dev\native\build_windows.bat` をダブルクリックすると、作ってここにも入れます（最初に Rust を入れる必要があります。`dev/native/README.md`）。
-無いときは numba で計算します。
+画面は `game/lib/alpedia_view.cp312-win_amd64.pyd`（Rust・wgpu。音も Rust）、物理の重い部分は `game/lib/alpedia_core*.pyd`（Rust）です。
+開発版の `alpedia\dev\native\build_windows.bat` をダブルクリックすると、両方を作ってパッケージ版用（cp312）も作ります
+（最初に Rust を入れる必要があります。`dev/native/README.md`）。画面の pyd が無いとパッケージを作れません。
+物理コアが無いときは numba で計算します。ストーリーのムービーは PyAV（`av`）で読み解きます。
 
 ## パッケージを作り直す（ゲームを更新したとき）
 
@@ -70,7 +41,7 @@ Python やライブラリのインストールなしで遊べる版です。
 
 | 部品 | 中身 |
 |---|---|
-| Python 3.12 | 次の2つのどちらか。どちらを使ったかは `Alpedia/runtime/RUNTIME.txt` に書かれます。<br>・python.org の「埋め込み用 Python」<br>・取れないネット環境では、Panda3D の Windows 用 wheel に入っている `python312.dll` と、`build/runtime_fallback/python312.zip`（標準ライブラリ。`make_stdlib.py` で作成） |
+| Python 3.12 | 次の2つのどちらか。どちらを使ったかは `Alpedia/runtime/RUNTIME.txt` に書かれます。<br>・python.org の「埋め込み用 Python」<br>・取れないネット環境では、Panda3D の Windows 用 wheel（部品を取り出すだけ）に入っている `python312.dll` と、`build/runtime_fallback/python312.zip`（標準ライブラリ。`make_stdlib.py` で作成） |
 | ライブラリ | `build/requirements-windows.txt` の版（動作確認した版に固定）。PyPI から Windows 用の wheel を取って入れます。 |
 | ランチャー | `build/launcher/launcher.c`（C 言語）。`runtime/python312.dll` を読み込んで `boot.py` を実行します。<br>`pip install ziglang` が入っていれば、作り直すたびに zig の C コンパイラで exe も作り直します（なければ同梱の exe を使います）。 |
 

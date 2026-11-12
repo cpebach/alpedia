@@ -5,7 +5,7 @@
 - 右の中ほど：近くにある、触れるもの（操縦席・コンピューター・お店・NPC など）のボタン（近づくと出る）
 - 左下：仮想ジョイスティック（ゲーム設定・一時停止メニューで ON にしたとき）。画面のほかの所をなぞると視点が回る
 
-指（タッチ）は、Windows の複数タッチが使えればそれを、使えなければマウスの左ボタン（1本の指はマウスとして届く）を使う。
+指（タッチ）は画面（Rust）が届ける指の出来事を、指が無ければマウスの左ボタン（1本の指）を使う。
 キーボード・マウスで遊ぶときは、Alt を押している間カーソルが出るので、ボタンをクリックできる。
 """
 import time as _time
@@ -37,67 +37,8 @@ def key_name(k):
 
 
 class Pointers:
-    """いま画面に触れている指（またはマウスの左ボタン）：{番号: (x, y)}（画面の UI 座標）。"""
-
-    def __init__(self, game):
-        self.game = game
-        self.touches = {}
-        self.touch_t = 0.0
-        self.multi = False
-        win = game.U["application"].base.win
-        add = getattr(win, "add_python_event_handler", None) or getattr(win, "addPythonEventHandler", None)
-        if add is not None:
-            try:
-                add(self._on_event, "alpedia_touch")
-                self.multi = True
-            except Exception as e:  # noqa: BLE001
-                L.info("複数タッチは使えません（%s）。1本の指（マウス）で操作します", e)
-        L.info("タッチ：%s", "複数タッチ（Windows）とマウス" if self.multi else "マウス（1本の指）")
-
-    def _on_event(self, data):
-        try:
-            if not data.is_touch_event():
-                return
-            seen = set()
-            for i in range(data.get_num_touches()):
-                t = data.get_touch_info(i)
-                tid = t.get_id()
-                f = t.get_flags()
-                if f & 4:                                   # 指を離した（TIF_up）
-                    self.touches.pop(tid, None)
-                else:
-                    self.touches[tid] = (t.get_x(), t.get_y())
-                    seen.add(tid)
-            self.touch_t = _time.monotonic()
-        except Exception:  # noqa: BLE001
-            L.exception("タッチの処理でエラー")
-
-    def _to_ui(self, px, py):
-        win = self.game.U["application"].base.win
-        w, h = max(win.getXSize(), 1), max(win.getYSize(), 1)
-        return (px - w / 2) / h, -(py - h / 2) / h
-
-    def current(self):
-        if self.touches and _time.monotonic() - self.touch_t < 5.0:
-            return {("t", k): self._to_ui(*v) for k, v in self.touches.items()}
-        self.touches.clear()
-        base = self.game.U["application"].base
-        try:
-            from panda3d.core import MouseButton
-            if base.mouseWatcherNode.is_button_down(MouseButton.one()):
-                return {"m": self.mouse()}
-        except Exception:  # noqa: BLE001
-            pass
-        return {}
-
-    def mouse(self):
-        win = self.game.U["application"].base.win
-        md = win.getPointer(0)
-        return self._to_ui(md.getX(), md.getY())
-
-
-class RsPointers:
-    """Rust の画面の指とマウス：画面（viewer）が feed で指の出来事を渡す。{番号: (x, y)}（画面の UI 座標）。"""
+    """いま画面に触れている指（またはマウスの左ボタン）：{番号: (x, y)}（画面の UI 座標）。
+    画面（viewer）が feed で指の出来事を渡す。"""
 
     def __init__(self, game):
         self.game = game
@@ -218,8 +159,7 @@ class TouchHUD:
         self.game = game
         self.U = U = game.U
         self.root = U["Entity"](parent=game.ui_root)
-        from . import gfx
-        self.ptr = RsPointers(game) if gfx.active() else Pointers(game)
+        self.ptr = Pointers(game)
         c = game.cfg["controls"]
         g = game
 

@@ -40,7 +40,7 @@ def _start_warmup(L):
 
 
 def _rust_view_ok(L):
-    """Rust の画面（lib/alpedia_view）が使えるか。無ければ今までの画面（Panda3D・ursina）で起動する。"""
+    """画面（lib/alpedia_view）が使えるか。"""
     from . import native
     if str(native.LIB) not in sys.path:
         sys.path.insert(0, str(native.LIB))
@@ -48,8 +48,7 @@ def _rust_view_ok(L):
         import alpedia_view  # noqa: F401
         return True
     except ImportError as e:
-        L.warning("Rust の画面（lib/alpedia_view）が使えません（%s）。今までの画面で起動します"
-                  "（native\\build_windows.bat で作れます）", e)
+        L.error("画面（lib/alpedia_view）がありません（%s）。Rust を入れて native\\build_windows.bat で作ってください", e)
         return False
 
 
@@ -60,22 +59,11 @@ def main(args):
     from . import winperf
     winperf.boost(cfg)
     _start_warmup(L)
-    view = getattr(args, "view", "auto") or "auto"
-    if view == "auto":
-        view = "rust" if _rust_view_ok(L) else "panda"
-    if view == "rust" and not args.headless:
-        L.info("Alpedia 起動（Rust の画面）")
-        from .client_rs.client import run_client
-        if args.world:
-            prepare_world(args.world, getattr(args, "new", False))
-        elif not any((d / "world.json").exists() for d in paths.SAVES.iterdir() if d.is_dir()):
-            from .tutorial import SCENARIO_WORLD, create_tutorial
-            create_tutorial(SCENARIO_WORLD)
-        run_client(cfg, args.world)
-        return
     if not args.headless:
+        if not _rust_view_ok(L):
+            raise SystemExit("画面（lib/alpedia_view）がありません。native\\build_windows.bat で作ってください")
         L.info("Alpedia 起動")
-        from .client.menu import run_client
+        from .client_rs.client import run_client
         if args.world:
             prepare_world(args.world, getattr(args, "new", False))
         elif not any((d / "world.json").exists() for d in paths.SAVES.iterdir() if d.is_dir()):

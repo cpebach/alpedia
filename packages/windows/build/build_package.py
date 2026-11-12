@@ -10,12 +10,13 @@ Windows 用の部品はすべてダウンロードして組み立てるので、
 何をしているか
 1. Python 本体（runtime/）
    - python.org の「埋め込み用 Python 3.12」が取れればそれを使う（いちばん素直）
-   - 取れなければ、Panda3D の Windows 用 wheel に入っている python312.dll・拡張モジュールと、
-     このフォルダの runtime_fallback/python312.zip（標準ライブラリ、make_stdlib.py で作ったもの）を組み合わせる
+   - 取れなければ、Panda3D の Windows 用 wheel（部品を取り出すだけ。ゲームでは使わない）に入っている python312.dll・
+     拡張モジュールと、このフォルダの runtime_fallback/python312.zip（標準ライブラリ、make_stdlib.py で作ったもの）を組み合わせる
 2. ライブラリ（runtime/Lib/site-packages/）：requirements-windows.txt の版を Windows 用 wheel で入れる
 3. ゲーム本体（game/）：このフォルダの2つ上（alpedia フォルダ）からコピーする。元のフォルダは一切変更しない
    - game/saves・game/logs・game/config/settings.json・game/mods に後から足したものは、作り直しても消さない
-4. GPU 高速化（alpedia_gpu/）と起動用の boot.py、ランチャー（Alpedia.exe / Alpedia-console.exe）
+4. 起動用の boot.py、ランチャー（Alpedia.exe / Alpedia-console.exe）
+画面は Rust（game/lib/alpedia_view.cp312-win_amd64.pyd。native/build_windows.bat が作る）。
 """
 import argparse
 import io
@@ -37,6 +38,7 @@ OUT = PKG / "Alpedia"
 CACHE = HERE / "cache"
 
 PY_VER = "3.12.10"
+PARTS_WHEEL = "panda3d==1.10.16"        # python312.dll（予備）・MSVCP140.dll を取り出すだけ（ゲームでは使わない）
 PY_TAG = "312"
 EMBED_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-amd64.zip"
 
@@ -76,6 +78,17 @@ def download_wheels():
     return sorted(wh.glob("*.whl"))
 
 
+def download_parts():
+    """Python 本体の部品（python312.dll の予備・C++ ランタイム）を取り出す wheel。"""
+    d = CACHE / "parts"
+    d.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "pip", "download", PARTS_WHEEL, "--no-deps",
+           "--only-binary=:all:", "--platform", "win_amd64", "--python-version", PY_VER.rsplit(".", 1)[0],
+           "--implementation", "cp", "--abi", f"cp{PY_TAG}", "-d", str(d), "--disable-pip-version-check", "-q"]
+    subprocess.run(cmd, check=True)
+    return next(w for w in d.glob("*.whl") if "gltf" not in w.name)
+
+
 # ---------------------------------------------------------------------------
 # Python 本体
 # ---------------------------------------------------------------------------
@@ -86,7 +99,7 @@ import site
 """
 
 
-def build_runtime(rt, wheels):
+def build_runtime(rt, parts):
     if rt.exists():
         _clear(rt)
     rt.mkdir(parents=True, exist_ok=True)
@@ -98,8 +111,7 @@ def build_runtime(rt, wheels):
         how = f"python.org 埋め込み用 Python {PY_VER}"
     except Exception as e:  # noqa: BLE001
         log("python.org から取得できませんでした（予備の組み合わせを使います）:", e)
-    panda = next(w for w in wheels if w.name.startswith("panda3d-") and "gltf" not in w.name)
-    with zipfile.ZipFile(panda) as zf:
+    with zipfile.ZipFile(parts) as zf:
         names = zf.namelist()
         if how is None:
             for n in names:
@@ -109,7 +121,7 @@ def build_runtime(rt, wheels):
             if not fb.exists():
                 sys.exit(f"{fb} がありません（make_stdlib.py を Python 3.12 で実行して作ってください）")
             shutil.copy2(fb, rt / f"python{PY_TAG}.zip")
-            how = "Panda3D 同梱の python312.dll ＋ 予備の標準ライブラリ（runtime_fallback）"
+            how = "部品の wheel の python312.dll ＋ 予備の標準ライブラリ（runtime_fallback）"
         # C++ ランタイム（llvmlite などが使う）
         for n in names:
             if Path(n).name.lower() == "msvcp140.dll" and not (rt / "MSVCP140.dll").exists():
@@ -136,8 +148,6 @@ def install_wheels(site, wheels):
                         parts = parts[2:]
                     else:
                         continue                         # scripts / headers / data は使わない
-                if parts[0] in ("deploy_libs", "panda3d_tools"):
-                    continue                             # Panda3D の配布用ツール（ゲームには不要）
                 if parts[0] in TRIM_TESTS and "tests" in parts[1:-1]:
                     continue                             # ライブラリ自身のテスト
                 dest = site.joinpath(*parts)
@@ -260,16 +270,21 @@ def copy_game(game):
             if not d.exists():
                 d.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(p, d)
-    # Rust の物理コア（native/build_windows.bat で作った lib/alpedia_core*.pyd。無ければ numba で動く）
-    #   同梱の Python 3.12 には python3.dll が無いので、使われるのは alpedia_core.cp312-win_amd64.pyd
-    pyds = sorted((SRC / "lib").glob("alpedia_core*.pyd"))
-    if pyds:
-        (game / "lib").mkdir(exist_ok=True)
-        for pyd in pyds:
-            shutil.copy2(pyd, game / "lib" / pyd.name)
-        log("Rust の物理コアを入れました:", ", ".join(p.name for p in pyds))
-    else:
-        log("Rust の物理コア（lib/alpedia_core.pyd）がありません。numba で計算します（native/build_windows.bat で作れます）")
+    # Rust の物理コアと画面（native/build_windows.bat で作った lib/alpedia_core*.pyd・alpedia_view*.pyd）
+    #   同梱の Python 3.12 には python3.dll が無いので、使われるのは *.cp312-win_amd64.pyd
+    for mod, what, need in (("alpedia_core", "物理コア", False), ("alpedia_view", "画面", True)):
+        pyds = sorted((SRC / "lib").glob(f"{mod}*.pyd"))
+        if need and not any(".cp312-" in p.name for p in pyds):
+            pyds = []                                    # 同梱の Python 3.12 で使える物が無い
+        if pyds:
+            (game / "lib").mkdir(exist_ok=True)
+            for pyd in pyds:
+                shutil.copy2(pyd, game / "lib" / pyd.name)
+            log(f"Rust の{what}を入れました:", ", ".join(p.name for p in pyds))
+        elif need:
+            sys.exit(f"Rust の{what}（lib/{mod}.cp312-win_amd64.pyd）がありません。native/build_windows.bat で作ってください")
+        else:
+            log(f"Rust の{what}（lib/{mod}.pyd）がありません。numba で計算します（native/build_windows.bat で作れます）")
     for d in ("saves", "logs", "config"):
         (game / d).mkdir(exist_ok=True)
     cfg_path = game / "config" / "settings.json"
@@ -279,7 +294,6 @@ def copy_game(game):
             cfg = json.loads((SRC / "config" / "settings.json").read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             pass
-        cfg.setdefault("graphics", {}).setdefault("gpu", "auto")
         cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
     log("ゲーム本体をコピー:", SRC)
 
@@ -289,7 +303,9 @@ def copy_boot(out):
     _retry(shutil.copy2, overlay / "boot.py", out / "boot.py")
     for bat in overlay.glob("*.bat"):                    # LANで公開できるようにする.bat など
         _retry(shutil.copy2, bat, out / bat.name)
-    sync_tree(overlay / "alpedia_gpu", out / "alpedia_gpu")
+    old = out / "alpedia_gpu"                            # 前の版の GPU 高速化（Panda3D 用）は消す
+    if old.exists():
+        shutil.rmtree(old, ignore_errors=True)
     launcher = HERE / "launcher"
     exes = [launcher / "Alpedia.exe", launcher / "Alpedia-console.exe"]
     try:                                                 # ziglang があれば作り直す（なければ同梱の exe を使う）
@@ -336,7 +352,7 @@ def main():
     rt = OUT / "runtime"
     if not args.skip_runtime or not rt.exists():
         wheels = download_wheels()
-        build_runtime(rt, wheels)
+        build_runtime(rt, download_parts())
         install_wheels(rt / "Lib" / "site-packages", wheels)
     copy_game(OUT / "game")
     copy_boot(OUT)

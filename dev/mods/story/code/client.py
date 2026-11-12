@@ -73,8 +73,7 @@ class StoryClient(ClientAddon):
                                 color=color.rgb(1.0, 0.9, 0.5))
         # 修理の場所の光る枠
         self.ghost = DynamicMesh(root, "story_ghost")
-        from panda3d.core import TransparencyAttrib
-        self.ghost.np.setTransparency(TransparencyAttrib.M_alpha)
+        self.ghost.np.setTransparency(True)
         self.ghost.np.setDepthWrite(False)
         self.ghost.np.setBin("transparent", 10)
         self._ghost_n = -1

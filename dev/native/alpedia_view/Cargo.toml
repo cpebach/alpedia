@@ -15,7 +15,7 @@ wgpu = "24"
 winit = "0.30"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico"] }
 fontdue = "0.9"
 rodio = "0.20"
 

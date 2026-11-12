@@ -196,12 +196,8 @@ class CameraMode:
                 d.mkdir(parents=True, exist_ok=True)
                 name = f"{self.game.world.name}_{_time.strftime('%Y%m%d_%H%M%S')}.png"
                 path = d / name
-                if gfx.active():                 # Rust の画面：この1コマを描いたときに保存される
-                    gfx.VIEW.screenshot(str(path))
-                    ok = True
-                else:
-                    from panda3d.core import Filename
-                    ok = self.game.U["application"].base.win.saveScreenshot(Filename.fromOsSpecific(str(path)))
+                gfx.VIEW.screenshot(str(path))   # この後に描く1コマを保存する
+                ok = True
                 if ok:
                     self.game.world.message(f"写真を保存しました：photos/{name}")
                     for a in self.game.addons:
@@ -218,11 +214,7 @@ class CameraMode:
                     self._shooting = False
                     if was:
                         self.show_panel()
-                from . import gfx
-                if gfx.active():
-                    invoke(restore, delay=0.15)      # Rust の画面は、この後に描く1コマを保存する
-                else:
-                    restore()
+                invoke(restore, delay=0.15)          # 保存する1コマを描いてからパネルを戻す
         invoke(shoot, delay=0.12)
 
     def reset(self):

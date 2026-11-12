@@ -1,7 +1,7 @@
 """音：BGM（mods/bgm の曲）と効果音（sauce/sounds/*.wav）。
 
-音量はゲーム設定の audio.bgm・audio.sfx（0〜100 %）。BGM は Panda3D の音楽の系統、効果音とムービーの音は
-効果音の系統で鳴らすので、それぞれの音量がそのまま効く。
+音量はゲーム設定の audio.bgm・audio.sfx（0〜100 %）。BGM は音楽の系統、効果音とムービーの音は
+効果音の系統で鳴らすので（Rust の alpedia_view.Audio）、それぞれの音量がそのまま効く。
 
 BGM の曲は mods/bgm/bgm.json の "tracks"：{曲の ID: {"file": ファイル名, "gain_db": 音量の補正, "title": 題名}}。
 どの場面でどの曲を流すかは、画面側の拡張の bgm()（シナリオなら章ごと）とムービー（set_override）が決める。
@@ -18,18 +18,14 @@ _SYS = None
 
 
 def get(cfg=None):
-    """ゲーム全体で1つの音の係。画面（ursina）を作ったあとで呼ぶ。"""
+    """ゲーム全体で1つの音の係（Rust の alpedia_view.Audio で鳴らす。使えなければ鳴らさない係）。"""
     global _SYS
     if _SYS is None:
-        from . import gfx
-        if gfx.active():                     # Rust の画面：音も Rust（alpedia_view.Audio）で鳴らす
-            try:
-                _SYS = SoundSystem(_RsBase())
-            except Exception:  # noqa: BLE001
-                L.exception("音を鳴らせません")
-                _SYS = _Silent()
-        else:
-            _SYS = SoundSystem()
+        try:
+            _SYS = SoundSystem(_RsBase())
+        except Exception:  # noqa: BLE001
+            L.exception("音を鳴らせません")
+            _SYS = _Silent()
     if cfg is not None:
         _SYS.apply(cfg)
     return _SYS
@@ -86,7 +82,7 @@ class _Silent:
 
 
 # ---------------------------------------------------------------------------
-# Rust の画面の音（Panda3D の AudioSound・loader のまね。SoundSystem はそのまま使う）
+# Rust の音（alpedia_view.Audio）を、SoundSystem が使う形（音・読み込み係・音量の系統）に包む
 # ---------------------------------------------------------------------------
 class _RsSound:
     PLAYING = 2
@@ -171,11 +167,6 @@ class _RsLoader:
         return snd
 
 
-class _RsTasks:
-    def add(self, *a, **k):
-        pass                                 # Rust の画面は毎フレーム update(dt) を呼ぶ
-
-
 class _RsBase:
     """application.base のうち、SoundSystem が使う所のまね。"""
 
@@ -190,14 +181,12 @@ class _RsBase:
         self.loader = _RsLoader(self)
         self.musicManager = _RsVolume(self, "music_vol")
         self.sfxManagerList = [_RsVolume(self, "sfx_vol")]
-        self.taskMgr = _RsTasks()
 
 
 class SoundSystem:
-    def __init__(self, base=None):
-        if base is None:
-            from ursina import application
-            base = application.base
+    """BGM・効果音（音そのものは base：_RsBase が Rust で鳴らす。update(dt) を毎フレーム呼ぶ）。"""
+
+    def __init__(self, base):
         self.base = base
         self.bgm_vol = 0.6
         self.sfx_vol = 0.8
@@ -208,16 +197,9 @@ class SoundSystem:
         self.fading = []           # 消えていく曲
         self.want = None           # 場面が流したい曲 (曲の ID, 始める秒)
         self.override = None       # ムービーの曲（場面の曲より優先）
-        try:
-            self.base.taskMgr.add(self._task, "alpedia-sound")
-        except Exception:  # noqa: BLE001
-            L.exception("音の係を動かせません")
 
     def _fname(self, p):
-        if isinstance(self.base, _RsBase):
-            return str(p)
-        from panda3d.core import Filename
-        return Filename.fromOsSpecific(str(p))
+        return str(p)
 
     # --- 音量 -------------------------------------------------------------
     def apply(self, cfg):
@@ -310,14 +292,6 @@ class SoundSystem:
         snd.play()
         L.info("BGM: %s（%s 秒から）", t[2], start)
         return {"key": key, "snd": snd, "gain": min(1.0, t[1]), "vol": 0.0}
-
-    def _task(self, task):
-        try:
-            from panda3d.core import ClockObject
-            self.update(min(0.1, float(ClockObject.getGlobalClock().getDt())))
-        except Exception:  # noqa: BLE001
-            L.exception("音の更新でエラー")
-        return task.cont
 
     def update(self, dt):
         key = self.override or self.want

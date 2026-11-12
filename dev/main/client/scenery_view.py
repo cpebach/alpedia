@@ -33,26 +33,12 @@ def box_quads(C, A, E):
 TEXTURES = {"rock": ("px_rock.png", 0.5), "metal": ("metal.png", 2.0), "ground": ("ground.png", 2.5)}
 PIXEL = {"rock"}                 # ドット絵：にじませない
 EDGE_RGBA = (0.04, 0.045, 0.06, 0.55)   # 箱のふちの線（ブロックの輪郭の線と同じ考え方）
-_tex_cache = {}
 
 
 def _texture(kind):
     from . import gfx
-    if gfx.active():
-        from .. import paths
-        return gfx.tex(str(paths.SAUCE / "textures" / TEXTURES[kind][0]), kind in PIXEL)
-    if kind not in _tex_cache:
-        from panda3d.core import Filename, SamplerState
-        from ursina import application
-        from .. import paths
-        t = application.base.loader.loadTexture(Filename.fromOsSpecific(str(paths.SAUCE / "textures" / TEXTURES[kind][0])))
-        if kind in PIXEL:
-            t.setMinfilter(SamplerState.FT_nearest_mipmap_nearest)
-            t.setMagfilter(SamplerState.FT_nearest)
-        else:
-            t.setMinfilter(SamplerState.FT_linear_mipmap_linear)
-        _tex_cache[kind] = t
-    return _tex_cache[kind]
+    from .. import paths
+    return gfx.tex(str(paths.SAUCE / "textures" / TEXTURES[kind][0]), kind in PIXEL)
 
 
 def tex_kind(p):
@@ -123,38 +109,40 @@ class SceneView:
         self.edges = self._edges(parent, scene)
 
     def _edges(self, parent, scene):
-        """ふつうの箱（光らない物）のふちに細い線（景色が平らな色の板に見えないように）。"""
-        from . import gfx
-        if gfx.active():
-            return None                    # Rust の画面：線はまだ
-        try:
-            from panda3d.core import LineSegs
-        except Exception:  # noqa: BLE001
-            return None
+        """ふつうの箱（光らない物）のふちに細い線（景色が平らな色の板に見えないように）。
+        線は細い十字の板（辺ごとに2枚）で描く。"""
         P = scene.parts
         idx = [k for k, p in enumerate(P) if p["glow"] is None and p["blink"] is None and p["group"] is None]
         if not idx:
             return None
         idx = np.array(idx)
         C, A, E = scene.C[idx] - scene.center, scene.A[idx], scene.E[idx]
-        ls = LineSegs(f"scenery_edges_{scene.id}")
-        ls.setThickness(1.4)
-        ls.setColor(*EDGE_RGBA)
         signs = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], float)
+        pairs = [(i, j) for i in range(8) for j in range(i + 1, 8) if np.count_nonzero(signs[i] != signs[j]) == 1]
+        quads = []
         for b in range(len(idx)):
             if float(E[b].min()) < 0.04:                 # 細い棒・板は線を付けない（線だらけになる）
                 continue
-            corners = C[b] + (signs * E[b]) @ A[b]          # A の行が箱の軸
-            for i in range(8):
-                for j in range(i + 1, 8):
-                    if np.count_nonzero(signs[i] != signs[j]) == 1:
-                        ls.moveTo(*corners[i].astype(float))
-                        ls.drawTo(*corners[j].astype(float))
-        np_ = parent.attachNewNode(ls.create())
-        np_.setTransparency(True)
-        np_.setLightOff(1)
-        np_.setShaderOff(1)
-        return np_
+            w = float(np.clip(E[b].min() * 0.02, 0.012, 0.04))
+            corners = C[b] + (signs * (E[b] + w * 0.5)) @ A[b]  # A の行が箱の軸（面より少し外に出して、面に埋もれないように）
+            for i, j in pairs:
+                ax = int(np.nonzero(signs[i] != signs[j])[0][0])
+                for o in ((ax + 1) % 3, (ax + 2) % 3):    # 辺に垂直な2つの向きに板
+                    d = A[b][o] * w
+                    p0, p1 = corners[i], corners[j]
+                    quads.append([p0 - d, p1 - d, p1 + d, p0 + d])
+        if not quads:
+            return None
+        Q = np.asarray(quads, np.float32).reshape(-1, 3)
+        v = np.zeros((len(Q), 12), np.float32)
+        v[:, 0:3] = Q
+        v[:, 4] = 1.0
+        v[:, 6:10] = EDGE_RGBA
+        m = DynamicMesh(parent, f"scenery_edges_{scene.id}")
+        m.np.setTransparency(True)
+        m.np.setDepthOffset(1)
+        m.set(v, quad_tris(len(quads)))
+        return m.np
 
     def _colors(self, name, on):
         """色を入れる。光る部品は（static なら いつも、lights なら on のとき）光の色で影なし、ほかは影つき。"""

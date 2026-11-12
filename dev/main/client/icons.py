@@ -204,7 +204,7 @@ def item_image(reg, item, size=96):
 
 
 def item_texture(reg, item, size=96):
-    """ursina のテクスチャ（キャッシュ）。"""
+    """アイテムのアイコンのテクスチャ（キャッシュ）。"""
     key = (item, size)
     t = _tex_cache.get(key)
     if t is None:
@@ -214,25 +214,10 @@ def item_texture(reg, item, size=96):
 
 
 def _to_texture(img):
-    """PIL 画像 → ursina のテクスチャ。ursina の版によって PIL 画像を直接渡せないことがあるので、
-    いったん PNG にして Panda3D のテクスチャを作ってから包む。"""
-    import io
+    """PIL 画像 → 画面（Rust）のテクスチャ。"""
     from . import gfx
-    if gfx.active():                     # Rust の画面
-        im = img.convert("RGBA")
-        return gfx.tex_rgba(im.width, im.height, im.tobytes(), "icon")
-    from panda3d.core import PNMImage, StringStream, SamplerState, Texture as PandaTexture
-    from ursina import Texture
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    pnm = PNMImage()
-    if not pnm.read(StringStream(buf.getvalue()), "icon.png"):
-        return Texture(img)
-    pt = PandaTexture("icon")
-    pt.load(pnm)
-    pt.setMinfilter(SamplerState.FT_linear)
-    pt.setMagfilter(SamplerState.FT_linear)
-    return Texture(pt)
+    im = img.convert("RGBA")
+    return gfx.tex_rgba(im.width, im.height, im.tobytes(), "icon")
 
 
 def item_name(reg, item):
@@ -309,24 +294,10 @@ def decal_atlas():
 
 
 def panda_texture(img, name="tex"):
-    """PIL 画像 → Panda3D のテクスチャ（Rust の画面のときは、その画面のテクスチャ）。"""
+    """PIL 画像 → 画面（Rust）のテクスチャ（名前は昔の名残り）。"""
     from . import gfx
-    if gfx.active():
-        im = img.convert("RGBA")
-        return gfx.tex_rgba(im.width, im.height, im.tobytes(), name)
-    import io
-    from panda3d.core import PNMImage, StringStream, SamplerState, Texture as PandaTexture
-    buf = io.BytesIO()
-    img.save(buf, "PNG")
-    pnm = PNMImage()
-    pnm.read(StringStream(buf.getvalue()), "img.png")
-    t = PandaTexture(name)
-    t.load(pnm)
-    t.setMinfilter(SamplerState.FT_linear_mipmap_linear)
-    t.setMagfilter(SamplerState.FT_linear)
-    t.setWrapU(PandaTexture.WM_clamp)
-    t.setWrapV(PandaTexture.WM_clamp)
-    return t
+    im = img.convert("RGBA")
+    return gfx.tex_rgba(im.width, im.height, im.tobytes(), name)
 
 
 # ---------------------------------------------------------------------------

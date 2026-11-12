@@ -1,10 +1,10 @@
-"""Rust の画面（native/alpedia_view）で遊ぶ（第4段の1：試験版）。
+"""遊ぶ画面（Rust の alpedia_view で描く）：ワールドの描画・操作・HUD・MOD の画面側。
 
-  python run.py --view rust --world 名前
+  python run.py --world 名前
 
-今の版で描く物：構築物（ブロック・遠景の箱・ライト・機器の記号）、地表と掘った跡、惑星、景色の箱（シナリオ・場所の MOD）、空の色。
-操作：WASD で歩く・マウスで見回す（クリックでマウスを閉じ込める、Esc で外す。もう一度 Esc で終わる）・Space でジャンプ・
-F でジェットパック・Ctrl で下・F5 で保存。文字（HUD・看板）・メニュー・道具・MOD の画面側はまだ（窓のタイトルに fps を出す）。
+描く物：構築物（ブロック・遠景の箱・ライト・機器の記号・看板）、地表と掘った跡、惑星、景色の箱、空の色、
+人物（VRM・色の箱）。画面の上の部品（プログラムの画面・MOD の画面・メニューなど）は ursina_shim（ursina の Entity・
+Text・Button などをまねる部品）で動き、一時停止メニュー・インベントリ・機器の設定は ui.py・screens*.py。
 """
 import time
 
@@ -29,7 +29,7 @@ class Viewer:
         from . import ursina_shim
         ursina_shim.install()            # 今までの画面の部品（ursina）を、この画面で動かす
         self.view = gfx.VIEW if gfx.active() else gfx.start(win.get("width", 1280), win.get("height", 720),
-                                                             "Alpedia（Rust の画面）", win.get("vsync", True))
+                                                             "Alpedia", win.get("vsync", True))
         from .. import paths as _paths
         render.STYLE = {"edges": bool(g.get("block_edges", True)), "ao": bool(g.get("block_ao", True))}
         tex_dir = _paths.ROOT / "sauce" / "textures"
@@ -65,6 +65,7 @@ class Viewer:
         self.labels = {}
         self.third_person = False
         self._was_seated = False
+        self.debug_hud = bool(cfg["graphics"].get("debug_hud", False))
         from .ui import UI
         self.ui = UI(self.view)
         from . import ursina_shim
@@ -462,6 +463,12 @@ class Viewer:
             w.save()
         elif k == c.get("third_person", "v"):
             self.third_person = not self.third_person
+        elif k == c.get("toggle_help", "f1"):
+            self.show_help = not getattr(self, "show_help", False)
+        elif k == c.get("debug_hud", "f3"):
+            self.debug_hud = not getattr(self, "debug_hud", False)
+        elif k == "f11":
+            self.view.set_fullscreen(not self.view.fullscreen())
         elif k == c.get("camera_mode", "c"):
             self.game.enter_camera()
         elif k == c.get("export", "f9"):
@@ -574,11 +581,12 @@ class Viewer:
         el = t2 - pf["t"]
         if el >= 1.0:
             f = pf["frames"]
-            txt = (f"Alpedia（Rust の画面）  fps {f / el:.0f}  物理 {pf['phys'] / max(pf['ticks'], 1) * 1000:.1f} ms/回"
+            txt = (f"fps {f / el:.0f}  物理 {pf['phys'] / max(pf['ticks'], 1) * 1000:.1f} ms/回"
                    f"  描画 {pf['rend'] / f * 1000:.1f} ms")
-            self.view.set_title(txt)
-            self.fps_text = txt.split("  ", 1)[1]
-            L.info("重さ: %s（構築物 %d）", txt, len(w.constructs))
+            self.fps_text = txt
+            self._perf_log = getattr(self, "_perf_log", 0) + 1
+            if self._perf_log % 10 == 1:                  # ログは 10 秒ごと
+                L.info("重さ: %s（構築物 %d）", txt, len(w.constructs))
             self.perf = {"frames": 0, "t": t2, "phys": 0.0, "rend": 0.0, "ticks": 0}
 
     def _camera(self, dt, look, up):
@@ -778,8 +786,12 @@ class Viewer:
             lines.append(f"マルチプレイ参加中（ホスト {net.host_name}）  {1 + len(net.others)} 人")
         elif net is not None:
             lines.append(f"LAN に公開中 {'  '.join(net.addresses()[:1])}  {1 + len(w.remote)} 人")
-        if getattr(self, "fps_text", ""):
+        if getattr(self, "fps_text", "") and getattr(self, "debug_hud", False):     # F3：処理の重さ
             lines.append(self.fps_text)
+        if getattr(self, "show_help", False):                                      # F1：操作の説明
+            from ..client.game import HELP
+            lines.append(HELP.rstrip())
+            lines += [a.help_text for a in self.addons if getattr(a, "help_text", "")]
         if self._touch_mode():
             pass                                    # タッチ操作：画面のボタンとジョイスティック
         elif not self.grabbed and not self.ui.stack:

@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
-rem Alpedia の物理コア（Rust）を Windows 用にビルドして lib に置く。
-rem   元のフォルダ用 ：lib\alpedia_core.pyd（この PC の Python 3.10 以上で使える形）
-rem   パッケージ版用 ：packages\windows\Alpedia\game\lib\alpedia_core.cp312-win_amd64.pyd（同梱の Python 3.12 用）
+rem Alpedia の物理コアと画面（Rust）を Windows 用にビルドして lib に置く。
+rem   元のフォルダ用 ：lib\alpedia_core.pyd・alpedia_view.pyd（この PC の Python 3.10 以上で使える形）
+rem   パッケージ版用 ：packages\windows\Alpedia\game\lib\alpedia_core・alpedia_view.cp312-win_amd64.pyd（同梱の Python 3.12 用）
 rem ビルドの途中のファイルは %LOCALAPPDATA%\alpedia_build に置く（OneDrive で同期されないように）。
 rem 記録は native\build_log.txt に残る。
 setlocal EnableExtensions
@@ -51,15 +51,15 @@ if errorlevel 1 goto fail
 copy /Y "%WORK%\abi3\release\alpedia_core.dll" "%ROOT%\lib\alpedia_core.pyd" >nul
 if errorlevel 1 goto fail
 echo     できました: lib\alpedia_core.pyd
-rem Rust の画面（試験版。python run.py --view rust）
+rem 画面（Rust。ゲームを動かすのに必要）
 echo ==== abi3 view ==== >> "%LOG%"
 pushd "%HERE%alpedia_view"
 cargo +%TC% build --release --features abi3 --target-dir "%WORK%\abi3_view" >> "%LOG%" 2>&1
 set "VERR=%errorlevel%"
 popd
 if "%VERR%"=="0" copy /Y "%WORK%\abi3_view\release\alpedia_view.dll" "%ROOT%\lib\alpedia_view.pyd" >nul
-if "%VERR%"=="0" echo     できました: lib\alpedia_view.pyd（Rust の画面の試験版）
-if not "%VERR%"=="0" echo     Rust の画面（試験版）は作れませんでした（くわしくは native\build_log.txt）。ゲームは今までどおり動きます
+if "%VERR%"=="0" echo     できました: lib\alpedia_view.pyd（画面）
+if not "%VERR%"=="0" goto fail
 set BUILT=1
 goto after_abi3
 :skip_abi3
@@ -91,6 +91,15 @@ if not exist "%GL%" mkdir "%GL%"
 copy /Y "%WORK%\cp312\release\alpedia_core.dll" "%GL%\alpedia_core.cp312-win_amd64.pyd" >nul
 copy /Y "%WORK%\cp312\release\alpedia_core.dll" "%ROOT%\lib\alpedia_core.cp312-win_amd64.pyd" >nul
 echo     できました: packages\windows\Alpedia\game\lib\alpedia_core.cp312-win_amd64.pyd
+echo ==== cp312 view ==== >> "%LOG%"
+pushd "%HERE%alpedia_view"
+cargo +%TC% build --release --target-dir "%WORK%\cp312_view" >> "%LOG%" 2>&1
+set "VERR=%errorlevel%"
+popd
+if not "%VERR%"=="0" goto fail
+copy /Y "%WORK%\cp312_view\release\alpedia_view.dll" "%GL%\alpedia_view.cp312-win_amd64.pyd" >nul
+copy /Y "%WORK%\cp312_view\release\alpedia_view.dll" "%ROOT%\lib\alpedia_view.cp312-win_amd64.pyd" >nul
+echo     できました: packages\windows\Alpedia\game\lib\alpedia_view.cp312-win_amd64.pyd
 set BUILT=1
 goto done
 :skip_312
@@ -99,7 +108,7 @@ echo [3/3] パッケージ版が見つからないので、パッケージ版用
 :done
 if "%BUILT%"=="0" goto fail
 echo.
-echo 完了しました。ゲームを起動すると、画面左上に「物理:Rust」と出ます。
+echo 完了しました。start.bat（または python run.py）でゲームを起動できます。
 echo 完了 >> "%LOG%"
 pause
 exit /b 0

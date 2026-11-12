@@ -1,9 +1,9 @@
 """画面側：選んだプレイヤーの定義の "model" が .vrm なら、その体をこの MOD が描く。"""
 from main import log
-from main.client import gfx, render
+from main.client import render
 from main.client.addon_hooks import ClientAddon
 
-from .view import RsVRMModel, VRMBody, VRMModel
+from .view import VRMBody, VRMModel
 from .vrm import VRM
 
 L = log.get("skinmodel")
@@ -26,7 +26,7 @@ class SkinClient(ClientAddon):
             L.info("VRM を読み込み: %s（%s、作者 %s、骨 %d、頂点 %d）", d["id"], m.get("title") or m.get("name") or "?",
                    m.get("author") or ", ".join(m.get("authors", []) or []) or "?",
                    len(v.joint_node), sum(len(x.pos) for x in v.meshes))
-            self.models[model] = (RsVRMModel if gfx.active() else VRMModel)(d, v, render.SUN)
+            self.models[model] = VRMModel(d, v, render.SUN)
 
     def player_body(self, player):
         """player の見た目が VRM なら、その体を作る（違えば None：コアが描く）。"""

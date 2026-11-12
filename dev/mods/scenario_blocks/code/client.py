@@ -45,13 +45,11 @@ class WeaponsClient(ClientAddon):
     def __init__(self, game):
         super().__init__(game)
         self.pack = game.world.addon("weapons")
-        from panda3d.core import ColorBlendAttrib, TransparencyAttrib
         root = game.scene_root
         self.solid = DynamicMesh(root, "weapons_solid")
         self.glow = DynamicMesh(root, "weapons_glow")
-        self.glow.np.setTransparency(TransparencyAttrib.M_alpha)
-        self.glow.np.setAttrib(ColorBlendAttrib.make(ColorBlendAttrib.M_add, ColorBlendAttrib.O_incoming_alpha,
-                                                     ColorBlendAttrib.O_one))
+        self.glow.np.setTransparency(True)
+        self.glow.np.setBlendAdd(True)                  # 光：足し算で重ねる
         self.glow.np.setDepthWrite(False)
         self.glow.np.setBin("fixed", 20)
         self._n = (-1, -1)
