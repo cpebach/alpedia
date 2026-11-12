@@ -35,9 +35,7 @@ DEFAULTS = {
                 # merge_settle_acc m/s² までにする。給油車などをつないだ瞬間に吹き飛ばないように）
                 "merge_settle_time": 1.0, "merge_settle_acc": 30.0,
                 # 構築物ごとの計算に使うスレッド数（0 = 自動）
-                "threads": 0,
-                # 物理コア："auto"（Rust の alpedia_core があれば使う）/ "rust"（必須）/ "python"（numba）
-                "backend": "auto"},
+                "threads": 0},
     "game": {"default_world": "scenario", "language": "ja",
              # スクリプトを開くエディタのコマンド（空なら自動：VS Code があればそれ、無ければメモ帳）。例 "notepad++.exe"
              "editor": ""},

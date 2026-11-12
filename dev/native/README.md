@@ -1,8 +1,7 @@
 # Rust の物理コア（alpedia_core）
 
 物理の重い部分を Rust で書いたものです。Python からは `alpedia_core` というモジュールとして使います。
-ビルドしたファイルを `lib/` に置くと、ゲームが自動で使います（画面左上に「物理:Rust」と出ます）。
-無いときは、今までどおり Python（numba）で計算します。
+ビルドしたファイルを `lib/` に置くと、ゲームが使います（無いとゲームは起動しません。前の版の numba はもう使いません）。
 
 ## Rust にしたもの
 
@@ -15,19 +14,14 @@
 | 描画用の頂点（ブロックごとに動いている構築物の形・法線・陰影・噴射の色をまとめて） | `mesh.rs`, `lib.rs`（`mesh_pack`） | `main/client/render.py` の `_update_blob` |
 | 構築物どうし（と、結合していないボクセルどうし）の押し出し | `contacts.rs`, `pairs.rs`, `lib.rs`（`Proxy`・`contacts`） | `main/world.py` の `_voxel_collisions` |
 | 完全剛体モードの関節つき剛体の1サブステップ（押し出し・関節・地面と MOD の箱の接触） | `artstep.rs`, `lib.rs`（`ArtTopo`） | `main/construct.py` の `_art_begin` / `_art_end` |
-| ボクセルごとの形合わせ・結合 | `kernels.rs` | `main/fastphys.py` |
+| ボクセルごとの形合わせ・結合 | `kernels.rs` | `main/fastphys.py`（前の版の numba） |
 | 当たり判定の芯・描画用の頂点と法線 | `kernels.rs` | `main/fastphys.py` |
 | 向き付きの箱との距離 | `kernels.rs` | `main/geom.py` |
 | 完全剛体モードの関節つき剛体 | `art.rs` | `main/fastphys.py` |
 | 惑星の地形（距離場・タイル・池・洞窟・掘削跡）と地面との接触 | `planet.rs`, `lib.rs` | `main/planet.py`, `main/terrain_earth.py`, `main/construct.py` |
 | 重力・構築物どうしの近い点の組 | `lib.rs` | `main/world.py`（scipy の cKDTree） |
 
-Python 側の入り口は `main/fastphys.py`（関数ごとに Rust と numba を選ぶ）、`main/planet.py`（`_nat()`）、
-`main/native.py`（読み込み）です。`config/settings.json` の `physics.backend` で選べます。
-
-- `"auto"`：既定。Rust があれば使う。
-- `"rust"`：Rust が無ければエラーにする。
-- `"python"`：Rust を使わない（比べるとき用）。
+Python 側の入り口は `main/fastphys.py`（形合わせなどの関数）、`main/planet.py`（`_nat()`）、`main/native.py`（読み込み）です。
 
 環境変数 `ALPEDIA_BACKEND=python` でも切り替えられます。
 

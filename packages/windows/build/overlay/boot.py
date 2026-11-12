@@ -34,8 +34,6 @@ def main():
     sys.path.insert(0, str(GAME))
     sys.path.insert(0, str(ROOT))
     os.chdir(GAME)
-    # numba のコンパイル結果はこのフォルダに保存（2回目以降の起動が速くなる）
-    os.environ.setdefault("NUMBA_CACHE_DIR", str(ROOT / "cache" / "numba"))
     import runpy
     sys.argv = [str(GAME / "run.py")] + sys.argv[1:]
     runpy.run_path(str(GAME / "run.py"), run_name="__main__")

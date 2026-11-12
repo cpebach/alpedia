@@ -24,19 +24,11 @@ def prepare_world(name, new=False):
     return World
 
 
-def _start_warmup(L):
-    """物理演算の高速化（numba）のコンパイルを裏で始めておく（初回だけ数十秒かかる。2回目からは保存済みを使う）。"""
-    import threading
-    from . import fastphys
-
-    def run():
-        t = time.time()
-        try:
-            fastphys.warmup()
-            L.info("物理演算の高速化を準備しました（%.1f 秒）", time.time() - t)
-        except Exception:  # noqa: BLE001
-            L.exception("物理演算の高速化の準備に失敗しました")
-    threading.Thread(target=run, daemon=True, name="numba-warmup").start()
+def _check_core():
+    """物理コア（lib/alpedia_core）があるか。無ければ作り方を出して終わる。"""
+    from . import native
+    if native.load() is None:
+        raise SystemExit(native.reason)
 
 
 def _rust_view_ok(L):
@@ -58,7 +50,7 @@ def main(args):
     L = log.setup(cfg.get("log_level", "INFO"))
     from . import winperf
     winperf.boost(cfg)
-    _start_warmup(L)
+    _check_core()
     if not args.headless:
         if not _rust_view_ok(L):
             raise SystemExit("画面（lib/alpedia_view）がありません。native\\build_windows.bat で作ってください")

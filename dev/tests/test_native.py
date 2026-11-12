@@ -1,5 +1,5 @@
-"""Rust の物理コア（alpedia_core）と Python（numba / numpy）版が同じ結果を出すかのテスト。
-Rust の物理コアが無いときは飛ばす。"""
+"""Rust の物理コア（alpedia_core）のテスト：計算の性質（動かない物は動かさない・式どおり）と、
+Python（numpy）で書ける所は同じ結果を出すか。"""
 import sys
 import unittest
 from pathlib import Path
@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from main import fastphys, native  # noqa: E402
+from main import native  # noqa: E402
 
 core = native.core
 TOL = 1e-9
@@ -17,49 +17,61 @@ def rnd(*shape, seed=0):
     return np.random.default_rng(seed).normal(size=shape)
 
 
+def rot(rng):
+    q = np.linalg.qr(rng.normal(size=(3, 3)))[0]
+    return q if np.linalg.det(q) > 0 else -q
+
+
 @unittest.skipIf(core is None, "Rust の物理コアがありません")
 class TestKernels(unittest.TestCase):
-    def test_shape_match(self):
-        n = 300
+    def test_shape_match_keeps_rigid_shape(self):
+        """形が回って動いただけ（伸び縮みなし）なら、形合わせは位置を変えず、その回転を返す。"""
+        n = 200
         rng = np.random.default_rng(1)
         rest = (np.array([[x, y, z] for x in (0, 1) for y in (0, 1) for z in (0, 1)], float) - 0.5)[None].repeat(n, 0)
-        rest = np.ascontiguousarray(rest + rng.normal(0, 0.02, rest.shape))
-        pos = (rest * 1.1 + rng.normal(0, 0.05, rest.shape)).reshape(-1, 3) + np.repeat(rng.normal(0, 5, (n, 3)), 8, 0)
-        sc = 1 + rng.random((n, 3)) * 0.2
-        st = rng.random(n)
-        vox = np.arange(0, n, 2, dtype=np.int64)
+        rest = np.ascontiguousarray(rest)
+        Rs = np.stack([rot(rng) for _ in range(n)])
+        pos = (np.einsum("nij,nkj->nki", Rs, rest) + rng.normal(0, 5, (n, 1, 3))).reshape(-1, 3)
+        sc, st = np.ones((n, 3)), np.ones(n)
+        vox = np.arange(n, dtype=np.int64)
         for par in (False, True):
-            p1, p2 = pos.copy(), pos.copy()
-            r1, r2 = np.zeros((n, 3, 3)), np.zeros((n, 3, 3))
-            q1 = np.zeros((n, 4)); q1[:, 0] = 1; q2 = q1.copy()
-            (fastphys._nb_shape_match_par if par else fastphys._nb_shape_match)(p1, rest, sc, st, vox, r1, q1)
-            core.shape_match(p2, rest, sc, st, vox, r2, q2, par)
-            self.assertLess(np.abs(p1 - p2).max(), TOL)
-            self.assertLess(np.abs(r1 - r2).max(), TOL)
-            self.assertLess(np.abs(q1 - q2).max(), TOL)
+            p = pos.copy()
+            r = np.zeros((n, 3, 3))
+            q = np.zeros((n, 4)); q[:, 0] = 1
+            core.shape_match(p, rest, sc, st, vox, r, q, par)
+            self.assertLess(np.abs(p - pos).max(), 1e-7)
+            self.assertLess(np.abs(r - Rs).max(), 1e-6)
 
-    def test_joints_cores_skin_normals(self):
+    def test_joints_keep_satisfied_lengths(self):
         rng = np.random.default_rng(2)
-        nv = 800
+        nv = 400
         pos = rng.normal(size=(nv, 3))
-        ja, jb = rng.integers(0, nv, 500), rng.integers(0, nv, 500)
-        jr, jk, im = rng.random(500), rng.random(500), rng.random(nv) + 0.5
-        jc = rng.integers(1, 5, nv).astype(float)
-        p1, p2 = pos.copy(), pos.copy()
-        fastphys._nb_solve_joints(p1, ja, jb, jr, jk, im, jc)
-        core.solve_joints(p2, ja, jb, jr, jk, im, jc)
-        self.assertLess(np.abs(p1 - p2).max(), TOL)
-        ct = rng.integers(-1, 3, nv)
-        ci = rng.integers(0, nv // 8, (nv, 3))
-        k1, k2 = fastphys._nb_contact_cores(pos, ct, ci), core.contact_cores(pos, ct, ci)
-        self.assertTrue(np.array_equal(np.isnan(k1), np.isnan(k2)))
-        self.assertLess(np.nanmax(np.abs(k1 - k2)), 1e-9)
-        vi = rng.integers(0, nv, (200, 8))
+        ja, jb = rng.integers(0, nv, 300), rng.integers(0, nv, 300)
+        jr = np.linalg.norm(pos[ja] - pos[jb], axis=1)
+        p = pos.copy()
+        core.solve_joints(p, ja, jb, jr, np.ones(300), np.ones(nv), np.ones(nv))
+        self.assertLess(np.abs(p - pos).max(), 1e-9)
+        jr2 = jr * 0.5                                   # 縮めたい長さ：近づく
+        p = pos.copy()
+        core.solve_joints(p, ja, jb, jr2, np.ones(300), np.ones(nv), np.ones(nv))
+        self.assertLess(np.linalg.norm(p[ja] - p[jb], axis=1).mean(), jr.mean())
+
+    def test_skin_normals_write(self):
+        rng = np.random.default_rng(3)
+        pos = rng.normal(size=(500, 3))
+        vi = rng.integers(0, 500, (200, 8))
         w = rng.random((200, 8))
-        s1, s2 = fastphys._nb_skin(pos, vi, w), core.skin(pos, vi, w)
-        self.assertLess(np.abs(s1 - s2).max(), TOL)
-        faces = rng.integers(0, 200, (300, 3))
-        self.assertLess(np.abs(fastphys._nb_vertex_normals(s1, faces) - core.vertex_normals(s1, faces)).max(), 1e-9)
+        s = core.skin(pos, vi, w)
+        self.assertLess(np.abs(s - np.einsum("vk,vkj->vj", w, pos[vi])).max(), TOL)
+        tri = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0]])
+        n = core.vertex_normals(tri, np.array([[0, 1, 2]]))
+        self.assertLess(np.abs(np.abs(n[:, 2]) - 1).max(), 1e-9)
+        X = rng.normal(size=(4, 3))
+        R = np.stack([rot(rng) for _ in range(4)])
+        gv, vg, vl = np.arange(30), rng.integers(0, 4, 30), rng.normal(size=(30, 3))
+        p = np.zeros((30, 3))
+        core.art_write(p, X, R, gv, vg, vl)
+        self.assertLess(np.abs(p - (X[vg] + np.einsum("nij,nj->ni", R[vg], vl))).max(), 1e-9)
 
     def test_box_sdf(self):
         from main import geom
@@ -74,15 +86,12 @@ class TestKernels(unittest.TestCase):
         self.assertLess(np.abs(n1 - n2).max(), 1e-9)
         self.assertTrue(np.array_equal(k1, k2))
 
-    def test_art(self):
+    def test_art_runs(self):
+        """関節つき剛体の解き方（回転だけ・ヒンジあり）が、値を壊さずに動く。"""
         rng = np.random.default_rng(4)
         G, NR, NC = 4, 3, 20
-        def state():
-            X = rng.normal(size=(G, 3))
-            R = np.stack([np.linalg.qr(rng.normal(size=(3, 3)))[0] for _ in range(G)])
-            R[np.linalg.det(R) < 0] *= -1
-            return X, R
-        X, R = state()
+        X = rng.normal(size=(G, 3))
+        R = np.stack([rot(rng) for _ in range(G)])
         invM = rng.random(G) + 0.5
         IB = np.stack([np.diag(rng.random(3) + 0.5) for _ in range(G)])
         ra, rb = np.array([0, 1, 2]), np.array([1, 2, 3])
@@ -92,38 +101,18 @@ class TestKernels(unittest.TestCase):
         cl, cn = rng.normal(size=(NC, 3)), rng.normal(size=(NC, 3))
         cn /= np.linalg.norm(cn, axis=1, keepdims=True)
         cd, cp, cprev, cvs, cmu = rng.random(NC) * 0.1, rng.normal(size=(NC, 3)), rng.normal(size=(NC, 3)), rng.normal(size=(NC, 3)), rng.random(NC)
-        a = [X.copy(), R.copy(), np.zeros(NC)]
-        b = [X.copy(), R.copy(), np.zeros(NC)]
-        for HK in (np.full((NR, 2), -1, np.int64), np.array([[0, 1], [-1, -1], [2, 3]], np.int64)):   # 回転だけ・ヒンジあり
-            a = [X.copy(), R.copy(), np.zeros(NC)]
-            b = [X.copy(), R.copy(), np.zeros(NC)]
-            fastphys._nb_art_solve(a[0], a[1], invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6,
-                                   a[2], HK)
-            core.art_solve(b[0], b[1], invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6, b[2],
-                           HK if (HK >= 0).any() else None)
-            for u, v in zip(a, b):
-                self.assertLess(np.abs(u - v).max(), 1e-7)
+        for HK in (None, np.array([[0, 1], [-1, -1], [2, 3]], np.int64)):     # 回転だけ・ヒンジあり
+            x, r, lam = X.copy(), R.copy(), np.zeros(NC)
+            core.art_solve(x, r, invM, IB, ra, rb, LA, LB, LC, ang, cap, cg, cl, cn, cd, cp, cprev, cvs, cmu, 0.005, 6, lam, HK)
+            self.assertTrue(np.isfinite(x).all() and np.isfinite(r).all() and (lam >= 0).all())
+            self.assertLess(np.abs(np.einsum("nij,nkj->nik", r, r) - np.eye(3)).max(), 1e-6)    # 回転のまま
         V, W = rng.normal(size=(G, 3)), rng.normal(size=(G, 3))
-        lam = np.abs(rng.normal(size=NC))
-        v1, w1, v2, w2 = V.copy(), W.copy(), V.copy(), W.copy()
-        fastphys._nb_art_contact_vel(v1, w1, X, R, invM, IB, cg, cl, cn, lam, 3)
-        core.art_contact_vel(v2, w2, R, invM, IB, cg, cl, cn, lam, 3)
-        self.assertLess(max(np.abs(v1 - v2).max(), np.abs(w1 - w2).max()), 1e-9)
-        gv = np.arange(30)
-        vg = rng.integers(0, G, 30)
-        vl = rng.normal(size=(30, 3))
-        p1, p2 = np.zeros((30, 3)), np.zeros((30, 3))
-        fastphys._nb_art_write(p1, X, R, gv, vg, vl)
-        core.art_write(p2, X, R, gv, vg, vl)
-        self.assertLess(np.abs(p1 - p2).max(), 1e-12)
+        core.art_contact_vel(V, W, R, invM, IB, cg, cl, cn, np.abs(rng.normal(size=NC)), 3)
+        self.assertTrue(np.isfinite(V).all() and np.isfinite(W).all())
 
     def test_bad_arrays_are_rejected(self):
         with self.assertRaises(ValueError):
             core.solve_joints(np.zeros((4, 3)), np.array([0, 9]), np.array([1, 2]), np.zeros(2), np.zeros(2), np.ones(4), np.ones(4))
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 @unittest.skipIf(core is None, "Rust の物理コアがありません")
@@ -204,10 +193,10 @@ class TestPairs(unittest.TestCase):
             res = {}
             for mode in ("python", "rust"):
                 saved = native.core
-                if mode == "python":
-                    native.core = None
                 try:
                     w = World("t", json.loads(json.dumps(config.DEFAULTS)), addons=[]).load()
+                    if mode == "python":                 # 地面との接触だけ Python（numpy）で
+                        native.core = None
                     pl = w.planets[0]
                     up = np.array([0, 1.0, 0])
                     g = pl.center + up * float(pl.surface_radius(up[None])[0])
@@ -542,7 +531,7 @@ class TestMesh(unittest.TestCase):
         for fr in (None, firing):
             outs = core.mesh_pack(pos, vidx, w, faces, list(origin), groups, list(sun), amb, fr)
             V = np.einsum("mk,mkj->mj", w, pos[vidx]) - origin
-            N = fastphys._nb_vertex_normals(V, faces) if hasattr(fastphys, "_nb_vertex_normals") else core.vertex_normals(V, faces)
+            N = core.vertex_normals(V, faces)
             for (vs, cols, uv, owner), o in zip(groups, outs):
                 n = N[vs]
                 k = amb + (1 - amb) * np.clip(n @ sun, 0, 1)
@@ -553,3 +542,7 @@ class TestMesh(unittest.TestCase):
                 ref = np.concatenate([V[vs], n, col, np.ones((len(vs), 1)), uv], axis=1).astype(np.float32)
                 self.assertEqual(o.dtype, np.float32)
                 self.assertLess(np.abs(o - ref).max(), 1e-5)
+
+
+if __name__ == "__main__":
+    unittest.main()

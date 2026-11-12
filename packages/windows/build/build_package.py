@@ -45,7 +45,7 @@ EMBED_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-a
 GAME_ITEMS = ["main", "sauce", "run.py", "README.md"]          # 毎回入れ替える
 GAME_KEEP = ["mods"]                                           # 足りないものだけ足す（本体の MOD は入れ替える）
 SKIP_NAMES = {"__pycache__", ".trash", ".git"}
-TRIM_TESTS = ("numpy", "scipy", "skimage", "numba", "llvmlite", "networkx", "PIL", "imageio", "tifffile")
+TRIM_TESTS = ("numpy", "scipy", "skimage", "networkx", "PIL", "imageio", "tifffile", "av")
 
 
 def log(*a):
@@ -122,7 +122,7 @@ def build_runtime(rt, parts):
                 sys.exit(f"{fb} がありません（make_stdlib.py を Python 3.12 で実行して作ってください）")
             shutil.copy2(fb, rt / f"python{PY_TAG}.zip")
             how = "部品の wheel の python312.dll ＋ 予備の標準ライブラリ（runtime_fallback）"
-        # C++ ランタイム（llvmlite などが使う）
+        # C++ ランタイム（ライブラリが使う）
         for n in names:
             if Path(n).name.lower() == "msvcp140.dll" and not (rt / "MSVCP140.dll").exists():
                 (rt / "MSVCP140.dll").write_bytes(zf.read(n))
@@ -270,21 +270,19 @@ def copy_game(game):
             if not d.exists():
                 d.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(p, d)
-    # Rust の物理コアと画面（native/build_windows.bat で作った lib/alpedia_core*.pyd・alpedia_view*.pyd）
+    # Rust の物理コアと画面（native/build_windows.bat で作った lib/alpedia_core*.pyd・alpedia_view*.pyd。どちらも必要）
     #   同梱の Python 3.12 には python3.dll が無いので、使われるのは *.cp312-win_amd64.pyd
-    for mod, what, need in (("alpedia_core", "物理コア", False), ("alpedia_view", "画面", True)):
+    for mod, what in (("alpedia_core", "物理コア"), ("alpedia_view", "画面")):
         pyds = sorted((SRC / "lib").glob(f"{mod}*.pyd"))
-        if need and not any(".cp312-" in p.name for p in pyds):
+        if not any(".cp312-" in p.name for p in pyds):
             pyds = []                                    # 同梱の Python 3.12 で使える物が無い
         if pyds:
             (game / "lib").mkdir(exist_ok=True)
             for pyd in pyds:
                 shutil.copy2(pyd, game / "lib" / pyd.name)
             log(f"Rust の{what}を入れました:", ", ".join(p.name for p in pyds))
-        elif need:
-            sys.exit(f"Rust の{what}（lib/{mod}.cp312-win_amd64.pyd）がありません。native/build_windows.bat で作ってください")
         else:
-            log(f"Rust の{what}（lib/{mod}.pyd）がありません。numba で計算します（native/build_windows.bat で作れます）")
+            sys.exit(f"Rust の{what}（lib/{mod}.cp312-win_amd64.pyd）がありません。native/build_windows.bat で作ってください")
     for d in ("saves", "logs", "config"):
         (game / d).mkdir(exist_ok=True)
     cfg_path = game / "config" / "settings.json"

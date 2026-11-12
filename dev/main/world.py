@@ -154,7 +154,7 @@ class World:
         self._timers = {"rebond": 0.0, "cleanup": 0.0}
         phys = cfg.get("physics", {})
         from . import native
-        native.ensure(phys.get("backend", "auto"))
+        native.require()
         self.substeps = int(phys.get("substeps", 3))
         self.iters = int(phys.get("iterations", 2))
 
@@ -710,7 +710,7 @@ class World:
         return out
 
     def _each(self, cons, fn):
-        """構築物ごとの計算を、複数の CPU コアで同時に進める（numba の計算は GIL を離すので並列に動く）。
+        """構築物ごとの計算を、複数の CPU コアで同時に進める（Rust の計算は GIL を離すので並列に動く）。
         大きな構築物はそれ自体をボクセルごとに並列化するので、先にメインスレッドで1つずつ進める。"""
         from . import fastphys
         workers = self._workers()

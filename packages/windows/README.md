@@ -7,7 +7,6 @@ Python やライブラリのインストールなしで遊べる版です。
 `Alpedia` フォルダの **`Alpedia.exe` をダブルクリック**します。
 
 - `Alpedia-console.exe` は、ログを画面に出しながら起動する調査用です。
-- 初めての起動では、物理計算（numba）の機械語への変換に数十秒かかることがあります。2 回目からは `Alpedia/cache` に保存されたものを使うので速くなります。
 - ほかの PC に配るときは、`Alpedia` フォルダを丸ごと渡すか、`dist/Alpedia-win64.zip` を渡します（展開してから `Alpedia.exe` を起動）。
 
 ### セーブと設定
@@ -18,8 +17,8 @@ Python やライブラリのインストールなしで遊べる版です。
 
 画面は `game/lib/alpedia_view.cp312-win_amd64.pyd`（Rust・wgpu。音も Rust）、物理の重い部分は `game/lib/alpedia_core*.pyd`（Rust）です。
 開発版の `alpedia\dev\native\build_windows.bat` をダブルクリックすると、両方を作ってパッケージ版用（cp312）も作ります
-（最初に Rust を入れる必要があります。`dev/native/README.md`）。画面の pyd が無いとパッケージを作れません。
-物理コアが無いときは numba で計算します。ストーリーのムービーは PyAV（`av`）で読み解きます。
+（最初に Rust を入れる必要があります。`dev/native/README.md`）。
+どちらも無いとパッケージを作れません。ストーリーのムービーは PyAV（`av`）で読み解きます。
 
 ## パッケージを作り直す（ゲームを更新したとき）
 
