@@ -47,10 +47,13 @@ def main(args):
     _start_warmup(L)
     if getattr(args, "view", "panda") == "rust" and not args.headless:
         L.info("Alpedia 起動（Rust の画面）")
-        from .client_rs.viewer import run
-        name = args.world or cfg["game"].get("default_world", "scenario")
-        prepare_world(name, getattr(args, "new", False))
-        run(cfg, name)
+        from .client_rs.client import run_client
+        if args.world:
+            prepare_world(args.world, getattr(args, "new", False))
+        elif not any((d / "world.json").exists() for d in paths.SAVES.iterdir() if d.is_dir()):
+            from .tutorial import SCENARIO_WORLD, create_tutorial
+            create_tutorial(SCENARIO_WORLD)
+        run_client(cfg, args.world)
         return
     if not args.headless:
         L.info("Alpedia 起動")

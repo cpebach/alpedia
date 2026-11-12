@@ -28,7 +28,8 @@ class Viewer:
         win = cfg.get("window", {})
         from . import ursina_shim
         ursina_shim.install()            # 今までの画面の部品（ursina）を、この画面で動かす
-        self.view = gfx.start(win.get("width", 1280), win.get("height", 720), "Alpedia（Rust の画面）", win.get("vsync", True))
+        self.view = gfx.VIEW if gfx.active() else gfx.start(win.get("width", 1280), win.get("height", 720),
+                                                             "Alpedia（Rust の画面）", win.get("vsync", True))
         from .. import paths as _paths
         render.STYLE = {"edges": bool(g.get("block_edges", True)), "ao": bool(g.get("block_ao", True))}
         tex_dir = _paths.ROOT / "sauce" / "textures"
@@ -108,6 +109,7 @@ class Viewer:
                 continue
             if kind == "close":
                 self.quit = True
+                self.close_app = True
             elif kind.startswith("key:"):
                 k = kind[4:]
                 if a:
@@ -487,6 +489,25 @@ class Viewer:
             alt = max(float(np.linalg.norm(origin - npl.center)) - npl.radius, 0.0)
             air = p * float(np.exp(-alt / max(npl.radius * 0.25, 30.0)))
         self.view.set_clear(*[s_ + (d - s_) * air for s_, d in zip(SKY_SPACE, SKY_DAY)])
+
+    def destroy(self):
+        """画面から消す（メニューに戻るとき）。"""
+        for v in self.views.values():
+            v.remove()
+        self.views = {}
+        for n in [self.root, self.hud.node, self.msg.node, self.aim_text.node, self.item_text.node, self.cross.np]:
+            n.removeNode()
+        if self.hotbar is not None:
+            self.hotbar[1].removeNode()
+        for s_ in list(self.ui.stack):
+            s_.close()
+        if self.editor is not None and hasattr(self.editor, "close"):
+            try:
+                self.editor.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self.shim.destroy(self.game.ui_root)
+        self.view.grab(False)
 
     def run(self):
         last = time.perf_counter()

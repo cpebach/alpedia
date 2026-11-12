@@ -943,6 +943,11 @@ time_ = _Time()
 
 class _App:
     paused = False
+
+    @staticmethod
+    def quit():
+        pass
+
     fonts_folder = None
     base = None
     asset_folder = None
