@@ -1,4 +1,5 @@
 """起動処理。"""
+import sys
 import time
 
 import numpy as np
@@ -38,6 +39,20 @@ def _start_warmup(L):
     threading.Thread(target=run, daemon=True, name="numba-warmup").start()
 
 
+def _rust_view_ok(L):
+    """Rust の画面（lib/alpedia_view）が使えるか。無ければ今までの画面（Panda3D・ursina）で起動する。"""
+    from . import native
+    if str(native.LIB) not in sys.path:
+        sys.path.insert(0, str(native.LIB))
+    try:
+        import alpedia_view  # noqa: F401
+        return True
+    except ImportError as e:
+        L.warning("Rust の画面（lib/alpedia_view）が使えません（%s）。今までの画面で起動します"
+                  "（native\\build_windows.bat で作れます）", e)
+        return False
+
+
 def main(args):
     paths.ensure_dirs()
     cfg = config.load()
@@ -45,7 +60,10 @@ def main(args):
     from . import winperf
     winperf.boost(cfg)
     _start_warmup(L)
-    if getattr(args, "view", "panda") == "rust" and not args.headless:
+    view = getattr(args, "view", "auto") or "auto"
+    if view == "auto":
+        view = "rust" if _rust_view_ok(L) else "panda"
+    if view == "rust" and not args.headless:
         L.info("Alpedia 起動（Rust の画面）")
         from .client_rs.client import run_client
         if args.world:

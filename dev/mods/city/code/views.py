@@ -1,7 +1,7 @@
 """街パックの描画：街の建物（CityView）と NPC（NpcView）。"""
 import numpy as np
-from panda3d.core import SamplerState, Texture
 
+from main.client import gfx
 from main.client.render import DynamicMesh, quad_tris, shade
 from . import citylife
 
@@ -29,7 +29,11 @@ def window_texture():
             x0, y0 = gx * 16 + 3, gy * 16 + 5
             img[y0:y0 + 8, x0:x0 + 10] = c
 
-    from panda3d.core import PNMImage
+    if gfx.active():                  # Rust の画面
+        rgba = np.concatenate([np.clip(img * 255, 0, 255).astype(np.uint8), np.full((S, S, 1), 255, np.uint8)], axis=2)
+        _window_tex = gfx.tex_rgba(S, S, rgba.tobytes(), "windows", nearest=True)
+        return _window_tex
+    from panda3d.core import PNMImage, SamplerState, Texture
     pnm = PNMImage(S, S)
     for y in range(S):
         for x in range(S):
@@ -245,11 +249,14 @@ class CityView:
                     it["mesh"].set(v)
         if reshade:
             self.shade_R = R.copy()
-        from panda3d.core import LMatrix4f
         M = np.eye(4)
         M[:3, :3] = R.T
         M[3, :3] = c.x - origin
-        mat = LMatrix4f(*[float(x) for x in M.ravel()])
+        if gfx.active():
+            mat = [float(x) for x in M.ravel()]
+        else:
+            from panda3d.core import LMatrix4f
+            mat = LMatrix4f(*[float(x) for x in M.ravel()])
         for m in self._meshes(want):
             m.np.setMat(mat)
 

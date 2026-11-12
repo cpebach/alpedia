@@ -6,19 +6,29 @@ float32 に変換するので、世界がどれだけ広くても精度が落ち
 import numpy as np
 
 from . import gfx
-from panda3d.core import (Geom, GeomEnums, GeomNode, GeomTriangles, GeomVertexArrayFormat, GeomVertexData,
-                          GeomVertexFormat, InternalName, OmniBoundingVolume, SamplerState, Texture)
+try:                          # 今までの画面（Panda3D）。Rust の画面だけなら無くてよい
+    from panda3d.core import (Geom, GeomEnums, GeomNode, GeomTriangles, GeomVertexArrayFormat, GeomVertexData,
+                              GeomVertexFormat, InternalName, OmniBoundingVolume, SamplerState, Texture)
+except ImportError:
+    Geom = None
 
 SUN = np.array([0.35, 0.85, 0.4])
 SUN /= np.linalg.norm(SUN)
 AMBIENT = 0.38
 
-_arr = GeomVertexArrayFormat()
-_arr.addColumn(InternalName.getVertex(), 3, Geom.NT_float32, Geom.C_point)
-_arr.addColumn(InternalName.getNormal(), 3, Geom.NT_float32, Geom.C_normal)
-_arr.addColumn(InternalName.getColor(), 4, Geom.NT_float32, Geom.C_color)
-_arr.addColumn(InternalName.getTexcoord(), 2, Geom.NT_float32, Geom.C_texcoord)
-FORMAT = GeomVertexFormat.registerFormat(GeomVertexFormat(_arr))
+_FORMAT = []
+
+
+def _format():
+    """Panda3D の頂点の形（位置・法線・色・UV）。"""
+    if not _FORMAT:
+        arr = GeomVertexArrayFormat()
+        arr.addColumn(InternalName.getVertex(), 3, Geom.NT_float32, Geom.C_point)
+        arr.addColumn(InternalName.getNormal(), 3, Geom.NT_float32, Geom.C_normal)
+        arr.addColumn(InternalName.getColor(), 4, Geom.NT_float32, Geom.C_color)
+        arr.addColumn(InternalName.getTexcoord(), 2, Geom.NT_float32, Geom.C_texcoord)
+        _FORMAT.append(GeomVertexFormat.registerFormat(GeomVertexFormat(arr)))
+    return _FORMAT[0]
 
 _tex_cache = {}
 
@@ -74,7 +84,7 @@ class DynamicMesh:
             self.n_rows = 0
             return
         if self.vdata is None or n != self.n_rows or tris is not None:
-            self.vdata = GeomVertexData("v", FORMAT, Geom.UH_dynamic)
+            self.vdata = GeomVertexData("v", _format(), Geom.UH_dynamic)
             self.vdata.uncleanSetNumRows(n)
             self.n_rows = n
             if tris is None:

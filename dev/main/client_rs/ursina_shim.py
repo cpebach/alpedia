@@ -1199,6 +1199,8 @@ def install():
     """sys.modules["ursina"] をこのまねにする（Rust の画面のときだけ）。"""
     import sys
     import types
+    from . import panda_compat
+    panda_compat.install()
     m = sys.modules[__name__]
     sys.modules["ursina"] = m
     sys.modules["ursina.color"] = types.SimpleNamespace(**{k: getattr(color, k) for k in dir(type(color)) if not k.startswith("_")})

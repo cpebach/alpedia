@@ -104,7 +104,11 @@ class RsNode:
 
     # ---- 位置 ----
     def setMat(self, m):
-        VIEW.node_mat(self.id, [float(x) for x in m])
+        try:
+            flat = [float(x) for x in m]
+        except TypeError:                    # 行の並び（Panda3D の LMatrix4f など）
+            flat = [float(x) for row in m for x in row]
+        VIEW.node_mat(self.id, flat)
 
     def setPos(self, x, y=None, z=None):
         if y is None:

@@ -452,7 +452,7 @@ CREDITS_STAFF = [
 CREDITS_THANKS = [
     ("anthropic", "Anthropic", "Claude（いっしょに作りました）"),
     ("python", "Python", "ゲームのほとんど"),
-    ("rust", "Rust", "物理演算のコア"),
+    ("rust", "Rust", "物理演算のコア・画面・音"),
     ("github", "GitHub", "ソースの置き場"),
     ("panda3d", "Panda3D", "3D の描画"),
     ("ursina", "Ursina Engine", "画面と操作"),

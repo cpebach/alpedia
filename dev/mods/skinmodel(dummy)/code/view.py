@@ -7,9 +7,12 @@ Rust の画面（--view rust）では RsVRMModel・RsVRMBody：骨の行列を R
 import math
 
 import numpy as np
-from panda3d.core import (Geom, GeomEnums, GeomNode, GeomTriangles, GeomVertexArrayFormat, GeomVertexData,
-                          GeomVertexFormat, InternalName, LMatrix4f, NodePath, OmniBoundingVolume, PNMImage,
-                          SamplerState, Shader, StringStream, Texture, TransparencyAttrib, Vec3, Vec4)
+try:                          # 今までの画面（Panda3D）。Rust の画面だけなら無くてよい
+    from panda3d.core import (Geom, GeomEnums, GeomNode, GeomTriangles, GeomVertexArrayFormat, GeomVertexData,
+                              GeomVertexFormat, InternalName, LMatrix4f, NodePath, OmniBoundingVolume, PNMImage,
+                              SamplerState, Shader, StringStream, Texture, TransparencyAttrib, Vec3, Vec4)
+except ImportError:
+    pass
 
 from .motion import Motion
 from .spring import Spring
