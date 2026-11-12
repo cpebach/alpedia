@@ -7,6 +7,7 @@ dev/logs/
 dev/lib/
 dev/cache/
 dev/native/alpedia_core/target/
+dev/native/alpedia_view/target/
 dev/native/build_log.txt
 # パッケージ版（作った物・ダウンロードの置き場）
 packages/windows/Alpedia/

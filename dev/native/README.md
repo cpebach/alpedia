@@ -80,3 +80,11 @@ python -m unittest discover -s tests -v
 
 `tests/test_native.py` が、Rust 版と Python 版に同じ入力を与えて結果を比べます（違いが 1e-7 以内か）。
 Rust が無ければ、このテストは飛ばされます。
+
+## Rust の画面（alpedia_view、試験版）
+
+`native/alpedia_view/` は画面を描く Rust（wgpu・winit）のモジュールです。Python が「ノード（親子の行列）」「メッシュ（頂点 (n,12) float32）」
+「テクスチャ」「カメラ」を作って動かし、`pump()` で入力を受け取り、`render()` で描きます。頂点は Panda3D 版と同じ物をそのまま使えるので、
+`main/client/render.py`・`scenery_view.py` の描画は `main/client/gfx.py`（NodePath のまね）を通して両方の画面で動きます。
+入口は `main/client_rs/viewer.py`（`python run.py --view rust`）。`build_windows.bat` が `lib/alpedia_view.pyd` も作ります
+（作れなくてもゲームは今までどおり動きます）。

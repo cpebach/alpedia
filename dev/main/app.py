@@ -45,6 +45,13 @@ def main(args):
     from . import winperf
     winperf.boost(cfg)
     _start_warmup(L)
+    if getattr(args, "view", "panda") == "rust" and not args.headless:
+        L.info("Alpedia 起動（Rust の画面）")
+        from .client_rs.viewer import run
+        name = args.world or cfg["game"].get("default_world", "scenario")
+        prepare_world(name, getattr(args, "new", False))
+        run(cfg, name)
+        return
     if not args.headless:
         L.info("Alpedia 起動")
         from .client.menu import run_client

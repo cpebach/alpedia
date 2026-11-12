@@ -4,6 +4,8 @@
 float32 に変換するので、世界がどれだけ広くても精度が落ちない。
 """
 import numpy as np
+
+from . import gfx
 from panda3d.core import (Geom, GeomEnums, GeomNode, GeomTriangles, GeomVertexArrayFormat, GeomVertexData,
                           GeomVertexFormat, InternalName, OmniBoundingVolume, SamplerState, Texture)
 
@@ -24,6 +26,8 @@ _tex_cache = {}
 def load_texture(loader, path):
     if not path:
         return None
+    if gfx.active():
+        return gfx.tex(path)
     if path in _tex_cache:
         return _tex_cache[path]
     from panda3d.core import Filename
@@ -40,7 +44,13 @@ def load_texture(loader, path):
 
 
 class DynamicMesh:
-    """頂点（位置・法線・色・UV）と三角形を numpy 配列から設定できるメッシュ。"""
+    """頂点（位置・法線・色・UV）と三角形を numpy 配列から設定できるメッシュ。
+    Rust の画面（gfx）を使っているときは gfx.RsDynamicMesh になる。"""
+
+    def __new__(cls, parent, name="mesh"):
+        if gfx.active():
+            return gfx.RsDynamicMesh(parent, name)
+        return super().__new__(cls)
 
     def __init__(self, parent, name="mesh"):
         self.node = GeomNode(name)
@@ -250,6 +260,8 @@ _edge_ts = None
 def _edge_stage():
     """輪郭の線を、本来のテクスチャに掛け合わせる2枚目のテクスチャの段。"""
     global _edge_ts
+    if gfx.active():
+        return gfx.EDGES
     if _edge_ts is None:
         from panda3d.core import TextureStage
         _edge_ts = TextureStage("block_edges")
@@ -328,9 +340,12 @@ class ConstructView:
     （Rust の物理コアがあれば、頂点・法線・陰影をまとめて Rust で作る）。"""
 
     def __init__(self, parent, loader, construct):
-        from ursina import Entity
         self.c = construct
-        self.root = Entity(parent=parent)
+        if gfx.active():
+            self.root = gfx.RsNode(parent)
+        else:
+            from ursina import Entity
+            self.root = Entity(parent=parent)
         self._parent0 = parent
         self.parent = self.root
         self.loader = loader
@@ -372,13 +387,13 @@ class ConstructView:
             if self._mat_key is None:
                 return
             self._mat_key = None
-            self.root.setMat(LMatrix4f.identMat())
+            self.root.setMat(np.eye(4).ravel().tolist() if gfx.active() else LMatrix4f.identMat())
             return
         key = M.tobytes()
         if self._mat_key == key:
             return
         self._mat_key = key
-        self.root.setMat(LMatrix4f(*M.ravel().tolist()))
+        self.root.setMat(M.ravel().tolist() if gfx.active() else LMatrix4f(*M.ravel().tolist()))
 
     def _rebuild(self):
         """形のメッシュが作れない（ブロックが無い）とき：何も描かない。"""
@@ -600,6 +615,8 @@ class ConstructView:
 
     def update_displays(self, origin, far):
         """コンピューターの表示（看板）。"""
+        if gfx.active():
+            return                          # Rust の画面：文字はまだ（次の段で）
         c = self.c
         want = {}
         lim2 = min(far, 400.0) ** 2

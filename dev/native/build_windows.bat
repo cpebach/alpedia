@@ -51,6 +51,15 @@ if errorlevel 1 goto fail
 copy /Y "%WORK%\abi3\release\alpedia_core.dll" "%ROOT%\lib\alpedia_core.pyd" >nul
 if errorlevel 1 goto fail
 echo     できました: lib\alpedia_core.pyd
+rem Rust の画面（試験版。python run.py --view rust）
+echo ==== abi3 view ==== >> "%LOG%"
+pushd "%HERE%alpedia_view"
+cargo +%TC% build --release --features abi3 --target-dir "%WORK%\abi3_view" >> "%LOG%" 2>&1
+set "VERR=%errorlevel%"
+popd
+if "%VERR%"=="0" copy /Y "%WORK%\abi3_view\release\alpedia_view.dll" "%ROOT%\lib\alpedia_view.pyd" >nul
+if "%VERR%"=="0" echo     できました: lib\alpedia_view.pyd（Rust の画面の試験版）
+if not "%VERR%"=="0" echo     Rust の画面（試験版）は作れませんでした（くわしくは native\build_log.txt）。ゲームは今までどおり動きます
 set BUILT=1
 goto after_abi3
 :skip_abi3

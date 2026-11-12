@@ -305,7 +305,11 @@ def decal_atlas():
 
 
 def panda_texture(img, name="tex"):
-    """PIL 画像 → Panda3D のテクスチャ。"""
+    """PIL 画像 → Panda3D のテクスチャ（Rust の画面のときは、その画面のテクスチャ）。"""
+    from . import gfx
+    if gfx.active():
+        im = img.convert("RGBA")
+        return gfx.tex_rgba(im.width, im.height, im.tobytes(), name)
     import io
     from panda3d.core import PNMImage, StringStream, SamplerState, Texture as PandaTexture
     buf = io.BytesIO()

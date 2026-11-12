@@ -37,6 +37,10 @@ _tex_cache = {}
 
 
 def _texture(kind):
+    from . import gfx
+    if gfx.active():
+        from .. import paths
+        return gfx.tex(str(paths.SAUCE / "textures" / TEXTURES[kind][0]), kind in PIXEL)
     if kind not in _tex_cache:
         from panda3d.core import Filename, SamplerState
         from ursina import application
@@ -120,6 +124,9 @@ class SceneView:
 
     def _edges(self, parent, scene):
         """ふつうの箱（光らない物）のふちに細い線（景色が平らな色の板に見えないように）。"""
+        from . import gfx
+        if gfx.active():
+            return None                    # Rust の画面：線はまだ
         try:
             from panda3d.core import LineSegs
         except Exception:  # noqa: BLE001
