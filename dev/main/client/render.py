@@ -368,8 +368,11 @@ class ConstructView:
             self._mat_key = None
             self.root.setMat(LMatrix4f.identMat())
             return
-        self._mat_key = 1
-        self.root.setMat(LMatrix4f(*[float(x) for x in M.ravel()]))
+        key = M.tobytes()
+        if self._mat_key == key:
+            return
+        self._mat_key = key
+        self.root.setMat(LMatrix4f(*M.ravel().tolist()))
 
     def _rebuild(self):
         """形のメッシュが作れない（ブロックが無い）とき：何も描かない。"""
@@ -461,8 +464,13 @@ class ConstructView:
         R, x, epoch = tf
         firing = None
         if highlight_flames:
-            firing = tuple(round(float(c.devs[i]["state"].get("firing", 0.0)), 2) for i in self._dev_ids())
+            thr = c.dev_ids("thruster")                 # 噴射の色は推進機だけ
+            firing = tuple(round(float(c.devs[i]["state"].get("firing", 0.0)), 2) for i in thr) if thr else None
         b = getattr(self, "_baked", None)
+        if (b is not None and b["epoch"] == epoch and b["firing"] == firing and b["R"] is not None
+                and np.array_equal(b["R"], R)
+                and not any(g["new"] for g in self.groups)):
+            return                                      # 止まっている物：作り直す物は無い（位置は親の行列で）
         if b is None or b["epoch"] != epoch:
             V = shape.skin(c, self.blob)
             local = (V - x) @ R          # 構築物の向きでの形
@@ -477,7 +485,7 @@ class ConstructView:
             fl_all = None
             if firing is not None and any(firing):
                 fl_all = np.zeros(c.n_vox)
-                fl_all[self._dev_ids()] = firing
+                fl_all[list(c.dev_ids("thruster"))] = firing
             for g in self.groups:
                 vs = g["verts"]
                 nw = b["nl"][vs] @ R.T
@@ -716,7 +724,8 @@ class DecalView:
         return DECAL_TYPES
 
     def _display_sig(self):
-        return tuple(i for i, d in enumerate(self.c.devs) if d and (d["state"].get("display") or {}).get("text"))
+        devs = self.c.devs
+        return tuple(i for i in self.c.dev_ids("computer") if (devs[i]["state"].get("display") or {}).get("text"))
 
     def update(self, origin, cam_pos, view=None):
         c = self.c
@@ -727,9 +736,13 @@ class DecalView:
                 self._rebuild()
         if self.items is None:
             return
-        # 遠くの構築物では記号を出さない
-        rel = c.pos[::8] - cam_pos
-        near = np.einsum("ij,ij->i", rel, rel).min() < self.max_dist ** 2
+        # 遠くの構築物では記号を出さない（外側の球で大まかに、近ければブロックごとに）
+        ctr, rad = c.bounds()
+        if float(np.linalg.norm(ctr - cam_pos)) - rad > self.max_dist:
+            near = False
+        else:
+            rel = c.pos[::8] - cam_pos
+            near = np.einsum("ij,ij->i", rel, rel).min() < self.max_dist ** 2
         if not near:
             if self.visible:
                 self.mesh.np.hide()

@@ -1252,6 +1252,7 @@ class Game:
             self._lod = render.LodLayer(self.scene_root)
             self._loaded = set()
         lod_list = []
+        frame = self._frame_no = getattr(self, "_frame_no", 0) + 1
         budget = _time.perf_counter() + 0.008
         for cid, c in w.constructs.items():
             if not c.n_vox:
@@ -1287,8 +1288,12 @@ class Game:
             self._loaded.add(cid)
             v.set_visible(True)
             v.update(origin)
-            v.update_decals(origin, origin, decal_dist)
-            v.update_displays(origin, far)
+            # 固定されて止まっている物（建物など）の記号・看板は、6 フレームに1回だけ見直す（形が変わったらすぐ）
+            if not (c.is_static and not seated) or (frame + hash(cid)) % 6 == 0 \
+                    or getattr(v, "_deco_ver", None) != c.version:
+                v._deco_ver = c.version
+                v.update_decals(origin, origin, decal_dist)
+                v.update_displays(origin, far)
         self._lod.update(lod_list, origin)
         if not hasattr(self, "_lights"):
             self._lights = render.LightLayer(self.scene_root)
@@ -1315,7 +1320,8 @@ class Game:
         now = float(w.time)
         for c in w.constructs.values():
             com = None
-            for d in c.devs:
+            for i in c.dev_ids("computer"):            # 矢印はコンピューターのプログラムが出す
+                d = c.devs[i]
                 arr = d["state"].get("_arrows") if d else None
                 if not arr:
                     continue

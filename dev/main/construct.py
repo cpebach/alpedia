@@ -1451,6 +1451,19 @@ class Construct:
             if not self._rails_ok(world, float(phys.get("rails_distance", 400.0)) * 0.9):
                 self.leave_rails()
 
+    def dev_ids(self, kind=None):
+        """機器のあるブロックの番号（kind が種類なら、その種類だけ）。形が変わったときだけ数え直す。"""
+        key = (self.version, len(self.cells))
+        cache = self.__dict__.get("_devid_cache")
+        if cache is None or cache[0] != key:
+            by = {None: []}
+            for i, d in enumerate(self.devs):
+                if d:
+                    by[None].append(i)
+                    by.setdefault((self.reg.device(d["def"]) or {}).get("type"), []).append(i)
+            cache = self._devid_cache = (key, by)
+        return cache[1].get(kind, ())
+
     def actuator_indices(self):
         """アクチュエーター（ヒンジなども）の番号（形が変わったときだけ数え直す）。"""
         cache = self.__dict__.get("_act_cache")
