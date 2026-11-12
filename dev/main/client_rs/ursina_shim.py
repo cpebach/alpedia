@@ -914,14 +914,36 @@ mouse = _mouse
 
 class _Window:
     def __init__(self):
-        self.size = (1280, 720)
+        self._size = (1280, 720)
         self.color = Color(0.45, 0.65, 0.9)
-        self.fullscreen = False
+        self._fullscreen = False
         self.borderless = False
         self.title = "Alpedia"
         self.vsync = True
 
-    aspect_ratio = property(lambda s: s.size[0] / max(s.size[1], 1))
+    @property
+    def size(self):
+        return Vec2(*self._size)
+
+    @size.setter
+    def size(self, v):
+        """窓の大きさを変える（設定の解像度）。"""
+        v = (int(v[0]), int(v[1]))
+        if gfx.VIEW is not None and v != tuple(self._size):
+            gfx.VIEW.set_size(*v)
+        self._size = v
+
+    @property
+    def fullscreen(self):
+        return gfx.VIEW.fullscreen() if gfx.VIEW is not None else self._fullscreen
+
+    @fullscreen.setter
+    def fullscreen(self, on):
+        self._fullscreen = bool(on)
+        if gfx.VIEW is not None:
+            gfx.VIEW.set_fullscreen(bool(on))
+
+    aspect_ratio = property(lambda s: s._size[0] / max(s._size[1], 1))
     top = property(lambda s: Vec2(0, 0.5))
     bottom = property(lambda s: Vec2(0, -0.5))
     left = property(lambda s: Vec2(-s.aspect_ratio / 2, 0))
@@ -1075,7 +1097,7 @@ def frame(view, dt):
     """毎フレーム：invoke・update() を呼び、位置・描く順を Rust の画面へ。"""
     time_.dt = dt
     w, h = view.size()
-    window.size = (w, h)
+    window._size = (w, h)
     now = _t.time()
     due = [x for x in _invokes if x[0] <= now]
     for x in due:

@@ -62,12 +62,18 @@ class Viewer:
         self.sel = 0
         self.dir_index = 0
         self.bodies = {}
+        self.labels = {}
         from .ui import UI
         self.ui = UI(self.view)
         from . import ursina_shim
         self.shim = ursina_shim
         self.editor = None             # 今までの画面の部品（ursina のまね）で開いている画面（プログラムなど）
         self.game = GameAdapter(self)
+        from ..client import sound
+        self.snd = sound.get(cfg)
+        self._snd_t, self._snd_lit, self._snd_loops = 0.0, set(), {}
+        from ..client import inventory
+        inventory.ensure_hotbar(world.player, world.registry)
         self.addons = self._load_addons()
         # 画面側の MOD が描かない拡張の景色の箱（画面側の無い MOD）はここで描く
         own = {id(getattr(a, "pack", None)) for a in self.addons}
@@ -163,7 +169,36 @@ class Viewer:
     def do_interact(self, hit):
         """E：MOD が使わなければワールドの interact（機器・席）。"""
         if not self._each_addon(lambda a: a.interact(hit), True):
+            kind = None
+            if hit and hit.get("kind") == "voxel" and hit["construct"].devs[hit["index"]]:
+                kind = (self.w.registry.device(hit["construct"].devs[hit["index"]]["def"]) or {}).get("type")
             self.w.interact(hit)
+            self.sfx("seat" if kind == "seat" else "click")
+        else:
+            self.sfx("click")
+
+    # ---- 音 ----
+    def sfx(self, name, volume=1.0):
+        if self.snd is not None:
+            self.snd.sfx(name, volume)
+
+    def _update_sound(self, dt):
+        """BGM（MOD が決める）と、近くの推進機・アクチュエーター・ジェットパックの音（今までの画面と同じ）。"""
+        snd = self.snd
+        if snd is None:
+            return
+        snd.set_bgm(self._each_addon(lambda a: a.bgm(), True))
+        if self.ui.stack and getattr(self.w, "net", None) is None:
+            snd.stop_loops()
+        else:
+            self._snd_t -= dt
+            if self._snd_t <= 0:                 # 機器の様子を数えるのは 0.1 秒ごと
+                from ..client import sound
+                self._snd_t = 0.1
+                self._snd_loops, self._snd_lit = sound.sources(self.w, self._snd_lit, self.sfx)
+            for name in ("thruster_loop", "motor_loop", "jetpack_loop"):
+                snd.loop(name, self._snd_loops.get(name, 0.0))
+        snd.update(dt)
 
     # ---- 視点 ----
     def look_vectors(self):
@@ -237,9 +272,11 @@ class Viewer:
             return
         if button == 0:
             if self.hit["kind"] == "voxel":
-                w.remove(self.hit)
+                if w.remove(self.hit) is not False:
+                    self.sfx("break")
             elif self.hit["kind"] in ("terrain", "water"):
-                w.dig(self.hit)
+                if w.dig(self.hit) is not False:
+                    self.sfx("dig")
         elif button == 1:
             self._place(self.hit)
 
@@ -250,7 +287,8 @@ class Viewer:
             w.message("アイテムバーのこの枠は空です")
             return
         _, _, _, look = self.look_vectors()
-        w.place(hit, item, self.dir_index, look)
+        ok = w.place(hit, item, self.dir_index, look)
+        self.sfx(("device" if item[0] == "device" else "place") if ok is not False else "error")
 
     def open_screen(self, name):
         """一時停止メニュー・インベントリを開く（マウスを出して、歩くのを止める）。"""
@@ -294,6 +332,18 @@ class Viewer:
             from ..client.script_panel import ScriptPanel
             self.editor = ScriptPanel(self.game, c, i)
 
+    def start_hosting(self):
+        """LAN に公開する（一時停止メニューから）。"""
+        from ..netserver import Host
+        try:
+            Host(self.w, self.cfg)
+        except OSError as e:
+            L.exception("LAN に公開できません")
+            self.w.message(f"LAN に公開できません（ポート {self.cfg.get('multiplayer', {}).get('port')} が使えない？）: {e}")
+            return
+        self.w.message("LAN に公開しました: " + "  ".join(self.w.net.addresses()[:2])
+                       + "（参加する人はメニューの「マルチプレイ」から）")
+
     def screen_closed(self):
         if not self.ui.stack:
             self.grabbed = True
@@ -308,6 +358,7 @@ class Viewer:
                 w.key_pressed(kk)
             if k == c["interact"]:
                 w.interact(None)
+                self.sfx("seat")
             elif kk not in SEAT_KEYS:
                 self._each_addon(lambda a: a.on_key(kk), True)        # MOD のキー（座っている間も使えるもの）
             return
@@ -361,14 +412,28 @@ class Viewer:
         n = 0
         t0 = time.perf_counter()
         net = getattr(w, "net", None)
+        client = net is not None and net.role == "client"
         if self.game.hold and net is None:        # MOD が世界の時間を止めている（ムービーなど）
             self.acc = 0.0
+        if client:                                 # マルチプレイに参加中：ホストから届いた世界を当てる
+            import types
+            net.look = look
+            top = self.ui.top
+            net.frame(types.SimpleNamespace(editor=self.editor or (top if hasattr(top, "c") else None)), dt)
+            if net.closed:
+                self.game._leave("menu", status=f"マルチプレイから抜けました：{net.closed}")
+                return
         while self.acc >= tick and n < 3:
-            w.step(tick, move, jump and n == 0, thrust)
+            if client:
+                net.step(tick, move, jump and n == 0, thrust)      # 自分の体だけ動かす
+            else:
+                w.step(tick, move, jump and n == 0, thrust)
             self.acc -= tick
             n += 1
         if n == 3:
             self.acc = 0.0
+        if net is not None and not client:
+            net.tick(dt)                           # 参加者へ送る・参加者の操作を行う
         t1 = time.perf_counter()
         origin = w.player.eye()
         self._render(origin)
@@ -384,6 +449,7 @@ class Viewer:
         self._aim(origin, look)
         self._overlay(ww, hh)
         self.shim.frame(self.view, dt)                # 今までの画面の部品（プログラムの画面など）
+        self._update_sound(dt)
         self.view.render()
         t2 = time.perf_counter()
         pf = self.perf
@@ -438,7 +504,12 @@ class Viewer:
         """ほかの人（マルチプレイ）の体：MOD（VRM の見た目など）か、定義の色の箱。"""
         w = self.w
         seen = set()
-        for key, p in list(getattr(w, "remote", {}).items()):
+        net = getattr(w, "net", None)
+        others = []
+        if net is not None:
+            others = net.others() if callable(getattr(net, "others", None)) else list(net.others.values())
+        for p in others:
+            key = f"p{p.pid}"
             seen.add(key)
             b = self.bodies.get(key)
             if b is None:
@@ -449,14 +520,34 @@ class Viewer:
             if b is None:
                 from ..client.game import BoxBody
                 b = self.bodies[key] = BoxBody(self.game, p)            # MOD が引き受けなければ定義の色の箱
+            q = p.pos - origin
+            shown = float(q @ q) < 500.0 ** 2
+            self._label(key, p, origin, shown)
             try:
-                b.update(origin, True, 1 / 60)
+                b.update(origin, shown, 1 / 60)
             except Exception:  # noqa: BLE001
                 if ("body", type(b).__name__) not in self._addon_err:
                     self._addon_err.add(("body", type(b).__name__))
                     L.exception("体の見た目でエラー")
         for key in [k for k in self.bodies if k not in seen]:
             self.bodies.pop(key).destroy()
+        for key in [k for k in self.labels if k not in seen]:
+            self.labels.pop(key).remove()
+
+    def _label(self, key, p, origin, shown):
+        """ほかの人の頭の上の名前（いつもカメラの方を向く）。"""
+        t = self.labels.get(key)
+        if t is None:
+            t = self.labels[key] = gfx.RsText(self.root, overlay=False, bg=(0.02, 0.03, 0.05, 0.55))
+        w_, h_ = t.set(p.name or "?", 0.22)
+        t.show(shown)
+        if not shown:
+            return
+        _, right, up, look = self.look_vectors()
+        cu = np.cross(look, right)                       # カメラの上
+        c = p.pos + p.up * (p.height - p.radius + 0.35) - origin
+        o = c - right * (w_ / 2) + cu * (h_ / 2)
+        t.node.setMat([*right, 0, *cu, 0, *(-look), 0, *o, 1])
 
     def _hotbar(self):
         """画面下のアイテムバー（アイコン・選んでいる枠は黄色。今までの画面と同じ並べ方）。"""
@@ -509,6 +600,11 @@ class Viewer:
         if p.seated and p.seated[0] in w.constructs:
             c = w.constructs[p.seated[0]]
             lines.append(f"操縦中: {c.name}  速度 {float(np.linalg.norm(c.velocity())):.1f} m/s")
+        net = getattr(w, "net", None)
+        if net is not None and net.role == "client":
+            lines.append(f"マルチプレイ参加中（ホスト {net.host_name}）  {1 + len(net.others)} 人")
+        elif net is not None:
+            lines.append(f"LAN に公開中 {'  '.join(net.addresses()[:1])}  {1 + len(w.remote)} 人")
         if getattr(self, "fps_text", ""):
             lines.append(self.fps_text)
         if not self.grabbed and not self.ui.stack:
@@ -525,7 +621,7 @@ class Viewer:
         msgs = [t for ts, t in list(w.msgs)[-5:] if now - ts < 8.0]
         _, h = self.msg.set("\n".join(msgs), 0.024, max_width=aspect * 0.6)
         self.msg.show(bool(msgs))
-        self.msg.place(-aspect / 2 + 0.015, -0.5 + 0.03 + h)
+        self.msg.place(-aspect / 2 + 0.015, -0.5 + 0.115 + h)          # アイテムバーより上
         at = getattr(self, "_aim_txt", "") or getattr(self, "_near_txt", "")     # 何も狙っていなければ近くの MOD の物
         tw, th = self.aim_text.set(at, 0.022, max_width=aspect * 0.5)
         self.aim_text.show(bool(at))
@@ -618,6 +714,11 @@ class Viewer:
 
     def destroy(self):
         """画面から消す（メニューに戻るとき）。"""
+        if self.snd is not None:
+            self.snd.set_bgm(None)
+            self.snd.set_override(None)
+            self.snd.stop_loops()
+            self.snd.update(10.0)               # 曲を止める
         self._each_addon(lambda a: a.destroy())
         self.addons = []
         for b in self.bodies.values():
@@ -626,6 +727,9 @@ class Viewer:
             except Exception:  # noqa: BLE001
                 pass
         self.bodies = {}
+        for t in self.labels.values():
+            t.remove()
+        self.labels = {}
         for v in self.views.values():
             v.remove()
         self.views = {}
@@ -759,5 +863,5 @@ class GameAdapter:
         self.v.grabbed = bool(on)
         self.v.view.grab(bool(on))
 
-    def sfx(self, *a, **k):
-        pass
+    def sfx(self, name, volume=1.0):
+        self.v.sfx(name, volume)

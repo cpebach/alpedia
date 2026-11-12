@@ -4,6 +4,8 @@
 //! 「カメラ」を作って動かし、`pump()` で入力を受け取り、`render()` で描く。陰影は頂点の色に焼き込み済み
 //! （Panda3D 版と同じ頂点をそのまま使える）。行列は Panda3D と同じ行ベクトル形式（p' = p M、平行移動は 4 行目）。
 
+mod audio;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -97,6 +99,7 @@ struct Tex {
     nearest: bool,
     dirty: bool,
     enc: Option<Vec<u8>>,     // 画像ファイルの中身（初めて描くときに読み解き、GPU に送ったら画素は捨てる）
+    nomip: bool,              // 縮小した段を作らない（毎フレーム変わる動画）
 }
 
 /// 文字の形（文字の置き場の中の位置と、ずらし・送り。ラスタの画素単位）
@@ -627,6 +630,24 @@ impl View {
         }
     }
 
+    /// 全画面（枠なし、今のモニター）にするか、窓に戻す
+    fn set_fullscreen(&mut self, on: bool) {
+        if let Some(g) = &self.app.gfx {
+            g.window.set_fullscreen(if on { Some(winit::window::Fullscreen::Borderless(None)) } else { None });
+        }
+    }
+
+    fn fullscreen(&self) -> bool {
+        self.app.gfx.as_ref().map(|g| g.window.fullscreen().is_some()).unwrap_or(false)
+    }
+
+    /// 窓の大きさ（画素）を変える（全画面のときは窓に戻したときの大きさ）
+    fn set_size(&mut self, width: u32, height: u32) {
+        if let Some(g) = &self.app.gfx {
+            let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(width.max(64), height.max(64)));
+        }
+    }
+
     /// マウスを窓の中に閉じ込めて隠す（視点を回す）か、戻す
     fn grab(&mut self, on: bool) {
         self.app.grab = on;
@@ -997,7 +1018,7 @@ impl View {
                 // Panda3D と同じく v は下から上（画像の行を上下逆に）
                 let rgba = image::imageops::flip_vertical(&img.to_rgba8());
                 let (w, h) = rgba.dimensions();
-                self.textures.push(Tex { w, h, rgba: rgba.into_raw(), gpu: None, nearest, dirty: false, enc: None });
+                self.textures.push(Tex { w, h, rgba: rgba.into_raw(), gpu: None, nearest, dirty: false, enc: None, nomip: false });
                 self.textures.len() as i64 - 1
             }
             Err(_) => -1,
@@ -1009,7 +1030,7 @@ impl View {
     fn tex_bytes(&mut self, data: Vec<u8>, nearest: bool) -> i64 {
         match image::ImageReader::new(std::io::Cursor::new(&data)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok()) {
             Some((w, h)) if w > 0 && h > 0 => {
-                self.textures.push(Tex { w, h, rgba: Vec::new(), gpu: None, nearest, dirty: false, enc: Some(data) });
+                self.textures.push(Tex { w, h, rgba: Vec::new(), gpu: None, nearest, dirty: false, enc: Some(data), nomip: false });
                 self.textures.len() as i64 - 1
             }
             _ => -1,
@@ -1034,7 +1055,7 @@ impl View {
             Some(l) => (l.ascent, l.new_line_size),
             None => (px * 0.9, px * 1.25),
         };
-        self.textures.push(Tex { w: ATLAS, h: ATLAS, rgba: vec![0; (ATLAS * ATLAS * 4) as usize], gpu: None, nearest: false, dirty: false, enc: None });
+        self.textures.push(Tex { w: ATLAS, h: ATLAS, rgba: vec![0; (ATLAS * ATLAS * 4) as usize], gpu: None, nearest: false, dirty: false, enc: None, nomip: false });
         let tex = self.textures.len() - 1;
         self.font = Some(Font { font, px, tex, glyphs: HashMap::new(), cx: GPAD, cy: GPAD, row_h: 0, line_h, ascent });
         Ok(())
@@ -1165,8 +1186,27 @@ impl View {
         for y in (0..h as usize).rev() {
             flipped.extend_from_slice(&rgba[y * w as usize * 4..(y + 1) * w as usize * 4]);
         }
-        self.textures.push(Tex { w, h, rgba: flipped, gpu: None, nearest, dirty: false, enc: None });
+        self.textures.push(Tex { w, h, rgba: flipped, gpu: None, nearest, dirty: false, enc: None, nomip: false });
         Ok(self.textures.len() as i64 - 1)
+    }
+
+    /// テクスチャの画素を差し替える（動画の1コマなど。上下は返して持つ）。大きさが変わってもよい
+    fn tex_update(&mut self, id: usize, w: u32, h: u32, rgba: &[u8]) -> PyResult<()> {
+        if id >= self.textures.len() || rgba.len() != (w * h * 4) as usize || w == 0 || h == 0 {
+            return Err(PyValueError::new_err("tex_update: 大きさが合いません"));
+        }
+        let mut flipped = Vec::with_capacity(rgba.len());
+        for y in (0..h as usize).rev() {
+            flipped.extend_from_slice(&rgba[y * w as usize * 4..(y + 1) * w as usize * 4]);
+        }
+        let t = &mut self.textures[id];
+        t.w = w;
+        t.h = h;
+        t.rgba = flipped;
+        t.enc = None;
+        t.nomip = true;
+        t.dirty = true;
+        Ok(())
     }
 
     /// 描く。戻り値：描いたメッシュの数
@@ -1213,7 +1253,7 @@ impl View {
                         t.rgba = vec![255; (t.w * t.h * 4) as usize];
                     }
                 }
-                t.gpu = Some(Gfx::upload_tex(&g.device, &g.queue, t.w, t.h, &t.rgba, !t.nearest));
+                t.gpu = Some(Gfx::upload_tex(&g.device, &g.queue, t.w, t.h, &t.rgba, !t.nearest && !t.nomip));
                 if t.enc.is_some() {
                     t.rgba = Vec::new();
                 }
@@ -1398,6 +1438,7 @@ impl View {
 #[pymodule]
 fn alpedia_view(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<View>()?;
+    m.add_class::<audio::Audio>()?;
     m.add("VERSION", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

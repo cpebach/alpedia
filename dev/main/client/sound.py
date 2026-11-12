@@ -22,7 +22,14 @@ def get(cfg=None):
     global _SYS
     if _SYS is None:
         from . import gfx
-        _SYS = _Silent() if gfx.active() else SoundSystem()     # Rust の画面：音はまだ鳴らさない
+        if gfx.active():                     # Rust の画面：音も Rust（alpedia_view.Audio）で鳴らす
+            try:
+                _SYS = SoundSystem(_RsBase())
+            except Exception:  # noqa: BLE001
+                L.exception("音を鳴らせません")
+                _SYS = _Silent()
+        else:
+            _SYS = SoundSystem()
     if cfg is not None:
         _SYS.apply(cfg)
     return _SYS
@@ -78,10 +85,120 @@ class _Silent:
         pass
 
 
-class SoundSystem:
+# ---------------------------------------------------------------------------
+# Rust の画面の音（Panda3D の AudioSound・loader のまね。SoundSystem はそのまま使う）
+# ---------------------------------------------------------------------------
+class _RsSound:
+    PLAYING = 2
+    READY = 1
+
+    def __init__(self, base, sid, music):
+        self.base, self.id, self.music = base, sid, music
+        self.vol = 1.0
+        self.start = 0.0
+
+    def _apply(self):
+        k = self.base.music_vol if self.music else self.base.sfx_vol
+        self.base.au.set_volume(self.id, self.vol * k)
+
+    def setVolume(self, v):
+        self.vol = float(v)
+        self._apply()
+
+    def setLoop(self, on=True):
+        self.base.au.set_loop(self.id, bool(on))
+
+    def setTime(self, t):
+        self.start = float(t)
+
+    def play(self):
+        self._apply()
+        self.base.au.play(self.id, self.start)
+        self.start = 0.0
+
+    def stop(self):
+        self.base.au.stop(self.id)
+        if self.music:                       # 曲は止めたら捨てる（大きいので）
+            self.base.au.unload(self.id)
+
+    def status(self):
+        return self.PLAYING if self.base.au.playing(self.id) else self.READY
+
+    def length(self):
+        return self.base.au.length(self.id)
+
+
+class _RsVolume:
+    def __init__(self, base, key):
+        self.base, self.key = base, key
+
+    def setVolume(self, v):
+        setattr(self.base, self.key, float(v))
+        for snd in self.base.made:
+            if snd.music == (self.key == "music_vol"):
+                snd._apply()
+
+
+class _RsLoader:
+    def __init__(self, base):
+        self.base = base
+
+    def _load(self, f, music):
+        path = f.toOsSpecific() if hasattr(f, "toOsSpecific") else str(f)
+        sid = self.base.au.load(path)
+        if sid < 0:
+            return None
+        snd = _RsSound(self.base, sid, music)
+        self.base.made.append(snd)
+        if music:
+            self.base.made = [x for x in self.base.made if not x.music or x is snd or x.base.au.playing(x.id)]
+        return snd
+
+    def loadSfx(self, f):
+        return self._load(f, False)
+
+    def loadMusic(self, f):
+        return self._load(f, True)
+
+    def loadPcm(self, samples, channels, rate):
+        """読み解いた音（float32、チャンネルを交互に）から効果音として（動画の音など）。"""
+        import numpy as np
+        sid = self.base.au.load_pcm(np.ascontiguousarray(samples, np.float32).reshape(-1), int(channels), int(rate))
+        if sid < 0:
+            return None
+        snd = _RsSound(self.base, sid, False)
+        self.base.made.append(snd)
+        return snd
+
+
+class _RsTasks:
+    def add(self, *a, **k):
+        pass                                 # Rust の画面は毎フレーム update(dt) を呼ぶ
+
+
+class _RsBase:
+    """application.base のうち、SoundSystem が使う所のまね。"""
+
     def __init__(self):
-        from ursina import application
-        self.base = application.base
+        import alpedia_view
+        self.au = alpedia_view.Audio()
+        if not self.au.ok():
+            L.warning("音の出口が見つかりません（音は鳴りません）")
+        self.music_vol = 1.0
+        self.sfx_vol = 1.0
+        self.made = []
+        self.loader = _RsLoader(self)
+        self.musicManager = _RsVolume(self, "music_vol")
+        self.sfxManagerList = [_RsVolume(self, "sfx_vol")]
+        self.taskMgr = _RsTasks()
+
+
+class SoundSystem:
+    def __init__(self, base=None):
+        if base is None:
+            from ursina import application
+            base = application.base
+        self.base = base
         self.bgm_vol = 0.6
         self.sfx_vol = 0.8
         self.lib = None
@@ -96,6 +213,12 @@ class SoundSystem:
         except Exception:  # noqa: BLE001
             L.exception("音の係を動かせません")
 
+    def _fname(self, p):
+        if isinstance(self.base, _RsBase):
+            return str(p)
+        from panda3d.core import Filename
+        return Filename.fromOsSpecific(str(p))
+
     # --- 音量 -------------------------------------------------------------
     def apply(self, cfg):
         self.bgm_vol = volume_of(cfg, "bgm", 60)
@@ -109,13 +232,12 @@ class SoundSystem:
 
     # --- 効果音 -----------------------------------------------------------
     def _load(self, name, music=False):
-        from panda3d.core import Filename
         p = paths.SAUCE / "sounds" / f"{name}.wav"
         if not p.exists():
             return None
         try:
             ld = self.base.loader
-            return (ld.loadMusic if music else ld.loadSfx)(Filename.fromOsSpecific(str(p)))
+            return (ld.loadMusic if music else ld.loadSfx)(self._fname(p))
         except Exception:  # noqa: BLE001
             return None
 
@@ -171,9 +293,8 @@ class SoundSystem:
         t = self.lib.get(tid)
         if t is None:
             return None
-        from panda3d.core import Filename
         try:
-            snd = self.base.loader.loadMusic(Filename.fromOsSpecific(str(t[0])))
+            snd = self.base.loader.loadMusic(self._fname(t[0]))
         except Exception:  # noqa: BLE001
             L.warning("BGM を読めません: %s", t[0])
             return None
@@ -218,3 +339,38 @@ class SoundSystem:
                 self.fading.remove(f)
             else:
                 f["snd"].setVolume(f["vol"] * f["gain"])
+
+
+def sources(w, prev_lit, sfx):
+    """近くで燃えている推進機・動いているアクチュエーター・ジェットパックの音の大きさ（距離で小さく）。
+    点火した推進機は sfx("ignite") で「ボッ」。戻り値 ({ループの名前: 大きさ}, 燃えている推進機の組)。
+    今までの画面（game.py）と Rust の画面の両方で使う。"""
+    import numpy as np
+
+    from .. import actuator as act
+    eye = w.player.eye()
+    out = {"thruster_loop": 0.0, "motor_loop": 0.0, "jetpack_loop": 0.0}
+    lit = set()
+    for c in w.constructs_near(eye, 150.0):
+        if not c.n_vox or not c.has_devices:
+            continue
+        for i, d in enumerate(c.devs):
+            if not d:
+                continue
+            st = d["state"]
+            if "firing" in st or "lit" in st:
+                f = float(st.get("firing", 0.0) or 0.0)
+                if f > 0.01 or st.get("lit"):
+                    dist = float(np.linalg.norm(c.voxel_center(i) - eye))
+                    att = 1.0 / (1.0 + (dist / 12.0) ** 2)
+                    out["thruster_loop"] += max(f, 0.15) * att * 0.5
+                    lit.add((c.id, i))
+                    if (c.id, i) not in prev_lit:
+                        sfx("ignite", min(1.0, att * 1.5))
+            elif "angle_target" in st and act.busy(st):
+                dist = float(np.linalg.norm(c.voxel_center(i) - eye))
+                out["motor_loop"] += 0.7 / (1.0 + (dist / 8.0) ** 2)
+    p = w.player
+    if getattr(p, "flying", False) and float(np.linalg.norm(getattr(p, "thrust", np.zeros(3)))) > 0.05:
+        out["jetpack_loop"] = 0.6
+    return {k: min(1.0, v) for k, v in out.items()}, lit

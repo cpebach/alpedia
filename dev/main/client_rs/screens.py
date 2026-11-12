@@ -16,19 +16,37 @@ class Pause(U.Screen):
     def build(self):
         self.clear()
         self.button("", 0, 0, 3.0, 2.0, None, color=(0, 0, 0, 0.45))     # 後ろを暗く（押しても何もしない）
-        self.panel(-0.25, 0.26, 0.25, -0.24)
-        self.text("一時停止", 0, 0.22, 0.034, anchor=(0.5, 0))
-        items = (("続ける（Esc）", self.close), ("保存する（F5）", self.save), ("保存して終わる", self.quit))
+        net = self.v.w.net
+        client = net is not None and net.role == "client"
+        g = self.v.game
+        if client:          # マルチプレイに参加中（保存はホストがする）
+            items = (("続ける（Esc）", self.close), ("ワールドから抜けてメニューへ", lambda: g._leave("menu")),
+                     ("ワールドから抜けて終了", lambda: g._leave("quit")))
+        else:
+            items = (("続ける（Esc）", self.close), ("保存する（F5）", self.save), ("保存してメニューへ", lambda: g._leave("menu")),
+                     ("保存せずにメニューへ", lambda: g._leave("menu", save=False)), ("保存して終了", lambda: g._leave("quit")))
+            if net is None:
+                items += (("LAN に公開（マルチプレイ）", self.host),)
+        top = 0.08 + len(items) * 0.045
+        self.panel(-0.27, top + 0.1, 0.27, top - len(items) * 0.09 - 0.02 - (0.06 if net is not None and not client else 0))
+        self.text("一時停止", 0, top + 0.06, 0.034, anchor=(0.5, 0))
         for k, (label, fn) in enumerate(items):
-            self.button(label, 0, 0.08 - k * 0.09, 0.4, 0.065, fn,
-                        color=(0.2, 0.45, 0.3, 1) if k == 0 else (0.22, 0.25, 0.32, 1), size=0.026)
+            self.button(label, 0, top - 0.04 - k * 0.09, 0.44, 0.065, fn,
+                        color=(0.2, 0.45, 0.3, 1) if k == 0 else (0.22, 0.25, 0.32, 1), size=0.024)
+        if net is not None and not client:
+            self.text("LAN に公開中: " + "  ".join(net.addresses()[:2]), 0, top - 0.04 - len(items) * 0.09 + 0.01,
+                      0.02, anchor=(0.5, 0))
+
+    def host(self):
+        self.v.start_hosting()
+        self.build()
 
     def save(self):
         self.v.w.save()
         self.v.w.message("保存しました")
 
     def quit(self):
-        self.v.quit = True
+        self.v.game._leave("menu")
 
     def on_key(self, key):
         if key == "escape":

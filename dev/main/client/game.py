@@ -528,35 +528,9 @@ class Game:
 
     def _sound_sources(self):
         """近くで燃えている推進機・動いているアクチュエーターの大きさ（距離で小さく）。点火した推進機は「ボッ」。"""
-        from .. import actuator as act
-        w = self.world
-        eye = w.player.eye()
-        out = {"thruster_loop": 0.0, "motor_loop": 0.0, "jetpack_loop": 0.0}
-        lit = set()
-        for c in w.constructs_near(eye, 150.0):
-            if not c.n_vox or not c.has_devices:
-                continue
-            for i, d in enumerate(c.devs):
-                if not d:
-                    continue
-                st = d["state"]
-                if "firing" in st or "lit" in st:
-                    f = float(st.get("firing", 0.0) or 0.0)
-                    if f > 0.01 or st.get("lit"):
-                        dist = float(np.linalg.norm(c.voxel_center(i) - eye))
-                        att = 1.0 / (1.0 + (dist / 12.0) ** 2)
-                        out["thruster_loop"] += max(f, 0.15) * att * 0.5
-                        lit.add((c.id, i))
-                        if (c.id, i) not in self._snd_lit:
-                            self.sfx("ignite", min(1.0, att * 1.5))
-                elif "angle_target" in st and act.busy(st):
-                    dist = float(np.linalg.norm(c.voxel_center(i) - eye))
-                    out["motor_loop"] += 0.7 / (1.0 + (dist / 8.0) ** 2)
-        self._snd_lit = lit
-        p = w.player
-        if getattr(p, "flying", False) and float(np.linalg.norm(getattr(p, "thrust", np.zeros(3)))) > 0.05:
-            out["jetpack_loop"] = 0.6
-        return {k: min(1.0, v) for k, v in out.items()}
+        from . import sound
+        out, self._snd_lit = sound.sources(self.world, self._snd_lit, self.sfx)
+        return out
 
     def do_target(self, t, settings=False):
         """近くのもの（画面右のボタン）を使う。settings=True なら設定（歯車）を開く。"""

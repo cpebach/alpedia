@@ -19,8 +19,13 @@ class Client:
         win = cfg.get("window", {})
         self.view = gfx.start(win.get("width", 1280), win.get("height", 720), "Alpedia（Rust の画面）", win.get("vsync", True))
         gfx.font(cfg.get("graphics", {}).get("font"))
+        from ..client import sound
+        sound.get(cfg)
+        if win.get("fullscreen", False):
+            self.view.set_fullscreen(True)
         self.menu = None
         self.viewer = None
+        self.joining = None
         self.running = True
 
     # ---- メニュー ----
@@ -28,7 +33,7 @@ class Client:
         from ..client.menu import MainMenu, purge_trash
         purge_trash()
         self.view.grab(False)
-        self.menu = MainMenu(self.cfg, self.play, self.quit, None)
+        self.menu = MainMenu(self.cfg, self.play, self.quit, self.join)
         if status:
             self.menu.error(status)
 
@@ -59,6 +64,60 @@ class Client:
             self.menu = None
         self.viewer = Viewer(world, self.cfg)
 
+    # ---- マルチプレイに参加 ----
+    def join(self, host, port, name):
+        """MOD とワールドを受け取ってから（別スレッド）、そのワールドで遊ぶ（今までの画面の menu.run_menu と同じ流れ）。"""
+        from ..netclient import Joiner
+        menu = self.menu
+        j = Joiner(host, port, name)
+
+        def cancel():
+            j.cancel()
+            menu.show_multiplayer()
+        menu.show_joining(j, cancel)
+        self.joining = j
+
+    def _check_join(self):
+        j = self.joining
+        if j is None:
+            return
+        if j.error:
+            self.joining = None
+            if self.menu is not None and not j.cancelled:
+                self.menu.status = f"参加できません：{j.error}"
+                self.menu.show_multiplayer()
+        elif j.done:
+            self.joining = None
+            self.start_joined(j.result)
+
+    def start_joined(self, info):
+        from .. import paths
+        from ..modcode import ModLoadError
+        from ..netclient import Client as NetClient, mods_cache
+        from ..world import World
+        from .viewer import Viewer
+        orig = paths.MODS
+        paths.MODS = mods_cache()           # ホストから受け取った MOD で読み込む
+        try:
+            try:
+                world = World(info["world"], self.cfg, directory=info["dir"]).load()
+            except ModLoadError as e:
+                info["conn"].close()
+                self.menu.show_load_errors(info["world"], e.errors)
+                return
+            except Exception as e:  # noqa: BLE001
+                L.exception("受け取ったワールドを読み込めません")
+                info["conn"].close()
+                self.menu.error(f"受け取ったワールドを読み込めません: {e}")
+                return
+            NetClient(info, world, self.cfg)
+            if self.menu is not None:
+                self.menu.destroy()
+                self.menu = None
+            self.viewer = Viewer(world, self.cfg)
+        finally:
+            paths.MODS = orig
+
     def leave(self):
         """ワールドを出る。MOD が決めた行き先（leave_action）：("menu"・"play:名前", 保存するか, 知らせ)。"""
         v = self.viewer
@@ -76,7 +135,7 @@ class Client:
             except Exception:  # noqa: BLE001
                 L.exception("マルチプレイの終了でエラー")
         v.destroy()
-        if getattr(v, "close_app", False):
+        if getattr(v, "close_app", False) or action == "quit":
             self.running = False
         elif action.startswith("play:"):
             self.play(action[5:])
@@ -97,6 +156,9 @@ class Client:
                 self.running = False
             self.U.event(self.view, kind, a, b, n)
         self.U.frame(self.view, dt)
+        self._check_join()
+        from ..client import sound
+        sound.get().update(dt)
         c = self.U.window.color
         self.view.set_clear(c[0], c[1], c[2])
         self.view.render()

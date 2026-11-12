@@ -17,6 +17,7 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 fontdue = "0.9"
+rodio = "0.20"
 
 [features]
 abi3 = ["pyo3/abi3-py310"]

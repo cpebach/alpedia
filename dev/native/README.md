@@ -94,3 +94,8 @@ Rust が無ければ、このテストは飛ばされます。
   `mesh_cutoff` は不透明さの切り捨て（MASK）。
 - テクスチャ：`tex_bytes`（PNG・JPEG のファイルの中身）は初めて描くときに読み解き、GPU に送ったら画素は捨てる。
   描くメッシュが使うテクスチャだけ GPU に送る。線形のテクスチャ（文字・アイコン・VRM）は縮小した段（ミップマップ）も作る。
+  `tex_update` は画素の差し替え（ムービーの1コマ）。
+- 窓：`set_size`・`set_fullscreen`（設定の解像度・フルスクリーン）。
+- 音：`alpedia_view.Audio`（rodio）。`load`（wav・mp3 など）・`load_pcm`（読み解いた音。ムービーの音）・`play(番号, 始める秒)`・
+  `stop`・`playing`・`set_volume`・`set_loop`。音の出口が無い PC では何も鳴らさないだけ（`ok()` が False）。
+  Linux で作るときは ALSA の開発用ファイル（`libasound2-dev`）が要ります。
