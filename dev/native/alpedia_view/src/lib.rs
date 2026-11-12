@@ -474,6 +474,15 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.events.push(("cursor".into(), position.x, position.y, 0));
             }
+            WindowEvent::Touch(t) => {
+                // 指：touch:start / touch:move / touch:end（位置は窓の画素、n は指の番号）
+                let ph = match t.phase {
+                    winit::event::TouchPhase::Started => "touch:start",
+                    winit::event::TouchPhase::Moved => "touch:move",
+                    _ => "touch:end",
+                };
+                self.events.push((ph.into(), t.location.x, t.location.y, t.id as i64));
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 // 文字の入力（名前・プログラムなど）
                 if event.state == ElementState::Pressed {

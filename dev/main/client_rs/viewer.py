@@ -77,6 +77,11 @@ class Viewer:
         from ..client import inventory
         inventory.ensure_hotbar(world.player, world.registry)
         self.addons = self._load_addons()
+        try:
+            from ..client.touch_ui import TouchHUD
+            self.game.touch_hud = TouchHUD(self.game)     # 画面のボタン・仮想ジョイスティック（今までの画面と同じ部品）
+        except Exception:  # noqa: BLE001
+            L.exception("画面のボタンを作れません")
         # 画面側の MOD が描かない拡張の景色の箱（画面側の無い MOD）はここで描く
         own = {id(getattr(a, "pack", None)) for a in self.addons}
         self.scenes = []
@@ -146,27 +151,9 @@ class Viewer:
         return bool(self._each_addon(lambda a: a.aim(hit), True))
 
     def nearby_targets(self, radius=2.6):
-        """近くの MOD の触れる物（お店・NPC・受付など）：近い順（MOD の nearby_priority で並べ替え）。"""
-        p = self.w.player
-        out = []
-        for a in self.addons:
-            try:
-                out += a.nearby(p.pos, radius) or []
-            except Exception:  # noqa: BLE001
-                pass
-
-        def prio(t):
-            s = 0.0
-            for a in self.addons:
-                fn = getattr(a, "nearby_priority", None)
-                if fn is not None:
-                    try:
-                        s += float(fn(t) or 0.0)
-                    except Exception:  # noqa: BLE001
-                        pass
-            return (s, t.get("dist", 0.0))
-        out.sort(key=prio)
-        return out
+        """近くの触れる物（機器・MOD の受付・お店・人物など）：使う順（今までの画面と同じ play.nearby_targets）。"""
+        from ..client import play
+        return play.nearby_targets(self.w, self.addons, radius)
 
     def do_interact(self, hit):
         """E：MOD が使わなければワールドの interact（機器・席）。"""
@@ -241,12 +228,18 @@ class Viewer:
                 continue
             if self.editor is not None and self.shim.event(self.view, kind, a, b, n):
                 continue
-            if self.editor is None and not self.grabbed and not self.ui.stack:     # MOD の画面の上のボタン（目標の欄など）
+            if kind.startswith("touch:"):           # 指：画面のボタン・ジョイスティック・なぞって視点
+                ww_, hh_ = self.view.size()
+                self.game.touch_hud.ptr.feed(kind, (a - ww_ / 2) / hh_, (hh_ / 2 - b) / hh_, n)
+                continue
+            if self.editor is None and not self.grabbed and not self.ui.stack:     # 画面の上のボタン（目標の欄・画面のボタン）
                 if kind == "cursor":
                     self.shim.event(self.view, kind, a, b, n)
-                elif kind == "button" and a and n == 0 and self.shim._hit(self.shim.mouse.x, self.shim.mouse.y):
-                    self.shim.event(self.view, kind, a, b, n)
-                    continue
+                elif kind == "button" and n == 0:
+                    mx, my = self.shim.mouse.x, self.shim.mouse.y
+                    if not a or self.shim._hit(mx, my) or self.game.touch_hud.over_ui(mx, my) or self._touch_mode():
+                        self.shim.event(self.view, kind, a, b, n)       # ボタンは指と同じ（ursina のまねの mouse.left）
+                        continue
             if self.ui.event(kind, a, b, n):
                 continue
             if kind == "close":
@@ -254,6 +247,14 @@ class Viewer:
                 self.close_app = True
             elif kind.startswith("key:"):
                 k = kind[4:]
+                if k == "alt":                      # Alt を押している間はカーソルを出す（画面のボタンを押せる）
+                    if a and self.grabbed:
+                        self._alt_free = True
+                        self.set_grab(False)
+                    elif not a and getattr(self, "_alt_free", False):
+                        self._alt_free = False
+                        if not self.ui.stack and self.editor is None and self.game.cam_mode is None:
+                            self.set_grab(True)
                 if a:
                     self.held.add(k)
                     if not n:
@@ -264,8 +265,8 @@ class Viewer:
                 dx += a
                 dy += b
             elif kind == "button" and a and not self.grabbed:
-                self.grabbed = True
-                self.view.grab(True)
+                if not self._touch_mode():
+                    self.set_grab(True)
             elif kind == "button" and a:
                 self._click(n)
             elif kind == "wheel" and a:
@@ -314,8 +315,7 @@ class Viewer:
         """一時停止メニュー・インベントリを開く（マウスを出して、歩くのを止める）。"""
         from . import screens
         self.held.clear()
-        self.grabbed = False
-        self.view.grab(False)
+        self.set_grab(False)
         self.game.ui_root.enabled = False          # MOD の画面の部品（目標の欄など）は隠す
         self.ui.open({"pause": screens.Pause, "inventory": screens.Inventory}[name], self)
 
@@ -334,8 +334,7 @@ class Viewer:
         if dd.get("type") == "computer":
             self.open_program(c, i)
             return
-        self.grabbed = False
-        self.view.grab(False)
+        self.set_grab(False)
         self.game.ui_root.enabled = False
         if act.is_actuator(c, i):
             self.ui.open(screens_dev.ActuatorPanel, self, c, i)
@@ -344,8 +343,7 @@ class Viewer:
 
     def open_program(self, c, i):
         """コンピューターのプログラムの画面（今までの画面の ScriptPanel・BlockEditor を ursina のまねで動かす）。"""
-        self.grabbed = False
-        self.view.grab(False)
+        self.set_grab(False)
         self.game.ui_root.enabled = False
         if c.devs[i]["state"].get("blocks"):
             from ..client.block_editor import BlockEditor
@@ -353,6 +351,53 @@ class Viewer:
         else:
             from ..client.script_panel import ScriptPanel
             self.editor = ScriptPanel(self.game, c, i)
+
+    def _touch_mode(self):
+        return bool(self.cfg["controls"].get("touch", False))
+
+    def set_grab(self, on):
+        """マウスで視点を回す（カーソルを隠して閉じ込める）か。タッチ操作の ON のときは閉じ込めない。"""
+        on = bool(on) and not self._touch_mode()
+        self.grabbed = on
+        self.game.mouse_captured = on
+        self.view.grab(on)
+
+    def screen_ray(self, x, y):
+        """画面の UI 座標 (x, y) を通る視線：(始点, 向き)。タッチで触った所を狙うのに使う。"""
+        cam = getattr(self, "_cam", None)
+        if cam is None:
+            _, _, _, look = self.look_vectors()
+            return self.w.player.eye(), look
+        origin, look, up, vfov = cam
+        right = np.cross(look, up)                    # 画面の右（カメラの向きから）
+        right /= max(np.linalg.norm(right), 1e-9)
+        cu = np.cross(right, look)
+        t = np.tan(np.radians(vfov) / 2)
+        d = look + right * (x * 2 * t) + cu * (y * 2 * t)
+        return np.asarray(origin, float), d / np.linalg.norm(d)
+
+    def touch_action(self, kind, x, y):
+        """タッチ：画面の (x, y) を触った。kind = "tap"（使う／置く）・"hold"（長押し：壊す・掘る）。"""
+        w = self.w
+        p = w.player
+        if p.seated or self.editor is not None or self.ui.stack:
+            return
+        o, d = self.screen_ray(x, y)
+        reach = float(p.defn.get("reach", 8.0)) + float(np.linalg.norm(o - p.eye()))
+        hit = w.raycast(o, d, reach)
+        if kind == "hold":
+            if hit and hit["kind"] == "voxel":
+                if w.remove(hit) is not False:
+                    self.sfx("break")
+            elif hit and hit["kind"] in ("terrain", "water"):
+                if w.dig(hit) is not False:
+                    self.sfx("dig")
+            return
+        if hit and self._usable(hit):
+            self.do_interact(hit)
+            return
+        if hit and (hit["kind"] in ("voxel", "terrain", "water") or hit.get("placeable")):
+            self._place(hit)
 
     def start_hosting(self):
         """LAN に公開する（一時停止メニューから）。"""
@@ -370,8 +415,7 @@ class Viewer:
         if not self.ui.stack and self.editor is None and self.game.cam_mode is None:
             self.game.ui_root.enabled = True
         if not self.ui.stack:
-            self.grabbed = True
-            self.view.grab(True)
+            self.set_grab(True)
 
     def _key(self, k, c):
         w = self.w
@@ -432,20 +476,43 @@ class Viewer:
         w = self.w
         c = self.cfg["controls"]
         self._input()
+        cam_mode = self.game.cam_mode
+        hud = self.game.touch_hud
+        if cam_mode is None:
+            hud.update(dt)                         # 画面のボタン・ジョイスティック・近くの物（押されたキー → vkeys）
+        vk = self.game.vkeys
+        tdx, tdy = hud.take_look()                 # 画面をなぞった量（タッチ）
+        if tdx or tdy:
+            sens = np.radians(float(c.get("mouse_sensitivity", 60.0)) * 1.6)
+            self.look_vectors()
+            upv = w.player.up
+            ang = float(tdx) * sens
+            self.yaw_fwd = self.yaw_fwd * np.cos(ang) + np.cross(upv, self.yaw_fwd) * np.sin(ang)
+            self.pitch = float(np.clip(self.pitch + float(tdy) * sens, -1.55, 1.55))
         fwd, right, up, look = self.look_vectors()
         w.local_player.look_fwd, w.local_player.pitch = fwd, self.pitch
-        H = lambda k: 1 if k in self.held else 0  # noqa: E731
+        held = {self.KEYMAP.get(k, k) for k in self.held} | {k for k, on in vk.items() if on}
+        H = lambda k: 1 if (k in held or (k == "control" and "left control" in held)) else 0  # noqa: E731
+        st = hud.stick
         move = np.zeros(3)
-        cam_mode = self.game.cam_mode
-        if not w.player.seated and not self.ui.stack and self.editor is None and not self.game.hold and cam_mode is None:
-            move += fwd * (H(c["forward"]) - H(c["back"])) + right * (H(c["right"]) - H(c["left"]))
+        busy = bool(self.ui.stack) or self.editor is not None or self.game.hold or cam_mode is not None
+        if not w.player.seated and not busy:
+            move += fwd * (H(c["forward"]) - H(c["back"]) + st[1]) + right * (H(c["right"]) - H(c["left"]) + st[0])
             nm = np.linalg.norm(move)
             if nm > 1:
                 move /= nm
-        jump = bool(H(c["jump"])) and not w.player.seated and cam_mode is None
-        thrust = (move * 0.6 + up * (H(c["jump"]) - H("control"))) if cam_mode is None else np.zeros(3)
+        jump = bool(H(c["jump"])) and not w.player.seated and not busy
+        thrust = (move * 0.6 + up * (H(c["jump"]) - H(c.get("down", "left control")))) if not busy else np.zeros(3)
         from ..client.game import SEAT_KEYS
-        w.input_keys = {self.KEYMAP.get(k, k) for k in self.held} & set(SEAT_KEYS) if w.player.seated else set()
+        if w.player.seated and not busy:
+            keys = held & set(SEAT_KEYS)
+            for k, on in ((c["forward"], st[1] > 0.4), (c["back"], st[1] < -0.4), (c["right"], st[0] > 0.4),
+                          (c["left"], st[0] < -0.4)):            # 操縦席ではスティックを W/A/S/D として使う
+                if on:
+                    keys.add(k)
+            w.input_keys = keys
+        else:
+            w.input_keys = set()
         tick = 1.0 / float(self.cfg["physics"].get("tick_rate", 60))
         self.acc += dt
         n = 0
@@ -483,6 +550,7 @@ class Viewer:
         hfov = np.radians(fov)                                # Panda3D と同じく横の視野角
         vfov = float(np.degrees(2 * np.arctan(np.tan(hfov / 2) * hh / max(ww, 1))))
         self.view.camera([0.0, 0.0, 0.0], [float(x) for x in cam_look], [float(x) for x in cam_up], vfov, 0.05)
+        self._cam = (origin, np.asarray(cam_look, float), np.asarray(cam_up, float), vfov)
         self.shim.camera.fov_pair = (float(np.degrees(hfov)), vfov)
         far = float(g.get("view_distance", 3000))
         self._each_addon(lambda a: a.update(origin, far))
@@ -712,13 +780,10 @@ class Viewer:
             lines.append(f"LAN に公開中 {'  '.join(net.addresses()[:1])}  {1 + len(w.remote)} 人")
         if getattr(self, "fps_text", ""):
             lines.append(self.fps_text)
-        if not self.grabbed and not self.ui.stack:
+        if self._touch_mode():
+            pass                                    # タッチ操作：画面のボタンとジョイスティック
+        elif not self.grabbed and not self.ui.stack:
             lines.append("クリックで操作（マウスで見回す）・Esc でメニュー・I でインベントリ")
-        if self.frame_no % 10 == 0:
-            near = None
-            if not p.seated and not self._usable(self.hit):
-                near = next((t for t in self.nearby_targets() if t.get("kind") == "e"), None)
-            self._near_txt = f"［E］{near['label']}" if near is not None else ""
         aspect = ww / max(hh, 1)
         self.hud.set("\n".join(lines), 0.026)
         self.hud.place(-aspect / 2 + 0.015, 0.5 - 0.015)
@@ -727,7 +792,7 @@ class Viewer:
         _, h = self.msg.set("\n".join(msgs), 0.024, max_width=aspect * 0.6)
         self.msg.show(bool(msgs))
         self.msg.place(-aspect / 2 + 0.015, -0.5 + 0.115 + h)          # アイテムバーより上
-        at = getattr(self, "_aim_txt", "") or getattr(self, "_near_txt", "")     # 何も狙っていなければ近くの MOD の物
+        at = getattr(self, "_aim_txt", "")
         tw, th = self.aim_text.set(at, 0.022, max_width=aspect * 0.5)
         self.aim_text.show(bool(at))
         self.aim_text.place(-tw / 2, -0.03)
@@ -826,6 +891,10 @@ class Viewer:
             self.snd.update(10.0)               # 曲を止める
         self._each_addon(lambda a: a.destroy())
         self.addons = []
+        try:
+            self.game.touch_hud.destroy()
+        except Exception:  # noqa: BLE001
+            pass
         for b in self.bodies.values():
             try:
                 b.destroy()
@@ -905,10 +974,28 @@ class _Pointers:
 
 
 class _TouchStub:
+    """画面のボタンを作れなかったときの代わり（何も出さない）。"""
+
     def __init__(self):
         self.ptr = _Pointers()
+        self.stick = np.zeros(2)
 
     def _release_all(self):
+        pass
+
+    def update(self, dt):
+        pass
+
+    def take_look(self):
+        return np.zeros(2)
+
+    def over_ui(self, x, y):
+        return False
+
+    def mouse_over_ui(self):
+        return False
+
+    def destroy(self):
         pass
 
 
@@ -930,6 +1017,8 @@ class GameAdapter:
         self.leaving = False
         self.load_errors = []
         self.touch_hud = _TouchStub()
+        self.vkeys = {}
+        self.mouse_captured = False
 
     @property
     def addons(self):
@@ -1029,8 +1118,44 @@ class GameAdapter:
         self.v.screen_closed()
 
     def set_mouse_capture(self, on):
-        self.v.grabbed = bool(on)
-        self.v.view.grab(bool(on))
+        self.v.set_grab(on)
+
+    # ---- 画面のボタン（touch_ui.TouchHUD）が使う口 ----
+    @property
+    def hit(self):
+        return self.v.hit
+
+    def _usable(self, hit):
+        return self.v._usable(hit)
+
+    def input(self, key):
+        """画面のボタンがキーを押した（ursina のキーの名前）。"""
+        self.v._key(key, self.cfg["controls"])
+
+    def do_remove(self):
+        self.v._click(0)
+
+    def do_place(self):
+        self.v._click(1)
+
+    def open_editor(self, hit=None):
+        if hit is not None:
+            self.v.hit = hit
+        self.v.open_editor()
+
+    def nearby_targets(self, radius=2.6):
+        return self.v.nearby_targets(radius)
+
+    def do_target(self, t, settings=False):
+        if settings or t.get("kind") == "p":
+            self.open_editor(t["hit"])
+        else:
+            self.v.do_interact(t["hit"])
+
+    def touch_action(self, kind, x, y):
+        self.v.touch_action(kind, x, y)
+
+
 
     def sfx(self, name, volume=1.0):
         self.v.sfx(name, volume)

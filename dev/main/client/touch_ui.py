@@ -96,6 +96,37 @@ class Pointers:
         return self._to_ui(md.getX(), md.getY())
 
 
+class RsPointers:
+    """Rust の画面の指とマウス：画面（viewer）が feed で指の出来事を渡す。{番号: (x, y)}（画面の UI 座標）。"""
+
+    def __init__(self, game):
+        self.game = game
+        self.touches = {}
+        self.touch_t = 0.0
+        self.multi = True
+
+    def feed(self, kind, x, y, n):
+        """kind：touch:start / touch:move / touch:end、(x, y) は UI 座標。"""
+        if kind == "touch:end":
+            self.touches.pop(n, None)
+        else:
+            self.touches[n] = (x, y)
+        self.touch_t = _time.monotonic()
+
+    def current(self):
+        if self.touches and _time.monotonic() - self.touch_t < 5.0:
+            return {("t", k): v for k, v in self.touches.items()}
+        self.touches.clear()
+        from ursina import mouse
+        if mouse.left and not getattr(self.game, "mouse_captured", False):
+            return {"m": self.mouse()}
+        return {}
+
+    def mouse(self):
+        from ursina import mouse
+        return (mouse.x, mouse.y)
+
+
 class Btn:
     def __init__(self, hud, bid, icon, label, r, kind="tap", key=None, on_tap=None, press_key=False):
         U = hud.U
@@ -187,7 +218,8 @@ class TouchHUD:
         self.game = game
         self.U = U = game.U
         self.root = U["Entity"](parent=game.ui_root)
-        self.ptr = Pointers(game)
+        from . import gfx
+        self.ptr = RsPointers(game) if gfx.active() else Pointers(game)
         c = game.cfg["controls"]
         g = game
 

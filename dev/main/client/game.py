@@ -559,53 +559,9 @@ class Game:
     QUIET_DEVICES = {"pipe", "battery", "anchor"}         # 近くの物の一覧に出さない（E で触るほどの物ではない）
 
     def nearby_targets(self, radius=2.6):
-        """近くにある、触れるもの（使う順）：[{"label", "hit", "kind": "e", "settings": 設定を開けるか, "icon", "dist"}]
-        機器 1 つにボタン 1 つ（設定はボタンの歯車・P）。配管・バッテリーは出さない。MOD の nearby_priority で並べ替える。"""
-        w = self.world
-        p = w.player
-        if p.seated:
-            return []
-        eye = p.eye()
-        out = []
-        surv = not w.creative
-        names = {"seat": "座る", "computer": "起動・停止", "tank": "燃料を入れる" if surv else "中身を切り替える",
-                 "actuator": "動かす", "processor": "原料を入れる・受け取る" if surv else "ON/OFF",
-                 "thruster": "点火", "valve": "開閉", "crank": "回す"}
-        for c in w.constructs_near(eye, radius):
-            if not c.n_vox or not c.has_devices:
-                continue
-            for i, d in enumerate(c.devs):
-                if not d:
-                    continue
-                dd = c.reg.device(d["def"]) or {}
-                t_ = dd.get("type")
-                if t_ in self.QUIET_DEVICES:
-                    continue
-                ctr = c.pos[8 * i:8 * i + 8].mean(0)
-                dist = float(np.linalg.norm(ctr - eye))
-                if dist > radius:
-                    continue
-                hit = {"kind": "voxel", "t": dist, "construct": c, "index": i, "face": 2, "point": ctr}
-                out.append({"label": f"{names.get(t_, '操作')}（{d['name']}）", "hit": hit, "kind": "e", "dist": dist,
-                            "icon": "interact", "settings": t_ != "seat"})
-        for a in self.addons:
-            try:
-                out += a.nearby(p.pos, radius) or []
-            except Exception:  # noqa: BLE001
-                L.exception("近くのものを探せません（%s）", a.name)
-
-        def rank(t):
-            pr = 0.0
-            for a in self.addons:
-                fn = getattr(a, "nearby_priority", None)
-                if fn is not None:
-                    try:
-                        pr += float(fn(t) or 0.0)
-                    except Exception:  # noqa: BLE001
-                        pass
-            return (pr, t["dist"])
-        out.sort(key=rank)
-        return out[:4]
+        """近くにある、触れるもの（使う順）。play.nearby_targets（Rust の画面と共通）。"""
+        from . import play
+        return play.nearby_targets(self.world, self.addons, radius)
 
     def _leave(self, action, save=True, status=""):
         if self.leaving:

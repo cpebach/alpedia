@@ -28,7 +28,7 @@ class Pause(U.Screen):
             if net is None:
                 items += (("LAN に公開（マルチプレイ）", self.host),)
         top = 0.3
-        n_right = 7
+        n_right = 8
         bottom = top - max(len(items), n_right) * 0.08 - 0.05 - (0.05 if net is not None and not client else 0)
         self.panel(-0.62, top + 0.1, 0.62, bottom)
         self.text("一時停止", 0, top + 0.07, 0.034, anchor=(0.5, 0))
@@ -46,7 +46,8 @@ class Pause(U.Screen):
                  ("読み込み（設計図・OBJ）", lambda: self.later(g.open_import)),
                  ("見ている構築物を OBJ で出力", lambda: self.later(self.v.export_obj)),
                  (f"BGM {int(au.get('bgm', 0))} %（押すと +10）", lambda: self.volume("bgm")),
-                 (f"効果音 {int(au.get('sfx', 0))} %（押すと +10）", lambda: self.volume("sfx"))]
+                 (f"効果音 {int(au.get('sfx', 0))} %（押すと +10）", lambda: self.volume("sfx")),
+                 (f"仮想ジョイスティック {'ON' if self.v.cfg['controls'].get('touch', False) else 'OFF'}", self.touch)]
         for k, (label, fn) in enumerate(right):
             self.button(label, xr, top - 0.04 - k * 0.08, 0.5, 0.06, fn, color=blue, size=0.022)
         y = top - 0.04 - len(right) * 0.08
@@ -78,6 +79,18 @@ class Pause(U.Screen):
             save_config(self.v.cfg)
         except Exception:  # noqa: BLE001
             pass
+        self.build()
+
+    def touch(self):
+        """仮想ジョイスティック（タッチ操作）の ON/OFF（設定に保存）。ON の間はマウスを閉じ込めない。"""
+        c = self.v.cfg["controls"]
+        c["touch"] = not c.get("touch", False)
+        try:
+            from ..client.menu import save_config
+            save_config(self.v.cfg)
+        except Exception:  # noqa: BLE001
+            pass
+        self.v.w.message("タッチ操作（仮想ジョイスティック） " + ("ON" if c["touch"] else "OFF"))
         self.build()
 
     def skin(self, step):

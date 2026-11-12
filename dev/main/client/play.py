@@ -123,3 +123,55 @@ def seat_follow(w, addons):
             ext = float(np.linalg.norm(t.pos.max(0) - t.pos.min(0)))
             return t.center_of_mass(), float(np.clip(ext * 2.0, 4.0, 30.0))
     return None
+
+
+QUIET_DEVICES = {"pipe", "battery", "anchor"}         # 近くの物の一覧に出さない（E で触るほどの物ではない）
+
+
+def nearby_targets(w, addons, radius=2.6):
+    """近くにある、触れるもの（使う順）：[{"label", "hit", "kind": "e", "settings": 設定を開けるか, "icon", "dist"}]
+    機器 1 つにボタン 1 つ（設定はボタンの歯車・P）。配管・バッテリーは出さない。MOD の nearby_priority で並べ替える。"""
+    p = w.player
+    if p.seated:
+        return []
+    eye = p.eye()
+    out = []
+    surv = not w.creative
+    names = {"seat": "座る", "computer": "起動・停止", "tank": "燃料を入れる" if surv else "中身を切り替える",
+             "actuator": "動かす", "processor": "原料を入れる・受け取る" if surv else "ON/OFF",
+             "thruster": "点火", "valve": "開閉", "crank": "回す"}
+    for c in w.constructs_near(eye, radius):
+        if not c.n_vox or not c.has_devices:
+            continue
+        for i, d in enumerate(c.devs):
+            if not d:
+                continue
+            dd = c.reg.device(d["def"]) or {}
+            t_ = dd.get("type")
+            if t_ in QUIET_DEVICES:
+                continue
+            ctr = c.pos[8 * i:8 * i + 8].mean(0)
+            dist = float(np.linalg.norm(ctr - eye))
+            if dist > radius:
+                continue
+            hit = {"kind": "voxel", "t": dist, "construct": c, "index": i, "face": 2, "point": ctr}
+            out.append({"label": f"{names.get(t_, '操作')}（{d['name']}）", "hit": hit, "kind": "e", "dist": dist,
+                        "icon": "interact", "settings": t_ != "seat"})
+    for a in addons:
+        try:
+            out += a.nearby(p.pos, radius) or []
+        except Exception:  # noqa: BLE001
+            pass
+
+    def rank(t):
+        pr = 0.0
+        for a in addons:
+            fn = getattr(a, "nearby_priority", None)
+            if fn is not None:
+                try:
+                    pr += float(fn(t) or 0.0)
+                except Exception:  # noqa: BLE001
+                    pass
+        return (pr, t["dist"])
+    out.sort(key=rank)
+    return out[:4]

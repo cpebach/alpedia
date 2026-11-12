@@ -217,6 +217,10 @@ def _to_texture(img):
     """PIL 画像 → ursina のテクスチャ。ursina の版によって PIL 画像を直接渡せないことがあるので、
     いったん PNG にして Panda3D のテクスチャを作ってから包む。"""
     import io
+    from . import gfx
+    if gfx.active():                     # Rust の画面
+        im = img.convert("RGBA")
+        return gfx.tex_rgba(im.width, im.height, im.tobytes(), "icon")
     from panda3d.core import PNMImage, StringStream, SamplerState, Texture as PandaTexture
     from ursina import Texture
     buf = io.BytesIO()
