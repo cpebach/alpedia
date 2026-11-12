@@ -100,6 +100,11 @@ def lod_vertices(c, base):
         return np.zeros((0, 12), np.float32)
     R, t = c.lattice_pose()
     s = c.size
+    core = _native()
+    if core is not None and hasattr(core, "lod_vertices"):          # Rust でまとめて
+        f64 = lambda a: np.ascontiguousarray(a, dtype=np.float64)  # noqa: E731
+        return core.lod_vertices(f64(C), f64(H), f64(col), f64(R), [float(x) for x in t],
+                                 [float(x) for x in base], float(s), [float(x) for x in SUN], float(AMBIENT))
     corners = (C[:, None, :] + H[:, None, :] * _BITS[None]) * s           # (k,8,3) 格子の座標
     W = corners @ R.T + (t - base)
     q = W[:, _BOX_FACES]                                                  # (k,6,4,3)
@@ -326,6 +331,7 @@ class ConstructView:
         from ursina import Entity
         self.c = construct
         self.root = Entity(parent=parent)
+        self._parent0 = parent
         self.parent = self.root
         self.loader = loader
         self.version = -1
@@ -536,9 +542,15 @@ class ConstructView:
             self._set_mesh(g, v)
 
     # -- 毎フレーム --------------------------------------------------------
-    def update(self, origin, highlight_flames=True):
-        """形を描く。戻り値：剛体・静止中なら (R, x, 版)、ブロックごとなら None（記号・看板の位置合わせに使う）。"""
+    def update(self, origin, highlight_flames=True, static_root=None, anchor=None):
+        """形を描く。戻り値：剛体・静止中なら (R, x, 版)、ブロックごとなら None（記号・看板の位置合わせに使う）。
+        static_root・anchor：止まっている物は、基準点 anchor からの位置で static_root の下に置く。"""
         c = self.c
+        want_parent = static_root if static_root is not None else self._parent0
+        if self.root.parent is not want_parent:
+            self.root.parent = want_parent
+            self._mat_key = "reparent"                    # 行列は必ず付け直す
+        base = anchor if static_root is not None else origin
         self._tf = None
         if self.version != c.version:
             if not self._rebuild_blob():
@@ -551,7 +563,7 @@ class ConstructView:
             # 行ベクトル形式（Panda3D）：p' = p R^T + (x - origin)
             M = np.eye(4)
             M[:3, :3] = R.T
-            M[3, :3] = x - origin
+            M[3, :3] = x - base
             self._set_root_mat(M)
         else:
             self._set_root_mat(None)
@@ -767,6 +779,17 @@ class DecalView:
         c = self.c
         vox, nl, al, uv = self.items
         sel = P8[vox]
+        core = _native()
+        if core is not None and hasattr(core, "decal_quads"):           # Rust でまとめて
+            v = core.decal_quads(np.ascontiguousarray(sel, dtype=np.float64), np.ascontiguousarray(nl, dtype=np.float64),
+                                 np.ascontiguousarray(al, dtype=np.float64), np.ascontiguousarray(uv, dtype=np.float32),
+                                 float(c.size), [float(x) for x in origin], [float(x) for x in SUN], float(AMBIENT))
+            if getattr(self, "_new", False):
+                self.mesh.set(v, quad_tris(len(vox)))
+                self._new = False
+            else:
+                self.mesh.set(v)
+            return
         cen = _centers8(sel)
         F = _frames8(sel)                             # 行がローカル x,y,z 軸
         n = np.einsum("dk,dkj->dj", nl, F)

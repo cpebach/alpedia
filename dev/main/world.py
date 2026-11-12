@@ -1041,6 +1041,12 @@ class World:
             b[4][k] = r
             b[3][k] = r + c.size
 
+    def _bounds_arrays(self):
+        """(構築物のリスト, 中心 (n,3), 半径＋大きさ (n,), 半径 (n,))（描画の距離の計算用）。"""
+        self._bounds()
+        b = self._bnd
+        return b[1], b[2], b[3], b[4]
+
     def process_distance(self):
         """機能処理の距離（m）。0 なら全部（距離に関係なく処理する）。"""
         return float(self.cfg.get("physics", {}).get("process_distance", 0) or 0)

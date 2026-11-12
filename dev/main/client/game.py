@@ -1254,11 +1254,24 @@ class Game:
         lod_list = []
         frame = self._frame_no = getattr(self, "_frame_no", 0) + 1
         budget = _time.perf_counter() + 0.008
-        for cid, c in w.constructs.items():
-            if not c.n_vox:
+        # 止まっている物（固定・眠っている）は、近くの基準点からの位置で親ノード（static_root）の下に置き、
+        # 毎フレームは親ノードを1つ動かすだけ（基準点から 256 m 離れたら置き直す）
+        if not hasattr(self, "_static_root"):
+            from ursina import Entity
+            self._static_root = Entity(parent=self.scene_root)
+            self._anchor, self._anchor_ver = None, 0
+        if self._anchor is None or float(np.linalg.norm(origin - self._anchor)) > 256.0:
+            self._anchor = np.array(origin, float)
+            self._anchor_ver += 1
+        self._static_root.setPos(*[float(x) for x in (self._anchor - origin)])
+        # 距離は外側の球（ワールドが使い回している配列）でまとめて計算
+        cs_all, C_all, _, R_all = w._bounds_arrays()
+        D_all = np.sqrt(((C_all - origin) ** 2).sum(1)) - R_all if len(cs_all) else np.zeros(0)
+        seat_id = w.player.seated[0] if w.player.seated else None
+        for c, dist in zip(cs_all, D_all.tolist()):
+            cid = c.id
+            if w.constructs.get(cid) is not c:
                 continue
-            ctr, rad = c.bounds()
-            dist = float(np.linalg.norm(ctr - origin)) - rad
             if dist > far:
                 if cid in self.views:
                     self.views[cid].set_visible(False)
@@ -1267,7 +1280,7 @@ class Game:
             if v is not None and v.c is not c:       # マルチプレイ：形が変わって作り直された
                 v.remove()
                 v = None
-            seated = w.player.seated and w.player.seated[0] == cid
+            seated = seat_id == cid
             near = load <= 0 or seated or dist < load or (cid in self._loaded and dist < load * 1.1)
             if not near:
                 if v is not None:
@@ -1287,7 +1300,15 @@ class Game:
                 v = self.views[cid] = render.ConstructView(self.scene_root, self.loader, c)
             self._loaded.add(cid)
             v.set_visible(True)
-            v.update(origin)
+            tf = c.render_transform()
+            static = tf is not None and not seated and (c.is_static or c.asleep) and not c.dev_ids("thruster")
+            key = (c.version, tf[2], self._anchor_ver) if static else None
+            if key is None or v.__dict__.get("_static_key") != key:
+                v._static_key = key
+                if static:
+                    v.update(origin, static_root=self._static_root, anchor=self._anchor)
+                else:
+                    v.update(origin)
             # 固定されて止まっている物（建物など）の記号・看板は、6 フレームに1回だけ見直す（形が変わったらすぐ）
             if not (c.is_static and not seated) or (frame + hash(cid)) % 6 == 0 \
                     or getattr(v, "_deco_ver", None) != c.version:

@@ -1268,6 +1268,122 @@ impl DevPlan {
 }
 
 // ---------------------------------------------------------------------------
+// 描画の準備（遠景の箱・記号の四角）
+// ---------------------------------------------------------------------------
+const BOX_FACES: [[usize; 4]; 6] = [[1, 3, 7, 5], [0, 4, 6, 2], [2, 6, 7, 3], [0, 1, 5, 4], [4, 5, 7, 6], [0, 2, 3, 1]];
+const BOX_N: [[f64; 3]; 6] = [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]];
+
+fn shade1(n: [f64; 3], c: [f64; 3], sun: [f64; 3], amb: f64) -> [f64; 3] {
+    let lam = (n[0] * sun[0] + n[1] * sun[1] + n[2] * sun[2]).clamp(0.0, 1.0);
+    let k = amb + (1.0 - amb) * lam;
+    [c[0] * k, c[1] * k, c[2] * k]
+}
+
+/// 遠景の箱（render.lod_vertices）：格子の座標の箱（中心 C・半分の大きさ H・色）を、R・t でワールドに置き base を引いた
+/// 頂点 (箱×24, 12) float32
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn lod_vertices<'py>(
+    py: Python<'py>, c: RoF<'py>, hh: RoF<'py>, col: RoF<'py>, r: RoF<'py>, t: [f64; 3], base: [f64; 3], size: f64, sun: [f64; 3],
+    ambient: f64,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let (cc, hv, co, rr) = (ro(&c, "C")?, ro(&hh, "H")?, ro(&col, "col")?, ro(&r, "R")?);
+    let k = cc.len() / 3;
+    need(hv.len() == 3 * k && co.len() == 3 * k && rr.len() == 9, "lod_vertices")?;
+    let mut out = vec![0f32; k * 24 * 12];
+    let rot = |v: [f64; 3]| [rr[0] * v[0] + rr[1] * v[1] + rr[2] * v[2], rr[3] * v[0] + rr[4] * v[1] + rr[5] * v[2],
+                             rr[6] * v[0] + rr[7] * v[1] + rr[8] * v[2]];
+    let nrm: Vec<[f64; 3]> = BOX_N.iter().map(|&n| rot(n)).collect();
+    for b in 0..k {
+        let mut w = [[0.0; 3]; 8];
+        for (q, wq) in w.iter_mut().enumerate() {
+            let bits = [(q & 1) as f64 * 2.0 - 1.0, ((q >> 1) & 1) as f64 * 2.0 - 1.0, ((q >> 2) & 1) as f64 * 2.0 - 1.0];
+            let l = [(cc[3 * b] + hv[3 * b] * bits[0]) * size, (cc[3 * b + 1] + hv[3 * b + 1] * bits[1]) * size,
+                     (cc[3 * b + 2] + hv[3 * b + 2] * bits[2]) * size];
+            let g = rot(l);
+            *wq = [g[0] + t[0] - base[0], g[1] + t[1] - base[1], g[2] + t[2] - base[2]];
+        }
+        let colr = [co[3 * b], co[3 * b + 1], co[3 * b + 2]];
+        for (f, face) in BOX_FACES.iter().enumerate() {
+            let n = nrm[f];
+            let sh = shade1(n, colr, sun, ambient);
+            for (j, &vi) in face.iter().enumerate() {
+                let o = ((b * 6 + f) * 4 + j) * 12;
+                for a in 0..3 {
+                    out[o + a] = w[vi][a] as f32;
+                    out[o + 3 + a] = n[a] as f32;
+                    out[o + 6 + a] = sh[a] as f32;
+                }
+                out[o + 9] = 1.0;
+            }
+        }
+    }
+    Ok(PyArray1::from_vec_bound(py, out).reshape([k * 24, 12])?)
+}
+
+/// 記号の四角（render.DecalView._write）：p8 (D,8,3) の頂点、nl・al (D,3) はブロックの向きでの面の法線と上、uv (D,4)。
+/// 戻り値 (D×4, 12) float32
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn decal_quads<'py>(
+    py: Python<'py>, p8: RoF<'py>, nl: RoF<'py>, al: RoF<'py>, uv: PyReadonlyArrayDyn<'py, f32>, size: f64, origin: [f64; 3],
+    sun: [f64; 3], ambient: f64,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let (p, n_, a_) = (ro(&p8, "P8")?, ro(&nl, "nl")?, ro(&al, "al")?);
+    let u = uv.as_slice().map_err(|_| PyValueError::new_err("uv: 連続した配列ではありません"))?;
+    let d = p.len() / 24;
+    need(n_.len() == 3 * d && a_.len() == 3 * d && u.len() == 4 * d, "decal_quads")?;
+    let mut out = vec![0f32; d * 4 * 12];
+    let h = size * 0.31;
+    for i in 0..d {
+        let q = |k: usize, a: usize| p[24 * i + 3 * k + a];
+        let mut cen = [0.0; 3];
+        for k in 0..8 {
+            for a in 0..3 {
+                cen[a] += q(k, a) / 8.0;
+            }
+        }
+        let axis = |hi: [usize; 4], lo: [usize; 4]| {
+            let mut v = [0.0; 3];
+            for a in 0..3 {
+                for j in 0..4 {
+                    v[a] += (q(hi[j], a) - q(lo[j], a)) / 4.0;
+                }
+            }
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9);
+            [v[0] / l, v[1] / l, v[2] / l]
+        };
+        let f = [axis([1, 3, 5, 7], [0, 2, 4, 6]), axis([2, 3, 6, 7], [0, 1, 4, 5]), axis([4, 5, 6, 7], [0, 1, 2, 3])];
+        let mut n = [0.0; 3];
+        let mut up = [0.0; 3];
+        for k in 0..3 {
+            for a in 0..3 {
+                n[a] += n_[3 * i + k] * f[k][a];
+                up[a] += a_[3 * i + k] * f[k][a];
+            }
+        }
+        let r = body::cross(up, n);
+        let pc = [cen[0] + n[0] * (size * 0.5 * 1.012) - origin[0], cen[1] + n[1] * (size * 0.5 * 1.012) - origin[1],
+                  cen[2] + n[2] * (size * 0.5 * 1.012) - origin[2]];
+        let sgn = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+        let uvs = [(u[4 * i], u[4 * i + 1]), (u[4 * i + 2], u[4 * i + 1]), (u[4 * i + 2], u[4 * i + 3]), (u[4 * i], u[4 * i + 3])];
+        let sh = shade1(n, [1.0, 1.0, 1.0], sun, ambient);
+        for j in 0..4 {
+            let o = (i * 4 + j) * 12;
+            for a in 0..3 {
+                out[o + a] = (pc[a] + r[a] * h * sgn[j].0 + up[a] * h * sgn[j].1) as f32;
+                out[o + 3 + a] = n[a] as f32;
+                out[o + 6 + a] = sh[a] as f32;
+            }
+            out[o + 9] = 1.0;
+            out[o + 10] = uvs[j].0;
+            out[o + 11] = uvs[j].1;
+        }
+    }
+    Ok(PyArray1::from_vec_bound(py, out).reshape([d * 4, 12])?)
+}
+
+// ---------------------------------------------------------------------------
 // 描画用のメッシュ
 // ---------------------------------------------------------------------------
 type MeshGroup<'py> = (RoI<'py>, RoF<'py>, PyReadonlyArrayDyn<'py, f32>, RoI<'py>);
@@ -1367,6 +1483,8 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Proxy>()?;
     m.add_function(wrap_pyfunction!(step_tick, m)?)?;
     m.add_class::<DevPlan>()?;
+    m.add_function(wrap_pyfunction!(lod_vertices, m)?)?;
+    m.add_function(wrap_pyfunction!(decal_quads, m)?)?;
     m.add_class::<ArtTopo>()?;
     m.add_function(wrap_pyfunction!(push_apart, m)?)?;
     Ok(())

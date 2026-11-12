@@ -10,6 +10,7 @@
 |---|---|---|
 | 1ティックの物理まるごと（動いている構築物すべてのサブステップの繰り返し・MOD の箱との接触・構築物どうしの押し出し・固定の戻し・結合直後のおさえ。Python の処理が要ること（眠っていた物が起きた・ちぎれた）が起きたらそこで返す） | `tick.rs`, `lib.rs`（`step_tick`） | `main/world.py` の `step` のサブステップの繰り返し（`_native_tick`） |
 | 機器の1ティック（電力・推進機・配管の流れとバルブ・精錬機・加工機・タンク・通気口・アンテナ・ライト・MOD の機器。状態は Python の dict のまま読み書き。アクチュエーターだけ Python） | `devices.rs`, `lib.rs`（`DevPlan`） | `main/devices.py` の `update` |
+| 遠景の箱（LOD）の頂点・機器の記号の四角 | `lib.rs`（`lod_vertices`・`decal_quads`） | `main/client/render.py` の `lod_vertices`・`DecalView._write` |
 | 構築物1つの1サブステップまるごと（重力・浮力・減衰・積分・形合わせ・結合・回転ジョイント・地面との接触・塑性変形・ちぎれの判定、剛体・完全剛体モードの接触も） | `body.rs`, `lib.rs`（`Body`） | `main/construct.py` の `substep_begin` / `substep_end` |
 | 描画用の頂点（ブロックごとに動いている構築物の形・法線・陰影・噴射の色をまとめて） | `mesh.rs`, `lib.rs`（`mesh_pack`） | `main/client/render.py` の `_update_blob` |
 | 構築物どうし（と、結合していないボクセルどうし）の押し出し | `contacts.rs`, `pairs.rs`, `lib.rs`（`Proxy`・`contacts`） | `main/world.py` の `_voxel_collisions` |
