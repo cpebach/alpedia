@@ -566,7 +566,19 @@ class World:
         broken = set()
         fixed_pos = [(c, c.pos.copy()) for c in sleeping if c.is_static]      # アンカーで固定：押されても戻す
         settle_acc = float(self.cfg.get("physics", {}).get("merge_settle_acc", 30.0))
-        for _ in range(self.substeps):
+        done = 0
+        res = self._native_tick(cons, sleeping, h, anchored_ids, settle_acc, fixed_pos)
+        if res is not None:                      # Rust でまとめて進めた（途中で止まったら、残りはここで今までどおり）
+            done, woke, broke = res
+            broken |= broke
+            if woke:
+                for c in woke:
+                    c.wake()
+                    c._prev = c.pos.copy()
+                    self._prep_ext(c, dt)
+                cons = cons + woke
+                sleeping = [c for c in sleeping if c.asleep or c.id in anchored_ids]
+        for _ in range(self.substeps - done):
             gs = float(self.settings.get("gravity_scale", 1.0))
             settling = [(c, c.vel.copy(), c.rb and (c.rb["v"].copy(), c.rb["w"].copy())) for c in cons
                         if c.__dict__.get("_settle", 0.0) > 0.0 and c.vel.shape == c.pos.shape]
@@ -889,6 +901,62 @@ class World:
             if ob >= n_active:
                 woke.add(ob)
         return [cons[k] for k in woke]
+
+    def _native_tick(self, cons, sleeping, h, anchored_ids, settle_acc, fixed_pos):
+        """1ティックの物理（サブステップの繰り返し）を Rust でまとめて進める。
+        戻り値 (進めたサブステップの数, 起きた眠っていた物, ちぎれた構築物の ID)。使えないときは None。"""
+        from . import native
+        from .construct import CONTACT_SOFT, NATIVE_STEP_OFF, Construct, _native_planets
+        core = native.core
+        if core is None or not hasattr(core, "step_tick") or NATIVE_STEP_OFF or not cons:
+            return None
+        pls = _native_planets(self.planets)
+        if pls is None:
+            return None
+        groups = ({}, [])
+        jobs = []
+        for c in cons:
+            j = c.tick_job(groups, True)
+            if j is None:
+                return None
+            st = c.__dict__.get("_settle", 0.0)
+            j["settle_cap"] = float(settle_acc * h) if st > 0.0 and c.vel.shape == c.pos.shape else 0.0
+            jobs.append(j)
+        fixed = {id(c) for c, _ in fixed_pos}
+        sl = []
+        for c in sleeping:
+            c._contig("pos", "vel")
+            sl.append((c.native_proxy(), c.pos, c.vel, c.mode == "rigid", id(c) in fixed, c.id not in anchored_ids))
+        gs = float(self.settings.get("gravity_scale", 1.0))
+        done, woke, touch, want, broken, hits = core.step_tick(
+            jobs, sl, groups[1], pls, gs, float(h), int(self.substeps), int(self.iters), float(Construct.IMPACT_SPEED),
+            float(CONTACT_SOFT))
+        allc = list(cons) + list(sleeping)
+        for c, t, w in zip(allc, touch, want):
+            if t:
+                c._touch_moving = True
+            if w:
+                c._want_soft = True
+        broke = set()
+        for k, br, rot in broken:
+            cons[k].tick_broken(br, rot)
+            broke.add(cons[k].id)
+        if hits:
+            owners = {}
+            for c in cons:
+                for owner, C, *_ in c.ext_colliders:
+                    owners[id(C)] = owner
+            gowner = {k: owners[i] for i, k in groups[0].items()}
+            ev = {}
+            for k, g, part, v, stp in hits:
+                ev.setdefault((k, g, stp), {})[int(part)] = float(v)
+            for (k, g, _), best in sorted(ev.items(), key=lambda x: x[0][2]):
+                cons[k].ext_events.append((gowner[g], best, None, None))
+        for c in cons:
+            if c.mode == "art" and c.art is not None:
+                c.art["defo"] = []
+                c.art["contacts"] = None
+        return done, [sleeping[q] for q in woke], broke
 
     def _voxel_collisions_native(self, core, active, sleeping):
         """_voxel_collisions の Rust 版（同じ計算を1回の呼び出しで）。"""

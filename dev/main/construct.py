@@ -953,6 +953,78 @@ class Construct:
         self._nb_used = True
         return True
 
+    # ---- 1ティックの物理をまとめて Rust で（world._native_tick） ----
+    def tick_job(self, groups, planets_ok):
+        """world._native_tick に渡す、この構築物の配列（dict）。まとめて計算できないときは None
+        （Rust が古い・MOD の箱の持ち主が動いている・関節つき剛体が Rust で解けない など）。
+        groups：MOD の箱のまとまりの番号を決める {id(C): 番号} と、そのリスト（ここで足す）。"""
+        if not planets_ok or not self.n_vox or self.mode not in ("soft", "rigid", "art"):
+            return None
+        body = self._native_body()
+        if body is None:
+            return None
+        idx, lst = groups
+        boxes = []
+        for owner, C, A, E, part in self.ext_colliders:
+            if owner.is_moving():
+                return None                      # 動いている街：押した反動を Python で計算する
+            k = idx.get(id(C))
+            if k is None:
+                k = idx[id(C)] = len(lst)
+                lst.append((np.ascontiguousarray(C, dtype=np.float64), np.ascontiguousarray(A, dtype=np.float64),
+                            np.ascontiguousarray(E, dtype=np.float64), np.ascontiguousarray(part, dtype=np.int64)))
+            boxes.append(k)
+        if getattr(self, "_prev", None) is None or self._prev.shape != self.pos.shape:
+            self._prev = self.pos.copy()
+        self._contig("pos", "vel", "_prev", "force")
+        job = {"body": body, "proxy": self.native_proxy(), "pos": self.pos, "vel": self.vel, "prev": self._prev,
+               "force": self.force, "boxes": boxes, "cav": None,
+               "parallel": bool(self.n_vox >= fastphys.PARALLEL_MIN_VOXELS)}
+        if self.mode == "art":
+            a = getattr(self, "art", None)
+            if a is None or a["version"] != self.version or a["n"] != self.n_vox:
+                self._art_build()
+                a = self.art
+            if a.get("nat") is None:
+                return None
+            self._art_contig()
+            ex = a["exts"]
+            st = [self.devs[e[0]]["state"] if self.devs[e[0]] else {} for e in ex]
+            job.update(kind=3, topo=a["nat"], x=a["X"], r=a["R"], vl=a["vl"], vl0=a["vl0"], applied=a["applied"],
+                       ext_applied=a["ext_applied"],
+                       want=[float(dv["state"].get("angle", 0.0)) for dv in a["devs"]],
+                       rot_speed=[float(dv["state"].get("rot_speed", 90.0)) for dv in a["devs"]],
+                       ext_want=[float(s_.get("ext", e[3])) for s_, e in zip(st, ex)],
+                       ext_speed=[float(s_.get("ext_speed", 0.5)) for s_ in st])
+        elif self.mode == "rigid":
+            rb = self.rb
+            if rb is None:
+                return None
+            for k in ("R", "Ib", "local", "x"):
+                v = rb[k]
+                if not (isinstance(v, np.ndarray) and v.dtype == np.float64 and v.flags.c_contiguous and v.flags.writeable):
+                    rb[k] = np.array(v, dtype=np.float64, order="C")
+            full = bool(getattr(self, "_full_rigid", False))
+            job.update(kind=2 if full else 1, rb_r=rb["R"], rb_ib=rb["Ib"], local=rb["local"], rb_x=rb["x"])
+        else:
+            self._ensure_lastR()
+            self._contig("rest", "act_scale", "_last_R", "_quat")
+            job.update(kind=0, rest=self.rest, act_scale=self.act_scale, last_r=self._last_R, quat=self._quat,
+                       angles=self._rotor_angles())
+        return job
+
+    def tick_broken(self, broken, rot):
+        """Rust でまとめて計算した間にちぎれた結合を外す（_native_end と同じ）。"""
+        for q in list(rot):
+            self.links.discard(self.rotors[q]["key"])
+        for j in list(broken):
+            key = self.jkey[j]
+            if key[0] == "x":
+                self.extras.pop(key[1:], None)
+            else:
+                self.links.discard(key)
+        self.rebuild()
+
     # ---- 関節つき剛体（完全剛体モードでアクチュエーターが動く間）の Rust 版 ----
     def _native_art_topo(self):
         core = native_core()
