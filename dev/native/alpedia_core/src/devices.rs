@@ -481,8 +481,8 @@ pub fn update(
         crank += pop_f(&st[k], "pending")?;
     }
     let bats: Vec<usize> = of(T::Battery).collect();
-    let mut stored: f64 = bats.iter().map(|&k| gf(&st[k], "charge", 0.0)).sum();
-    let capacity: f64 = bats.iter().map(|&k| p.devs[k].capacity).sum();
+    let mut stored: f64 = bats.iter().map(|&k| gf(&st[k], "charge", 0.0)).sum::<f64>() + 0.0; // 空の和の -0 を 0 に
+    let capacity: f64 = bats.iter().map(|&k| p.devs[k].capacity).sum::<f64>() + 0.0;
     let mut production = 0.0;
     for k in of(T::Generator) {
         let on = gb(&st[k], "enabled", true);
@@ -628,7 +628,7 @@ pub fn update(
             }
         }
     }
-    stored = bats.iter().map(|&k| gf(&st[k], "charge", 0.0)).sum();
+    stored = bats.iter().map(|&k| gf(&st[k], "charge", 0.0)).sum::<f64>() + 0.0;
     let powered: HashSet<usize> = if ratio > 0.0 { consumers.iter().copied().collect() } else { HashSet::new() };
     for k in of(T::Antenna).chain(of(T::Light)) {
         sb(&st[k], "active", powered.contains(&k))?;

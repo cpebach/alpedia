@@ -57,6 +57,15 @@ class Viewer:
         self.cross = gfx.RsDynamicMesh(gfx.RsNode(None, "cross"), "cross")
         gfx.VIEW.mesh_overlay(self.cross.mid, True)
         gfx.quad(self.cross, -0.003, 0.003, 0.003, -0.003, (1, 1, 1, 0.9))
+        # 手の操作：狙っている物の枠・置く場所の枠・説明・アイテムバー
+        self.highlight = gfx.wire_box(self.root, (1.0, 0.92, 0.2, 1.0), 0.025)
+        self.ghost = gfx.wire_box(self.root, (0.4, 1.0, 0.4, 1.0), 0.02)
+        self.aim_text = gfx.RsText(None, overlay=True, bg=(0.02, 0.03, 0.05, 0.55), bin=10)
+        self.item_text = gfx.RsText(None, overlay=True, bg=(0.02, 0.03, 0.05, 0.55), bin=10)
+        self.hit = None
+        self.sel = 0
+        self.dir_index = 0
+        self.bodies = {}
         self.held = set()
         self.yaw_fwd = None
         self.pitch = 0.0
@@ -100,6 +109,10 @@ class Viewer:
             elif kind == "button" and a and not self.grabbed:
                 self.grabbed = True
                 self.view.grab(True)
+            elif kind == "button" and a:
+                self._click(n)
+            elif kind == "wheel" and a:
+                self.sel = (self.sel + (-1 if a > 0 else 1)) % 9
             elif kind == "focus" and not a:
                 self.held.clear()
         if dx or dy:
@@ -111,8 +124,51 @@ class Viewer:
             self.yaw_fwd = f * np.cos(ang) + np.cross(up, f) * np.sin(ang)
             self.pitch = float(np.clip(self.pitch - dy * sens, -1.55, 1.55))
 
+    KEYMAP = {"control": "left control", "shift": "left shift", "alt": "left alt"}
+
+    def _click(self, button):
+        """左：壊す・掘る、右：置く。"""
+        w = self.w
+        if w.player.seated or self.hit is None:
+            if button == 1 and not w.player.seated:
+                self._place(None)
+            return
+        if button == 0:
+            if self.hit["kind"] == "voxel":
+                w.remove(self.hit)
+            elif self.hit["kind"] in ("terrain", "water"):
+                w.dig(self.hit)
+        elif button == 1:
+            self._place(self.hit)
+
+    def _place(self, hit):
+        w = self.w
+        item = w.player.hotbar[self.sel]
+        if item is None:
+            w.message("アイテムバーのこの枠は空です")
+            return
+        _, _, _, look = self.look_vectors()
+        w.place(hit, item, self.dir_index, look)
+
     def _key(self, k, c):
         w = self.w
+        from ..client.game import SEAT_KEYS
+        if w.player.seated and k != "escape":
+            kk = self.KEYMAP.get(k, k)
+            if kk in SEAT_KEYS or kk == "x":
+                w.key_pressed(kk)
+            if k == c["interact"]:
+                w.interact(None)
+            return
+        if k in "123456789" and len(k) == 1:
+            self.sel = int(k) - 1
+        elif k == c["rotate"]:
+            self.dir_index = (self.dir_index + 1) % 6
+        elif k == c["interact"]:
+            if self.hit is not None:
+                w.interact(self.hit)
+        elif k == c["new_construct"]:
+            self._place(None)
         if k == "escape":
             if self.grabbed:
                 self.grabbed = False
@@ -140,7 +196,8 @@ class Viewer:
                 move /= nm
         jump = bool(H(c["jump"])) and not w.player.seated
         thrust = move * 0.6 + up * (H(c["jump"]) - H("control"))
-        w.input_keys = set()
+        from ..client.game import SEAT_KEYS
+        w.input_keys = {self.KEYMAP.get(k, k) for k in self.held} & set(SEAT_KEYS) if w.player.seated else set()
         tick = 1.0 / float(self.cfg["physics"].get("tick_rate", 60))
         self.acc += dt
         n = 0
@@ -154,11 +211,13 @@ class Viewer:
         t1 = time.perf_counter()
         origin = w.player.eye()
         self._render(origin)
+        self._bodies(origin)
         g = self.cfg["graphics"]
         ww, hh = self.view.size()
         hfov = np.radians(float(g.get("fov", 80)))           # Panda3D と同じく横の視野角
         vfov = float(np.degrees(2 * np.arctan(np.tan(hfov / 2) * hh / max(ww, 1))))
         self.view.camera([0.0, 0.0, 0.0], [float(x) for x in look], [float(x) for x in up], vfov, 0.05)
+        self._aim(origin, look)
         self._overlay(ww, hh)
         self.view.render()
         t2 = time.perf_counter()
@@ -176,6 +235,45 @@ class Viewer:
             self.fps_text = txt.split("  ", 1)[1]
             L.info("重さ: %s（構築物 %d）", txt, len(w.constructs))
             self.perf = {"frames": 0, "t": t2, "phys": 0.0, "rend": 0.0, "ticks": 0}
+
+    def _aim(self, origin, look):
+        """狙っている物：枠と説明（今までの画面と同じ play.aim）。"""
+        from ..client import play
+        w = self.w
+        p = w.player
+        self.hit = None if p.seated else w.raycast(p.eye(), look, float(p.defn.get("reach", 8.0)))
+        a = play.aim(w, self.hit, self.look_vectors())
+        for node, box in ((self.highlight, a["highlight"]), (self.ghost, a["ghost"])):
+            if box is None:
+                node.hide()
+            else:
+                gfx.set_box(node, box[0] - origin, box[1], box[2])
+                node.show()
+        self._aim_txt = a["text"]
+
+    def _bodies(self, origin):
+        """ほかの人（マルチプレイ）の体：定義の色の箱。"""
+        w = self.w
+        seen = set()
+        for key, p in list(getattr(w, "remote", {}).items()):
+            seen.add(key)
+            b = self.bodies.get(key)
+            if b is None:
+                node = gfx.RsNode(self.root, "body")
+                m = gfx.RsDynamicMesh(node, "body")
+                col = p.defn.get("color", [1, 1, 1])
+                v, t = gfx.box_vertices((col[0], col[1], col[2], 1.0))
+                m.set(v, t)
+                b = self.bodies[key] = node
+            up = p.up
+            f = np.asarray(p.look_fwd, float)
+            f = f - up * (f @ up)
+            f = f / np.linalg.norm(f) if np.linalg.norm(f) > 1e-6 else np.cross(up, [1.0, 0, 0])
+            r = np.cross(up, f)
+            gfx.set_box(b, p.pos + up * (p.height / 2 - p.radius) - origin, np.stack([r, up, f]),
+                        np.array([p.radius * 2, p.height, p.radius * 1.4]))
+        for key in [k for k in self.bodies if k not in seen]:
+            self.bodies.pop(key).removeNode()
 
     def _overlay(self, ww, hh):
         """画面の上の文字（左上：場所・高度・速度・重さ、左下：知らせ）。"""
@@ -201,6 +299,13 @@ class Viewer:
         _, h = self.msg.set("\n".join(msgs), 0.024, max_width=aspect * 0.6)
         self.msg.show(bool(msgs))
         self.msg.place(-aspect / 2 + 0.015, -0.5 + 0.03 + h)
+        tw, th = self.aim_text.set(getattr(self, "_aim_txt", ""), 0.022, max_width=aspect * 0.5)
+        self.aim_text.show(bool(getattr(self, "_aim_txt", "")))
+        self.aim_text.place(-tw / 2, -0.03)
+        from ..client import play
+        it = play.item_text(w, p.hotbar[self.sel], self.sel, self.dir_index) + "   （1〜9・ホイールで選ぶ、R で向き）"
+        tw, th = self.item_text.set(it, 0.024)
+        self.item_text.place(-tw / 2, -0.5 + 0.03 + th)
 
     def _render(self, origin):
         w = self.w

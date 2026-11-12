@@ -331,3 +331,54 @@ class RsDisplayView:
 
     def remove(self):
         self.root.removeNode()
+
+
+def box_vertices(rgba, lo=-0.5, hi=0.5):
+    """箱（-0.5〜0.5）の頂点 (24,12) と三角形。陰影は面ごとに少し変える。"""
+    import numpy as np
+    from .render import _BITS, _BOX_FACES, _BOX_N
+    corners = (_BITS * 0.5 + 0.5) * (hi - lo) + lo
+    v = np.zeros((24, 12), np.float32)
+    shade = [0.85, 0.7, 1.0, 0.55, 0.9, 0.75]
+    for f in range(6):
+        for j, k in enumerate(_BOX_FACES[f]):
+            r = v[f * 4 + j]
+            r[0:3] = corners[k]
+            r[3:6] = _BOX_N[f]
+            r[6:9] = [c * shade[f] for c in rgba[:3]]
+            r[9] = rgba[3]
+    t = np.array([[q * 4, q * 4 + 1, q * 4 + 2] for q in range(6)] + [[q * 4, q * 4 + 2, q * 4 + 3] for q in range(6)], np.int64)
+    return v, t
+
+
+def wire_box(parent, rgba, thick=0.03):
+    """枠だけの箱（12 本の細い棒。単位の箱 -0.5〜0.5 を、ノードの行列で置く）。戻り値はノード。"""
+    import numpy as np
+    node = RsNode(parent, "wire")
+    V, T = [], []
+    bv, bt = box_vertices(rgba)
+    h = 0.5
+    for ax in range(3):
+        for s1 in (-h, h):
+            for s2 in (-h, h):
+                c = np.zeros(3)
+                c[(ax + 1) % 3] = s1
+                c[(ax + 2) % 3] = s2
+                e = np.full(3, thick)
+                e[ax] = 1.0 + thick
+                v = bv.copy()
+                v[:, 0:3] = v[:, 0:3] * e + c
+                T.append(bt + len(V) * 24)
+                V.append(v)
+    m = RsDynamicMesh(node, "wire")
+    m.set(np.concatenate(V), np.concatenate(T))
+    VIEW.mesh_props(m.mid, rgba[3] < 0.999, True, True, 1, 0)
+    return node
+
+
+def set_box(node, center, axes, scale):
+    """ノードを (中心, 軸 (3,3) 行が x・y・z, 大きさ (3,)) に置く（game._set_box と同じ）。"""
+    import numpy as np
+    m = np.asarray(axes, float) * np.asarray(scale, float)[:, None]
+    node.setMat([m[0, 0], m[0, 1], m[0, 2], 0, m[1, 0], m[1, 1], m[1, 2], 0, m[2, 0], m[2, 1], m[2, 2], 0,
+                 float(center[0]), float(center[1]), float(center[2]), 1])
