@@ -1,11 +1,7 @@
 """惑星：距離場（SDF）で表した地形。掘削（クレーター）で形が変わる。"""
-import threading
-
 import numpy as np
 
 from . import native
-
-_TILE_LOCK = threading.Lock()   # 物理演算を複数スレッドで進めるので、タイルの作成は1つずつ
 
 
 def fcross(a, b):
@@ -72,21 +68,19 @@ class Planet:
         if "lipschitz" in d:
             self.lipschitz = float(d["lipschitz"])
 
-    # --- Rust の物理コア（あれば地形の計算をそちらで行う） -----------------
+    # --- 地形の計算は Rust（alpedia_core の PlanetShape） -------------------
     def _native_params(self):
         """Rust 側に渡す地形の値：(radius, amp, freq, seed, earth の dict か None)"""
         return self.radius, self.amp, self.freq, self.seed, None
 
     def _nat(self):
-        """Rust の地形（使わないときは None）。掘削跡が増えていたら渡し直す。"""
-        if native.core is None:
-            return None
+        """Rust の地形。掘削跡が増えていたら渡し直す。"""
+        core = native.require()
         s = getattr(self, "_nat_shape", None)
-        if s is None or getattr(self, "_nat_core", None) is not native.core:
+        if s is None or getattr(self, "_nat_core", None) is not core:
             r, amp, freq, seed, earth = self._native_params()
-            s = self._nat_shape = native.core.PlanetShape(r, amp, freq, int(seed), [float(x) for x in self.center],
-                                                          earth)
-            self._nat_core = native.core
+            s = self._nat_shape = core.PlanetShape(r, amp, freq, int(seed), [float(x) for x in self.center], earth)
+            self._nat_core = core
             self._nat_ncr = -1
         if self._nat_ncr != len(self.craters):
             s.set_craters(np.asarray(self.craters, dtype=np.float64).reshape(-1, 4))
@@ -99,55 +93,11 @@ class Planet:
 
     def surface_radius_exact(self, dirs):
         """単位方向 (N,3) における地表半径（ノイズを直接計算）。"""
-        n = fbm(dirs * self.freq + 100.0, self.seed)
-        return self.radius + (n - 0.5) * 2 * self.amp
+        return self._nat().surface_radius_exact(np.ascontiguousarray(dirs, dtype=np.float64).reshape(-1, 3))
 
     def _sample(self, dirs):
-        """キューブマップ状のタイルにキャッシュした値（地表半径・水面半径）を双線形補間。"""
-        dirs = np.asarray(dirs, dtype=np.float64)
-        nat = self._nat()
-        if nat is not None:
-            return nat.sample(np.ascontiguousarray(dirs))
-        if not hasattr(self, "_N"):
-            with _TILE_LOCK:
-                if not hasattr(self, "_tiles"):
-                    self._tiles = {}
-                self._N = int(np.ceil(np.pi / 2 * self.radius / self.RES / self.TILE)) * self.TILE
-        N, T = self._N, self.TILE
-        ab = np.abs(dirs)
-        major = ab.argmax(axis=1)
-        sign = np.sign(dirs[np.arange(len(dirs)), major])
-        face = major * 2 + (sign < 0)
-        a1, a2 = (major + 1) % 3, (major + 2) % 3
-        m = ab[np.arange(len(dirs)), major]
-        u = dirs[np.arange(len(dirs)), a1] / m
-        v = dirs[np.arange(len(dirs)), a2] / m
-        gx = np.clip((u + 1) * 0.5 * N, 0, N - 1e-6)
-        gy = np.clip((v + 1) * 0.5 * N, 0, N - 1e-6)
-        ix, iy = np.floor(gx).astype(np.int64), np.floor(gy).astype(np.int64)
-        fx, fy = gx - ix, gy - iy
-        tx, ty = ix // T, iy // T
-        lx, ly = ix - tx * T, iy - ty * T
-        key = (face * 100000 + tx) * 100000 + ty
-        out = np.empty((len(dirs), 2))
-        if len(key) and key.min() == key.max():   # よくある場合：全部同じタイル
-            keys = [key[0]]
-        else:
-            keys = np.unique(key)
-        for k in keys:
-            sel = key == k if len(keys) > 1 else slice(None)
-            f0 = int(face[sel][0]); t0 = int(tx[sel][0]); t1 = int(ty[sel][0])
-            tile = self._tiles.get((f0, t0, t1))
-            if tile is None:
-                with _TILE_LOCK:
-                    tile = self._tiles.get((f0, t0, t1))
-                    if tile is None:
-                        tile = self._make_tile(f0, t0, t1)
-            a, b = lx[sel], ly[sel]
-            px, py = fx[sel][:, None], fy[sel][:, None]
-            out[sel] = (tile[a, b] * (1 - px) * (1 - py) + tile[a + 1, b] * px * (1 - py)
-                        + tile[a, b + 1] * (1 - px) * py + tile[a + 1, b + 1] * px * py)
-        return out
+        """キューブマップ状のタイルにキャッシュした値（地表半径・水面半径）を双線形補間（Rust）。"""
+        return self._nat().sample(np.ascontiguousarray(dirs, dtype=np.float64).reshape(-1, 3))
 
     def surface_radius(self, dirs):
         return self._sample(dirs)[:, 0]
@@ -157,9 +107,8 @@ class Planet:
         return self._sample(dirs)[:, 1]
 
     def _tile_values(self, dirs):
-        """タイルに保存する値 (N,2)：地表半径・水面半径。"""
-        h = self.surface_radius_exact(dirs)
-        return np.stack([h, np.zeros_like(h)], axis=1)
+        """タイルに保存する値 (N,2)：地表半径・水面半径（補間しない値。Rust）。"""
+        return self._nat().tile_values(np.ascontiguousarray(dirs, dtype=np.float64).reshape(-1, 3))
 
     def far_samples(self, dirs):
         """遠景用：半径と色。"""
@@ -225,39 +174,9 @@ class Planet:
         depth = s[:, 1] - r
         return np.where(s[:, 1] > s[:, 0], depth, -1e9)
 
-    def _make_tile(self, face, tx, ty):
-        N, T = self._N, self.TILE
-        major, neg = face // 2, face % 2
-        g = np.arange(T + 1)
-        gx, gy = np.meshgrid((tx * T + g) / N * 2 - 1, (ty * T + g) / N * 2 - 1, indexing="ij")
-        d = np.zeros(gx.shape + (3,))
-        d[..., major] = -1.0 if neg else 1.0
-        d[..., (major + 1) % 3] = gx
-        d[..., (major + 2) % 3] = gy
-        d /= np.linalg.norm(d, axis=-1, keepdims=True)
-        tile = self._tile_values(d.reshape(-1, 3)).reshape(T + 1, T + 1, 2)
-        self._tiles[(face, tx, ty)] = tile
-        if len(self._tiles) > 4000:
-            self._tiles.pop(next(iter(self._tiles)))
-        return tile
-
     def sdf(self, p):
-        """世界座標 (N,3) → 符号付き距離（負=地中）。"""
-        nat = self._nat()
-        if nat is not None:
-            return nat.sdf(np.ascontiguousarray(p, dtype=np.float64).reshape(-1, 3))
-        q = np.asarray(p, dtype=np.float64) - self.center
-        r = np.linalg.norm(q, axis=1)
-        dirs = q / np.maximum(r, 1e-9)[:, None]
-        d = r - self.surface_radius(dirs)
-        if self.craters:
-            c = np.asarray(self.craters)
-            dist = np.linalg.norm(q[:, None, :] - c[None, :, :3], axis=2) - c[None, :, 3]
-            d = np.maximum(d, -dist.min(axis=1))
-        if self.has_caves:
-            c = self.cave_dist(q)
-            d = np.maximum(d, -c)
-        return d
+        """世界座標 (N,3) → 符号付き距離（負=地中。Rust）。"""
+        return self._nat().sdf(np.ascontiguousarray(p, dtype=np.float64).reshape(-1, 3))
 
     def sdf_parts(self, p):
         """(掘削跡込みの地形の距離, 洞窟の距離 or None)。描画用。"""
@@ -274,47 +193,8 @@ class Planet:
         return h, d, cv
 
     def sdf_grad(self, p, eps=0.05):
-        """距離と勾配（法線）を同時に求める（ノイズ評価を1回にまとめる）。"""
-        nat = self._nat()
-        if nat is not None:
-            return nat.sdf_grad(np.ascontiguousarray(p, dtype=np.float64).reshape(-1, 3), eps)
-        q = np.asarray(p, dtype=np.float64) - self.center
-        r = np.linalg.norm(q, axis=1)
-        dirs = q / np.maximum(r, 1e-9)[:, None]
-        ref = np.where(np.abs(dirs[:, 1:2]) < 0.9, np.array([[0, 1, 0]]), np.array([[1, 0, 0]]))
-        t1 = fcross(dirs, ref)
-        t1 /= np.linalg.norm(t1, axis=1, keepdims=True)
-        t2 = fcross(dirs, t1)
-        ang = eps / max(self.radius, 1.0)
-        d1 = dirs + t1 * ang
-        d2 = dirs + t2 * ang
-        d1 /= np.linalg.norm(d1, axis=1, keepdims=True)
-        d2 /= np.linalg.norm(d2, axis=1, keepdims=True)
-        n = len(q)
-        rs = self.surface_radius(np.concatenate([dirs, d1, d2]))
-        r0, r1, r2 = rs[:n], rs[n:2 * n], rs[2 * n:]
-        d = r - r0
-        g = dirs - t1 * ((r1 - r0) / eps)[:, None] - t2 * ((r2 - r0) / eps)[:, None]
-        if self.craters:
-            c = np.asarray(self.craters)
-            diff = q[:, None, :] - c[None, :, :3]
-            dist = np.linalg.norm(diff, axis=2) - c[None, :, 3]
-            k = dist.argmin(axis=1)
-            cd = -dist[np.arange(n), k]
-            use = cd > d
-            if use.any():
-                v = diff[np.arange(n), k]
-                cg = -v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-9)
-                d = np.where(use, cd, d)
-                g = np.where(use[:, None], cg, g)
-        if self.has_caves:
-            c, cg = self.cave_dist(q, grad=True)
-            use = -c > d
-            if use.any():
-                d = np.where(use, -c, d)
-                g = np.where(use[:, None], -cg, g)
-        g /= np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-9)
-        return d, g
+        """距離と勾配（法線）を同時に求める（Rust）。"""
+        return self._nat().sdf_grad(np.ascontiguousarray(p, dtype=np.float64).reshape(-1, 3), eps)
 
     def normal(self, p):
         return self.sdf_grad(p)[1]
@@ -332,30 +212,6 @@ class Planet:
         local = np.asarray(world_point, dtype=np.float64) - self.center
         self.craters.append([float(local[0]), float(local[1]), float(local[2]), float(radius)])
         self.version += 1
-
-    # --- 衝突 -----------------------------------------------------------
-    def collide(self, pos, prev, friction):
-        """pos を地表の外へ押し出し、摩擦を適用。接触した頂点のマスクを返す。"""
-        rel = pos - self.center
-        near = np.einsum("ij,ij->i", rel, rel) < self.bound ** 2
-        if not near.any():
-            return near
-        idx = np.nonzero(near)[0]
-        d, g = self.sdf_grad(pos[idx])
-        hit = d < 0
-        if not hit.any():
-            near[:] = False
-            return near
-        hi = idx[hit]
-        n = g[hit]
-        pos[hi] -= n * d[hit][:, None]
-        disp = pos[hi] - prev[hi]
-        tang = disp - n * np.einsum("ij,ij->i", disp, n)[:, None]
-        fr = np.clip(np.broadcast_to(np.asarray(friction, dtype=np.float64), (len(pos),))[hi], 0, 1)
-        pos[hi] -= tang * fr[:, None]
-        mask = np.zeros(len(pos), bool)
-        mask[hi] = True
-        return mask
 
     def raycast(self, origin, direction, max_dist):
         """球面行進で地表との交点を求める。"""

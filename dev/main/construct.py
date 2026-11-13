@@ -7,7 +7,6 @@
 - 塑性: 変形が yield_strain を超えると plasticity に応じて元の形自体が変わる。
 - 再結合: rebond な素材（液体・粘土）は近づいた頂点同士が新たに結合する。
 """
-import os
 import uuid
 from itertools import combinations
 
@@ -68,9 +67,6 @@ CONTACT_SOFT = 1.0
 
 from . import devstate, fastphys  # noqa: E402
 from .planet import fcross  # noqa: E402
-
-
-NATIVE_STEP_OFF = os.environ.get("ALPEDIA_NATIVE_STEP") == "0"   # 比べるとき用：1サブステップまとめての Rust を使わない
 
 
 def _native_planets(planets):
@@ -533,46 +529,34 @@ class Construct:
         F = np.stack([ex, ey, ez], axis=1)
         return F / np.maximum(np.linalg.norm(F, axis=2, keepdims=True), 1e-9)
 
-    def substep(self, h, iters, gravity_fn, planets):
+    def substep(self, h, iters, gravity_fn, planets, gscale=1.0):
         """単独で1サブステップ進める（テスト用）。"""
-        self.substep_begin(h, iters, gravity_fn, planets)
+        self.substep_begin(h, iters, gravity_fn, planets, gscale)
         return self.substep_end(h)
 
-    def substep_begin(self, h, iters, gravity_fn, planets, gscale=None):
-        """gscale：重力倍率。渡されたとき（gravity_fn が世界の重力そのもののとき）は Rust でまとめて計算できる。"""
+    def substep_begin(self, h, iters, gravity_fn, planets, gscale=1.0):
+        """1サブステップの前半（Rust）。gscale：重力倍率（重力は惑星から Rust で計算する。gravity_fn は昔の名残り）。"""
         if not self.n_vox:
             return
+        if gscale is None:
+            gscale = 1.0
         if self.mode == "art":
-            if gscale is not None and self._native_art_begin(h, planets, gscale):
-                return
-            return self._art_begin(h, gravity_fn, planets)
-        if gscale is not None and self._native_begin(h, iters, planets, gscale):
-            return
-        if self.mode == "rigid":
-            return self._rigid_begin(h, gravity_fn, planets)
-        acc = gravity_fn(self.pos) + self.force * self.inv_mass[:, None]
-        self.vel += acc * h
-        for pl in planets:
-            if pl.has_water and self._near_planet(pl):
-                self._buoyancy(pl, h, gravity_fn)
-        # 減衰は構築物全体の並進運動にはかけない（空気抵抗のように軌道が落ちないように）
-        vm = (self.vel * self.mass[:, None]).sum(0) / self.mass.sum()
-        self.vel = vm + (self.vel - vm) * np.maximum(0.0, 1.0 - self.damp * h)[:, None]
-        self._prev = self.pos.copy()
-        self.pos += self.vel * h
-        if self.rotors:
-            iters = iters * 2  # 可動部のある構築物は反復を増やして硬くする
-        # 地面との接触を反復の中で解くと、接触による局所的なずれを結合が直せる
-        near = [pl for pl in planets if self._near_planet(pl)]
-        for _ in range(iters):
-            self._shape_match()
-            self._solve_joints()
-            if self.rotors:
-                self._solve_rotors()
-        for pl in near:
-            self._collide_planet(pl)
-        for bs in self.ext_colliders:
-            self._collide_boxes(bs, h)
+            self._native_art_begin(h, planets, gscale)
+        else:
+            self._native_begin(h, iters, planets, gscale)
+
+    def substep_end(self, h):
+        if not self.n_vox:
+            return False
+        if self.mode == "art":
+            if getattr(self, "_nb_art", False):
+                self._nb_art = False
+                self._native_art_end(h)
+            return False
+        if getattr(self, "_nb_used", False):
+            self._nb_used = False
+            return self._native_end(h)
+        return False
 
     WATER_DENSITY = 1000.0
 
@@ -594,40 +578,6 @@ class Construct:
         self._cav_cache = (net, data)
         return data
 
-    def _buoyancy(self, pl, h, gravity_fn):
-        """水の浮力と抵抗。ボクセルの水に沈んだ割合で、押しのけた水の重さだけ上向きの力。
-        気密の空洞（中が空気）も水を押しのけるので、空洞の大きい船は重い素材でも浮きやすい。"""
-        cen = self.voxel_centers()
-        wd = pl.water_depth(cen)
-        frac = np.clip(wd / self.size + 0.5, 0.0, 1.0)
-        if not (frac > 0).any() and wd.max() < -2 * self.size:
-            return        # 水に触れていない（空洞も水の外とみなせる）
-        cav = self._cavity_neighbors()
-        g = gravity_fn(cen)
-        vol = self.size ** 3
-        force = -g * (self.WATER_DENSITY * vol * frac)[:, None]           # 各ボクセルが受ける力
-        if cav is not None:
-            nb = cav[0]
-            ok = nb >= 0
-            cnt = ok.sum(1)
-            cc = (cen[np.maximum(nb, 0)] * ok[..., None]).sum(1) / cnt[:, None]
-            f2 = np.clip(pl.water_depth(cc) / self.size + 0.5, 0.0, 1.0)
-            if (f2 > 0).any():
-                gc = gravity_fn(cc)
-                fc = -gc * (self.WATER_DENSITY * vol * f2)[:, None] / cnt[:, None]
-                for k in range(nb.shape[1]):
-                    m = ok[:, k]
-                    np.add.at(force, nb[m, k], fc[m])
-        if not (np.abs(force).sum() > 0):
-            return
-        self.vel += np.repeat(force / (self.v_density * vol)[:, None], 8, axis=0) * h
-        # 水の抵抗（沈んでいる頂点ほど減速）
-        fv = np.repeat(frac, 8)
-        self.vel *= (1.0 - np.minimum(1.0, 1.5 * h * fv))[:, None]
-
-    def _near_planet(self, pl):
-        rel = self.pos[::8] - pl.center
-        return np.einsum("ij,ij->i", rel, rel).min() < (pl.bound + self.size * 2) ** 2
 
     def _build_contacts(self):
         """各頂点の当たり判定に使う「芯」（点・線・三角形）を選ぶ（Rust の build_contacts）。
@@ -643,58 +593,6 @@ class Construct:
         """各頂点に対応する芯の最近点（この点から半径 r が見た目の表面）。"""
         return fastphys.contact_cores(self.pos, self.ctype, self.cidx)
 
-    def _collide_planet(self, pl, collect=False):
-        """地面との当たり判定：頂点ごとに対応する芯の点を、半径 r の球として地面と判定する。
-        （見た目の球・カプセル・斜面と同じ形で接地する）"""
-        K = self.contact_cores()
-        r = self.size * 0.5
-        nat = pl._nat()
-        if nat is not None:
-            return self._collide_planet_native(pl, nat, K, r, collect)
-        rel = K - pl.center
-        with np.errstate(invalid="ignore"):
-            near = np.einsum("ij,ij->i", rel, rel) < (pl.bound + r) ** 2
-        if not near.any():
-            return
-        # 地面から十分高い頂点は調べない（地面の高さは傾きの上限で見積もる）
-        com = self.pos.mean(0) - pl.center
-        cn = float(np.linalg.norm(com))
-        if cn > 1e-6:
-            up = com / cn
-            gc = getattr(self, "_ground_cache", None)
-            if gc is not None and gc[0] is pl and float(np.abs(gc[1] - up).max()) * pl.radius < 0.5:
-                Rs = gc[2]
-            else:
-                Rs = float(pl.surface_radius(up[None])[0])
-                self._ground_cache = (pl, up, Rs)
-            with np.errstate(invalid="ignore"):
-                rad = np.sqrt(np.einsum("ij,ij->i", rel, rel))
-                along = rel @ up
-                lat = np.sqrt(np.maximum(rad * rad - along * along, 0.0))
-                near &= (rad - Rs) < r + 0.5 + lat / max(pl.lipschitz, 0.2)
-            if not near.any():
-                return
-        idx = np.nonzero(near)[0]
-        d, g = pl.sdf_grad(K[idx])
-        d = d - r
-        if self.mode == "rigid":
-            # 剛体のまま速くぶつかりそうなら、ぶつかる前にブロックごとの計算に戻す（壊れ方を残すため）
-            vn = -np.einsum("ij,ij->i", self.vel[idx], g)
-            if np.any((vn > self.IMPACT_SPEED) & (d < vn * 0.12 + 0.05)):
-                self._want_soft = True
-        hit = d < 0
-        if not hit.any():
-            return
-        hi = idx[hit]
-        n = g[hit]
-        if collect:
-            return hi, -d[hit], n
-        # 押し戻しを少しやわらげる（衝撃が結合に一度にかかってちぎれるのを防ぐ）
-        self.pos[hi] -= n * (d[hit] * CONTACT_SOFT)[:, None]
-        disp = self.pos[hi] - self._prev[hi]
-        tang = disp - n * np.einsum("ij,ij->i", disp, n)[:, None]
-        fr = np.clip(self.fric[hi], 0, 1)
-        self.pos[hi] -= tang * fr[:, None]
 
     def _ground_ref(self, pl):
         """地面から高い頂点を省くための (上向き, その方向の地表半径)。重心が惑星の中心なら (None, 0)。"""
@@ -710,8 +608,12 @@ class Construct:
         self._ground_cache = (pl, up, Rs)
         return up, Rs
 
-    def _collide_planet_native(self, pl, nat, K, r, collect):
-        """_collide_planet の Rust 版（同じ計算を1回の呼び出しで）。"""
+    def _collide_planet(self, pl, collect=False):
+        """地面との当たり判定（Rust）：頂点ごとに対応する芯の点を、半径 r の球として地面と判定する。
+        collect なら押し戻さずに (頂点, めり込み, 法線) を返す。"""
+        nat = pl._nat()
+        K = self.contact_cores()
+        r = self.size * 0.5
         up, Rs = self._ground_ref(pl)
         if not (self.pos.flags.c_contiguous and self.pos.flags.writeable):
             self.pos = np.ascontiguousarray(self.pos)
@@ -771,40 +673,15 @@ class Construct:
             self.ext_events.append((owner, None, -J, self.pos[hi_]))
         return None
 
-    def substep_end(self, h):
-        if not self.n_vox:
-            return False
-        if getattr(self, "_nb_used", False):
-            self._nb_used = False
-            return self._native_end(h)
-        if self.mode == "rigid":
-            self._rigid_fit_pos()
-            self.vel = (self.pos - self._prev) / h
-            return False
-        if self.mode == "art":
-            if getattr(self, "_nb_art", False):
-                self._nb_art = False
-                self._native_art_end(h)
-            else:
-                self._art_end(h)
-            return False
-        self.vel = (self.pos - self._prev) / h
-        self._plasticity(h)
-        return self._check_breaks()
 
     # ------------------------------------------------------------------
     # Rust で1サブステップをまとめて計算する（native/alpedia_core の Body）
     # ------------------------------------------------------------------
     def _native_body(self):
-        """この構築物の Rust の Body（形が変わったら作り直す）。Rust が無いときは None。"""
-        from . import native
-        core = native.core
-        if core is None or not hasattr(core, "Body") or NATIVE_STEP_OFF:
-            return None
+        """この構築物の Rust の Body（形が変わったら作り直す）。"""
+        core = native_core()
         from . import actuator as act
         hk = np.array([list(act.hinge_of(r["dev"], self.reg) or (-1, -1)) for r in self.rotors], np.int64).reshape(-1, 2)
-        if (hk >= 0).any() and not getattr(core, "HINGE", False):
-            return None              # 古い Rust の物理コア（ヒンジを解けない）：Python で計算する
         key = (self.version, id(core), self.n_vox, hk.tobytes())     # ヒンジの側が変わっても作り直す
         nb = getattr(self, "_nb_cache", None)
         if nb is not None and nb[0] == key:
@@ -825,8 +702,7 @@ class Construct:
         body = core.Body(float(self.size), i64(self.ja), i64(self.jb), f64(self.jr), f64(self.jk), f64(self.jbrk),
                          f64(self.jcount), f64(self.inv_mass), f64(self.mass), f64(self.damp), f64(self.fric),
                          f64(self.v_stiff), f64(self.v_plast), f64(self.v_yield), f64(self.v_density),
-                         i64(self.ctype), i64(self.cidx), ra, rva, rvb, rbr,
-                         *((hk,) if getattr(core, "HINGE", False) else ()))
+                         i64(self.ctype), i64(self.cidx), ra, rva, rvb, rbr, hk)
         self._nb_cache = (key, body)
         return body
 
@@ -865,18 +741,11 @@ class Construct:
                 setattr(self, k, np.array(a, dtype=np.float64, order="C"))
 
     def _native_begin(self, h, iters, planets, gscale):
-        """substep_begin の Rust 版。使えないとき（Rust が無い・惑星が Rust 化できない・
-        完全剛体モードで MOD の箱がある）は False を返して Python で計算する。"""
+        """substep_begin（ブロックごと・剛体）を Rust で。"""
         body = self._native_body()
-        if body is None:
-            return False
         pls = _native_planets(planets)
-        if pls is None:
-            return False
         rigid = self.mode == "rigid"
         full = rigid and getattr(self, "_full_rigid", False)
-        if full and self.ext_colliders and not hasattr(native_core(), "ArtTopo"):
-            return False             # 古い版の Rust（MOD の箱を一緒に解けない）：Python で計算する
         if getattr(self, "_prev", None) is None or self._prev.shape != self.pos.shape:
             self._prev = self.pos.copy()
         self._contig("pos", "vel", "_prev", "force")
@@ -911,7 +780,7 @@ class Construct:
     # ---- 1ティックの物理をまとめて Rust で（world._native_tick） ----
     def tick_job(self, groups, planets_ok):
         """world._native_tick に渡す、この構築物の配列（dict）。まとめて計算できないときは None
-        （Rust が古い・MOD の箱の持ち主が動いている・関節つき剛体が Rust で解けない など）。
+        （MOD の箱の持ち主が動いている など）。
         groups：MOD の箱のまとまりの番号を決める {id(C): 番号} と、そのリスト（ここで足す）。"""
         if not planets_ok or not self.n_vox or self.mode not in ("soft", "rigid", "art"):
             return None
@@ -922,7 +791,7 @@ class Construct:
         boxes = []
         for owner, C, A, E, part in self.ext_colliders:
             if owner.is_moving():
-                return None                      # 動いている街：押した反動を Python で計算する
+                return None                      # 動いている街：サブステップごとに進めて押した反動を拡張に渡す
             k = idx.get(id(C))
             if k is None:
                 k = idx[id(C)] = len(lst)
@@ -983,12 +852,7 @@ class Construct:
     # ---- 関節つき剛体（完全剛体モードでアクチュエーターが動く間）の Rust 版 ----
     def _native_art_topo(self):
         core = native_core()
-        if core is None or not hasattr(core, "ArtTopo") or NATIVE_STEP_OFF:
-            return None
         a = self.art
-        new = getattr(core, "HINGE", False)
-        if (a["HK"] >= 0).any() and not new:
-            return None
         i64 = lambda x: np.ascontiguousarray(x, dtype=np.int64)  # noqa: E731
         f64 = lambda x: np.ascontiguousarray(x, dtype=np.float64)  # noqa: E731
         ex = a["exts"]
@@ -997,7 +861,7 @@ class Construct:
                             i64([e[1] for e in ex]).reshape(-1, 4), f64([e[2] for e in ex]).reshape(-1, 3),
                             f64([e[3] for e in ex]), int(self.ART_ITERS), int(self.ART_CONTACTS),
                             float(self.MOTOR_STEP_X), float(self.MOTOR_HOLD_DEG),
-                            *((i64(a["HK"]).reshape(-1, 2),) if new else ()),
+                            i64(a["HK"]).reshape(-1, 2),
                             **({"fixed": i64(a["fixed"]), "xfix": f64(a["Xfix"])} if a["fixed"].any() else {}))
 
     def _art_contig(self):
@@ -1008,15 +872,13 @@ class Construct:
                 a[k] = np.array(v, dtype=np.float64, order="C")
 
     def _native_art_begin(self, h, planets, gscale):
-        """_art_begin の Rust 版。MOD の箱との接触だけ Python で集めて渡す。使えないときは False。"""
+        """関節つき剛体の1サブステップの前半（Rust）。MOD の箱との接触だけ Python で集めて渡す（MOD のプログラムを呼ぶため）。"""
         a = getattr(self, "art", None)
         if a is None or a["version"] != self.version or a["n"] != self.n_vox:
             self._art_build()
             a = self.art
         nat, body = a.get("nat"), self._native_body()
         pls = _native_planets(planets)
-        if nat is None or body is None or pls is None:
-            return False
         if getattr(self, "_prev", None) is None or self._prev.shape != self.pos.shape:
             self._prev = self.pos.copy()
         self._contig("pos", "vel", "_prev", "force")
@@ -1132,57 +994,6 @@ class Construct:
             self._quat = np.zeros((self.n_vox, 4))
             self._quat[:, 0] = 1.0
 
-    def _shape_match(self):
-        self._ensure_lastR()
-        fn = fastphys.shape_match_par if self.n_vox >= fastphys.PARALLEL_MIN_VOXELS and not self._in_pool \
-            else fastphys.shape_match
-        fn(self.pos, self.rest, self.act_scale, self.v_stiff, self._allvox, self._last_R, self._quat)
-
-    def _solve_joints(self):
-        if not len(self.ja):
-            return
-        fastphys.solve_joints(self.pos, self.ja, self.jb, self.jr, self.jk, self.inv_mass, self.jcount)
-
-    def _rotor_targets(self, r):
-        """回転ジョイント: アクチュエーター出力面の4頂点を、軸まわりに回した位置。
-        回転なら軸＝出力の向き（面の中心を通る）。ヒンジなら軸はヒンジのブロックの中心を通り、
-        角度が + のとき出力側は決めた側へ倒れる（軸 = 向き × 側）。"""
-        pairs = JOINT_PAIRS[r["d"]]
-        ia, ib = r["a"], r["b"]
-        A = 8 * ia + pairs[:, 0]
-        B = 8 * ib + pairs[:, 1]
-        pa = self.pos[A]
-        c = pa.mean(0)
-        n = c - self.pos[8 * ia:8 * ia + 8].mean(0)
-        n /= max(np.linalg.norm(n), 1e-9)
-        th = np.radians(float(r["dev"]["state"].get("angle", 0.0)))
-        from . import actuator as act
-        hp = act.hinge_of(r["dev"], self.reg)
-        if hp is None:
-            m, o = n, c
-        else:
-            s = (pa[hp[0]] + pa[hp[1]]) * 0.5 - c     # 倒れる側（面の中心 → その側の辺）
-            o = self.pos[8 * ia:8 * ia + 8].mean(0)   # 軸が通る点：ヒンジのブロックの中心
-            s /= max(np.linalg.norm(s), 1e-9)
-            m = np.cross(n, s)
-            m /= max(np.linalg.norm(m), 1e-9)
-        v = pa - o
-        cs, sn = np.cos(th), np.sin(th)
-        rot = v * cs + fcross(m, v) * sn + np.outer(v @ m, m) * (1 - cs)
-        r["_n"], r["_th"] = m, th
-        return A, B, o + rot
-
-    def _solve_rotors(self):
-        for r in self.rotors:
-            A, B, target = self._rotor_targets(r)
-            err = self.pos[B] - target
-            # 並進成分（重さや押す力）は両側で分け合い、回転・変形成分は出力側だけを動かす
-            # （モーターの反トルクは土台に伝えない：安定性のため）
-            mean = err.mean(axis=0)
-            wa, wb = self.inv_mass[A[0]], self.inv_mass[B[0]]
-            ka = wa / (wa + wb)
-            self.pos[B] -= (err - mean) + mean * (1 - ka)
-            self.pos[A] += mean * ka
 
     # ------------------------------------------------------------------
     # 軽量化 1：剛体化（加速度が小さく、形が変わっていない構築物は1つの剛体として動かす）
@@ -1245,121 +1056,6 @@ class Construct:
         self._calm_t = 0.0
         self._want_soft = False
 
-    def _rigid_begin(self, h, gravity_fn, planets):
-        acc = gravity_fn(self.pos) + self.force * self.inv_mass[:, None]
-        self.vel += acc * h
-        for pl in planets:
-            if pl.has_water and self._near_planet(pl):
-                self._buoyancy(pl, h, gravity_fn)
-        # 速度を剛体の動き（並進＋回転）に揃える（運動量・角運動量は保つ）
-        rb = self.rb
-        m = self.mass
-        M = m.sum()
-        x = (self.pos * m[:, None]).sum(0) / M
-        v = (self.vel * m[:, None]).sum(0) / M
-        r = self.pos - x
-        L = (fcross(r, self.vel - v) * m[:, None]).sum(0)
-        R = rb["R"]
-        Iw = R @ rb["Ib"] @ R.T
-        w = np.linalg.solve(Iw + np.eye(3) * 1e-9 * max(np.trace(Iw), 1e-9), L)
-        self.vel = v + fcross(w, r)
-        self._prev = self.pos.copy()
-        self.pos += self.vel * h
-        near = [pl for pl in planets if self._near_planet(pl)]
-        if getattr(self, "_full_rigid", False):
-            self._rigid_ground_contacts(near, h)
-            return
-        for pl in near:
-            self._collide_planet(pl)
-        for bs in self.ext_colliders:
-            self._collide_boxes(bs, h)
-
-    def _rigid_ground_contacts(self, near, h=1 / 180):
-        """完全剛体モードの地面・建物との接触：剛体として（並進＋回転で）めり込みを解消し、摩擦をかける。
-        頂点ごとに押し戻して形に合わせ直すやり方だと、押し戻しが全体に薄まって跳ね返ってしまうため。"""
-        P, D, N, VS, CI = [], [], [], [], []
-        for pl in near:
-            res = self._collide_planet(pl, collect=True)
-            if res:
-                P.append(res[0]); D.append(res[1]); N.append(res[2])
-                VS.append(np.zeros((len(res[0]), 3))); CI.append(np.full(len(res[0]), -1))
-        boxes = list(self.ext_colliders)
-        for bi, bs in enumerate(boxes):
-            res = self._collide_boxes(bs, h, collect=True)
-            if res:
-                P.append(res[0]); D.append(res[1]); N.append(res[2])
-                VS.append(res[3]); CI.append(np.full(len(res[0]), bi))
-        if not P:
-            return
-        P, D, N = np.concatenate(P), np.concatenate(D), np.concatenate(N)
-        VS, CI = np.concatenate(VS), np.concatenate(CI)
-        order = np.argsort(-D)[:32]                   # 深い所から（多すぎる接触点は間引く）
-        P, D, N, VS, CI = P[order], D[order], N[order], VS[order], CI[order]
-        m = self.mass
-        M = m.sum()
-        x = (self.pos * m[:, None]).sum(0) / M
-        r_all = self.pos - x
-        rr = np.einsum("ij,ij->i", r_all, r_all)
-        I = np.eye(3) * (m * rr).sum() - np.einsum("i,ij,ik->jk", m, r_all, r_all)
-        Iinv = np.linalg.inv(I + np.eye(3) * 1e-6 * max(np.trace(I), 1e-6))
-        rk = r_all[P]
-        rn = fcross(rk, N)
-        wk = 1.0 / M + np.einsum("ij,ij->i", rn, rn @ Iinv.T)
-        # めり込み（法線方向）：接点ごとの押し戻し量 λ≥0 を、全接点が同時に地面の上に出るように一度に解く
-        A = (N @ N.T) / M + rn @ Iinv @ rn.T
-        try:
-            lam_n = native_core().nnls(np.ascontiguousarray(A, dtype=np.float64), np.ascontiguousarray(D, dtype=np.float64))
-        except Exception:  # noqa: BLE001
-            lam_n = np.zeros(len(P))
-            lam_n[0] = D[0] / wk[0]
-        dx = (N * lam_n[:, None]).sum(0) / M
-        dth = Iinv @ (rn * lam_n[:, None]).sum(0)
-        # 動いている街（ステーション）を押した分の反動
-        for bi in np.unique(CI[CI >= 0]):
-            m_ = (CI == bi) & (lam_n > 0)
-            if m_.any():
-                J = N[m_] * (lam_n[m_] / h)[:, None]
-                self.ext_events.append((boxes[bi][0], None, -J, self.pos[P[m_]]))
-        # 摩擦（接点の横すべりを、押し戻した量に比例する上限まで止める）。動いている建物とは相対的に
-        base = self.pos[P] - self._prev[P] - VS * h
-        fr = np.clip(self.fric[P], 0, 1)
-        for _ in range(2):
-            for k in range(len(P)):
-                if lam_n[k] <= 0:
-                    continue
-                disp = base[k] + dx + np.cross(dth, rk[k])
-                t = disp - N[k] * (N[k] @ disp)
-                tl = float(np.linalg.norm(t))
-                if tl < 1e-9:
-                    continue
-                tn = t / tl
-                rt = np.cross(rk[k], tn)
-                wt = 1.0 / M + rt @ (Iinv @ rt)
-                lam = min(tl * fr[k] / wt, lam_n[k] * 1.5)
-                dx -= tn * (lam / M)
-                dth -= Iinv @ rt * lam
-        th = float(np.linalg.norm(dth))
-        if th > 1e-12:
-            k_ = dth / th
-            Kx = np.array([[0, -k_[2], k_[1]], [k_[2], 0, -k_[0]], [-k_[1], k_[0], 0]])
-            Rw = np.eye(3) + np.sin(th) * Kx + (1 - np.cos(th)) * (Kx @ Kx)
-            r_all = r_all @ Rw.T
-        self.pos = x + dx + r_all
-
-    def _rigid_fit_pos(self):
-        """頂点を剛体の形に戻す（重み付きの最適な回転・並進）。"""
-        rb = self.rb
-        m = self.mass
-        M = m.sum()
-        x = (self.pos * m[:, None]).sum(0) / M
-        H = (rb["local"] * m[:, None]).T @ (self.pos - x)
-        U, _, Vt = np.linalg.svd(H)
-        R = Vt.T @ U.T
-        if np.linalg.det(R) < 0:
-            Vt[2] *= -1
-            R = Vt.T @ U.T
-        rb["R"], rb["x"] = R, x
-        self.pos = x + rb["local"] @ R.T
 
     def update_mode(self, dt, world):
         """毎ティック：ブロックごと ⇔ 剛体 ⇔ レール（遠方の軌道計算）を切り替える。"""
@@ -1469,7 +1165,7 @@ class Construct:
     # ------------------------------------------------------------------
     # 完全剛体モード＋アクチュエーター：アクチュエーターの前後で分けた部分ごとの剛体を関節でつなぐ
     # ・部分 = アクチュエーターの出力面の結合を除いてつながっているブロックのまとまり
-    # ・関節 = 出力面の4隅を回転角だけ回した位置に、出力側の部分の4隅を合わせる（fastphys.art_solve）
+    # ・関節 = 出力面の4隅を回転角だけ回した位置に、出力側の部分の4隅を合わせる（Rust の ArtTopo）
     # ・押し出し = アクチュエーター自身の出力面の4頂点を、押し出した分だけ部分の中でずらす
     # ・電力・信号・配管は構築物全体で共有なので、部分に分けても今までどおり通る
     # ------------------------------------------------------------------
@@ -1557,10 +1253,7 @@ class Construct:
             self.art["invM_s"] = np.where(fixed, 0.0, self.art["invM"])
             self.art["IinvB_s"] = np.where(fixed[:, None, None], 0.0, IinvB)
             self.art["Xfix"] = X.copy()
-            # 固定の部分のある関節も Rust で（古い Rust なら Python ＋ Rust の関節計算で解く）
-            self.art["nat"] = self._native_art_topo() if getattr(native_core(), "ART_FIXED", False) else None
-        else:
-            self.art["nat"] = self._native_art_topo()   # ヒンジも Rust で（古い Rust ならヒンジのときは None）
+        self.art["nat"] = self._native_art_topo()
 
     def enter_art(self):
         self._art_build()
@@ -1568,201 +1261,6 @@ class Construct:
         self.rb = None
         self._want_soft = False
 
-    def _art_fit(self):
-        """今の頂点の位置に、部分ごとの最適な姿勢（重み付きの回転・並進）を合わせる。"""
-        a = self.art
-        vg, G, vl = a["vg"], a["G"], a["vl"]
-        m = self.mass
-        M = 1.0 / a["invM"]
-        X = np.stack([np.bincount(vg, weights=m * self.pos[:, k], minlength=G) for k in range(3)], 1) / M[:, None]
-        d = self.pos - X[vg]
-        H = np.zeros((G, 3, 3))
-        for i in range(3):
-            for j in range(3):
-                H[:, i, j] = np.bincount(vg, weights=m * vl[:, i] * d[:, j], minlength=G)
-        U, _, Vt = np.linalg.svd(H)
-        V = np.transpose(Vt, (0, 2, 1))
-        Ut = np.transpose(U, (0, 2, 1))
-        R = V @ Ut
-        neg = np.linalg.det(R) < 0
-        if neg.any():
-            V[neg, :, 2] *= -1
-            R = V @ Ut
-        a["X"], a["R"] = X, R
-
-    def _art_write(self):
-        a = self.art
-        fastphys.art_write(self.pos, a["X"], a["R"], a["gv"], a["vg"], a["vl"])
-
-    def _art_begin(self, h, gravity_fn, planets):
-        a = getattr(self, "art", None)
-        if a is None or a["version"] != self.version or a["n"] != self.n_vox:
-            self._art_build()
-            a = self.art
-        acc = gravity_fn(self.pos) + self.force * self.inv_mass[:, None]
-        self.vel += acc * h
-        for pl in planets:
-            if pl.has_water and self._near_planet(pl):
-                self._buoyancy(pl, h, gravity_fn)
-        # 押し出し：アクチュエーターの出力面を押し出した分だけずらす（部分の形の中での変形）
-        self._art_fit()
-        a["defo"] = []
-        if a["exts"]:
-            vl = a["vl0"].copy()
-            moved = False
-            for k, (i, rows, nb, e0) in enumerate(a["exts"]):
-                st = self.devs[i]["state"] if self.devs[i] else {}
-                # 伸びもティックごとに進むので、サブステップごとに伸びる速さで追いかける（動きが速度として残るように）
-                want = float(st.get("ext", e0))
-                spd = max(float(st.get("ext_speed", 0.5)), 0.01) * h * 1.05
-                e = a["ext_applied"][k] = a["ext_applied"][k] + float(np.clip(want - a["ext_applied"][k], -spd, spd))
-                if e != e0:
-                    vl[rows] += nb * ((e - e0) * self.size)
-                    moved = True
-            if moved:
-                # 部分の重心が基準点（X）のままになるように、部分ごとに中心を合わせ直す
-                vg, G = a["vg"], a["G"]
-                m = self.mass
-                M = 1.0 / a["invM"]
-                lbar = np.stack([np.bincount(vg, weights=m * vl[:, k], minlength=G) for k in range(3)], 1) / M[:, None]
-                lbar[a["fixed"]] = 0.0          # 固定の部分は基準点ごと動かさない（押し出した面だけが動く）
-                vl -= lbar[vg]
-            d = vl - a["vl"]
-            rows = np.nonzero(np.abs(d).max(1) > 0)[0]
-            if len(rows):
-                a["vl"] = vl
-                a["defo"].append((rows, d[rows]))
-        # 部分ごとの速度（運動量・角運動量を保つ）
-        vg, G = a["vg"], a["G"]
-        m = self.mass
-        M = 1.0 / a["invM"]
-        X, R = a["X"], a["R"]
-        v = np.stack([np.bincount(vg, weights=m * self.vel[:, k], minlength=G) for k in range(3)], 1) / M[:, None]
-        r = self.pos - X[vg]
-        Lm = fcross(r, self.vel - v[vg]) * m[:, None]
-        Lg = np.stack([np.bincount(vg, weights=Lm[:, k], minlength=G) for k in range(3)], 1)
-        Iinv_w = R @ a["IinvB"] @ np.transpose(R, (0, 2, 1))
-        w = np.einsum("gij,gj->gi", Iinv_w, Lg)
-        fx = a["fixed"]
-        if fx.any():                                    # 固定の部分は動かない（重力も効かない）
-            v[fx] = 0.0
-            w[fx] = 0.0
-            X = X.copy()
-            X[fx] = a["Xfix"][fx]
-            R[fx] = np.eye(3)
-        self._prev = self.pos.copy()
-        a["X"] = X + v * h
-        for g in range(G):
-            phi = w[g] * h
-            th = float(np.linalg.norm(phi))
-            if th > 1e-14:
-                k_ = phi / th
-                Kx = np.array([[0, -k_[2], k_[1]], [k_[2], 0, -k_[0]], [-k_[1], k_[0], 0]])
-                R[g] = (np.eye(3) + np.sin(th) * Kx + (1 - np.cos(th)) * (Kx @ Kx)) @ R[g]
-        self._art_write()
-        # 接触の候補（予測した位置で集め、反復の中では姿勢の変化から深さを見積もる）
-        near = [pl for pl in planets if self._near_planet(pl)]
-        P, D, N, VS, CI = [], [], [], [], []
-        for pl in near:
-            res = self._collide_planet(pl, collect=True)
-            if res:
-                P.append(res[0]); D.append(res[1]); N.append(res[2])
-                VS.append(np.zeros((len(res[0]), 3))); CI.append(np.full(len(res[0]), -1))
-        boxes = list(self.ext_colliders)
-        for bi, bs in enumerate(boxes):
-            res = self._collide_boxes(bs, h, collect=True)
-            if res:
-                P.append(res[0]); D.append(res[1]); N.append(res[2])
-                VS.append(res[3]); CI.append(np.full(len(res[0]), bi))
-        if P:
-            P, D, N = np.concatenate(P), np.concatenate(D), np.concatenate(N)
-            VS, CI = np.concatenate(VS), np.concatenate(CI)
-            if fx.any():                                # 固定の部分は地面にめり込んでいてよい（接触を解かない）
-                k_ = ~fx[vg[P]]
-                P, D, N, VS, CI = P[k_], D[k_], N[k_], VS[k_], CI[k_]
-            cg = vg[P]
-            order = np.lexsort((-D, cg))                 # 部分ごとに深い順
-            P, D, N, VS, CI, cg = P[order], D[order], N[order], VS[order], CI[order], cg[order]
-            first = np.searchsorted(cg, cg)
-            keep = (np.arange(len(cg)) - first) < self.ART_CONTACTS
-            P, D, N, VS, CI, cg = P[keep], D[keep], N[keep], VS[keep], CI[keep], cg[keep]
-        else:
-            P = np.zeros(0, np.int64); D = np.zeros(0); N = np.zeros((0, 3)); VS = np.zeros((0, 3))
-            CI = np.zeros(0, np.int64); cg = np.zeros(0, np.int64)
-        X, R = a["X"], a["R"]
-        cl = np.einsum("nji,nj->ni", R[cg], self.pos[P] - X[cg]) if len(P) else np.zeros((0, 3))
-        nr = len(a["ra"])
-        vl = a["vl"]
-        LA = vl[a["A"]] if nr else np.zeros((0, 4, 3))
-        LB = vl[a["B"]] if nr else np.zeros((0, 4, 3))
-        LC = vl[a["C"]].mean(1) if nr else np.zeros((0, 3))
-        # 回転角はティックごとに進むので、サブステップごとに少しずつ（回転の速さで）追いかける（動きが速度として残るように）
-        if nr:
-            want = np.array([float(d["state"].get("angle", 0.0)) for d in a["devs"]])
-            spd = np.array([max(float(d["state"].get("rot_speed", 90.0)), 1.0) for d in a["devs"]]) * h * 1.05
-            step = np.clip(want - a["applied"], -spd, spd)
-            a["applied"] = a["applied"] + step
-            ang = np.radians(a["applied"])
-            # モーターが1サブステップで回せる角度の上限（今回進める角度＋重さを支える分）。
-            # 地面などに押し返されて回れないときに、無限の力で押し続けて構築物ごと跳ね飛ばさないように
-            cap = np.radians(np.abs(step) * self.MOTOR_STEP_X + self.MOTOR_HOLD_DEG)
-        else:
-            ang = np.zeros(0)
-            cap = np.zeros(0)
-        lamN = np.zeros(len(P))
-        fastphys.art_solve(X, R, a.get("invM_s", a["invM"]), a.get("IinvB_s", a["IinvB"]), a["ra"], a["rb"],
-                           np.ascontiguousarray(LA),
-                           np.ascontiguousarray(LB), np.ascontiguousarray(LC), ang, cap, cg.astype(np.int64),
-                           np.ascontiguousarray(cl), np.ascontiguousarray(N, dtype=np.float64),
-                           np.ascontiguousarray(D, dtype=np.float64), self.pos[P].copy(), self._prev[P].copy(),
-                           np.ascontiguousarray(VS, dtype=np.float64), np.clip(self.fric[P], 0, 1),
-                           float(h), int(self.ART_ITERS), lamN, a.get("HK"))
-        self._art_write()
-        a["contacts"] = (cg.astype(np.int64), np.ascontiguousarray(cl), np.ascontiguousarray(N, dtype=np.float64), lamN)
-        # 動いている街（ステーション）を押した分の反動
-        if len(P) and (CI >= 0).any():
-            for bi in np.unique(CI[CI >= 0]):
-                m_ = (CI == bi) & (lamN > 0)
-                if m_.any():
-                    J = N[m_] * (lamN[m_] / h)[:, None]
-                    self.ext_events.append((boxes[bi][0], None, -J, self.pos[P[m_]]))
-
-    def _art_end(self, h):
-        """ほかの構築物に押された分なども部分ごとの剛体の動きに直してから、速度を求める。"""
-        a = self.art
-        self._art_fit()
-        fx = a.get("fixed")
-        if fx is not None and fx.any():                 # ほかの構築物に押されても、固定の部分は元の姿勢のまま
-            a["X"][fx] = a["Xfix"][fx]
-            a["R"][fx] = np.eye(3)
-        self._art_write()
-        self.vel = (self.pos - self._prev) / h
-        if fx is not None and fx.any():
-            self.vel[fx[a["vg"]]] = 0.0
-        # 押し出しによる形の変化は速度に含めない（含めると、部分全体の運動量として毎サブステップ積み上がってしまう）
-        for rows, d in a.get("defo") or ():
-            g = a["vg"][rows]
-            self.vel[rows] -= np.einsum("nij,nj->ni", a["R"][g], d) / h
-        a["defo"] = []
-        ct = a.get("contacts")
-        if ct is not None and len(ct[0]) and (ct[3] > 0).any():
-            # 部分ごとの速度（並進・回転）に直し、地面から離れる向きの余計な速度を消してから頂点の速度に戻す
-            vg, G = a["vg"], a["G"]
-            m = self.mass
-            M = 1.0 / a["invM"]
-            X, R = a["X"], a["R"]
-            V = np.stack([np.bincount(vg, weights=m * self.vel[:, k], minlength=G) for k in range(3)], 1) / M[:, None]
-            r = self.pos - X[vg]
-            Lm = fcross(r, self.vel - V[vg]) * m[:, None]
-            Lg = np.stack([np.bincount(vg, weights=Lm[:, k], minlength=G) for k in range(3)], 1)
-            W = np.einsum("gij,gj->gi", R @ a["IinvB"] @ np.transpose(R, (0, 2, 1)), Lg)
-            fastphys.art_contact_vel(V, W, X, R, a.get("invM_s", a["invM"]), a.get("IinvB_s", a["IinvB"]),
-                                     ct[0], ct[1], ct[2], ct[3], 2)
-            if fx is not None and fx.any():
-                V[fx] = 0.0
-                W[fx] = 0.0
-            self.vel = V[vg] + fcross(W[vg], r)
-        a["contacts"] = None
 
     # ------------------------------------------------------------------
     # 軽量化 2：レール（遠方の構築物は重心の軌道と回転だけを計算する）
@@ -1860,48 +1358,6 @@ class Construct:
             return np.eye(3), self._sleep_anchor[1], ("sleep", self.sleep_epoch, self.version)
         return None
 
-    def _plasticity(self, h):
-        if not hasattr(self, "_last_R") or not np.any(self.v_plast > 0) or len(self._last_R) != self.n_vox:
-            return
-        P = self.pos.reshape(-1, 8, 3)
-        X = P - P.mean(axis=1, keepdims=True)
-        local = np.einsum("nji,nkj->nki", self._last_R, X) / self.act_scale[:, None, :]
-        local -= local.mean(axis=1, keepdims=True)
-        diff = local - self.rest
-        strain = np.linalg.norm(diff, axis=2).max(axis=1) / self.size
-        over = (strain > self.v_yield) & (self.v_plast > 0)
-        if over.any():
-            rate = np.clip(self.v_plast[over] * 20.0 * h, 0, 1)[:, None, None]
-            self.rest[over] += diff[over] * rate
-            # 潰れすぎ・伸びすぎを防ぐ
-            lim = self.size * 1.2
-            self.rest = np.clip(self.rest, -lim, lim)
-
-    def _check_breaks(self):
-        broke_rotor = False
-        for r in getattr(self, "rotors", []):
-            A, B, target = self._rotor_targets(r)
-            if np.linalg.norm(self.pos[B] - target, axis=1).max() > r["br"]:
-                self.links.discard(r["key"])
-                broke_rotor = True
-        if not len(self.ja):
-            if broke_rotor:
-                self.rebuild()
-            return broke_rotor
-        L = np.linalg.norm(self.pos[self.jb] - self.pos[self.ja], axis=1)
-        broken = np.nonzero(L > self.jbrk)[0]
-        if not len(broken):
-            if broke_rotor:
-                self.rebuild()
-            return broke_rotor
-        for j in broken:
-            key = self.jkey[j]
-            if key[0] == "x":
-                self.extras.pop(key[1:], None)
-            else:
-                self.links.discard(key)
-        self.rebuild()
-        return True
 
     # ------------------------------------------------------------------
     # 編集

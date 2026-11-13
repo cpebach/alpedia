@@ -5,7 +5,7 @@
 
 ## Rust にしたもの
 
-| 中身 | Rust（`alpedia_core/src/`） | 元の Python |
+| 中身 | Rust（`alpedia_core/src/`） | 元の Python（今は消して Rust だけ） |
 |---|---|---|
 | 1ティックの物理まるごと（動いている構築物すべてのサブステップの繰り返し・MOD の箱との接触・構築物どうしの押し出し・固定の戻し・結合直後のおさえ。Python の処理が要ること（眠っていた物が起きた・ちぎれた）が起きたらそこで返す） | `tick.rs`, `lib.rs`（`step_tick`） | `main/world.py` の `step` のサブステップの繰り返し（`_native_tick`） |
 | 機器の1ティック（電力・推進機・配管の流れとバルブ・精錬機・加工機・タンク・通気口・アンテナ・ライト・MOD の機器。状態は Python の dict のまま読み書き。アクチュエーターだけ Python） | `devices.rs`, `lib.rs`（`DevPlan`） | `main/devices.py` の `update` |
@@ -24,17 +24,16 @@
 | 値ノイズ・fbm（地形・色・池・洞窟の生成） | `planet.rs`, `lib.rs`（`noise`） | `main/planet.py` の `value_noise`・`fbm` |
 | 形の等値面（Marching Cubes）・空洞の塗り分け・いちばん近い点・小さな凸包・負にならない最小二乗 | `geomx.rs`, `mc_tables.rs`, `body.rs`（`nnls`） | scikit-image・scipy（`main/shape.py`, `main/airtight.py`, `main/construct.py`） |
 
-Python 側の入り口は `main/fastphys.py`（形合わせなどの関数）、`main/planet.py`（`_nat()`）、`main/native.py`（読み込み）です。
-
-環境変数 `ALPEDIA_BACKEND=python` でも切り替えられます。
+Python 側の入り口は `main/fastphys.py`（芯・皮・法線）、`main/planet.py`（`_nat()`）、`main/native.py`（読み込み）です。
+Rust と同じ計算をする Python の予備（numpy 版）はもうありません。地形・物理・機器の計算は Rust だけで行います。
 
 物理の1サブステップは、構築物ごとの計算（ブロックごと・剛体・完全剛体・関節つき剛体）も、構築物どうしの押し出しも Rust で行います。
 Python に残っているのは、次のものだけです。
 
 - 街などの MOD が出す当たり判定の箱との接触（MOD のプログラムを呼ぶため）。完全剛体・関節つき剛体では、
   Python が箱との接触点を集めて Rust に渡し、地面の接触と一緒に解きます
-- ブロックごと ⇔ 剛体 ⇔ レールの切り替えの判断、ちぎれたあとの作り直し、機器・スクリプト（ゲームの決まりごと）
-- 環境変数 `ALPEDIA_NATIVE_STEP=0` のとき（比べるとき用。Rust 化の前の計算に戻す）
+- ブロックごと ⇔ 剛体 ⇔ レールの切り替えの判断、ちぎれたあとの作り直し、アクチュエーター・スクリプト（ゲームの決まりごと）
+- 池・洞窟の配置を決める乱数（numpy の乱数。今までのワールドと同じ地形にするため。高さの計算は Rust）
 
 構築物の形が変わったとき（ブロックの追加・削除・ちぎれ）は、`Body`・`Proxy`・`ArtTopo` を作り直します。
 

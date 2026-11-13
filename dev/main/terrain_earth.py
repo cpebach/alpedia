@@ -8,6 +8,7 @@
 """
 import numpy as np
 
+from . import native
 from .planet import Planet, fbm, smoothstep
 
 SPAWN_DIR = np.array([0.0, 1.0, 0.0])
@@ -36,12 +37,6 @@ def _seg_dist(p, a, b, ra, rb):
     v = p - c
     L = np.linalg.norm(v, axis=1)
     return L - (ra + (rb - ra) * t), c, v, L
-
-
-def ridged(p, seed, octaves=3):
-    """尾根状のノイズ（0..1、尾根で 1）。"""
-    n = (fbm(p, seed, octaves) - 0.5) / 0.12
-    return np.clip(1 - np.abs(n) * 0.6, 0, 1) ** 2
 
 
 class EarthPlanet(Planet):
@@ -73,29 +68,17 @@ class EarthPlanet(Planet):
         return np.arccos(np.clip(dirs @ ref, -1, 1)) * self.radius
 
     def height0(self, dirs):
-        """池を除いた地表の高さ（半径からの m）。"""
-        dirs = np.asarray(dirs, dtype=np.float64)
-        sd = self.seed
-        cont = (fbm(dirs * 1.3 + 11.0, sd, 4) - 0.545) / 0.1
-        a_sp = self._ang(dirs, SPAWN_DIR)
-        e_sp = np.exp(-(a_sp / 300.0) ** 2)
-        cont = cont * (1 - e_sp) + (np.maximum(cont, 1.2) + 0.3) * e_sp   # 出現地点のまわりは陸
-        base = np.where(cont > 0, cont * 6.0, cont * 12.0)
-        hills = (fbm(dirs * 9.0 + 5.0, sd + 1, 3) - 0.5) * 2.5 * self.hill_h
-        # 山脈：尾根状のノイズを、別の低周波ノイズで山域に限定
-        ridge = ridged(dirs * 3.2 + 3.0, sd + 2, 4)
-        rough = ridged(dirs * 11.0 + 7.0, sd + 4, 3) * 0.6 + ridged(dirs * 27.0 + 1.0, sd + 5, 2) * 0.4
-        rng = smoothstep(0.52, 0.66, fbm(dirs * 1.6 + 40.0, sd + 3, 3)) * smoothstep(0.2, 1.2, cont)
-        # 出現地点から 170 m ほど先（-Z 側）に必ず山を置く
-        mdir = np.array([0.0, np.cos(170 / self.radius), -np.sin(170 / self.radius)])
-        am = self._ang(dirs, mdir)
-        rng = np.maximum(rng, np.exp(-(am / 70.0) ** 2))
-        mtn = rng * (ridge * 0.55 + 0.45) * (0.65 + 0.35 * rough)
-        h = base + hills + mtn * self.mountain_h * 1.1
-        # 出現地点のまわりは平らに
-        w = 1 - smoothstep(self.flat_r, self.flat_r * 1.9, a_sp)
-        h = h * (1 - w) + (self.spawn_h + hills * 0.15) * w
-        return h
+        """池を除いた地表の高さ（半径からの m。Rust）。池・洞窟を作る前は、それらの無い地形で計算する。"""
+        d = np.ascontiguousarray(dirs, dtype=np.float64).reshape(-1, 3)
+        if hasattr(self, "_ccap"):
+            return self._nat().height0(d)
+        core = native.require()
+        bare = getattr(self, "_bare", None)
+        if bare is None:
+            e = self._earth_params(empty=True)
+            bare = self._bare = core.PlanetShape(self.radius, self.amp, self.freq, int(self.seed),
+                                                 [float(x) for x in self.center], e)
+        return bare.height0(d)
 
     def _dir_at(self, ox, oz):
         """出現地点から地表に沿って (x, z) m 離れた方向。"""
@@ -136,29 +119,6 @@ class EarthPlanet(Planet):
         self.ponds_rad = np.array([p[1] for p in ponds])
         self.ponds_depth = np.array([p[2] for p in ponds])
         self.ponds_level = np.array([p[3] for p in ponds])
-
-    def _apply_ponds(self, dirs, h):
-        """dirs の高さ h を池で削り、水面の高さ（無い所は -inf）を返す。"""
-        water = np.full(len(dirs), -np.inf)
-        if not len(self.ponds_dir):
-            return h, water
-        mean = dirs.mean(0)
-        mean /= max(np.linalg.norm(mean), 1e-9)
-        spread = self._ang(dirs, mean).max()
-        near = np.nonzero(self._ang(self.ponds_dir, mean) < spread + self.ponds_rad * 2.0)[0]
-        for k in near:
-            t = self._ang(dirs, self.ponds_dir[k]) / self.ponds_rad[k]
-            m = t < 2.0
-            if not m.any():
-                continue
-            L = self.ponds_level[k]
-            tt = t[m]
-            bowl = np.where(tt < 1, L - self.ponds_depth[k] * (1 - tt * tt), L + (tt - 1) * self.ponds_rad[k] * 0.8)
-            h[m] = np.minimum(h[m], bowl)
-            w = tt < 1.15
-            idx = np.nonzero(m)[0][w]
-            water[idx] = np.maximum(water[idx], L)
-        return h, water
 
     # ------------------------------------------------------------------
     # 洞窟（芋虫状のカプセル列）
@@ -238,51 +198,31 @@ class EarthPlanet(Planet):
         self._cstart = start
         self._cend = np.append(start[1:], len(keys))
         self._ccap = caps
+        self._bare = None
 
     @staticmethod
     def _key(g):
         g = g + 4096
         return (g[..., 0] * 8192 + g[..., 1]) * 8192 + g[..., 2]
 
-    def _native_params(self):
+    def _earth_params(self, empty=False):
+        """Rust の地形（PlanetShape）に渡す地球型の値。empty：池・洞窟の無い地形（池・洞窟を作るときの高さ用）。"""
         earth = {"sea": self.sea, "mountain_h": self.mountain_h, "hill_h": self.hill_h, "flat_r": self.flat_r,
                  "spawn_h": self.spawn_h, "cell": self.CELL}
         for k in ("ponds_dir", "ponds_rad", "ponds_depth", "ponds_level", "cave_a", "cave_b", "cave_ra", "cave_rb"):
-            earth[k] = np.ascontiguousarray(getattr(self, k), dtype=np.float64)
-        for k, v in (("ck", self._ck), ("cstart", self._cstart), ("cend", self._cend), ("ccap", self._ccap)):
-            earth[k] = np.ascontiguousarray(v, dtype=np.int64)
-        return self.radius, self.amp, self.freq, self.seed, earth
+            earth[k] = (np.zeros((0, 3) if k in ("ponds_dir", "cave_a", "cave_b") else 0) if empty
+                        else np.ascontiguousarray(getattr(self, k), dtype=np.float64))
+        for k in ("ck", "cstart", "cend", "ccap"):
+            earth[k] = np.zeros(0, np.int64) if empty else np.ascontiguousarray(getattr(self, "_" + k), dtype=np.int64)
+        return earth
+
+    def _native_params(self):
+        return self.radius, self.amp, self.freq, self.seed, self._earth_params()
 
     def cave_dist(self, q, grad=False):
-        nat = self._nat()
-        if nat is not None:
-            d, g = nat.cave_dist(np.ascontiguousarray(q, dtype=np.float64).reshape(-1, 3))
-            return (d, g) if grad else d
-        q = np.asarray(q, dtype=np.float64)
-        n = len(q)
-        out = np.full(n, 1e9)
-        gout = np.zeros((n, 3)) if grad else None
-        key = self._key(np.floor(q / self.CELL).astype(np.int64))
-        pos = np.searchsorted(self._ck, key)
-        pos = np.minimum(pos, len(self._ck) - 1)
-        found = self._ck[pos] == key
-        if found.any():
-            pi = np.nonzero(found)[0]
-            st, en = self._cstart[pos[pi]], self._cend[pos[pi]]
-            cnt = en - st
-            rep = np.repeat(pi, cnt)
-            off = np.arange(cnt.sum()) - np.repeat(np.cumsum(cnt) - cnt, cnt)
-            cap = self._ccap[np.repeat(st, cnt) + off]
-            d, c, v, L = _seg_dist(q[rep], self.cave_a[cap], self.cave_b[cap], self.cave_ra[cap], self.cave_rb[cap])
-            # 点ごとの最小
-            o = np.lexsort((d, rep))
-            first = np.ones(len(o), bool)
-            first[1:] = rep[o][1:] != rep[o][:-1]
-            sel = o[first]
-            out[rep[sel]] = d[sel]
-            if grad:
-                gout[rep[sel]] = v[sel] / np.maximum(L[sel], 1e-9)[:, None]
-        return (out, gout) if grad else out
+        d, g = self._nat().cave_dist(np.ascontiguousarray(q, dtype=np.float64).reshape(-1, 3))
+        return (d, g) if grad else d
+
 
     def caves_near(self, center_local, radius):
         """center_local の周り radius 以内にあるカプセルの番号。"""
@@ -293,18 +233,7 @@ class EarthPlanet(Planet):
     # ------------------------------------------------------------------
     # Planet の上書き
     # ------------------------------------------------------------------
-    def surface_radius_exact(self, dirs):
-        dirs = np.asarray(dirs, dtype=np.float64)
-        h, _ = self._apply_ponds(dirs, self.height0(dirs))
-        return self.radius + h
 
-    def _tile_values(self, dirs):
-        h, water = self._apply_ponds(dirs, self.height0(dirs))
-        water = np.maximum(water, self.sea)
-        wr = np.where(water > h, self.radius + water, 0.0)
-        # 水の無い所も水面の値を入れておく（補間で水際がなめらかになる）
-        wr = np.where(wr == 0.0, self.radius + np.minimum(water, h - 0.05), wr)
-        return np.stack([self.radius + h, wr], axis=1)
 
     def water_depth(self, p):
         q = np.asarray(p, dtype=np.float64) - self.center

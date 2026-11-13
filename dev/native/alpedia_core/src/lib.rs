@@ -340,6 +340,14 @@ impl PlanetShape {
         Ok(PyArray1::from_vec_bound(py, out).reshape([n, 2])?)
     }
 
+    /// 単位方向 (N,3) → タイルに入れる値そのもの (地表半径, 水面半径) (N,2)（補間しない）
+    fn tile_values<'py>(&self, py: Python<'py>, dirs: RoF<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let d = rows3(ro(&dirs, "dirs")?);
+        let n = d.len();
+        let out: Vec<f64> = py.allow_threads(|| self.shape.tile_values(&d).into_iter().flatten().collect());
+        Ok(PyArray1::from_vec_bound(py, out).reshape([n, 2])?)
+    }
+
     fn surface_radius_exact<'py>(&self, py: Python<'py>, dirs: RoF<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let d = rows3(ro(&dirs, "dirs")?);
         let out = py.allow_threads(|| self.shape.surface_radius_exact(&d));

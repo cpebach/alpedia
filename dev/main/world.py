@@ -384,19 +384,16 @@ class World:
 
     def gravity(self, p):
         from . import native
-        if native.core is not None and self.planets:
+        if self.planets:
             pl = self.planets
             if getattr(self, "_grav_key", None) != len(pl):
                 self._grav = (np.array([x.center for x in pl], float), np.array([x.gm for x in pl], float),
                               np.array([x.radius for x in pl], float))
                 self._grav_key = len(pl)
             c, gm, r = self._grav
-            g = native.core.gravity(np.ascontiguousarray(p, dtype=np.float64).reshape(-1, 3), c, gm, r)
-            return g * float(self.settings.get("gravity_scale", 1.0))
-        g = np.zeros_like(np.asarray(p, dtype=np.float64))
-        for pl in self.planets:
-            g += pl.gravity(p)
-        return g * float(self.settings.get("gravity_scale", 1.0))
+            g = native.require().gravity(np.ascontiguousarray(p, dtype=np.float64).reshape(-1, 3), c, gm, r)
+            return g.reshape(np.shape(p)) * float(self.settings.get("gravity_scale", 1.0))
+        return np.zeros_like(np.asarray(p, dtype=np.float64))
 
     def nearest_planet(self, p):
         best, bd = None, 1e300
@@ -761,15 +758,14 @@ class World:
 
     def _native_tick(self, cons, sleeping, h, anchored_ids, settle_acc, fixed_pos):
         """1ティックの物理（サブステップの繰り返し）を Rust でまとめて進める。
-        戻り値 (進めたサブステップの数, 起きた眠っていた物, ちぎれた構築物の ID)。使えないときは None。"""
+        戻り値 (進めたサブステップの数, 起きた眠っていた物, ちぎれた構築物の ID)。
+        まとめて進められないとき（動いている街に触れうる物がある）は None（サブステップごとに進める）。"""
         from . import native
-        from .construct import CONTACT_SOFT, NATIVE_STEP_OFF, Construct, _native_planets
-        core = native.core
-        if core is None or not hasattr(core, "step_tick") or NATIVE_STEP_OFF or not cons:
+        from .construct import CONTACT_SOFT, Construct, _native_planets
+        core = native.require()
+        if not cons:
             return None
         pls = _native_planets(self.planets)
-        if pls is None:
-            return None
         groups = ({}, [])
         jobs = []
         for c in cons:

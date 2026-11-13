@@ -185,7 +185,7 @@ impl Shape {
     }
 
     /// タイルに保存する値：地表半径・水面半径
-    fn tile_values(&self, dirs: &[[f64; 3]]) -> Vec<[f64; 2]> {
+    pub fn tile_values(&self, dirs: &[[f64; 3]]) -> Vec<[f64; 2]> {
         match &self.earth {
             None => dirs
                 .iter()

@@ -36,22 +36,9 @@ def lod_vertices(c, base):
         return np.zeros((0, 12), np.float32)
     R, t = c.lattice_pose()
     s = c.size
-    core = _native()
-    if core is not None and hasattr(core, "lod_vertices"):          # Rust でまとめて
-        f64 = lambda a: np.ascontiguousarray(a, dtype=np.float64)  # noqa: E731
-        return core.lod_vertices(f64(C), f64(H), f64(col), f64(R), [float(x) for x in t],
-                                 [float(x) for x in base], float(s), [float(x) for x in SUN], float(AMBIENT))
-    corners = (C[:, None, :] + H[:, None, :] * _BITS[None]) * s           # (k,8,3) 格子の座標
-    W = corners @ R.T + (t - base)
-    q = W[:, _BOX_FACES]                                                  # (k,6,4,3)
-    n = np.broadcast_to((_BOX_N @ R.T)[None, :, None, :], q.shape)
-    cc = shade(n.reshape(-1, 3), np.repeat(col, 24, axis=0))
-    out = np.zeros((len(C) * 24, 12), np.float32)
-    out[:, 0:3] = q.reshape(-1, 3)
-    out[:, 3:6] = n.reshape(-1, 3)
-    out[:, 6:9] = cc
-    out[:, 9] = 1.0
-    return out
+    f64 = lambda a: np.ascontiguousarray(a, dtype=np.float64)  # noqa: E731
+    return _native().lod_vertices(f64(C), f64(H), f64(col), f64(R), [float(x) for x in t],
+                                  [float(x) for x in base], float(s), [float(x) for x in SUN], float(AMBIENT))
 
 
 def light_ids(c):
@@ -227,9 +214,6 @@ def block_ao(c, p, n, owner=None, strength=0.42):
     return 1.0 - strength * np.clip(frac * 1.6, 0, 1)
 
 
-def _centers8(P8):
-    return P8.mean(axis=1)
-
 
 def _frames8(P8):
     """(n,8,3) の頂点 → 各ボクセルのローカル軸 (n,3,3)。construct.voxel_frames と同じ。"""
@@ -242,8 +226,7 @@ def _frames8(P8):
 
 def _native():
     from .. import native
-    core = native.core
-    return core if core is not None and hasattr(core, "mesh_pack") else None
+    return native.require()
 
 
 class ConstructView:
@@ -431,37 +414,17 @@ class ConstructView:
                 self._set_mesh(g, v)
 
     def _update_blob(self, origin, highlight_flames):
-        from .. import shape
         c = self.c
         m = self.blob
         firing = self._firing() if highlight_flames else None
-        core = _native()
-        if core is not None:
-            pos = c.pos if c.pos.flags.c_contiguous and c.pos.dtype == np.float64 else np.ascontiguousarray(c.pos, np.float64)
-            outs = core.mesh_pack(pos, m["vidx64"], m["w64"], m["faces64"], [float(x) for x in origin],
-                                  [(g["verts"], g["cols"], g["uv"], g["owner"]) for g in self.groups],
-                                  [float(x) for x in SUN], float(AMBIENT), firing)
-            for g, v in zip(self.groups, outs):
-                if g["alpha"] < 0.999:
-                    v = np.array(v, dtype=np.float32, copy=True)
-                    v[:, 9] = g["alpha"]
-                self._set_mesh(g, v)
-            return
-        V = shape.skin(c, m) - origin
-        N = shape.vertex_normals(V, m["faces"])
-        for g in self.groups:
-            vs = g["verts"]
-            n = N[vs]
-            col = shade(n, g["cols"])
-            if firing is not None and firing.any():
-                fl = firing[g["owner"]][:, None]
-                col = col * (1 - fl * 0.6) + np.array([1.0, 0.75, 0.25]) * fl
-            v = np.empty((len(vs), 12), dtype=np.float32)
-            v[:, 0:3] = V[vs]
-            v[:, 3:6] = n
-            v[:, 6:9] = col
-            v[:, 9] = g["alpha"]
-            v[:, 10:12] = g["uv"]
+        pos = c.pos if c.pos.flags.c_contiguous and c.pos.dtype == np.float64 else np.ascontiguousarray(c.pos, np.float64)
+        outs = _native().mesh_pack(pos, m["vidx64"], m["w64"], m["faces64"], [float(x) for x in origin],
+                                   [(g["verts"], g["cols"], g["uv"], g["owner"]) for g in self.groups],
+                                   [float(x) for x in SUN], float(AMBIENT), firing)
+        for g, v in zip(self.groups, outs):
+            if g["alpha"] < 0.999:
+                v = np.array(v, dtype=np.float32, copy=True)
+                v[:, 9] = g["alpha"]
             self._set_mesh(g, v)
 
     # -- 毎フレーム --------------------------------------------------------
@@ -701,40 +664,14 @@ class DecalView:
         c = self.c
         vox, nl, al, uv = self.items
         sel = P8[vox]
-        core = _native()
-        if core is not None and hasattr(core, "decal_quads"):           # Rust でまとめて
-            v = core.decal_quads(np.ascontiguousarray(sel, dtype=np.float64), np.ascontiguousarray(nl, dtype=np.float64),
-                                 np.ascontiguousarray(al, dtype=np.float64), np.ascontiguousarray(uv, dtype=np.float32),
-                                 float(c.size), [float(x) for x in origin], [float(x) for x in SUN], float(AMBIENT))
-            if getattr(self, "_new", False):
-                self.mesh.set(v, quad_tris(len(vox)))
-                self._new = False
-            else:
-                self.mesh.set(v)
-            return
-        cen = _centers8(sel)
-        F = _frames8(sel)                             # 行がローカル x,y,z 軸
-        n = np.einsum("dk,dkj->dj", nl, F)
-        a = np.einsum("dk,dkj->dj", al, F)
-        r = np.cross(a, n)
-        h = c.size * 0.31
-        p = cen + n * (c.size * 0.5 * 1.012) - origin
-        corners = np.stack([p - r * h - a * h, p + r * h - a * h, p + r * h + a * h, p - r * h + a * h], axis=1)
-        D = len(vox)
-        v = np.empty((D, 4, 12), dtype=np.float32)
-        v[:, :, 0:3] = corners
-        v[:, :, 3:6] = n[:, None, :]
-        v[:, :, 6:9] = shade(n, np.ones((D, 3)))[:, None, :]
-        v[:, :, 9] = 1.0
-        v[:, 0, 10:12] = uv[:, [0, 1]]
-        v[:, 1, 10:12] = uv[:, [2, 1]]
-        v[:, 2, 10:12] = uv[:, [2, 3]]
-        v[:, 3, 10:12] = uv[:, [0, 3]]
+        v = _native().decal_quads(np.ascontiguousarray(sel, dtype=np.float64), np.ascontiguousarray(nl, dtype=np.float64),
+                                  np.ascontiguousarray(al, dtype=np.float64), np.ascontiguousarray(uv, dtype=np.float32),
+                                  float(c.size), [float(x) for x in origin], [float(x) for x in SUN], float(AMBIENT))
         if getattr(self, "_new", False):
-            self.mesh.set(v.reshape(-1, 12), quad_tris(D))
+            self.mesh.set(v, quad_tris(len(vox)))
             self._new = False
         else:
-            self.mesh.set(v.reshape(-1, 12))
+            self.mesh.set(v)
 
     def remove(self):
         self.mesh.remove()

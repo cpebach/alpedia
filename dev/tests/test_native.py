@@ -128,27 +128,32 @@ class TestPlanet(unittest.TestCase):
         d[50:100] = [1e-9, 1, 0]
         p = pl.center + d * (pl.radius + rng.uniform(-30, 30, (n, 1)))
         pl.dig(p[0], 2.0); pl.dig(p[1], 3.0)
-        out = {}
-        for mode in ("python", "rust"):
-            saved = native.core
-            if mode == "python":
-                native.core = None
-            try:
-                pl2 = make_planet(reg.get("planets", pdef_id), [10.0, -20.0, 5.0])
-                pl2.craters = [list(c) for c in pl.craters]
-                s = pl2._sample(d)
-                dd = pl2.sdf(p)
-                dg, g = pl2.sdf_grad(p)
-                cv = pl2.cave_dist(p - pl2.center, grad=True) if pl2.has_caves else None
-                out[mode] = (s, dd, dg, g, cv)
-            finally:
-                native.core = saved
-        a, b = out["python"], out["rust"]
-        for k in range(4):
-            self.assertLess(np.abs(a[k] - b[k]).max(), 1e-7, f"{pdef_id} 項目 {k}")
-        if a[4] is not None:
-            self.assertLess(np.abs(a[4][0] - b[4][0]).max(), 1e-9)
-            self.assertLess(np.abs(a[4][1] - b[4][1]).max(), 1e-9)
+        # タイルの補間値は、補間しない値に近い
+        s = pl._sample(d)
+        tv = pl._tile_values(d)
+        self.assertLess(np.abs(s[:, 0] - tv[:, 0]).max(), 0.25)
+        self.assertLess(np.abs(pl.surface_radius_exact(d) - tv[:, 0]).max(), 1e-9)
+        # 距離と勾配：sdf_grad の距離は sdf と同じ、勾配は単位ベクトルで、差分の向きとだいたい同じ
+        dd = pl.sdf(p)
+        dg, g = pl.sdf_grad(p)
+        self.assertLess(np.abs(dd - dg).max(), 1e-9)
+        self.assertLess(np.abs(np.linalg.norm(g[2:], axis=1) - 1).max(), 1e-9)   # 0・1 は掘削跡の中心（勾配なし）
+        e = 1e-3
+        fd = np.stack([(pl.sdf(p + np.eye(3)[k] * e) - pl.sdf(p - np.eye(3)[k] * e)) / (2 * e) for k in range(3)], 1)
+        fn = fd / np.maximum(np.linalg.norm(fd, axis=1, keepdims=True), 1e-9)
+        self.assertGreater(np.median(np.einsum("ij,ij->i", fn, g)), 0.99)
+        # 掘削跡：中心は地中ではない（くり抜かれている）
+        for cr in pl.craters:
+            q = pl.center + np.asarray(cr[:3])
+            self.assertGreaterEqual(float(pl.sdf(q[None])[0]), cr[3] - 1e-6)
+        # 地表の上下で符号が変わる
+        up = pl.center + d[:200] * (pl.surface_radius_exact(d[:200]) + 1.0)[:, None]
+        self.assertTrue((pl.sdf(up) > 0).mean() > 0.95)
+        if pl.has_caves:
+            cd, cg = pl.cave_dist(p - pl.center, grad=True)
+            self.assertLess(np.abs(cd - pl.cave_dist(p - pl.center)).max(), 1e-12)
+            m = cd < 50
+            self.assertLess(np.abs(np.linalg.norm(cg[m], axis=1) - 1).max(), 1e-6)
 
     def test_sphere_planet(self):
         self._compare("terra")
@@ -208,8 +213,8 @@ class TestPairs(unittest.TestCase):
         E = Counter(tuple(sorted(e)) for t_ in f.tolist() for e in ((t_[0], t_[1]), (t_[1], t_[2]), (t_[2], t_[0])))
         self.assertTrue(all(n_ == 2 for n_ in E.values()))   # 閉じている
 
-    def test_collide_matches_python(self):
-        """地面との接触：Rust と Python で、同じ頂点が同じだけ押し戻される。"""
+    def test_collide_planet(self):
+        """地面との接触（Rust）：めり込んだ頂点だけを集め、押し戻したあとは地面の上（ほぼ）にある。"""
         import json, shutil, tempfile
         from main import config, log, paths
         from main.construct import Construct
@@ -219,34 +224,30 @@ class TestPairs(unittest.TestCase):
         try:
             d = paths.world_dir("t"); (d / "scripts").mkdir(parents=True)
             (d / "world.json").write_text(json.dumps(dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "gaia", "position": [0, 0, 0], "craters": []}])), "utf-8")
-            res = {}
-            for mode in ("python", "rust"):
-                saved = native.core
-                try:
-                    w = World("t", json.loads(json.dumps(config.DEFAULTS)), addons=[]).load()
-                    if mode == "python":                 # 地面との接触だけ Python（numpy）で
-                        native.core = None
-                    pl = w.planets[0]
-                    up = np.array([0, 1.0, 0])
-                    g = pl.center + up * float(pl.surface_radius(up[None])[0])
-                    c = Construct.from_voxels(w.registry, [((x, 0, z), "steel", None) for x in range(4) for z in range(4)],
-                                              g - up * 0.3, np.eye(3), size=0.5)
-                    c._prev = c.pos.copy() + 0.01
-                    c.vel[:] = -up * 5
-                    c.mode = "rigid"
-                    out = c._collide_planet(pl, collect=True)
-                    c._collide_planet(pl)
-                    res[mode] = (out, c.pos.copy(), getattr(c, "_want_soft", False))
-                finally:
-                    native.core = saved
-            (h1, d1, n1), p1, s1 = res["python"]
-            (h2, d2, n2), p2, s2 = res["rust"]
-            self.assertTrue(np.array_equal(np.sort(h1), np.sort(h2)))
-            o1, o2 = np.argsort(h1), np.argsort(h2)
-            self.assertLess(np.abs(d1[o1] - d2[o2]).max(), 1e-7)
-            self.assertLess(np.abs(n1[o1] - n2[o2]).max(), 1e-6)
-            self.assertLess(np.abs(p1 - p2).max(), 1e-7)
-            self.assertEqual(s1, s2)
+            w = World("t", json.loads(json.dumps(config.DEFAULTS)), addons=[]).load()
+            pl = w.planets[0]
+            up = np.array([0, 1.0, 0])
+            g = pl.center + up * float(pl.surface_radius(up[None])[0])
+            c = Construct.from_voxels(w.registry, [((x, 0, z), "steel", None) for x in range(4) for z in range(4)],
+                                      g - up * 0.3, np.eye(3), size=0.5)
+            c._prev = c.pos.copy()
+            c.vel[:] = -up * 5
+            c.mode = "rigid"
+            r = c.size * 0.5
+            K = c.contact_cores()
+            ok = ~np.isnan(K[:, 0])
+            sd = np.full(len(K), np.inf)
+            sd[ok] = pl.sdf(K[ok]) - r
+            hi, dep, n = c._collide_planet(pl, collect=True)
+            self.assertTrue(len(hi))
+            self.assertTrue(np.array_equal(np.sort(hi), np.nonzero(sd < 0)[0]))     # めり込んだ頂点だけ
+            self.assertLess(np.abs(dep - (-sd[hi])).max(), 1e-6)
+            self.assertLess(np.abs(np.linalg.norm(n, axis=1) - 1).max(), 1e-9)
+            self.assertGreater(float((n @ up).min()), 0.5)                            # 上向きに押す
+            c._collide_planet(pl)
+            K2 = c.contact_cores()
+            self.assertGreater(float((pl.sdf(K2[hi]) - r).min()), -0.3 * float(dep.max()))
+            self.assertTrue(c._want_soft)                                             # 剛体のまま速くぶつかる
         finally:
             paths.SAVES = saves
             shutil.rmtree(tmp, ignore_errors=True)
@@ -254,7 +255,7 @@ class TestPairs(unittest.TestCase):
 
 @unittest.skipIf(core is None or not hasattr(core, "Body"), "Rust の物理コア（段階B）がありません")
 class TestStep(unittest.TestCase):
-    """1サブステップをまとめて Rust で計算したものと、Python で順に計算したものが同じになる。"""
+    """1サブステップ（Rust）を何回か進めて、物理として正しく動くか（値が壊れない・地面に乗る・関節が動く など）。"""
     H = 1 / 180
 
     @classmethod
@@ -319,28 +320,22 @@ class TestStep(unittest.TestCase):
         return c
 
     def _run(self, make, n=12):
-        out = {}
-        for native_ in (False, True):
-            c = make()
-            br = []
-            for _ in range(n):
-                c.substep_begin(self.H, self.w.iters, self.w.gravity, self.w.planets,
-                                float(self.w.settings["gravity_scale"]) if native_ else None)
-                br.append(c.substep_end(self.H))
-            out[native_] = (c, br)
-        (a, ba), (b, bb) = out[False], out[True]
-        r = a.size * 0.5
-        self.touch = min(float(np.nanmin(pl.sdf(a.contact_cores()[~np.isnan(a.contact_cores()[:, 0])]))) - r
-                         for pl in self.w.planets[:1])
-        self.assertEqual(ba, bb)
-        self.assertTrue(hasattr(b, "_nb_cache") and not hasattr(a, "_nb_cache"))    # 本当に Rust でまとめて計算した
-        self.assertEqual(a.links, b.links)
-        self.assertEqual(a.n_vox, b.n_vox)
-        self.assertLess(np.abs(a.pos - b.pos).max(), 1e-6)
-        self.assertLess(np.abs(a.vel - b.vel).max(), 1e-4)
-        self.assertLess(np.abs(a.rest - b.rest).max(), 1e-6)
-        self.assertEqual(getattr(a, "_want_soft", False), getattr(b, "_want_soft", False))
-        return a, b
+        c = make()
+        x0 = c.pos.copy()
+        br = []
+        for _ in range(n):
+            c.substep_begin(self.H, self.w.iters, self.w.gravity, self.w.planets, float(self.w.settings["gravity_scale"]))
+            br.append(c.substep_end(self.H))
+        r = c.size * 0.5
+        k = c.contact_cores()
+        self.touch = float(np.nanmin(self.w.planets[0].sdf(k[~np.isnan(k[:, 0])]))) - r
+        self.broke = br
+        self.assertTrue(hasattr(c, "_nb_cache"))                    # Rust の Body で計算した
+        self.assertTrue(np.isfinite(c.pos).all() and np.isfinite(c.vel).all())
+        self.assertGreater(np.abs(c.pos - x0).max(), 1e-6)          # 動いた
+        self.assertLess(np.abs(c.vel).max(), 200.0)                 # 吹き飛んでいない
+        self.assertGreater(self.touch, -0.2)                        # 地面に深くめり込んでいない
+        return c, c
 
     SLAB = [((x, 0, z), "steel", None) for x in range(4) for z in range(3)]
 
@@ -362,7 +357,7 @@ class TestStep(unittest.TestCase):
         self.assertTrue(a.rotors)
 
     def test_soft_hinge(self):
-        """ヒンジの関節（ブロックの中心を軸に振る）も Rust で：Python と同じ"""
+        """ヒンジの関節（ブロックの中心を軸に振る）も Rust で"""
         vox = [((0, 0, 0), "steel", {"def": "battery", "dir": 2}),
                ((1, 0, 0), "steel", {"def": "hinge", "dir": 2, "name": "arm", "state": {"hinge": 0}}),
                ((1, 1, 0), "steel", None), ((1, 2, 0), "steel", None)]
@@ -377,6 +372,7 @@ class TestStep(unittest.TestCase):
             c.pos[8:16] += np.array([2.0, 0, 0])      # 2つめのボクセルを引きはがす
         a, b = self._run(lambda: self._make([((0, 0, 0), "wood", None), ((1, 0, 0), "wood", None)], 2.0, setup=setup), n=2)
         self.assertEqual(len(a.links), 0)
+        self.assertTrue(any(self.broke))
 
     def test_soft_water_with_cavity(self):
         box = [((x, y, z), "steel", None) for x in range(3) for y in range(3) for z in range(3) if (x, y, z) != (1, 1, 1)]
@@ -403,7 +399,7 @@ class TestStep(unittest.TestCase):
         return setup
 
     def test_art(self):
-        """完全剛体モードの関節つき剛体（回転・押し出し・地面）：Rust と Python で同じ"""
+        """完全剛体モードの関節つき剛体（回転・押し出し・地面）"""
         vox = [((x, 0, z), "steel", None) for x in range(3) for z in range(2)]
         vox += [((1, 1, 0), "steel", {"def": "battery", "dir": 2}), ((1, 2, 0), "steel", {"def": "actuator", "dir": 2}),
                 ((1, 3, 0), "aluminum", None), ((2, 3, 0), "aluminum", None), ((0, 1, 1), "steel", {"def": "actuator", "dir": 4}),
@@ -427,7 +423,7 @@ class TestStep(unittest.TestCase):
         self.assertLess(self.touch, 0.01)
 
     def test_art_hinge(self):
-        """完全剛体モードのヒンジ（とローター）：Rust と Python で同じ。Rust の ArtTopo で解いている"""
+        """完全剛体モードのヒンジ（とローター）。Rust の ArtTopo で解いている"""
         vox = [((x, 0, z), "steel", None) for x in range(3) for z in range(2)]
         vox += [((1, 1, 0), "steel", {"def": "battery", "dir": 2}),
                 ((1, 2, 0), "steel", {"def": "hinge", "dir": 2, "state": {"hinge": 5}}),
@@ -480,52 +476,42 @@ class TestStep(unittest.TestCase):
             return c
         a, b = self._run(make, n=10)
         self.assertTrue(a.ext_events)
-        self.assertEqual(len(a.ext_events), len(b.ext_events))
-        for ea, eb in zip(a.ext_events, b.ext_events):
-            self.assertEqual(ea[1], eb[1])
-            if ea[2] is not None:
-                self.assertLess(np.abs(ea[2] - eb[2]).max(), 1e-3)
+        J = [e for e in a.ext_events if e[2] is not None]
+        self.assertTrue(J)                                     # 動いている箱を押した反動
+        up = self._ground(False)[1]
+        self.assertTrue(all(float((e[2] @ up).sum()) < 0 for e in J))   # 箱は下向きに押される
 
     def test_full_rigid_on_mod_box(self):
-        """完全剛体：地面と MOD の箱（動いている）の接触を一緒に解く：Rust と Python で同じ"""
+        """完全剛体：地面と MOD の箱（動いている）の接触を一緒に解く"""
         self._with_box("full", self.SLAB)
 
     def test_art_on_mod_box(self):
-        """関節つき剛体：MOD の箱の上で：Rust と Python で同じ"""
+        """関節つき剛体：MOD の箱の上で"""
         vox = [((x, 0, z), "steel", None) for x in range(3) for z in range(2)]
         vox += [((1, 1, 0), "steel", {"def": "battery", "dir": 2}), ((1, 2, 0), "steel", {"def": "actuator", "dir": 2}),
                 ((1, 3, 0), "aluminum", None)]
         self._with_box("art", vox)
 
     def test_contacts(self):
-        """構築物どうし・結合していないボクセルどうしの押し出し：Rust と Python で同じ"""
-        from main import construct as C
-        out = {}
-        for native_ in (False, True):
-            c1 = self._make(self.SLAB, 0.0, seed=1)
-            c2 = self._make([((x, 0, z), "wood", None) for x in range(2) for z in range(2)], 0.0, seed=2)
-            c2.pos += (c1.voxel_centers().mean(0) - c2.voxel_centers().mean(0)) + c1.size * 0.2
-            from main.construct import Construct
-            g, up = self._ground(False)
-            c3 = Construct.from_voxels(self.w.registry, [((0, 0, 0), "steel", None), ((1, 0, 0), "steel", None),
-                                                         ((1, 0, 1), "steel", None)], c1.voxel_centers()[0] + up * 0.3,
-                                       np.eye(3), size=0.5, links=set())
-            c3.pos += c1.voxel_centers()[0] + up * 0.3 - c3.voxel_centers()[0]
-            c3.asleep = True
-            saved = C.NATIVE_STEP_OFF
-            C.NATIVE_STEP_OFF = not native_
-            try:
-                woke = self.w._voxel_collisions([c1, c2], [c3])
-            finally:
-                C.NATIVE_STEP_OFF = saved
-            out[native_] = (c1, c2, c3, [c.name for c in woke], [getattr(c, "_touch_moving", False) for c in (c1, c2, c3)])
-        a, b = out[False], out[True]
-        for k in range(3):
-            self.assertLess(np.abs(a[k].pos - b[k].pos).max(), 1e-12)
-        self.assertEqual(a[3], b[3])
-        self.assertTrue(a[3])                                                    # 眠っていた構築物が起きた
-        self.assertEqual(a[4], b[4])
-        self.assertGreater(np.abs(a[0].pos - self._make(self.SLAB, 0.0, seed=1).pos).max(), 1e-4)   # 本当に押し出した
+        """構築物どうし・結合していないボクセルどうしの押し出し（Rust）：重なった物が押し出され、眠っていた物が起きる"""
+        from main.construct import Construct
+        c1 = self._make(self.SLAB, 0.0, seed=1)
+        c2 = self._make([((x, 0, z), "wood", None) for x in range(2) for z in range(2)], 0.0, seed=2)
+        c2.pos += (c1.voxel_centers().mean(0) - c2.voxel_centers().mean(0)) + c1.size * 0.2
+        g, up = self._ground(False)
+        c3 = Construct.from_voxels(self.w.registry, [((0, 0, 0), "steel", None), ((1, 0, 0), "steel", None),
+                                                     ((1, 0, 1), "steel", None)], c1.voxel_centers()[0] + up * 0.3,
+                                   np.eye(3), size=0.5, links=set())
+        c3.pos += c1.voxel_centers()[0] + up * 0.3 - c3.voxel_centers()[0]
+        c3.asleep = True
+        p1, p2 = c1.pos.copy(), c2.pos.copy()
+        d0 = np.linalg.norm(c1.voxel_centers().mean(0) - c2.voxel_centers().mean(0))
+        woke = self.w._voxel_collisions([c1, c2], [c3])
+        self.assertEqual([c.name for c in woke], [c3.name])                      # 眠っていた構築物が起きた
+        self.assertGreater(np.abs(c1.pos - p1).max(), 1e-4)                      # 本当に押し出した
+        self.assertGreater(np.abs(c2.pos - p2).max(), 1e-4)
+        self.assertGreater(np.linalg.norm(c1.voxel_centers().mean(0) - c2.voxel_centers().mean(0)), d0)   # 離れる向き
+        self.assertTrue(np.isfinite(c1.pos).all() and np.isfinite(c2.pos).all() and np.isfinite(c3.pos).all())
 
     def test_nnls(self):
         """負にならない最小二乗：最適の条件（x≥0、x>0 の所は傾き 0、x=0 の所は傾き ≥0）を満たす。"""
