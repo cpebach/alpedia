@@ -16,7 +16,7 @@
 | 番号 | 種類 | 重要度 | 問題 | 根拠・場所 | 状態 | 直した日 | 直した内容 |
 |---|---|---|---|---|---|---|---|
 | G-01 | 管理 | 高 | Rust への書き直しを含む 69 コミットが GitHub に上がっていない | `git status`：`main...origin/main [ahead 69]` | 済 | 2026-11-14 | `origin/main` へ push（この表と報告書のコミットまで） |
-| G-02 | 管理 | 高 | ビルドに要る修正（`ModLoadError` を abi3 で作れる形に）が未コミット。`alpedia_view/Cargo.lock` も | `dev/native/alpedia_core/src/game/modcode.rs`・`mod.rs` | 未 | | |
+| G-02 | 管理 | 高 | ビルドに要る修正（`ModLoadError` を abi3 で作れる形に）が未コミット。`alpedia_view/Cargo.lock` も | `dev/native/alpedia_core/src/game/modcode.rs`・`mod.rs` | 済 | 2026-11-14 | コミット `d0de1a5`（3 ファイル）。コミット済みのソースからの作り直しは未確認 |
 | B-01 | 配布 | 高 | パッケージ版が書き直し前の中身のまま（`main`・`mods` は 11-11 の Python 版、`lib` だけ新しい）。同梱の Python に使わないライブラリが残る | `packages/windows/Alpedia/game/`・`runtime/Lib/site-packages`（panda3d・ursina・numba・scipy・skimage） | 未 | | |
 | M-01 | ムービー | 高 | ムービーを作る道具が、消した ursina・panda3d と Python 版の描画に頼っていて動かない見込み（未実行） | `movies/cinema/stage.py`・`actor.py`・`post.py` | 未 | | |
 | D-01 | 文書 | 中 | 「Rust が無くても numba で動きます」が誤り。`alpedia_view` の説明が無い | `docs/開発の進め方.md` 43 行目ほか | 未 | | |
