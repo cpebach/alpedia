@@ -74,7 +74,7 @@ class Host:
         self.cfg = cfg
         mp = cfg.get("multiplayer", {})
         self.name = mp.get("name") or _default_name()
-        self.inbox = queue.Queue()
+        self.inbox = net.Inbox()
         self.listener = net.Listener(port if port is not None else int(mp.get("port", net.PORT)), self.inbox)
         self.port = self.listener.port
         self.announcer = net.Announcer(self._info)

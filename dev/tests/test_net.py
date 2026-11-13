@@ -174,7 +174,8 @@ class NetCase(unittest.TestCase):
         orbit = [c for c in hc.cities.cities if c.kind == "orbit"]
         if orbit:
             o = orbit[0]
-            self.assertLess(np.linalg.norm(cc.cities.by_id[o.id].x - o.x), 1.0)     # 動くステーションも同じ所
+            # 動くステーションも同じ所（通信の 1〜2 フレームの遅れの分だけはずれてよい：軌道の速さ 60 m/s ほど × 1/60 秒）
+            self.assertLess(np.linalg.norm(cc.cities.by_id[o.id].x - o.x), 2.5)
         rp = w.remote[self.client.pid]
         city = cc.cities.cities[0]
         before = rp.inventory.get("credits", 0.0)

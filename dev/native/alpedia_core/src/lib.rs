@@ -21,6 +21,7 @@ mod geomx;
 mod topo;
 mod mc_tables;
 mod geomq;
+mod net;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -1803,6 +1804,15 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(obj_parse, m)?)?;
     m.add_function(wrap_pyfunction!(voxelize, m)?)?;
     m.add_function(wrap_pyfunction!(ray_boxes, m)?)?;
+    m.add_function(wrap_pyfunction!(net::net_encode, m)?)?;
+    m.add_function(wrap_pyfunction!(net::net_decode, m)?)?;
+    m.add_function(wrap_pyfunction!(net::net_connect, m)?)?;
+    m.add_function(wrap_pyfunction!(net::net_local_addresses, m)?)?;
+    m.add_class::<net::Inbox>()?;
+    m.add_class::<net::Conn>()?;
+    m.add_class::<net::Listener>()?;
+    m.add_class::<net::Announcer>()?;
+    m.add_class::<net::Browser>()?;
     m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
     m.add_function(wrap_pyfunction!(topology, m)?)?;
     m.add_function(wrap_pyfunction!(noise, m)?)?;
