@@ -23,19 +23,9 @@ _C = native.require()
 Kit = _C.Kit                             # セルごとに素材・機器を置いていく（v：セル → (素材, 機器)）
 
 
-def _rng(a, b):
-    return range(int(min(a, b)), int(max(a, b)) + 1)
-
-
-def _axes(f):
-    """前の向き f → (横の向き, 前の向き)（セルの差）。"""
-    fw = {"+z": (0, 0, 1), "-z": (0, 0, -1), "+x": (1, 0, 0), "-x": (-1, 0, 0)}[f]
-    ax = (fw[2], 0, -fw[0]) if fw[0] else (1 if fw[2] > 0 else -1, 0, 0)
-    return ax, fw
-
-
-def _add(p, d, k):
-    return (p[0] + d[0] * k, p[1] + d[1] * k, p[2] + d[2] * k)
+_rng = _C.bk_rng                         # range(int(min(a, b)), int(max(a, b)) + 1)
+_axes = _C.bk_axes                       # 前の向き f → (横の向き, 前の向き)（セルの差）
+_add = _C.bk_add                         # p + d × k
 
 
 # ---------------------------------------------------------------------------

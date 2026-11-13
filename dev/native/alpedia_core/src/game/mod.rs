@@ -313,6 +313,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(actuator::act_step, m)?)?;
     m.add("MotionError", m.py().get_type_bound::<actuator::MotionError>())?;
     m.add_function(wrap_pyfunction!(buildkit::bk_root_cells, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_rng, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_axes, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_add, m)?)?;
     m.add_function(wrap_pyfunction!(buildkit::bk_anchor_cells, m)?)?;
     m.add_function(wrap_pyfunction!(buildkit::bk_anchored, m)?)?;
     m.add_function(wrap_pyfunction!(buildkit::bk_anchored_inside, m)?)?;

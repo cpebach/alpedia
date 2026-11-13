@@ -1118,3 +1118,38 @@ pub fn bk_spawn_on_map<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bo
     world.call_method1("add_construct", (&c,))?;
     Ok(c)
 }
+
+/// range(int(min(a, b)), int(max(a, b)) + 1)
+#[pyfunction]
+pub fn bk_rng<'py>(a: &Bound<'py, PyAny>, b: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    let py = a.py();
+    let bi = py.import_bound("builtins")?;
+    let int = bi.getattr("int")?;
+    let lo = int.call1((bi.getattr("min")?.call1((a, b))?,))?;
+    let hi = int.call1((bi.getattr("max")?.call1((a, b))?,))?.call_method1("__add__", (1,))?;
+    bi.getattr("range")?.call1((lo, hi))
+}
+/// 前の向き f → (横の向き, 前の向き)（セルの差）。
+#[pyfunction]
+pub fn bk_axes(f: &str) -> R<((i64, i64, i64), (i64, i64, i64))> {
+    let fw = match f {
+        "+z" => (0, 0, 1),
+        "-z" => (0, 0, -1),
+        "+x" => (1, 0, 0),
+        "-x" => (-1, 0, 0),
+        _ => return Err(pyo3::exceptions::PyKeyError::new_err(f.to_string())),
+    };
+    let ax = if fw.0 != 0 { (fw.2, 0, -fw.0) } else { (if fw.2 > 0 { 1 } else { -1 }, 0, 0) };
+    Ok((ax, fw))
+}
+/// p + d × k（セル）
+#[pyfunction]
+pub fn bk_add<'py>(p: &Bound<'py, PyAny>, d: &Bound<'py, PyAny>, k: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
+    let py = p.py();
+    let op = py.import_bound("operator")?;
+    let mut v = vec![];
+    for i in 0..3 {
+        v.push(op.call_method1("add", (p.get_item(i)?, op.call_method1("mul", (d.get_item(i)?, k))?))?);
+    }
+    Ok(PyTuple::new_bound(py, v))
+}
