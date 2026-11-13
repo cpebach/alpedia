@@ -22,6 +22,7 @@ mod topo;
 mod mc_tables;
 mod geomq;
 mod net;
+mod game;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -1813,6 +1814,7 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<net::Listener>()?;
     m.add_class::<net::Announcer>()?;
     m.add_class::<net::Browser>()?;
+    game::register(m)?;
     m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
     m.add_function(wrap_pyfunction!(topology, m)?)?;
     m.add_function(wrap_pyfunction!(noise, m)?)?;

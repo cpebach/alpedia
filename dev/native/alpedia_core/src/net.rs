@@ -484,7 +484,7 @@ pub fn decode_raw(flag: u8, body: &[u8]) -> Result<Msg, String> {
     Ok(Msg { val, blobs })
 }
 
-fn val_to_py(py: Python<'_>, v: &Val, blobs: &[Vec<u8>]) -> PyResult<PyObject> {
+pub(crate) fn val_to_py(py: Python<'_>, v: &Val, blobs: &[Vec<u8>]) -> PyResult<PyObject> {
     Ok(match v {
         Val::Null => py.None(),
         Val::Bool(b) => b.into_py(py),

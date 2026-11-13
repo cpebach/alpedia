@@ -1,172 +1,33 @@
-"""機器の状態の決まった形（スキーマ）。
+"""機器の状態の決まった形（スキーマ）。中身は Rust（alpedia_core の game/devstate.rs）。
 
-機器（ブロック）ごとの状態 d["state"] に入れてよい項目は、機器の種類ごとにここで決める。
-- 保存する項目（saved=True）と、計算中だけ使う項目（saved=False：保存しない）を分ける
+機器（ブロック）ごとの状態 d["state"] に入れてよい項目は、機器の種類ごとに Rust の表で決める。
+- 保存する項目と、計算中だけ使う項目（保存しない）を分ける
 - 読み込み・設置のときに normalize() で、足りない項目を既定値で埋め、型をそろえ、知らない項目を捨てる
 - "_" で始まる項目は、実行中だけの内部用（スクリプトの実行環境など）。保存も検査もしない
-
-Rust など別の言語で書き直すときは、この表がそのまま構造体の定義になる。
 """
-from . import log
-
-L = log.get("devstate")
-
-
-class F:
-    """項目の定義。kind: float / int / bool / str / dict / list / any。default は値か、params を受け取る関数。"""
-    __slots__ = ("kind", "default", "saved", "optional")
-
-    def __init__(self, kind, default=None, saved=True, optional=False):
-        self.kind = kind
-        self.default = default
-        self.saved = saved
-        self.optional = optional       # True：無ければ作らない（既定値で埋めない）
-
-    def make_default(self, params, st):
-        d = self.default
-        if callable(d):
-            return d(params, st)
-        if isinstance(d, (dict, list)):
-            return type(d)(d)
-        return d
-
-
-def _p(key, default):
-    return lambda params, st: params.get(key, default)
-
-
-# どの機器にもある項目
-COMMON = {
-    "error": F("str", optional=True),              # 直前のエラー（スクリプト・電力不足など）
-    "error_line": F("int", optional=True),
-    "display": F("dict", optional=True),           # 表面に出す文字（コンピューターの api.display）
-    "active": F("bool", optional=True, saved=False),   # 電力が来て動いている（毎ティック計算）
-}
-
-SCHEMA = {
-    # 推進機：lit＝燃えている（燃料が来なくなると消える）。ignite＝点火の頼み（次のティックで点火する）
-    # firing / throttle＝いまの出力 0〜1（毎ティック計算。throttle は前の版のスクリプト向けの名前）
-    "thruster": {"lit": F("bool", False), "ignite": F("bool", optional=True, saved=False),
-                 "firing": F("float", optional=True, saved=False), "throttle": F("float", optional=True, saved=False)},
-    "tank": {"contents": F("dict", lambda p, st: dict(p.get("contents", {})))},
-    "pipe": {},
-    # バルブ：open＝開き具合 0〜1（0 で閉。前の版の True/False は 1/0）。set＝E で開け直すときの開き具合
-    "valve": {"open": F("float", _p("open", 1.0)), "set": F("float", optional=True)},
-    "battery": {"charge": F("float", _p("charge", 0.0))},
-    "generator": {"enabled": F("bool", True)},                  # 太陽光パネル
-    "crank": {"pending": F("float", optional=True)},           # 回したけれどまだ配っていない電気 (J)
-    "computer": {"script": F("str", _p("script", "")), "running": F("bool", False), "memory": F("dict", {}),
-                 "blocks": F("str", optional=True)},         # ブロックプログラムのファイル名
-    "actuator": {"attached": F("bool", optional=True, saved=False),   # 出力面が結合しているか（毎ティック計算）
-                 "ext": F("float", 0.0), "ext_target": F("float", lambda p, st: st.get("ext", 0.0)),
-                 "ext_speed": F("float", _p("speed", 0.5)),
-                 "angle": F("float", 0.0), "angle_target": F("float", lambda p, st: st.get("angle", 0.0)),
-                 "rot_speed": F("float", _p("rot_speed", 90.0)),
-                 "preset": F("dict", lambda p, st: _default_preset(p)),
-                 # ヒンジ（機器 "hinge"）の曲がる側：0〜5 の向きの番号（置くときに決める）。-1 = まだ決めていない（既定の側）
-                 "hinge": F("int", -1)},
-    "processor": {"progress": F("float", 0.0), "enabled": F("bool", True), "next": F("int", optional=True),
-                  "store": F("dict", {}),                       # 中にある物（原料と、作った物）
-                  "working": F("bool", optional=True, saved=False)},
-    "seat": {},
-    "anchor": {},
-    # ライト：enabled＝点ける（E で切り替え）。color＝光の色（無ければ機器の params）。blink＝点滅の周期（秒）。
-    # group＝明かりのまとまり（MOD が group ごとに点けたり消したりする。例：基地の明かり・非常灯）
-    "light": {"enabled": F("bool", True), "color": F("list", optional=True), "blink": F("float", optional=True),
-              "group": F("str", optional=True)},                                              # アンカー：状態なし（あれば構築物ごと固定）
-    "air_vent": {"mode": F("str", _p("mode", "fill")), "enabled": F("bool", True),
-                 "cavity": F("bool", optional=True, saved=False)},
-    "antenna": {"enabled": F("bool", True)},
-    # MOD の機器（extensions.py）：data は MOD が自由に使う（保存される）
-    "custom": {"enabled": F("bool", True), "data": F("dict", {})},
-}
-
-
-def _default_preset(params=None):
-    from .actuator import DEFAULT_PRESET, PISTON_PRESET
-    return dict(PISTON_PRESET if (params or {}).get("motion") == "piston" else DEFAULT_PRESET)
+from . import native
 
 
 def fields(dtype):
-    out = dict(COMMON)
-    out.update(SCHEMA.get(dtype, {}))
-    return out
-
-
-def _coerce(kind, v):
-    if v is None:
-        return None
-    if kind == "float":
-        return float(v)
-    if kind == "int":
-        return int(v)
-    if kind == "bool":
-        return bool(v)
-    if kind == "str":
-        return str(v)
-    if kind == "dict":
-        if not isinstance(v, dict):
-            raise TypeError("dict ではありません")
-        return v
-    if kind == "list":
-        return list(v)
-    return v
+    """その種類の項目：{名前: (型, 保存するか, 無くてよいか)}"""
+    return native.require().devstate_fields(dtype)
 
 
 def normalize(dtype, params, state, where=""):
     """状態をこの種類の決まった形にした新しい辞書を返す（元の辞書は変えない）。"""
-    st = dict(state or {})
-    fs = fields(dtype)
-    out = {}
-    for k, v in st.items():
-        if k.startswith("_"):
-            out[k] = v                   # 実行中だけの内部用
-            continue
-        f = fs.get(k)
-        if f is None:
-            L.warning("機器 %s%s の状態の知らない項目 '%s' を捨てました", dtype, where, k)
-            continue
-        try:
-            out[k] = _coerce(f.kind, v)
-        except (TypeError, ValueError):
-            L.warning("機器 %s%s の状態 '%s' の値 %r が %s でないので既定値にしました", dtype, where, k, v, f.kind)
-    for k, f in fs.items():
-        if k not in out and not f.optional:
-            out[k] = _coerce(f.kind, f.make_default(params or {}, out))
-    return out
+    return native.require().devstate_normalize(dtype, params, state, where)
 
 
 def fill(dtype, params, st):
     """足りない項目を既定値で埋める（その辞書をそのまま書き換える。動いている機器用）。"""
-    for k, f in fields(dtype).items():
-        if k not in st and not f.optional:
-            st[k] = _coerce(f.kind, f.make_default(params or {}, st))
-    return st
+    return native.require().devstate_fill(dtype, params, st)
 
 
 def to_saved(dtype, state):
     """保存する分だけ（計算中だけの項目と "_" で始まる項目を除く）。"""
-    fs = fields(dtype)
-    return {k: v for k, v in state.items() if not k.startswith("_") and (k not in fs or fs[k].saved)}
+    return native.require().devstate_to_saved(dtype, state)
 
 
 def check(dtype, state):
     """決まった形になっているか（テスト用）：問題のリスト。"""
-    fs = fields(dtype)
-    bad = []
-    for k, v in state.items():
-        if k.startswith("_"):
-            continue
-        f = fs.get(k)
-        if f is None:
-            bad.append(f"知らない項目 {k}")
-            continue
-        try:
-            if v is not None and _coerce(f.kind, v) != v:
-                bad.append(f"{k} の型が {f.kind} でない: {v!r}")
-        except (TypeError, ValueError):
-            bad.append(f"{k} の型が {f.kind} でない: {v!r}")
-    for k, f in fs.items():
-        if not f.optional and k not in state:
-            bad.append(f"{k} がない")
-    return bad
+    return native.require().devstate_check(dtype, state)
