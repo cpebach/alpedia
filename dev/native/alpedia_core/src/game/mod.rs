@@ -39,6 +39,7 @@ pub mod panels;
 pub mod render;
 pub mod scenery_view;
 pub mod sound;
+pub mod icons;
 pub mod shape_tables;
 
 use pyo3::prelude::*;
@@ -102,6 +103,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     render::register(m)?;
     scenery_view::register(m)?;
     sound::register(m)?;
+    icons::register(m)?;
     m.add_class::<netgame::Peer>()?;
     m.add_class::<netgame::Host>()?;
     m.add_class::<netgame::Joiner>()?;
