@@ -4,6 +4,7 @@ pub mod devstate;
 pub mod savefmt;
 pub mod airtight;
 pub mod radio;
+pub mod registry;
 
 use pyo3::prelude::*;
 
@@ -24,6 +25,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<radio::RadioBus>()?;
     m.add_function(wrap_pyfunction!(radio::radio_antenna_info, m)?)?;
     m.add("RadioError", m.py().get_type_bound::<radio::RadioError>())?;
+    m.add_class::<registry::Registry>()?;
+    m.add_function(wrap_pyfunction!(registry::registry_defaults, m)?)?;
+    m.add_function(wrap_pyfunction!(registry::registry_deep_merge, m)?)?;
     m.add("SAVE_FORMAT", savefmt::FORMAT)?;
     Ok(())
 }
