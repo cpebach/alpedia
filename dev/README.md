@@ -1,13 +1,13 @@
 # Alpedia（プロトタイプ）
 
 Minecraft と KSP を組み合わせたような、物理演算付きボクセルサンドボックス。
-「方針.txt」（alpedia フォルダの docs）に沿って作った、一通り動く最初の土台です。
+「方針.txt」（alpedia フォルダの docs）に沿って作りました。ゲームの本体は Rust（`native/`）、MOD とゲーム内のプログラムは Python です。
 
 ## 起動
 
 1. Python 3.10 以上を入れる
 2. このフォルダで `pip install -r requirements.txt`
-3. Rust を入れて `native\build_windows.bat`（物理のコア `lib\alpedia_core.pyd` と画面 `lib\alpedia_view.pyd` を作る）
+3. Rust を入れて `native\build_windows.bat`（ゲームの本体 `lib\alpedia_core.pyd` と画面 `lib\alpedia_view.pyd` を作る。無いと起動しません）
 4. `start.bat` をダブルクリック（または `python run.py`）
 
 起動するとメニュー画面が出ます（初回はシナリオのワールド `scenario` が自動で作られます。シナリオはメニューの「シナリオ」から、いつでも新しく始められます）。
@@ -15,9 +15,9 @@ Minecraft と KSP を組み合わせたような、物理演算付きボクセ�
 ### 画面
 
 画面は Rust（wgpu・winit）で描き、音も Rust（rodio）で鳴らします（`lib\alpedia_view.pyd`。`native\build_windows.bat` で作る）。
-Panda3D・ursina はもう使いません。メニュー・プログラムの画面・MOD の画面などの画面の上の部品は ursina と同じ書き方のまま、
-`main/client_rs/ursina_shim.py`（Entity・Text・Button・InputField・mouse・camera.ui・color などをまねる）を通して Rust の画面に描かれます
-（MOD が使う panda3d.core の定数・行列などは `main/client_rs/panda_compat.py` がまねます）。
+Panda3D・ursina はもう使いません。メニュー・設定・プログラムの画面なども Rust で作っています。MOD の画面は ursina と同じ書き方
+（`from ursina import Entity, Text, Button …`）のまま書け、ursina のまね（Rust の `game/ursina.rs`。入口は `main/client_rs/ursina_shim.py`）を
+通して Rust の画面に描かれます（MOD が使う panda3d.core の定数・行列などのまねは `game/panda.rs`。入口は `main/client_rs/panda_compat.py`）。
 ストーリーのムービーは PyAV（`pip install av`）で読み解いて1コマずつ画面へ送ります（av が無ければ題名だけ出て次へ進みます）。
 `--world 名前` でメニューを飛ばせます。F1 で操作の説明、F3 で処理の重さ、F11 でフルスクリーンの切り替え。
 
@@ -219,8 +219,11 @@ python run.py --headless --steps 600   描画なしでシミュレーション�
 ## フォルダ構成
 
 ```
-main/     本体コード（下の「コード構成」）
+main/     Python の入口（本体は Rust。下の「コード構成」）
+native/   Rust のソース（alpedia_core＝物理とゲーム本体、alpedia_view＝画面と音。作り方は native/README.md）
+lib/      ビルドした Rust（native/build_windows.bat が作る）
 tests/    自動テスト（python -m unittest discover -s tests）
+tools/    設計図・効果音・台本の文書を作り直す道具
 saves/    セーブデータ
   <ワールド名>/
     world.json       ワールド設定（惑星、自動削除など）
@@ -545,40 +548,46 @@ Windows では起動時に、このゲームだけ省電力の速度制限（Eco
 - 液体・粘土などの柔らかい素材も、構築物の一部として固まったまま動きます。
 - 遠くの構築物のレール（軌道計算）はこのモードでも使います。画面左上に「完全剛体」と表示されます。
 
-### 高速化（Rust の物理コア・複数コア）
+### 高速化（Rust・複数コア）
 
-物理演算の重い部分（形合わせ・結合・当たり判定・惑星の地形・構築物どうしの押し出しの組探し）は、
-Rust で書いた物理コア `alpedia_core`（`native/`、`lib/alpedia_core.pyd`）で計算します（無いとゲームは起動しません）。
+ゲームの本体は Rust のモジュール `alpedia_core`（`native/`、`lib/alpedia_core.pyd`）です（無いとゲームは起動しません）。
 構築物1つの1サブステップ（重力・浮力・減衰・形合わせ・結合・回転ジョイント・地面との接触・塑性変形・ちぎれの判定、
 剛体・完全剛体・関節つき剛体も）と、構築物どうしの押し出しは Rust でまとめて計算し、その間は Python を止めないので、
 構築物ごとの計算が複数コアで本当に同時に進みます。大きな構築物（256 ブロック以上）は、その中のブロックごとの計算を複数コアに分けます。
-MOD のプログラム・ブロックプログラム・ゲームの決まりごとは Python のままです。
+ワールド・機器・アクチュエーター・スクリプトの実行の仕組みなど、ゲームの決まりごとも Rust です（値は Python の dict・numpy のまま持ち、
+Rust から読み書きする形）。Python で書くのは、MOD のプログラムと、ゲーム内のプログラム（ブロックプログラムが変換された Python も）です。
 作り方は `native/README.md`（Windows は `native\build_windows.bat` をダブルクリック）。前の版の numba（Python の高速化）・scipy・scikit-image はもう使いません。
 
 - `config/settings.json` の `physics.threads` で使うスレッド数を指定できます（0 = 自動）。
 
 ## コード構成（コア・MOD・画面）
 
-Rust などへの書き直しに向けて、物理とワールドの「コア」と、それ以外をはっきり分けています。
+本体は Rust です（2026-11 に Python から書き直しました）。`main/` の Python は、前と同じモジュール名のまま
+「既定値の表と、Rust（`alpedia_core`）の同じ名前の物を呼ぶだけ」の薄い入口になっています（MOD とテストが `from main.world import World` の
+ように今までどおり書けるように）。動きを直すときは、下の表の Rust のファイルを直して `native\build_windows.bat` で作り直します。
 
-| 区分 | 場所 | 中身 |
-|---|---|---|
-| コア | `main/` 直下 | ワールド（`world.py`）・構築物と物理（`construct.py`, `fastphys.py`, `shape.py`, `geom.py`）・機器（`devices.py`, `actuator.py`, `airtight.py`）・惑星・プレイヤー・無線・定義の読み込み |
-| コアの決まりごと | `hooks.py` / `modcode.py` / `devstate.py` / `savefmt.py` / `control.py` | MOD のプログラムの口／その読み込み／機器の状態の形／セーブの形／スクリプトから構築物を読み書きする窓口 |
-| Rust の物理コア | `native/alpedia_core/`（`lib/` にビルドしたもの） | 構築物の1サブステップまるごと（`Body`）・形合わせ・結合・関節つき剛体・惑星の地形と接触・重力・近い点の組。Python 側の入り口は `native.py`・`construct.py`（`_native_begin`）・`fastphys.py`・`planet.py` |
-| スクリプト | `scripting.py`, `blocks.py` | `api` は `control.Port` だけを通して構築物を読み書きする |
-| マルチプレイ | `net.py` / `netsync.py` / `netserver.py` / `netclient.py` | 通信の形・LAN の中のワールド探し／状態の送り方・受け方／ホスト側／参加者側 |
-| MOD | `mods/` | 定義（JSON）とプログラム（`code/`）。本体に入っている MOD：街（`mods/city`：街・暮らしと経済・政治・その画面）、シナリオモード（`mods/story`）と、その再現ブロック・登場人物・場所（`mods/scenario_blocks`・`soredemo_cast`・`lunaport`・`amatsu`）、かわいいモーション（`mods/cute_motions`） |
-| 画面 | `main/client_rs/`・`main/client/`・`native/alpedia_view/` | 遊ぶ画面とメニューの流れ（`client_rs/viewer.py`・`client.py`）、描く物の頂点（`client/render.py`）・Rust の画面への窓口（`client/gfx.py`）・画面の上の部品（ursina の書き方、`client_rs/ursina_shim.py` で描く）。MOD の画面は `client/addon_hooks.py` の口で足す |
-| 中身 | `content.py`, `tutorial*.py`, `modmeta.py`, `extensions.py`, `scenery.py` | スクリプトの説明、新しいワールドを作る（MOD のワールドの形）、MOD の情報と依存関係、MOD の機器（custom）とブロックの口、景色の箱と地図 |
+| 区分 | Rust（`native/alpedia_core/src/`） | Python の入口（`main/`） | 中身 |
+|---|---|---|---|
+| 物理コア | `body.rs`・`tick.rs`・`kernels.rs`・`art*.rs`・`contacts.rs`・`pairs.rs`・`topo.rs`・`geom*.rs`・`planet.rs`・`devices.rs`・`mesh.rs` | `native.py`（読み込み）・`fastphys.py` | 1ティックの物理・形合わせ・結合・関節つき剛体・当たり・惑星の地形・機器の1ティック・描画用の頂点（Python の値を使わない計算。複数コア） |
+| コア | `game/world.rs`・`construct.rs`・`shape.rs`・`planet.rs`・`devices.rs`・`actuator.rs`・`airtight.rs`・`player.rs`・`radio.rs`・`registry.rs`・`objio.rs` | 同じ名前の `.py` | ワールド・構築物・機器・惑星・プレイヤー・無線・定義の読み込み・OBJ |
+| コアの決まりごと | `game/hooks.rs`・`modcode.rs`・`devstate.rs`・`savefmt.rs`・`control.rs`・`survival.rs` | 同じ名前の `.py` | MOD のプログラムの口／その読み込み／機器の状態の形／セーブの形／スクリプトから構築物を読み書きする窓口／サバイバルのルール |
+| スクリプト | `game/scripting.rs`・`blocks.rs` | `scripting.py`・`blocks.py` | `api` は `control.Port` だけを通して構築物を読み書きする。ブロックプログラムの読み書き・Python への変換 |
+| マルチプレイ | `net.rs`・`game/netsync.rs`・`netgame.rs` | `net.py`・`netsync.py`・`netserver.py`・`netclient.py` | 通信の形・LAN の中のワールド探し／状態の送り方・受け方／ホスト側・参加者側 |
+| 画面 | `game/rsclient.rs`・`viewer.rs`・`menu.rs`・`render.rs`・`gfx.rs`・`ui.rs`・`screens*.rs`・`panels.rs`・`block_editor.rs`・`script_panel.rs`・`import_ui.rs`・`camera_mode.rs`・`touch_ui.rs`・`icons.rs`・`sound.rs`・`scenery_view.rs`・`client_*.rs` | `main/client_rs/`・`main/client/` | 遊ぶ画面とメニューの流れ、描く物の頂点、画面の上の部品、音。MOD の画面は `client/addon_hooks.py` の口（`ClientAddon`）で足す |
+| MOD の画面のためのまね | `game/ursina.rs`・`panda.rs` | `client_rs/ursina_shim.py`・`panda_compat.py` | MOD が ursina・panda3d.core の書き方のまま画面を作れるようにする |
+| 窓・描画・音 | `native/alpedia_view/src/`（別のモジュール `alpedia_view`） | `client/gfx.py` から使う | wgpu・winit の窓と描画、VRM の骨の変形、文字、rodio の音 |
+| 中身 | `game/buildkit.rs`・`scenery.rs`・`modmeta.rs`・`misc.rs` | `buildkit.py`・`scenery.py`・`modmeta.py`・`extensions.py`・`tutorial*.py`・`content.py` | 建物の組み立て道具、景色の箱と地図、MOD の情報と依存関係、MOD の機器（custom）とブロックの口、新しいワールドを作る、スクリプトの説明 |
+| MOD | —（Python） | `mods/` | 定義（JSON）とプログラム（`code/`）。本体に入っている MOD：街（`mods/city`：街・暮らしと経済・政治・その画面）、シナリオモード（`mods/story`）と、その再現ブロック・登場人物・場所（`mods/scenario_blocks`・`soredemo_cast`・`lunaport`・`amatsu`）、VRM の見た目（`mods/skinmodel(dummy)`）、かわいいモーション（`mods/cute_motions`）、BGM（`mods/bgm`） |
 
+- `game/` の Rust は、値（位置・機器の状態・設定など）を Python の dict・numpy のまま持ち、Rust から読み書きします
+  （MOD とゲーム内のプログラムが、今までどおり Python から同じ値を触れるように）。
 - コアは MOD のプログラムと `main.client` を読み込みません（`tests/test_core.py` が確かめます）。
 - MOD のプログラムは `hooks.Addon` を継承し、当たり判定の箱（`colliders`）・物理の前後（`before_physics` / `after_physics`）・
   視線（`raycast`）・プレイヤーの押し出し（`push_sphere`）・E の操作（`interact`）・置いたとき（`on_placed`）・
   読み込み/保存（`on_load` / `on_save`）、資源のルール（`pay` / `refund` / `on_dig` / `on_water` / `interact_device` / `jetpack`）の口を
   必要なものだけ使います。書き方は `mods/README.md`。
-- 機器の状態（`state`）に入れてよい項目と型は `devstate.py` の表で決まっています。読み込み時に形をそろえ、
-  計算中だけの項目（推進機の噴射量など）は保存しません。セーブの各ファイルの形は `savefmt.py` で調べます（違う所はログに出ます）。
+- 機器の状態（`state`）に入れてよい項目と型は `devstate`（`game/devstate.rs`）の表で決まっています。読み込み時に形をそろえ、
+  計算中だけの項目（推進機の噴射量など）は保存しません。セーブの各ファイルの形は `savefmt`（`game/savefmt.rs`）で調べます（違う所はログに出ます）。
 - 自動テスト: `python -m unittest discover -s tests -v`（コアだけで動く物理・スクリプト・無線・保存・MOD の口と、サバイバル・街を画面なしで読み込むテスト）。
 - 古い形式のワールド（world.json に `creative` / `cities` があるもの）は、読み込むときに MOD に読み替えます
   （サバイバルだったら遊び方 survival、街ありだったら city の MOD。保存すると新しい形式になります）。

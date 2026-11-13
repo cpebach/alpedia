@@ -20,8 +20,15 @@ python render.py pilot_drama --no-audio
 
 ### 必要なもの
 
+> **今の `dev/` とは合っていません（2026-11-14 時点）。** この道具は、ゲームの画面が Panda3D・ursina だったころの描画
+> （`ursina`・`panda3d`・`direct` と、Python 版の `main.client.render`・`main.construct`）を直接使います。
+> ゲームの本体と画面を Rust に書き直したので、今の `dev/` につないでも描き直せない見込みです（`cinema/stage.py`・`actor.py`・`post.py`）。
+> 描き直すには、この道具を Rust の画面（`alpedia_view`）で描くように直すか、書き直す前のゲーム（Panda3D・ursina の画面を消したコミット `4460d74` より前。その1つ前は `45278af`）を
+> 別に取り出して使う必要があります。できあがったムービー（`dev/mods/story/movies/`）の再生と、音だけの作り直しには関係ありません。
+> `docs/Alpedia_Phase3_問題点一覧.md` の M-01。
+
 ゲーム（dev/）と同じ Python 環境に、`pip install -r movies/requirements.txt`（ffmpeg の入った imageio-ffmpeg）。
-ゲームの requirements（ursina・numpy・scipy・pillow）も使います。
+ほかに、前のゲームが使っていたライブラリ（ursina・panda3d・numpy・scipy・pillow）が要ります（今の `dev/requirements.txt` には入っていません）。
 
 ## 本編のムービー（章の区切りに入れるもの）
 

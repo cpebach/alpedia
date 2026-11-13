@@ -19,13 +19,13 @@
 | G-02 | 管理 | 高 | ビルドに要る修正（`ModLoadError` を abi3 で作れる形に）が未コミット。`alpedia_view/Cargo.lock` も | `dev/native/alpedia_core/src/game/modcode.rs`・`mod.rs` | 済 | 2026-11-14 | コミット `d0de1a5`（3 ファイル）。コミット済みのソースからの作り直しは未確認 |
 | B-01 | 配布 | 高 | パッケージ版が書き直し前の中身のまま（`main`・`mods` は 11-11 の Python 版、`lib` だけ新しい）。同梱の Python に使わないライブラリが残る | `packages/windows/Alpedia/game/`・`runtime/Lib/site-packages`（panda3d・ursina・numba・scipy・skimage） | 済 | 2026-11-14 | 作り直した（1.1 GB → 792 MB。ライブラリは numpy・pillow・av だけ、`main`・`mods` は開発版と同じ）。描画なしの起動テストと、同梱の Python 3.12 でのシナリオ・MOD・街のテスト 34 件が通った。画面を出しての起動・前からあるセーブ（`world1`）の読み込みは未確認。原因は X-01・X-02 |
 | M-01 | ムービー | 高 | ムービーを作る道具が、消した ursina・panda3d と Python 版の描画に頼っていて動かない見込み（未実行） | `movies/cinema/stage.py`・`actor.py`・`post.py` | 未 | | |
-| D-01 | 文書 | 中 | 「Rust が無くても numba で動きます」が誤り。`alpedia_view` の説明が無い | `docs/開発の進め方.md` 43 行目ほか | 未 | | |
-| D-02 | 文書 | 中 | 「コード構成」が `main/*.py` を本体として説明（今は Rust の入口だけ）。「決まりごとは Python のまま」も古い | `dev/README.md`「コード構成」「高速化」 | 未 | | |
-| D-03 | 文書 | 中 | 「Rust 版と Python 版を比べるテスト」の説明が古い。`src/game/` の説明が無い | `dev/native/README.md` | 未 | | |
-| D-04 | 文書 | 低 | 必要なものに ursina・scipy と書いてある | `movies/README.md` 24 行目 | 未 | | |
-| D-05 | 文書 | 低 | Panda3D の wheel を使う予備の手順が残る | `packages/windows/README.md` 43 行目 | 未 | | |
-| D-06 | 文書 | 低 | ルートの README に Phase2 最終報告書が無い。`ストーリー改訂案.md` が「提案・未実装」のまま（今のシナリオと別物） | `README.md`・`docs/ストーリー改訂案.md` | 未 | | |
-| T-01 | テスト | 中 | Rust の単体テストが 0 件。Python 版を消したので「比べて確かめる」基準が無い | `dev/native/`（`#[test]` なし）・`dev/tests/test_native.py` | 未 | | |
+| D-01 | 文書 | 中 | 「Rust が無くても numba で動きます」が誤り。`alpedia_view` の説明が無い | `docs/開発の進め方.md` 43 行目ほか | 済 | 2026-11-14 | numba の記述を消し、Rust が本体で無いと起動しないこと・`alpedia_view`・`tools`・`movies` を足した |
+| D-02 | 文書 | 中 | 「コード構成」が `main/*.py` を本体として説明（今は Rust の入口だけ）。「決まりごとは Python のまま」も古い | `dev/README.md`「コード構成」「高速化」 | 済 | 2026-11-14 | 「コード構成」を Rust のファイルと Python の入口の対応表に書き直し、「高速化」「画面」「フォルダ構成」も今の作りに |
+| D-03 | 文書 | 中 | 「Rust 版と Python 版を比べるテスト」の説明が古い。`src/game/` の説明が無い | `dev/native/README.md` | 済 | 2026-11-14 | 2つのモジュールの説明と「ゲーム本体（`src/game/`）」の節を足し、テストの説明・ビルドでできる物を今の形に |
+| D-04 | 文書 | 低 | 必要なものに ursina・scipy と書いてある | `movies/README.md` 24 行目 | 済 | 2026-11-14 | 今の `dev/` とは合わないこと・要るライブラリ・描き直すための道を冒頭に書いた（道具そのものは M-01 のまま） |
+| D-05 | 文書 | 低 | Panda3D の wheel を使う予備の手順が残る | `packages/windows/README.md` 43 行目 | 済 | 2026-11-14 | 予備の手順は今もスクリプトにあり正しかった。Panda3D の wheel は部品を取り出すだけで同梱しないことと、MOD の入れ替え方を書き足した |
+| D-06 | 文書 | 低 | ルートの README に Phase2 最終報告書が無い。`ストーリー改訂案.md` が「提案・未実装」のまま（今のシナリオと別物） | `README.md`・`docs/ストーリー改訂案.md` | 済 | 2026-11-14 | ルートの README に Phase2 最終・Phase3 の文書と `movies/` を足し、改訂案の冒頭に「前の案」の断り書きを入れた |
+| T-01 | テスト | 中 | Rust の単体テストが 0 件。Python 版の本体を消したので、比べる相手はテストの中に numpy で書いた式だけ | `dev/native/`（`#[test]` なし）・`dev/tests/test_native.py` | 未 | | |
 | T-02 | テスト | 中 | `dev/tools/*.py`（設計図・効果音・台本）を書き直し後に動かして確かめていない | `dev/tools/` | 未 | | |
 | G-03 | 管理 | 中 | 登場人物の VRM 13 体とエンドロールのロゴが git に無い。BGM の曲を配る物に入れるか・権利の確認も未決 | `dev/mods/skinmodel(dummy)/*.vrm`・`dev/mods/story/credits/`・`dev/mods/bgm/` | 未 | | |
 | G-05 | 管理 | 中 | リポジトリが OneDrive の中（`.git` 357 MB・`target` 93 MB も同期される） | フォルダの場所・`dev/native/alpedia_core/target` | 未 | | |
@@ -69,3 +69,4 @@
 | 2026-11-14 | 作成（37 件） |
 | 2026-11-14 | G-01・G-02 を済に |
 | 2026-11-14 | B-01 を済に。X-01・X-02 を追加 |
+| 2026-11-14 | D-01〜D-06 を済に（文書を今の作りに合わせた）。T-01 の書き方を正確に |

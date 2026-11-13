@@ -1,9 +1,15 @@
-# Rust の物理コア（alpedia_core）
+# Rust（alpedia_core・alpedia_view）
 
-物理の重い部分を Rust で書いたものです。Python からは `alpedia_core` というモジュールとして使います。
-ビルドしたファイルを `lib/` に置くと、ゲームが使います（無いとゲームは起動しません。前の版の numba はもう使いません）。
+ゲームの本体を Rust で書いたものです。2つのモジュールがあります。
 
-## Rust にしたもの
+| モジュール | 場所 | 中身 |
+|---|---|---|
+| `alpedia_core` | `alpedia_core/src/` | 物理コア（下の「物理コア」の表）と、ゲーム本体（`src/game/`。下の「ゲーム本体」） |
+| `alpedia_view` | `alpedia_view/src/` | 窓・描画（wgpu・winit）・音（rodio）。下の「画面」 |
+
+ビルドしたファイルを `lib/` に置くと、ゲームが使います（どちらも無いとゲームは起動しません。前の版の numba・Panda3D・ursina はもう使いません）。
+
+## 物理コア（Python の値を使わない計算）
 
 | 中身 | Rust（`alpedia_core/src/`） | 元の Python（今は消して Rust だけ） |
 |---|---|---|
@@ -30,14 +36,21 @@ Python 側の入り口は `main/fastphys.py`（芯・皮・法線）、`main/pla
 Rust と同じ計算をする Python の予備（numpy 版）はもうありません。地形・物理・機器の計算は Rust だけで行います。
 
 物理の1サブステップは、構築物ごとの計算（ブロックごと・剛体・完全剛体・関節つき剛体）も、構築物どうしの押し出しも Rust で行います。
-Python に残っているのは、次のものだけです。
-
-- 街などの MOD が出す当たり判定の箱との接触（MOD のプログラムを呼ぶため）。完全剛体・関節つき剛体では、
-  Python が箱との接触点を集めて Rust に渡し、地面の接触と一緒に解きます
-- ブロックごと ⇔ 剛体 ⇔ レールの切り替えの判断、ちぎれたあとの作り直し、アクチュエーター・スクリプト（ゲームの決まりごと）
-- 池・洞窟の配置を決める乱数（numpy の乱数。今までのワールドと同じ地形にするため。高さの計算は Rust）
-
 構築物の形が変わったとき（ブロックの追加・削除・ちぎれ）は、`Body`・`Proxy`・`ArtTopo` を作り直します。
+
+## ゲーム本体（`alpedia_core/src/game/`）
+
+前は `main/` の Python にあったゲームの決まりごと・画面を、同じ名前のまま Rust に移したものです（`main/world.py` → `game/world.rs` など）。
+`main/` の Python は、既定値の表と、ここを呼ぶだけの薄い入口です。どのファイルに何があるかは `dev/README.md` の「コード構成」の表にあります。
+
+- **値は Python のまま持ちます。** 位置・速度（numpy）、機器の状態・設定（dict）などは Python の値として持ち、Rust から読み書きします。
+  MOD とゲーム内のプログラムが、前と同じように Python から同じ値を触れるようにするためです。
+  その分、ここの Rust は Python の属性の読み書き・メソッドの呼び出しが多く、Python のインタープリタを止めたまま動きます
+  （複数コアで同時に進むのは、上の「物理コア」の計算だけ）。
+- **Python のままの物**：MOD のプログラム（`mods/*/code/`）、ゲーム内のプログラム（`scripts/*.py`。ブロックプログラムもここへ変換される）、
+  チュートリアルの舞台の一部（`main/tutorial_drone.py`・`tutorial_rod.py`）、スクリプトの説明の文章（`main/content.py`）。
+  池・洞窟の配置を決める乱数も numpy のまま（今までのワールドと同じ地形にするため）。
+- MOD の画面のための ursina・panda3d.core のまねは `game/ursina.rs`・`game/panda.rs`。
 
 ## Windows でビルドする
 
@@ -48,13 +61,14 @@ Python に残っているのは、次のものだけです。
    - 選択肢は既定（1）のままで大丈夫です。
 2. 入れ終わったら、開いているコマンドのウィンドウは閉じます。
 
-あとは **`native\build_windows.bat` をダブルクリック**するだけです。2つ作ります。
+あとは **`native\build_windows.bat` をダブルクリック**するだけです。`alpedia_core` と `alpedia_view` を、それぞれ2つの形で作ります。
 
 | できるもの | 使う Python |
 |---|---|
-| `lib\alpedia_core.pyd` | この PC の Python（3.10 以上ならどれでも。`python3.dll` を使う形） |
-| `lib\alpedia_core.cp312-win_amd64.pyd` と `..\packages\windows\Alpedia\game\lib\`（alpedia フォルダの packages） の同じもの | パッケージ版に同梱の Python 3.12（`python3.dll` が無いので 3.12 専用に作る） |
+| `lib\alpedia_core.pyd`・`lib\alpedia_view.pyd` | この PC の Python（3.10 以上ならどれでも。`python3.dll` を使う形＝abi3） |
+| `lib\alpedia_core.cp312-win_amd64.pyd`・`lib\alpedia_view.cp312-win_amd64.pyd` と `..\packages\windows\Alpedia\game\lib\`（alpedia フォルダの packages） の同じもの | パッケージ版に同梱の Python 3.12（`python3.dll` が無いので 3.12 専用に作る） |
 
+- abi3 の形では、`#[pyclass]` で Python の例外などの組み込みの型を継げません（3.12 専用の形では通ってしまうので、両方のビルドで確かめる）。
 - 初回は、Windows 用の GNU ツールチェーンの準備とビルドに数分かかります。
 - ビルドの途中のファイルは `%LOCALAPPDATA%\alpedia_build` に置きます（OneDrive で同期されないように）。
 - 記録は `native\build_log.txt` に残ります。失敗したときはこのファイルを見ます。
@@ -76,8 +90,10 @@ cp target/release/libalpedia_core.so ../../lib/alpedia_core.abi3.so      # macOS
 python -m unittest discover -s tests -v
 ```
 
-`tests/test_native.py` が、Rust 版と Python 版に同じ入力を与えて結果を比べます（違いが 1e-7 以内か）。
-Rust が無ければ、このテストは飛ばされます。
+`tests/test_native.py` が、物理コアの計算の性質（動かない物は動かさない・式どおり）と、テストの中に numpy で書いた同じ計算との一致を確かめます
+（前にあった「Python 版の本体」はもう無いので、比べる相手はテストの中の式だけです）。ゲーム本体（`game/`）は、ほかのテスト
+（`test_core.py`・`test_mods.py`・`test_net.py`・`test_story.py` など）が Python から動かして確かめます。
+Rust の中の単体テスト（`cargo test`）はまだありません。
 
 ## 画面（alpedia_view）
 

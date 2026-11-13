@@ -34,14 +34,21 @@ Python やライブラリのインストールなしで遊べる版です。
 - `game/saves`
 - `game/logs`
 - `game/config/settings.json`
-- `game/mods` に自分で足したもの（本体に入っている MOD のサバイバル・街は入れ替えます）
+- `game/mods` に自分で足したもの（自分で足した MOD・VRM・曲など）
+
+MOD は次のように入れ替えます。
+
+- 本体の MOD（`mod.json` に `"builtin": true`。街・シナリオとその仲間）：開発版と同じ中身にそろえる（余分なファイルは消す）
+- そのほかの同梱 MOD（VRM の見た目・モーション・BGM・例）：足りないファイルを足し、開発版のほうが新しいファイルは入れ替える
+  （自分で足したファイルは残る。同梱のファイルを書き換えていた場合は、開発版のほうが新しければ上書きされます）
+- 前は本体に入っていて今は無い MOD（前の版のサバイバルの MOD など）：消す
 
 ### 使っているもの
 
 | 部品 | 中身 |
 |---|---|
-| Python 3.12 | 次の2つのどちらか。どちらを使ったかは `Alpedia/runtime/RUNTIME.txt` に書かれます。<br>・python.org の「埋め込み用 Python」<br>・取れないネット環境では、Panda3D の Windows 用 wheel（部品を取り出すだけ）に入っている `python312.dll` と、`build/runtime_fallback/python312.zip`（標準ライブラリ。`make_stdlib.py` で作成） |
-| ライブラリ | `build/requirements-windows.txt` の版（動作確認した版に固定）。PyPI から Windows 用の wheel を取って入れます。 |
+| Python 3.12 | 次の2つのどちらか。どちらを使ったかは `Alpedia/runtime/RUNTIME.txt` に書かれます。<br>・python.org の「埋め込み用 Python」<br>・取れないネット環境では、Panda3D の Windows 用 wheel に入っている `python312.dll` と、`build/runtime_fallback/python312.zip`（標準ライブラリ。`make_stdlib.py` で作成）<br>Panda3D の wheel は、この予備と C++ のランタイム（`MSVCP140.dll`）を取り出すためだけにダウンロードします（`build/cache/parts`）。ゲームは Panda3D を使わず、同梱もしません。 |
+| ライブラリ | `build/requirements-windows.txt` の版（動作確認した版に固定。numpy・pillow・av）。PyPI から Windows 用の wheel を取って入れます。毎回、今の requirements に要る物だけを集め直すので、外したライブラリは同梱されません。 |
 | ランチャー | `build/launcher/launcher.c`（C 言語）。`runtime/python312.dll` を読み込んで `boot.py` を実行します。<br>`pip install ziglang` が入っていれば、作り直すたびに zig の C コンパイラで exe も作り直します（なければ同梱の exe を使います）。 |
 
 `build/cache` はダウンロードしたものの置き場です。消してもかまいません（次に作るときにもう一度ダウンロードします）。

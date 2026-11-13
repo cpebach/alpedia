@@ -153,7 +153,7 @@
 
 - **C-01（中）Rust にしたが、中身は Python の値を Rust から触る形。** `src/game/` に Python の属性の読み書き・メソッド呼び出しが約 5,600 か所ある（値を Python の dict・numpy のまま持つ）。Rust の型の検査がきかず、速さの得も限られ、Python のインタープリタのロックに頼る。読み込みは速くなった（約 10 秒 → 約 2 秒）が、ここから先は値を Rust の型で持つ形に進める必要がある。
 - **C-02（中）ファイルが大きい。** `construct.rs` 3,531 行、`ursina.rs` 2,665 行、`world.rs` 2,499 行、`render.rs` 2,443 行、`block_editor.rs` 2,190 行、`viewer.rs` 2,068 行。
-- **T-01（中）Rust の単体テストが 0 件。** 確かめは Python の unittest だけ。前は「Rust 版と Python 版を比べる」テストが正しさの基準だったが、Python 版を消したので基準が無くなった。
+- **T-01（中）Rust の単体テストが 0 件。** 確かめは Python の unittest だけ。前は「Rust 版と Python 版の本体を比べる」テストが正しさの基準だったが、Python 版の本体を消したので、比べる相手はテストの中に numpy で書いた式だけになった。
 - **C-03（低）MOD の画面が ursina・panda3d の「まね」に頼っている。** `ursina.rs`・`panda.rs` が古いライブラリの書き方をまねていて、MOD（`story`・`city`）は今も `from ursina import …` と書く。使っていないライブラリの名前と作法が、MOD の決まりごとになっている。
 - **C-04（低）`unwrap()`・`expect()` が 124 か所。** 想定外の値で Rust が止まると、エラーの出どころが分かりにくい。
 - **C-05（低）保存形式の表にない項目。** `buildkit` が `world.json` に書く `blocks` が保存形式の表（`savefmt`）に無く、読み込むたびに警告が出る。
