@@ -873,3 +873,248 @@ pub fn bk_set_light_group(py: Python<'_>, world: &Bound<'_, PyAny>, group: &Boun
     }
     Ok(n)
 }
+
+// ---------------------------------------------------------------- 置く（地図の場所・ワールドの姿勢に）
+
+fn foot_offset(py: Python<'_>, vox: &Bound<'_, PyAny>, rm: &[[f64; 3]; 3], size: f64) -> R<[f64; 3]> {
+    let _ = py;
+    let mut body = vec![];
+    let mut all = vec![];
+    for v in vox.iter()? {
+        let v = v?;
+        let cl = super::construct::v3(&v.get_item(0)?)?;
+        let d = v.get_item(2)?;
+        all.push(cl);
+        let anc = d.is_truthy()? && d.call_method1("get", ("def",))?.eq("anchor")?;
+        if !anc {
+            body.push(cl);
+        }
+    }
+    if body.is_empty() {
+        body = all;
+    }
+    let y0 = body.iter().map(|c| c[1]).fold(f64::INFINITY, f64::min);
+    let foot: Vec<[f64; 3]> = body.into_iter().filter(|c| c[1] == y0).collect();
+    let n = foot.len() as f64;
+    let mx = foot.iter().map(|c| c[0]).sum::<f64>() / n;
+    let mz = foot.iter().map(|c| c[2]).sum::<f64>() / n;
+    Ok(super::construct::mul_t([(mx + 0.5) * size, y0 * size, (mz + 0.5) * size], rm))
+}
+
+/// アンカー以外の頂点の行（持ち上げの判定用）
+fn non_anchor_rows(c: &Bound<'_, PyAny>) -> R<Vec<usize>> {
+    let anc: HashSet<i64> = super::construct::iv(&c.call_method0("anchor_index")?)?.into_iter().collect();
+    let nv: usize = c.getattr("n_vert")?.extract()?;
+    Ok((0..nv).filter(|r| !anc.contains(&((r / 8) as i64))).collect())
+}
+
+/// pos をすべて up の向きに k だけずらす（その場で）
+fn shift_pos(c: &Bound<'_, PyAny>, up: [f64; 3], k: f64) -> R<()> {
+    let p = c.getattr("pos")?;
+    if !super::construct::with_rw(&p, |s| for q in s.chunks_exact_mut(3) { for a in 0..3 { q[a] += up[a] * k; } })? {
+        let mut v = super::construct::fv(&p)?;
+        for q in v.chunks_exact_mut(3) {
+            for a in 0..3 {
+                q[a] += up[a] * k;
+            }
+        }
+        let n = v.len() / 3;
+        c.setattr("pos", super::construct::arr(c.py(), v, &[n, 3])?)?;
+    }
+    Ok(())
+}
+
+fn rows_of<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, rows: &[usize]) -> R<Bound<'py, PyAny>> {
+    let pos = super::construct::v3s(&c.getattr("pos")?)?;
+    let sel: Vec<[f64; 3]> = rows.iter().map(|&r| pos[r]).collect();
+    super::construct::a3(py, &sel)
+}
+
+/// ボクセルを置く。p：足もとの基準点（center なら足もとの真ん中）、R：向き（列が 右・上・前）。
+/// lift_sdf(P) があれば、アンカー以外のブロックがすべて外（> 0.03）に出るまで持ち上げる
+#[pyfunction]
+#[pyo3(signature = (world, vox, p, r, size=0.5, name="建物", center=false, lift_sdf=None, id_=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn bk_spawn<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bound<'py, PyAny>, p: &Bound<'py, PyAny>, r: &Bound<'py, PyAny>,
+                     size: f64, name: &str, center: bool, lift_sdf: Option<&Bound<'py, PyAny>>, id_: Option<&Bound<'py, PyAny>>)
+    -> R<Bound<'py, PyAny>> {
+    let rm = super::construct::m3(r)?;
+    let mut pp = super::construct::v3(p)?;
+    if center {
+        pp = super::construct::sub(pp, foot_offset(py, vox, &rm, size)?);
+    }
+    let kw = PyDict::new_bound(py);
+    kw.set_item("size", size)?;
+    kw.set_item("name", name)?;
+    kw.set_item("id_", id_.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None()))?;
+    let c = super::imp(py, "main.construct")?.getattr("Construct")?.call_method("from_voxels",
+        (world.getattr("registry")?, vox, super::construct::a1(py, pp), super::construct::mat(py, &rm)?), Some(&kw))?;
+    if let Some(f) = lift_sdf.filter(|f| !f.is_none()) {
+        let rows = non_anchor_rows(&c)?;
+        let up = [rm[0][1], rm[1][1], rm[2][1]];
+        for _ in 0..8 {
+            let dmin: f64 = f.call1((rows_of(py, &c, &rows)?,))?.call_method0("__float__")?.extract()?;
+            if dmin >= 0.03 {
+                break;
+            }
+            shift_pos(&c, up, 0.03 - dmin + 0.01)?;
+        }
+    }
+    world.call_method1("add_construct", (&c,))?;
+    Ok(c)
+}
+
+/// MOD の建物：まだ無ければ作る（ワールドに1回だけ。壊されて無くなった物は作り直さない）。
+/// items：[(役, 作る関数 make() → 構築物)]。作った物の ID は world.settings["blocks"][key] に残す
+#[pyfunction]
+pub fn bk_ensure<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, key: &Bound<'py, PyAny>, items: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
+    let made = PyDict::new_bound(py);
+    let net = world.getattr("net")?;
+    if !net.is_none() && match net.getattr("role") { Ok(r) => r.eq("client")?, Err(_) => false } {
+        return Ok(made);
+    }
+    let reg = world.getattr("settings")?.call_method1("setdefault", ("blocks", PyDict::new_bound(py)))?
+        .call_method1("setdefault", (key, PyDict::new_bound(py)))?;
+    for it in items.iter()? {
+        let it = it?;
+        let (role, make) = (it.get_item(0)?, it.get_item(1)?);
+        if reg.contains(&role)? {
+            continue;
+        }
+        let c = match make.call0() {
+            Ok(c) => c,
+            Err(e) if e.is_instance_of::<pyo3::exceptions::PyException>(py) => {
+                e.restore(py);
+                super::imp(py, "main.log")?.call_method1("get", ("buildkit",))?
+                    .call_method1("exception", ("建物を作れません: %s/%s", key, &role))?;
+                let _ = PyErr::take(py);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        if !c.is_none() {
+            reg.set_item(&role, c.getattr("id")?)?;
+            made.set_item(&role, c)?;
+        }
+    }
+    Ok(made)
+}
+
+/// 地図 m の惑星の地面と、景色の箱（床・台）を合わせた「地面からの高さ」の関数
+#[pyclass(module = "alpedia_core")]
+pub struct GroundFn {
+    m: PyObject,
+    scenes: Vec<PyObject>,
+}
+
+#[pymethods]
+impl GroundFn {
+    fn __call__<'py>(&self, py: Python<'py>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+        let pv = super::construct::v3s(p)?;
+        let pa = super::construct::a3(py, &pv)?;
+        let mut d = super::construct::fv(&self.m.bind(py).getattr("pl")?.call_method1("sdf", (&pa,))?)?;
+        for sc in &self.scenes {
+            let sc = sc.bind(py);
+            if sc.getattr("map")?.is_none() {
+                continue;
+            }
+            let col = sc.getattr("col")?;
+            if !col.call_method0("any")?.is_truthy()? {
+                continue;
+            }
+            let ctr = super::construct::v3(&sc.getattr("center")?)?;
+            let rad: f64 = sc.getattr("radius")?.extract()?;
+            if pv.is_empty() || super::construct::norm(super::construct::sub(pv[0], ctr)) >= rad + 10.0 {
+                continue;
+            }
+            let sel = |k: &str| -> R<Bound<'py, PyAny>> { sc.getattr(k)?.get_item(&col) };
+            let np = super::construct::np(py)?;
+            let c = |o: Bound<'py, PyAny>| np.call_method1("ascontiguousarray", (o, "float64"));
+            let r = super::imp(py, "alpedia_core")?.call_method1("box_sdf", (&pa, c(sel("C")?)?.call_method1("reshape", (-1, 3))?,
+                c(sel("A")?)?.call_method1("reshape", (-1, 3, 3))?, c(sel("E")?)?.call_method1("reshape", (-1, 3))?))?;
+            let dd = super::construct::fv(&r.get_item(0)?)?;
+            for (a, b) in d.iter_mut().zip(dd) {
+                *a = a.min(b);
+            }
+        }
+        let n = d.len();
+        super::construct::arr(py, d, &[n])
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (m, scenes=None))]
+pub fn bk_ground_fn(m: PyObject, scenes: Option<&Bound<'_, PyAny>>) -> R<GroundFn> {
+    let s = match scenes { Some(s) => s.iter()?.map(|x| x.map(|x| x.unbind())).collect::<R<Vec<_>>>()?, None => vec![] };
+    Ok(GroundFn { m, scenes: s })
+}
+
+/// 地図 m の場所 place = (x, z, 向き（度）, 高さ) に置く。地面と景色の箱にめり込まないように持ち上げ、
+/// center なら足もとの真ん中を場所に合わせ、坂で浮いた所は土台で埋めてアンカーをその下に置き直す。sink：持ち上げない
+#[pyfunction]
+#[pyo3(signature = (world, vox, m, place, name, scenes=None, size=None, center=false, sink=false, id_=None, **kw))]
+#[allow(clippy::too_many_arguments)]
+pub fn bk_spawn_on_map<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bound<'py, PyAny>, m: &Bound<'py, PyAny>, place: &Bound<'py, PyAny>,
+                            name: &Bound<'py, PyAny>, scenes: Option<&Bound<'py, PyAny>>, size: Option<&Bound<'py, PyAny>>, center: bool,
+                            sink: bool, id_: Option<&Bound<'py, PyAny>>, kw: Option<&Bound<'py, PyDict>>) -> R<Bound<'py, PyAny>> {
+    // foundation：土台の素材（"auto"：足もとが広ければコンクリート、None：真上のブロックと同じ）
+    let foundation: Option<Bound<'py, PyAny>> = match kw { Some(k) => k.get_item("foundation")?, None => None };
+    let (x, z, yaw, lift) = (place.get_item(0)?, place.get_item(1)?, place.get_item(2)?, place.get_item(3)?);
+    let p0 = super::construct::v3(&m.call_method1("ground", (&x, &z, &lift))?.get_item(0)?)?;
+    let rmo = m.call_method1("frame", (&x, &z, &yaw))?;
+    let rm = super::construct::m3(&rmo)?;
+    let size: f64 = match size {
+        Some(s) if s.is_truthy()? => s.extract()?,
+        _ => world.getattr("settings")?.call_method1("get", ("voxel_size", 0.5))?.extract()?,
+    };
+    let mut p = p0;
+    if center {
+        p = super::construct::sub(p, foot_offset(py, vox, &rm, size)?);
+    }
+    let ccls = super::imp(py, "main.construct")?.getattr("Construct")?;
+    let mk = |v: &Bound<'py, PyAny>, at: [f64; 3], r: &[[f64; 3]; 3]| -> R<Bound<'py, PyAny>> {
+        let kw = PyDict::new_bound(py);
+        kw.set_item("size", size)?;
+        kw.set_item("name", name)?;
+        kw.set_item("id_", id_.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None()))?;
+        ccls.call_method("from_voxels", (world.getattr("registry")?, v, super::construct::a1(py, at), super::construct::mat(py, r)?), Some(&kw))
+    };
+    let mut c = mk(vox, p, &rm)?;
+    let gh = Bound::new(py, bk_ground_fn(m.clone().unbind(), scenes)?)?;
+    let anc_n = super::construct::iv(&c.call_method0("anchor_index")?)?.len();
+    let rows = non_anchor_rows(&c)?;
+    let up = [rm[0][1], rm[1][1], rm[2][1]];
+    for _ in 0..(if sink { 0 } else { 8 }) {
+        let d = super::construct::fv(&gh.call1((rows_of(py, &c, &rows)?,))?)?;
+        let dmin = d.iter().copied().fold(f64::INFINITY, f64::min);
+        if dmin >= 0.03 {
+            break;
+        }
+        shift_pos(&c, up, 0.03 - dmin + 0.01)?;
+    }
+    if center && !sink && anc_n > 0 {
+        let fit = c.call_method0("rigid_fit")?;
+        let (rl, tl) = (fit.get_item(0)?, fit.get_item(1)?);
+        let mut body = vec![];
+        for v in vox.iter()? {
+            let v = v?;
+            let d = v.get_item(2)?;
+            if !(d.is_truthy()? && d.call_method1("get", ("def",))?.eq("anchor")?) {
+                body.push(super::construct::v3(&v.get_item(0)?)?);
+            }
+        }
+        let y0 = body.iter().map(|b| b[1]).fold(f64::INFINITY, f64::min);
+        let wide: HashSet<(i64, i64)> = body.iter().filter(|c| c[1] == y0).map(|c| (c[0] as i64, c[2] as i64)).collect();
+        let fmat: PyObject = match &foundation {
+            Some(f) if !f.eq("auto")? => f.clone().unbind(),
+            _ => if wide.len() > 6 { "concrete".into_py(py) } else { py.None() },
+        };
+        let np = super::construct::np(py)?;
+        let vox2 = bk_grounded(py, vox, np.call_method1("ascontiguousarray", (&rl, "float64"))?.extract()?,
+            np.call_method1("ascontiguousarray", (&tl, "float64"))?.call_method0("ravel")?.extract()?, size, gh.as_any(),
+            if fmat.is_none(py) { None } else { Some(fmat.bind(py)) }, 2)?;
+        c = mk(&vox2, super::construct::v3(&tl)?, &super::construct::m3(&rl)?)?;
+    }
+    world.call_method1("add_construct", (&c,))?;
+    Ok(c)
+}

@@ -37,6 +37,11 @@ pub fn imp<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyModule>> {
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<buildkit::GroundFn>()?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_spawn, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_ensure, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_ground_fn, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_spawn_on_map, m)?)?;
     m.add_class::<construct::Construct>()?;
     m.add_class::<world::World>()?;
     m.add_class::<shape::Csr>()?;
@@ -121,6 +126,11 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(blocks::blocks_to_python, m)?)?;
     m.add("BLOCKS_HEADER", blocks::HEADER)?;
     m.add_function(wrap_pyfunction!(actuator::act_motion, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_merge_map, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_cmd_attach, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_cmd_retract, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_side_toward_any, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_init_state, m)?)?;
     m.add_function(wrap_pyfunction!(actuator::act_actions_for, m)?)?;
     m.add_function(wrap_pyfunction!(actuator::act_default_preset, m)?)?;
     m.add_function(wrap_pyfunction!(actuator::act_migrate_device, m)?)?;

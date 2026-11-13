@@ -10,7 +10,7 @@
 
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{IntoPyDict, PyDict, PyList, PyTuple};
 
 type R<T> = PyResult<T>;
 
@@ -802,4 +802,207 @@ pub fn act_step(c: &Bound<'_, PyAny>, i: usize, dd: &Bound<'_, PyAny>, dt: f64, 
     a[[i, axis]] = 1.0 + f("ext")?;
     st.set_item("attached", is_attached(c, i)?)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------- 結合（出力面の先のブロックとつなぐ）
+
+/// other のセルを c の格子に対応させる：(cell_map, xform)。各ボクセルが c の格子に（90°単位の回転も含めて）揃っていれば
+/// xform に頂点の並べ替えを入れて格子に合わせる。揃っていなければ離れたセル番号に置き、結合は頂点どうしで行う
+#[pyfunction]
+pub fn act_merge_map<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, other: &Bound<'py, PyAny>) -> R<(Bound<'py, PyDict>, Bound<'py, PyDict>)> {
+    use super::construct::{cell_of, iarr, m3, mat, mean8, mul_r, sub, v3, v3s, DIRS};
+    let fit = c.call_method0("rigid_fit")?;
+    let rm = m3(&fit.get_item(0)?)?;
+    let t = v3(&fit.get_item(1)?)?;
+    let csize: f64 = c.getattr("size")?.extract()?;
+    let osize: f64 = other.getattr("size")?.extract()?;
+    let cen = v3s(&other.call_method0("voxel_centers")?)?;
+    let local: Vec<[f64; 3]> = cen.iter().map(|p| { let l = mul_r(sub(*p, t), &rm); [l[0] / csize - 0.5, l[1] / csize - 0.5, l[2] / csize - 0.5] }).collect();
+    let rnd: Vec<[f64; 3]> = local.iter().map(|l| [l[0].round_ties_even(), l[1].round_ties_even(), l[2].round_ties_even()]).collect();
+    let ocells: Vec<Bound<'py, PyAny>> = other.getattr("cells")?.iter()?.collect::<R<_>>()?;
+    let dmax = local.iter().zip(&rnd).flat_map(|(a, b)| (0..3).map(move |k| (a[k] - b[k]).abs())).fold(0.0f64, f64::max);
+    if (osize - csize).abs() < 1e-6 && dmax < 0.2 {
+        let fr: Vec<f64> = super::construct::fv(&other.call_method0("voxel_frames")?)?;
+        let n = cen.len();
+        let mut mm = vec![[[0.0; 3]; 3]; n];
+        for q in 0..n {
+            for i in 0..3 {
+                for k in 0..3 {
+                    // M[n,i,k] = Σ_j R[j,i] F[n,k,j]
+                    mm[q][i][k] = (0..3).map(|j| rm[j][i] * fr[9 * q + 3 * k + j]).sum();
+                }
+            }
+        }
+        let mr: Vec<[[f64; 3]; 3]> = mm.iter().map(|m| m.map(|r| r.map(|x| x.round_ties_even()))).collect();
+        let dm = mm.iter().zip(&mr).flat_map(|(a, b)| (0..9).map(move |k| (a[k / 3][k % 3] - b[k / 3][k % 3]).abs())).fold(0.0f64, f64::max);
+        let det = |m: &[[f64; 3]; 3]| m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        if dm < 0.25 && mr.iter().all(|m| (det(m) - 1.0).abs() < 1e-6) {
+            let mp = PyDict::new_bound(py);
+            let mut vals = std::collections::HashSet::new();
+            let index = c.getattr("index")?;
+            let mut clash = false;
+            for (cell, r) in ocells.iter().zip(&rnd) {
+                let v = [r[0] as i64, r[1] as i64, r[2] as i64];
+                vals.insert(v);
+                let vt = PyTuple::new_bound(py, v);
+                if index.contains(&vt)? {
+                    clash = true;
+                }
+                mp.set_item(cell, vt)?;
+            }
+            if vals.len() == mp.len() && !clash {
+                let mut ok = true;
+                for l in other.getattr("links")?.iter()? {
+                    let l = l?;
+                    let a = cell_of(&mp.get_item(l.get_item(0)?)?.unwrap())?;
+                    let b = cell_of(&mp.get_item(l.get_item(1)?)?.unwrap())?;
+                    if !DIRS.contains(&[b[0] - a[0], b[1] - a[1], b[2] - a[2]]) {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok {
+                    let xf = PyDict::new_bound(py);
+                    let pos = v3s(&other.getattr("pos")?)?;
+                    let mut broke = false;
+                    for k in 0..n {
+                        let eye = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+                        if (0..9).all(|q| (mr[k][q / 3][q % 3] - eye[q / 3][q % 3]).abs() <= 1e-8 + 1e-5 * eye[q / 3][q % 3].abs()) {
+                            continue;
+                        }
+                        let p = &pos[8 * k..8 * k + 8];
+                        let m = mean8(p);
+                        let perm: Vec<i64> = p.iter().map(|x| {
+                            let q = mul_r(sub(*x, m), &rm);
+                            (q[0] > 0.0) as i64 + 2 * (q[1] > 0.0) as i64 + 4 * (q[2] > 0.0) as i64
+                        }).collect();
+                        let ps: std::collections::HashSet<i64> = perm.iter().copied().collect();
+                        if ps.len() != 8 {
+                            broke = true;
+                            break;
+                        }
+                        xf.set_item(k, (iarr(py, perm, &[8])?, mat(py, &mr[k])?))?;
+                    }
+                    if !broke {
+                        return Ok((mp, xf));
+                    }
+                }
+            }
+        }
+    }
+    let cc: Vec<[i64; 3]> = c.getattr("cells")?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
+    let oc: Vec<[i64; 3]> = ocells.iter().map(cell_of).collect::<R<_>>()?;
+    let off: Vec<i64> = (0..3).map(|a| cc.iter().map(|x| x[a]).max().unwrap_or(0) - oc.iter().map(|x| x[a]).min().unwrap_or(0) + 1000).collect();
+    let mp = PyDict::new_bound(py);
+    for (cell, o) in ocells.iter().zip(&oc) {
+        mp.set_item(cell, PyTuple::new_bound(py, [o[0] + off[0], o[1] + off[1], o[2] + off[2]]))?;
+    }
+    Ok((mp, PyDict::new_bound(py)))
+}
+
+/// 出力面の先にあるブロックと結合する。メッセージを返す
+#[pyfunction]
+pub fn act_cmd_attach(py: Python<'_>, world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, i: usize) -> R<String> {
+    use super::construct::{link_key_c, norm, sub, v3, v3s};
+    if act_is_attached(c, i)? {
+        return Ok("既に結合しています".into());
+    }
+    let fi = act_face_info(py, c, i)?;
+    let (ctr, n) = (v3(fi.0.as_any())?, v3(fi.1.as_any())?);
+    let size: f64 = c.getattr("size")?.extract()?;
+    let want = [ctr[0] + n[0] * size * 0.5, ctr[1] + n[1] * size * 0.5, ctr[2] + n[2] * size * 0.5];
+    let mut best: Option<(f64, Bound<'_, PyAny>, usize)> = None;
+    for other in world.getattr("constructs")?.call_method0("values")?.iter()? {
+        let other = other?;
+        if other.getattr("n_vox")?.extract::<usize>()? == 0 {
+            continue;
+        }
+        let cen = v3s(&other.call_method0("voxel_centers")?)?;
+        let mut dist: Vec<f64> = cen.iter().map(|p| norm(sub(*p, want))).collect();
+        if other.is(c) {
+            dist[i] = f64::INFINITY;
+        }
+        let mut k = 0;
+        for q in 1..dist.len() {
+            if dist[q] < dist[k] {
+                k = q;
+            }
+        }
+        let lim = size.max(other.getattr("size")?.extract::<f64>()?) * 0.75;
+        if dist[k] < lim && best.as_ref().map(|b| dist[k] < b.0).unwrap_or(true) {
+            best = Some((dist[k], other.clone(), k));
+        }
+    }
+    let (_, other, k) = match best {
+        Some(b) => b,
+        None => return Ok("出力面の先に結合できるブロックがありません".into()),
+    };
+    let target = if !other.is(c) {
+        let (cell_map, xform) = act_merge_map(py, c, &other)?;
+        let t = cell_map.get_item(other.getattr("cells")?.get_item(k)?)?.unwrap();
+        world.call_method1("merge_constructs", (c, &other, &cell_map, &xform))?;
+        t
+    } else {
+        c.getattr("cells")?.get_item(k)?
+    };
+    let j: usize = c.getattr("index")?.get_item(&target)?.extract()?;
+    let out = act_output_cell(c, i)?;
+    let d: usize = c.getattr("devs")?.get_item(i)?.get_item("dir")?.extract()?;
+    let pairs = super::construct::joint_pairs(d);
+    let ci = c.getattr("cells")?.get_item(i)?;
+    let adj = target.eq(&out)?;
+    if adj {
+        // 格子の隣どうし → 通常の結合（回転・押し出しも使える）
+        c.getattr("links")?.call_method1("add", (link_key_c(py, super::construct::cell_of(&ci)?, super::construct::cell_of(out.as_any())?),))?;
+    } else {
+        // 格子がずれている → 近い頂点どうしを結ぶ
+        let pos = v3s(&c.getattr("pos")?)?;
+        let pb = &pos[8 * j..8 * j + 8];
+        let mut lst: Vec<(usize, usize, f64)> = vec![];
+        let mut used = std::collections::HashSet::new();
+        for (ca, _) in pairs {
+            let dd: Vec<f64> = pb.iter().map(|p| norm(sub(*p, pos[8 * i + ca]))).collect();
+            let mut order: Vec<usize> = (0..8).collect();
+            order.sort_by(|a, b| dd[*a].partial_cmp(&dd[*b]).unwrap_or(std::cmp::Ordering::Equal));
+            for cb in order {
+                if used.insert(cb) {
+                    lst.push((ca, cb, if dd[cb] > 0.15 * size { dd[cb] } else { 0.0 }));
+                    break;
+                }
+            }
+        }
+        let key = link_key_c(py, super::construct::cell_of(&ci)?, super::construct::cell_of(&target)?);
+        if !key.get_item(0)?.eq(&ci)? {
+            lst = lst.into_iter().map(|(a, b, r)| (b, a, r)).collect();
+        }
+        c.getattr("extras")?.set_item(key, lst)?;
+    }
+    c.call_method0("rebuild")?;
+    if adj {
+        act_sync_angle(c, i)?;
+    }
+    c.call_method("wake", (), Some(&[("soft", true)].into_py_dict_bound(py)))?;
+    Ok(format!("結合しました{}", if adj { "" } else { "（格子がずれているため回転・押し出しは伝わりません）" }))
+}
+
+#[pyfunction]
+#[pyo3(signature = (c, i, amount=1.0, speed=None))]
+pub fn act_cmd_retract(py: Python<'_>, c: &Bound<'_, PyAny>, i: usize, amount: f64, speed: Option<&Bound<'_, PyAny>>) -> R<()> {
+    act_cmd_extend(c, i, Some(&(-amount).into_py(py).into_bound(py)), speed, false)
+}
+
+/// 置くとき：出力の軸に垂直な4つの向きのうち、見ている向き look にいちばん近いもの（その側へ曲がる）。配列でなくてもよい
+#[pyfunction]
+#[pyo3(name = "act_side_toward_any")]
+pub fn act_side_toward_any(py: Python<'_>, frame_rows: &Bound<'_, PyAny>, d: i64, look: &Bound<'_, PyAny>) -> R<usize> {
+    let a = super::construct::np(py)?.call_method1("ascontiguousarray", (frame_rows, "float64"))?.call_method1("reshape", (3, 3))?;
+    act_side_toward(a.extract()?, d, super::construct::v3(look)?)
+}
+
+/// 足りない項目を既定値で埋める（形は devstate の表）
+#[pyfunction]
+#[pyo3(signature = (st, params=None))]
+pub fn act_init_state<'py>(py: Python<'py>, st: &Bound<'py, PyDict>, params: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyDict>> {
+    super::devstate::devstate_fill(py, "actuator", params, st)
 }
