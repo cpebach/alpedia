@@ -68,13 +68,22 @@ def fetch(url, dest):
 
 
 def download_wheels():
-    wh = CACHE / "wheels"
+    # 毎回、空のフォルダに「今の requirements に要る物だけ」を集める（前に取った物は --find-links で使い回す）。
+    # 置き場をそのまま使うと、requirements から外したライブラリ（前の版の Panda3D・numba など）の wheel が残っていて、
+    # それも同梱されてしまう
+    wh, new = CACHE / "wheels", CACHE / "wheels.new"
     wh.mkdir(parents=True, exist_ok=True)
+    if new.exists():
+        shutil.rmtree(new)
+    new.mkdir(parents=True)
     cmd = [sys.executable, "-m", "pip", "download", "-r", str(HERE / "requirements-windows.txt"),
            "--only-binary=:all:", "--platform", "win_amd64", "--python-version", PY_VER.rsplit(".", 1)[0],
-           "--implementation", "cp", "--abi", f"cp{PY_TAG}", "-d", str(wh), "--disable-pip-version-check", "-q"]
+           "--implementation", "cp", "--abi", f"cp{PY_TAG}", "-d", str(new), "--find-links", str(wh),
+           "--disable-pip-version-check", "-q"]
     log("Windows 用ライブラリを取得中（初回は数百 MB）")
     subprocess.run(cmd, check=True)
+    _retry(shutil.rmtree, wh)
+    _retry(os.rename, new, wh)
     return sorted(wh.glob("*.whl"))
 
 
@@ -194,6 +203,12 @@ def _clear(path):
                 pass                        # 開かれている空のフォルダは残る（中身は消えている）
         else:
             _retry(os.unlink, t)
+    # 1回目で消せなかった空のフォルダ（同期が一瞬つかんでいた物）を、もう一度消してみる
+    for t in sorted((x for x in path.rglob("*") if x.is_dir()), key=lambda x: len(x.parts), reverse=True):
+        try:
+            os.rmdir(t)
+        except OSError:
+            pass
     try:
         os.rmdir(path)
     except OSError:
@@ -259,7 +274,18 @@ def copy_game(game):
             builtin = False
         if builtin:
             sync_tree(mj.parent, game / "mods" / mj.parent.name)
-    for item in GAME_KEEP:                               # 後から足したものは残し、足りないものだけ足す
+    # 前は本体に入っていたが今は無い MOD（"builtin": true なのに dev/mods に無い。前の版のサバイバルの MOD など）は消す
+    for mj in sorted((game / "mods").glob("*/mod.json")):
+        try:
+            builtin = json.loads(mj.read_text(encoding="utf-8")).get("builtin")
+        except Exception:  # noqa: BLE001
+            builtin = False
+        if builtin and not (SRC / "mods" / mj.parent.name).exists():
+            _clear(mj.parent)
+            log("今は無い本体の MOD を消しました:", mj.parent.name)
+    # そのほかの MOD（VRM の見た目・モーション・BGM・例）：後から足したファイルは残し、足りないものを足す。
+    # 元（dev）のほうが新しいファイルは入れ替える（足すだけだと、前の版のプログラムが残って動かなくなる）
+    for item in GAME_KEEP:
         s = SRC / item
         if not s.exists():
             continue
@@ -267,9 +293,9 @@ def copy_game(game):
             if p.is_dir() or any(x in SKIP_NAMES for x in p.parts):
                 continue
             d = game / item / p.relative_to(s)
-            if not d.exists():
+            if not d.exists() or int(p.stat().st_mtime) > int(d.stat().st_mtime):
                 d.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(p, d)
+                _retry(shutil.copy2, p, d)
     # Rust の物理コアと画面（native/build_windows.bat で作った lib/alpedia_core*.pyd・alpedia_view*.pyd。どちらも必要）
     #   同梱の Python 3.12 には python3.dll が無いので、使われるのは *.cp312-win_amd64.pyd
     for mod, what in (("alpedia_core", "物理コア"), ("alpedia_view", "画面")):

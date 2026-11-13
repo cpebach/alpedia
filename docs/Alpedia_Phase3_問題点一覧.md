@@ -17,7 +17,7 @@
 |---|---|---|---|---|---|---|---|
 | G-01 | 管理 | 高 | Rust への書き直しを含む 69 コミットが GitHub に上がっていない | `git status`：`main...origin/main [ahead 69]` | 済 | 2026-11-14 | `origin/main` へ push（この表と報告書のコミットまで） |
 | G-02 | 管理 | 高 | ビルドに要る修正（`ModLoadError` を abi3 で作れる形に）が未コミット。`alpedia_view/Cargo.lock` も | `dev/native/alpedia_core/src/game/modcode.rs`・`mod.rs` | 済 | 2026-11-14 | コミット `d0de1a5`（3 ファイル）。コミット済みのソースからの作り直しは未確認 |
-| B-01 | 配布 | 高 | パッケージ版が書き直し前の中身のまま（`main`・`mods` は 11-11 の Python 版、`lib` だけ新しい）。同梱の Python に使わないライブラリが残る | `packages/windows/Alpedia/game/`・`runtime/Lib/site-packages`（panda3d・ursina・numba・scipy・skimage） | 未 | | |
+| B-01 | 配布 | 高 | パッケージ版が書き直し前の中身のまま（`main`・`mods` は 11-11 の Python 版、`lib` だけ新しい）。同梱の Python に使わないライブラリが残る | `packages/windows/Alpedia/game/`・`runtime/Lib/site-packages`（panda3d・ursina・numba・scipy・skimage） | 済 | 2026-11-14 | 作り直した（1.1 GB → 792 MB。ライブラリは numpy・pillow・av だけ、`main`・`mods` は開発版と同じ）。描画なしの起動テストと、同梱の Python 3.12 でのシナリオ・MOD・街のテスト 34 件が通った。画面を出しての起動・前からあるセーブ（`world1`）の読み込みは未確認。原因は X-01・X-02 |
 | M-01 | ムービー | 高 | ムービーを作る道具が、消した ursina・panda3d と Python 版の描画に頼っていて動かない見込み（未実行） | `movies/cinema/stage.py`・`actor.py`・`post.py` | 未 | | |
 | D-01 | 文書 | 中 | 「Rust が無くても numba で動きます」が誤り。`alpedia_view` の説明が無い | `docs/開発の進め方.md` 43 行目ほか | 未 | | |
 | D-02 | 文書 | 中 | 「コード構成」が `main/*.py` を本体として説明（今は Rust の入口だけ）。「決まりごとは Python のまま」も古い | `dev/README.md`「コード構成」「高速化」 | 未 | | |
@@ -59,7 +59,8 @@
 
 | 番号 | 直した日 | 種類 | 何が問題だったか | 直した内容 | 場所・コミット |
 |---|---|---|---|---|---|
-| | | | | | |
+| X-01 | 2026-11-14 | 配布 | パッケージを作るとき、ダウンロードの置き場に残っている wheel を全部同梱していた（requirements から外した Panda3D・ursina・numba・scipy なども入り続ける） | 毎回、今の requirements に要る物だけを空のフォルダに集め直す。消せずに残った空のフォルダももう一度消す | `packages/windows/build/build_package.py`（`download_wheels`・`_clear`） |
+| X-02 | 2026-11-14 | 配布 | 本体の印（`builtin`）が無い同梱 MOD（VRM の見た目・モーション・BGM・例）は足りないファイルを足すだけで、変わったプログラムが入れ替わらなかった。前の版のサバイバルの MOD も残り続けていた | 開発版のほうが新しいファイルは入れ替える。今は無い本体の MOD は消す | `packages/windows/build/build_package.py`（`copy_game`） |
 
 ## 更新の記録
 
@@ -67,3 +68,4 @@
 |---|---|
 | 2026-11-14 | 作成（37 件） |
 | 2026-11-14 | G-01・G-02 を済に |
+| 2026-11-14 | B-01 を済に。X-01・X-02 を追加 |
