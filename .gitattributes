@@ -1,0 +1,2 @@
+# Windows のバッチは CRLF のまま（LF だと cmd が行を読み違える）
+*.bat -text
