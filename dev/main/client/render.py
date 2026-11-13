@@ -178,41 +178,17 @@ def project_uv(p, axis):
     return np.stack([u, v], axis=1)
 
 
-_AO_DIRS = None
-
-
 def block_ao(c, p, n, owner=None, strength=0.42):
-    """角の暗さ（環境光の遮り）：頂点の外側の半球に、ほかのブロックがどれだけあるか（形が変わったときだけ計算）。
+    """角の暗さ（環境光の遮り）：頂点の外側の半球に、ほかのブロックがどれだけあるか（形が変わったときだけ。Rust）。
     owner があれば、回転ジョイントの向こう側（別に動く部分）のブロックは数えない（回したときに出る切り口が暗くならないように）。"""
-    global _AO_DIRS
-    if _AO_DIRS is None:
-        g = np.array([[x, y, z] for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1) if (x, y, z) != (0, 0, 0)], float)
-        _AO_DIRS = g / np.linalg.norm(g, axis=1, keepdims=True)
     if not len(p):
         return np.ones(0)
-    D = _AO_DIRS
-    w = D @ n.T                                          # (26, V)
-    use = w > 0.25
-    q = p[None] + n[None] * 0.3 + D[:, None, :] * 0.75   # (26, V, 3)
-    cell = np.floor(q).astype(np.int64).reshape(-1, 3)
-    vc = np.asarray(c.cells, dtype=np.int64)
-    lo = np.minimum(vc.min(0), cell.min(0))
-    span = np.maximum(vc.max(0), cell.max(0)) - lo + 1
-    enc = lambda a: ((a[:, 0] - lo[0]) * span[1] + (a[:, 1] - lo[1])) * span[2] + (a[:, 2] - lo[2])  # noqa: E731
-    vk = enc(vc)
-    order = np.argsort(vk)
-    sk = vk[order]
-    qk = enc(cell)
-    pos = np.clip(np.searchsorted(sk, qk), 0, len(sk) - 1)
-    occ = (sk[pos] == qk)
     gid = c._art_groups() if owner is not None and getattr(c, "rotors", None) and hasattr(c, "_art_groups") else None
-    if gid is not None and gid.max() > 0:
-        same = gid[order[pos]] == np.tile(gid[owner], len(D))
-        occ &= same
-    occ = occ.reshape(len(D), len(p))
-    frac = (occ * use * w).sum(0) / np.maximum((use * w).sum(0), 1e-9)
-    return 1.0 - strength * np.clip(frac * 1.6, 0, 1)
-
+    use = gid is not None and len(gid) and gid.max() > 0
+    return _native().block_ao(np.asarray(c.cells, dtype=np.int64).reshape(-1, 3), np.ascontiguousarray(p, dtype=np.float64),
+                              np.ascontiguousarray(n, dtype=np.float64), float(strength),
+                              np.ascontiguousarray(gid, dtype=np.int64) if use else None,
+                              np.ascontiguousarray(owner, dtype=np.int64) if use else None)
 
 
 def _frames8(P8):

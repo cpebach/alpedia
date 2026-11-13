@@ -20,6 +20,7 @@ mod tick;
 mod geomx;
 mod topo;
 mod mc_tables;
+mod geomq;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -473,6 +474,155 @@ impl PlanetShape {
         let g: Vec<f64> = res.iter().flat_map(|x| x.1).collect();
         Ok((PyArray1::from_vec_bound(py, d), PyArray1::from_vec_bound(py, g).reshape([n, 3])?))
     }
+
+    /// 世界座標の点の水深（水面からの深さ。水の外は -1e9）
+    fn water_depth_at(&self, p: [f64; 3]) -> f64 {
+        let c = self.center;
+        let q = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        let r = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
+        let ri = r.max(1e-9);
+        let s = self.shape.sample([q[0] / ri, q[1] / ri, q[2] / ri]);
+        if s[1] > s[0] { s[1] - r } else { -1e9 }
+    }
+
+    /// 球面行進で地表との交点 (t, 点) か None（planet.raycast）
+    fn raycast(&self, py: Python<'_>, origin: [f64; 3], dir: [f64; 3], max_dist: f64, lipschitz: f64) -> Option<(f64, [f64; 3])> {
+        let cr = self.craters.read().unwrap().clone();
+        let c = self.center;
+        py.allow_threads(|| {
+            let mut t = 0.0;
+            for _ in 0..160 {
+                let p = [origin[0] + dir[0] * t, origin[1] + dir[1] * t, origin[2] + dir[2] * t];
+                let d = self.shape.sdf([p[0] - c[0], p[1] - c[1], p[2] - c[2]], &cr);
+                if d < 0.01 {
+                    return Some((t, p));
+                }
+                t += (d * lipschitz).max(0.02);
+                if t > max_dist {
+                    break;
+                }
+            }
+            None
+        })
+    }
+
+    /// 水面との交点 (t, 点) か None（目が水中にあるときも None。planet.water_raycast）
+    fn water_raycast(&self, py: Python<'_>, origin: [f64; 3], dir: [f64; 3], max_dist: f64) -> Option<(f64, [f64; 3])> {
+        py.allow_threads(|| {
+            let at = |t: f64| [origin[0] + dir[0] * t, origin[1] + dir[1] * t, origin[2] + dir[2] * t];
+            let n = (((max_dist + 1e-9) / 0.12).ceil() as i64).max(0) as usize;
+            if n == 0 || self.water_depth_at(at(0.0)) > 0.0 {
+                return None;
+            }
+            let k = (1..n).find(|&k| self.water_depth_at(at(k as f64 * 0.12)) > 0.0)?;
+            let (mut a, mut b) = ((k - 1) as f64 * 0.12, k as f64 * 0.12);
+            for _ in 0..8 {
+                let m = (a + b) * 0.5;
+                if self.water_depth_at(at(m)) > 0.0 {
+                    b = m;
+                } else {
+                    a = m;
+                }
+            }
+            Some((b, at(b)))
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 問い合わせの幾何（geomq.rs）
+// ---------------------------------------------------------------------------
+/// 点 p から構築物の形への最短：(距離 − size/2, 最近点, ボクセル番号) か None（shape.closest_on_shape）
+#[pyfunction]
+fn closest_on_shape(py: Python<'_>, cen: PyReadonlyArray2<'_, f64>, segs: PyReadonlyArray2<'_, i64>, tris: PyReadonlyArray2<'_, i64>,
+                    p: [f64; 3], max_dist: f64, size: f64) -> PyResult<Option<(f64, [f64; 3], i64)>> {
+    let c = pts3(&cen, "cen")?;
+    let s = irows::<2>(&segs, "segs")?;
+    let t = irows::<3>(&tris, "tris")?;
+    let n = c.len() as i64;
+    if s.iter().flatten().chain(t.iter().flatten()).any(|&i| i < 0 || i >= n) {
+        return Err(PyValueError::new_err("closest_on_shape: 番号が範囲外です"));
+    }
+    Ok(py.allow_threads(|| geomq::closest_on_shape(&c, &s, &t, p, max_dist, size)).map(|(d, q, i)| (d - size * 0.5, q, i)))
+}
+
+/// 視線といちばん手前で交わるボクセル (t, 番号, 面) か None。frames：(n,3,3)
+#[pyfunction]
+fn voxel_raycast(py: Python<'_>, cen: PyReadonlyArray2<'_, f64>, frames: RoF<'_>, o: [f64; 3], d: [f64; 3], size: f64, max_dist: f64)
+    -> PyResult<Option<(f64, i64, i64)>> {
+    let c = pts3(&cen, "cen")?;
+    let f = ro(&frames, "frames")?;
+    if f.len() != c.len() * 9 {
+        return Err(PyValueError::new_err("voxel_raycast: frames は (n,3,3) にしてください"));
+    }
+    let fr: Vec<[[f64; 3]; 3]> = f.chunks_exact(9).map(|m| [[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]]).collect();
+    Ok(py.allow_threads(|| geomq::voxel_raycast(&c, &fr, o, d, size, max_dist)))
+}
+
+/// 角の暗さ（render.block_ao）。gid・owner：同じ部分のブロックだけ数えるとき
+#[pyfunction]
+#[pyo3(signature = (cells, p, n, strength, gid=None, owner=None))]
+fn block_ao<'py>(py: Python<'py>, cells: PyReadonlyArray2<'py, i64>, p: PyReadonlyArray2<'py, f64>, n: PyReadonlyArray2<'py, f64>,
+                 strength: f64, gid: Option<RoI<'py>>, owner: Option<RoI<'py>>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let c = irows::<3>(&cells, "cells")?;
+    let pp = pts3(&p, "p")?;
+    let nn = pts3(&n, "n")?;
+    if pp.len() != nn.len() {
+        return Err(PyValueError::new_err("block_ao: p と n の数が合いません"));
+    }
+    let g = match (&gid, &owner) {
+        (Some(g), Some(o)) => {
+            let (g, o) = (ro(g, "gid")?, ro(o, "owner")?);
+            if g.len() != c.len() || o.len() != pp.len() || o.iter().any(|&x| x < 0 || x as usize >= g.len()) {
+                return Err(PyValueError::new_err("block_ao: gid・owner の大きさが合いません"));
+            }
+            Some((g, o))
+        }
+        _ => None,
+    };
+    let out = py.allow_threads(|| geomq::block_ao(&c, &pp, &nn, g, strength));
+    Ok(PyArray1::from_vec_bound(py, out))
+}
+
+/// レイと向き付きの箱の交差：(t, 箱の番号, 法線) か None。a：(B,3,3)
+#[pyfunction]
+fn ray_boxes(py: Python<'_>, o: [f64; 3], d: [f64; 3], c: PyReadonlyArray2<'_, f64>, a: RoF<'_>, e: PyReadonlyArray2<'_, f64>, max_t: f64)
+    -> PyResult<Option<(f64, i64, [f64; 3])>> {
+    let cc = pts3(&c, "C")?;
+    let ee = pts3(&e, "E")?;
+    let aa = ro(&a, "A")?;
+    if ee.len() != cc.len() || aa.len() != 9 * cc.len() {
+        return Err(PyValueError::new_err("ray_boxes: 箱の配列の大きさが合いません"));
+    }
+    let ax: Vec<[[f64; 3]; 3]> = aa.chunks_exact(9).map(|m| [[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]]).collect();
+    Ok(py.allow_threads(|| geomq::ray_boxes(o, d, &cc, &ax, &ee, max_t)))
+}
+
+/// OBJ の文字列 → (頂点 (V,3), 三角形 (T,3), 三角形ごとの素材名の番号 (T,), 素材名のリスト)
+#[pyfunction]
+fn obj_parse<'py>(py: Python<'py>, text: &str)
+    -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>, Bound<'py, PyArray1<i64>>, Vec<String>)> {
+    let (v, t, m, names) = geomq::parse_obj(text).map_err(PyValueError::new_err)?;
+    let (nv, nt) = (v.len(), t.len());
+    Ok((PyArray1::from_vec_bound(py, v.into_iter().flatten().collect()).reshape([nv, 3])?,
+        PyArray1::from_vec_bound(py, t.into_iter().flatten().collect()).reshape([nt, 3])?,
+        PyArray1::from_vec_bound(py, m), names))
+}
+
+/// 閉じたメッシュの内部のセル：(セル (m,3), そのセルを決めた三角形の番号 (m,))。n：各軸のセルの数
+#[pyfunction]
+fn voxelize<'py>(py: Python<'py>, verts: PyReadonlyArray2<'py, f64>, tris: PyReadonlyArray2<'py, i64>, size: f64, n: [i64; 3])
+    -> PyResult<(Bound<'py, PyArray2<i64>>, Bound<'py, PyArray1<i64>>)> {
+    let v = pts3(&verts, "verts")?;
+    let t = irows::<3>(&tris, "tris")?;
+    if t.iter().flatten().any(|&i| i < 0 || i as usize >= v.len()) {
+        return Err(PyValueError::new_err("voxelize: 三角形の頂点の番号が範囲外です"));
+    }
+    let out = py.allow_threads(|| geomq::voxelize(&v, &t, size, n));
+    let m = out.len();
+    let cells: Vec<i64> = out.iter().flat_map(|x| x.0).collect();
+    let ti: Vec<i64> = out.iter().map(|x| x.1 as i64).collect();
+    Ok((PyArray1::from_vec_bound(py, cells).reshape([m, 2 + 1])?, PyArray1::from_vec_bound(py, ti)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1647,6 +1797,12 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(marching_cubes, m)?)?;
     m.add_function(wrap_pyfunction!(label_empty, m)?)?;
     m.add_function(wrap_pyfunction!(nearest, m)?)?;
+    m.add_function(wrap_pyfunction!(closest_on_shape, m)?)?;
+    m.add_function(wrap_pyfunction!(voxel_raycast, m)?)?;
+    m.add_function(wrap_pyfunction!(block_ao, m)?)?;
+    m.add_function(wrap_pyfunction!(obj_parse, m)?)?;
+    m.add_function(wrap_pyfunction!(voxelize, m)?)?;
+    m.add_function(wrap_pyfunction!(ray_boxes, m)?)?;
     m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
     m.add_function(wrap_pyfunction!(topology, m)?)?;
     m.add_function(wrap_pyfunction!(noise, m)?)?;

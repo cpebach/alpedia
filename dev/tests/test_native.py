@@ -80,11 +80,47 @@ class TestKernels(unittest.TestCase):
         A = np.stack([np.linalg.qr(rng.normal(size=(3, 3)))[0] for _ in range(20)])
         E = rng.random((20, 3)) + 0.2
         P = rng.normal(0, 4, (500, 3))
-        d1, n1, k1 = geom.box_sdf(P, C, A, E)
-        d2, n2, k2 = core.box_sdf(P, C, A, E)
+        d2, n2, k2 = geom.box_sdf(P, C, A, E)
+        # numpy で同じ計算をした値と比べる
+        q = np.einsum("bij,nbj->nbi", A, P[:, None, :] - C[None])
+        aq = np.abs(q) - E[None]
+        d_all = np.linalg.norm(np.maximum(aq, 0.0), axis=-1) + np.minimum(aq.max(-1), 0.0)
+        k1 = np.argmin(d_all, axis=1)
+        d1 = d_all[np.arange(len(P)), k1]
         self.assertLess(np.abs(d1 - d2).max(), 1e-9)
-        self.assertLess(np.abs(n1 - n2).max(), 1e-9)
         self.assertTrue(np.array_equal(k1, k2))
+        self.assertLess(np.abs(np.linalg.norm(n2, axis=1) - 1).max(), 1e-9)
+        out = d1 > 0                                     # 外の点：向きは最近点からの向き
+        e = 1e-4
+        d3, _, _ = geom.box_sdf(P[out] + n2[out] * e, C, A, E)
+        self.assertLess(np.abs(d3 - d1[out] - e).max(), 1e-6)
+
+    def test_ray_boxes(self):
+        from main import geom
+        rng = np.random.default_rng(4)
+        n_hit = 0
+        for _ in range(300):
+            B = int(rng.integers(1, 8))
+            C = rng.normal(0, 3, (B, 3))
+            A = np.stack([np.linalg.qr(rng.normal(size=(3, 3)))[0] for _ in range(B)])
+            E = rng.random((B, 3)) + 0.2
+            o = rng.normal(0, 6, 3)
+            d = C[0] - o
+            d /= np.linalg.norm(d)
+            r = geom.ray_boxes(o, d, C, A, E, 30.0)
+            if r is None:
+                continue
+            n_hit += 1
+            t, k, nrm = r
+            p = o + d * t
+            dd, _, kk = geom.box_sdf(p[None], C, A, E)
+            if t > 0:
+                self.assertLess(abs(dd[0]), 1e-6)            # 当たった点は箱の表面
+                self.assertLess(float(nrm @ d), 0.0)         # 法線はレイと向き合う
+            # それより手前の点はどの箱にも入っていない
+            for s in np.linspace(0, max(t - 1e-3, 0), 20)[:-1]:
+                self.assertGreater(geom.box_sdf((o + d * s)[None], C, A, E)[0][0], -1e-9)
+        self.assertGreater(n_hit, 100)
 
     def test_art_runs(self):
         """関節つき剛体の解き方（回転だけ・ヒンジあり）が、値を壊さずに動く。"""

@@ -183,7 +183,10 @@ class SceneryHost:
             ctr = (lo + hi) / 2
             if np.linalg.norm(ctr - s.center) > s.radius + np.linalg.norm(hi - lo) / 2 + margin:
                 continue
-            rb = np.linalg.norm(s.E, axis=1)
+            rb = s.__dict__.get("_rb")
+            if rb is None or len(rb) != len(s.E) or s.__dict__.get("_rb_src") is not s.E:
+                rb = s._rb = np.linalg.norm(s.E, axis=1)            # 箱の外側の球の半径（箱が変わったときだけ）
+                s._rb_src = s.E
             m = s.col & np.all(s.C + rb[:, None] + margin > lo, axis=1) & np.all(s.C - rb[:, None] - margin < hi, axis=1)
             if m.any():
                 idx = np.nonzero(m)[0]

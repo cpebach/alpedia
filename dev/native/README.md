@@ -16,7 +16,8 @@
 | 完全剛体モードの関節つき剛体の1サブステップ（押し出し・関節・地面と MOD の箱の接触） | `artstep.rs`, `lib.rs`（`ArtTopo`） | `main/construct.py` の `_art_begin` / `_art_end` |
 | ボクセルごとの形合わせ・結合 | `kernels.rs` | `main/fastphys.py`（前の版の numba） |
 | 当たり判定の芯・描画用の頂点と法線 | `kernels.rs` | `main/fastphys.py` |
-| 向き付きの箱との距離 | `kernels.rs` | `main/geom.py` |
+| 向き付きの箱との距離・レイと箱の交差 | `kernels.rs`, `geomq.rs` | `main/geom.py` |
+| 形への最短距離（プレイヤーとブロックの当たり）・視線とブロック／地面／水面の交差・角の暗さ（AO）・OBJ の読み込みとボクセル化 | `geomq.rs`, `lib.rs`（`closest_on_shape`・`voxel_raycast`・`PlanetShape.raycast`・`water_raycast`・`block_ao`・`obj_parse`・`voxelize`） | `main/shape.py`, `main/world.py` の `raycast`, `main/planet.py`, `main/client/render.py`, `main/objio.py` |
 | 完全剛体モードの関節つき剛体 | `art.rs` | `main/fastphys.py` |
 | 惑星の地形（距離場・タイル・池・洞窟・掘削跡）と地面との接触 | `planet.rs`, `lib.rs` | `main/planet.py`, `main/terrain_earth.py`, `main/construct.py` |
 | 重力・構築物どうしの近い点の組 | `lib.rs` | `main/world.py`（scipy の cKDTree） |

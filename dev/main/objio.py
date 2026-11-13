@@ -89,68 +89,27 @@ def export_construct(c, out_dir: Path, name: str, scripts_dir: Path = None):
 
 
 def parse_obj(path: Path):
-    verts, tris, tri_mat = [], [], []
-    cur = "default"
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        parts = line.strip().split()
-        if not parts:
-            continue
-        if parts[0] == "v" and len(parts) >= 4:
-            verts.append([float(x) for x in parts[1:4]])
-        elif parts[0] == "usemtl":
-            cur = parts[1] if len(parts) > 1 else "default"
-        elif parts[0] == "f":
-            idx = []
-            for p in parts[1:]:
-                k = int(p.split("/")[0])
-                idx.append(k - 1 if k > 0 else len(verts) + k)
-            for j in range(1, len(idx) - 1):
-                tris.append([idx[0], idx[j], idx[j + 1]])
-                tri_mat.append(cur)
-    return np.asarray(verts, dtype=np.float64), np.asarray(tris, dtype=np.int64), tri_mat
+    """OBJ ファイル → (頂点 (V,3), 三角形 (T,3), 三角形ごとの素材名のリスト)（Rust で読む）。"""
+    from . import native
+    V, T, M, names = native.require().obj_parse(Path(path).read_text(encoding="utf-8", errors="replace"))
+    return V, T, [names[k] for k in M.tolist()]
 
 
 def voxelize(verts, tris, tri_mat, size, mapping, default_material, max_cells=200000):
-    """閉じたメッシュの内部を判定してボクセル化（x方向レイの交差回数）。"""
+    """閉じたメッシュの内部を判定してボクセル化（x方向レイの交差回数。Rust）。"""
+    from . import native
     if not len(tris):
         return []
+    verts = np.ascontiguousarray(verts, dtype=np.float64)
     lo = verts.min(0)
     hi = verts.max(0)
     n = np.maximum(np.ceil((hi - lo) / size).astype(int), 1)
     if np.prod(n) > max_cells:
         raise ValueError(f"大きすぎます（{n.tolist()} セル）。voxel_size か scale を調整してください")
-    T = verts[tris]  # (t,3,3)
-    out = []
-    eps = 1e-4
-    for j in range(n[1]):
-        y = lo[1] + (j + 0.5) * size + eps
-        for k in range(n[2]):
-            z = lo[2] + (k + 0.5) * size + eps * 1.7
-            a, b, c = T[:, 0], T[:, 1], T[:, 2]
-            # yz 平面での重心座標
-            v0 = b[:, 1:] - a[:, 1:]
-            v1 = c[:, 1:] - a[:, 1:]
-            v2 = np.array([y, z]) - a[:, 1:]
-            den = v0[:, 0] * v1[:, 1] - v1[:, 0] * v0[:, 1]
-            ok = np.abs(den) > 1e-12
-            den = np.where(ok, den, 1)
-            u = (v2[:, 0] * v1[:, 1] - v1[:, 0] * v2[:, 1]) / den
-            w = (v0[:, 0] * v2[:, 1] - v2[:, 0] * v0[:, 1]) / den
-            inside = ok & (u >= 0) & (w >= 0) & (u + w <= 1)
-            if not inside.any():
-                continue
-            ids = np.nonzero(inside)[0]
-            xs = a[ids, 0] + u[ids] * (b[ids, 0] - a[ids, 0]) + w[ids] * (c[ids, 0] - a[ids, 0])
-            order = np.argsort(xs)
-            xs, ids = xs[order], ids[order]
-            for e in range(0, len(xs) - 1, 2):
-                x0, x1 = xs[e], xs[e + 1]
-                mat = mapping.get(tri_mat[ids[e]], default_material)
-                i0 = max(int(np.ceil((x0 - lo[0]) / size - 0.5)), 0)
-                i1 = min(int(np.floor((x1 - lo[0]) / size - 0.5)), n[0] - 1)
-                for i in range(i0, i1 + 1):
-                    out.append(((i, j, k), mat, None))
-    return out
+    cells, ti = native.require().voxelize(verts, np.ascontiguousarray(tris, dtype=np.int64).reshape(-1, 3), float(size),
+                                          [int(x) for x in n])
+    mats = [mapping.get(m, default_material) for m in tri_mat]
+    return [((x, y, z), mats[t], None) for (x, y, z), t in zip(cells.tolist(), ti.tolist())]
 
 
 def _resolve(p: Path):

@@ -214,42 +214,17 @@ class Planet:
         self.version += 1
 
     def raycast(self, origin, direction, max_dist):
-        """球面行進で地表との交点を求める。"""
-        o = np.asarray(origin, dtype=np.float64)
-        dvec = np.asarray(direction, dtype=np.float64)
-        t = 0.0
-        for _ in range(160):
-            p = o + dvec * t
-            d = float(self.sdf(p[None])[0])
-            if d < 0.01:
-                return t, p
-            t += max(d * self.lipschitz, 0.02)
-            if t > max_dist:
-                break
-        return None
+        """球面行進で地表との交点 (t, 点) か None（Rust）。"""
+        r = self._nat().raycast([float(x) for x in origin], [float(x) for x in direction], float(max_dist),
+                                float(self.lipschitz))
+        return None if r is None else (r[0], np.asarray(r[1]))
 
     def water_raycast(self, origin, direction, max_dist):
-        """水面との交点（目が水中にあるときは None）。"""
+        """水面との交点（目が水中にあるときは None。Rust）。"""
         if not self.has_water:
             return None
-        o = np.asarray(origin, dtype=np.float64)
-        dvec = np.asarray(direction, dtype=np.float64)
-        ts = np.arange(0.0, max_dist + 1e-9, 0.12)
-        depth = self.water_depth(o[None] + ts[:, None] * dvec)
-        if depth[0] > 0:
-            return None
-        wet = np.nonzero(depth > 0)[0]
-        if not len(wet):
-            return None
-        k = wet[0]
-        a, b = ts[k - 1], ts[k]
-        for _ in range(8):
-            m = (a + b) * 0.5
-            if self.water_depth((o + dvec * m)[None])[0] > 0:
-                b = m
-            else:
-                a = m
-        return b, o + dvec * b
+        r = self._nat().water_raycast([float(x) for x in origin], [float(x) for x in direction], float(max_dist))
+        return None if r is None else (r[0], np.asarray(r[1]))
 
     # --- 保存 -----------------------------------------------------------
     def to_dict(self):

@@ -981,38 +981,19 @@ class World:
         o = np.asarray(origin, dtype=np.float64)
         dvec = np.asarray(direction, dtype=np.float64)
         dvec = dvec / np.linalg.norm(dvec)
+        from . import native
+        core = native.require()
+        ov, dv = [float(x) for x in o], [float(x) for x in dvec]
         best = None
         for c in self.constructs_on_ray(o, dvec, max_dist):
             if not c.n_vox:
                 continue
-            ctrs = c.centers_cached()
-            rel = ctrs - o
-            tproj = rel @ dvec
-            perp = np.linalg.norm(rel - np.outer(tproj, dvec), axis=1)
-            cand = np.nonzero((perp < c.size) & (tproj > -c.size) & (tproj < max_dist + c.size))[0]
-            if not len(cand):
-                continue
-            F = c.frames_cached()[cand]
-            lo_ = np.einsum("nij,nj->ni", F, o - ctrs[cand])
-            ld = np.einsum("nij,j->ni", F, dvec)
-            half = c.size * 0.5
-            with np.errstate(divide="ignore", invalid="ignore"):
-                inv = 1.0 / np.where(np.abs(ld) < 1e-12, 1e-12, ld)
-                t1 = (-half - lo_) * inv
-                t2 = (half - lo_) * inv
-            tmin = np.minimum(t1, t2)
-            tmax = np.maximum(t1, t2)
-            tn = tmin.max(axis=1)
-            tf = tmax.min(axis=1)
-            ok = (tn <= tf) & (tf > 0) & (tn < max_dist)
-            for k in np.nonzero(ok)[0]:
-                t = max(tn[k], 0.0)
-                if best is None or t < best["t"]:
-                    ax = int(np.argmax(tmin[k]))
-                    sign = -np.sign(ld[k, ax])
-                    face = ax * 2 + (0 if sign > 0 else 1)
-                    best = {"kind": "voxel", "t": t, "construct": c, "index": int(cand[k]), "face": face,
-                            "point": o + dvec * t}
+            hit = core.voxel_raycast(np.ascontiguousarray(c.centers_cached(), dtype=np.float64),
+                                     np.ascontiguousarray(c.frames_cached(), dtype=np.float64),
+                                     ov, dv, float(c.size), float(max_dist))
+            if hit is not None and (best is None or hit[0] < best["t"]):
+                t, k, face = hit
+                best = {"kind": "voxel", "t": t, "construct": c, "index": int(k), "face": int(face), "point": o + dvec * t}
         for pl in self.planets:
             if np.linalg.norm(o - pl.center) > pl.bound + max_dist:
                 continue

@@ -120,49 +120,6 @@ def topology(c):
 
 
 # ---------------------------------------------------------------------------
-# 距離（ベクトル化）
-# ---------------------------------------------------------------------------
-def dist_segments(p, a, b):
-    ab = b - a
-    t = np.einsum("...i,...i->...", p - a, ab) / np.maximum(np.einsum("...i,...i->...", ab, ab), 1e-12)
-    t = np.clip(t, 0, 1)
-    q = a + ab * t[..., None]
-    return np.linalg.norm(p - q, axis=-1), q
-
-
-def dist_triangles(p, a, b, c):
-    """点 p と三角形 abc の距離と最近点（形はブロードキャスト可能）。"""
-    ab, ac = b - a, c - a
-    n = np.cross(ab, ac)
-    nn = np.linalg.norm(n, axis=-1, keepdims=True)
-    n = n / np.maximum(nn, 1e-12)
-    ap = p - a
-    dn = np.einsum("...i,...i->...", ap, n)
-    proj = p - n * dn[..., None]
-    # 重心座標
-    v0, v1, v2 = ab, ac, proj - a
-    d00 = np.einsum("...i,...i->...", v0, v0)
-    d01 = np.einsum("...i,...i->...", v0, v1)
-    d11 = np.einsum("...i,...i->...", v1, v1)
-    d20 = np.einsum("...i,...i->...", v2, v0)
-    d21 = np.einsum("...i,...i->...", v2, v1)
-    den = d00 * d11 - d01 * d01
-    den = np.where(np.abs(den) < 1e-12, 1e-12, den)
-    v = (d11 * d20 - d01 * d21) / den
-    w = (d00 * d21 - d01 * d20) / den
-    u = 1 - v - w
-    inside = (u >= 0) & (v >= 0) & (w >= 0)
-    d1, q1 = dist_segments(p, a, b)
-    d2, q2 = dist_segments(p, b, c)
-    d3, q3 = dist_segments(p, c, a)
-    de = np.minimum(np.minimum(d1, d2), d3)
-    qe = np.where((d1 <= d2)[..., None] & (d1 <= d3)[..., None], q1, np.where((d2 <= d3)[..., None], q2, q3))
-    d = np.where(inside, np.abs(dn), de)
-    q = np.where(inside[..., None], proj, qe)
-    return d, q
-
-
-# ---------------------------------------------------------------------------
 # かたい素材の角ばった見た目（多面体）
 # ---------------------------------------------------------------------------
 # 素材の "facet": true（鋼鉄・岩など）は、芯からの距離を球ではなく多面体（面・辺・角を落とした立方体＝
@@ -385,40 +342,19 @@ def vertex_normals(v, faces):
 # 当たり判定
 # ---------------------------------------------------------------------------
 def closest_on_shape(c, p, max_dist):
-    """点 p から形（表面）への最短：(距離, 最近点, 近いボクセル番号) または None。
+    """点 p から形（表面）への最短：(距離, 最近点, 近いボクセル番号) または None（Rust）。
     距離は「芯（点・線・三角形）からの距離 − r」。"""
     if not c.n_vox:
         return None
-    r = c.size * 0.5
     cen = c.centers_cached() if hasattr(c, "centers_cached") else c.voxel_centers()
-    near = np.linalg.norm(cen - p, axis=1) < max_dist + c.size * 1.8
-    if not near.any():
-        return None
     topo = c.topo
-    best = (np.inf, None, -1)
-    pts = np.nonzero(near)[0]
-    d = np.linalg.norm(cen[pts] - p, axis=1)
-    k = int(np.argmin(d))
-    best = (d[k], cen[pts[k]], int(pts[k]))
-    segs = topo["segs"]
-    if len(segs):
-        sel = near[segs[:, 0]] | near[segs[:, 1]]
-        if sel.any():
-            S = segs[sel]
-            d, q = dist_segments(p[None], cen[S[:, 0]], cen[S[:, 1]])
-            k = int(np.argmin(d))
-            if d[k] < best[0]:
-                best = (d[k], q[k], int(S[k, 0]))
-    tris = topo["tris"]
-    if len(tris):
-        sel = near[tris[:, 0]] | near[tris[:, 1]] | near[tris[:, 2]]
-        if sel.any():
-            T = tris[sel]
-            d, q = dist_triangles(p[None], cen[T[:, 0]], cen[T[:, 1]], cen[T[:, 2]])
-            k = int(np.argmin(d))
-            if d[k] < best[0]:
-                best = (d[k], q[k], int(T[k, 0]))
-    return best[0] - r, best[1], best[2]
+    res = native.require().closest_on_shape(
+        np.ascontiguousarray(cen, dtype=np.float64), np.asarray(topo["segs"], np.int64).reshape(-1, 2),
+        np.asarray(topo["tris"], np.int64).reshape(-1, 3), [float(x) for x in p], float(max_dist), float(c.size))
+    if res is None:
+        return None
+    d, q, vi = res
+    return d, np.asarray(q), int(vi)
 
 
 def collision_proxies(c):
