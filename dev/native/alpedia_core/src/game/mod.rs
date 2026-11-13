@@ -31,6 +31,7 @@ pub mod screens;
 pub mod screens_dev;
 pub mod ursina;
 pub mod panda;
+pub mod rsclient;
 pub mod shape_tables;
 
 use pyo3::prelude::*;
@@ -86,6 +87,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<screens_dev::Fmt>()?;
     ursina::register(m)?;
     panda::register(m)?;
+    rsclient::register(m)?;
     m.add_class::<netgame::Peer>()?;
     m.add_class::<netgame::Host>()?;
     m.add_class::<netgame::Joiner>()?;
