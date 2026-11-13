@@ -38,6 +38,7 @@ pub mod client_play;
 pub mod panels;
 pub mod render;
 pub mod scenery_view;
+pub mod sound;
 pub mod shape_tables;
 
 use pyo3::prelude::*;
@@ -100,6 +101,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     panels::register(m)?;
     render::register(m)?;
     scenery_view::register(m)?;
+    sound::register(m)?;
     m.add_class::<netgame::Peer>()?;
     m.add_class::<netgame::Host>()?;
     m.add_class::<netgame::Joiner>()?;
@@ -351,4 +353,4 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// __init__ を持つ Rust のクラス（作るときに __init__ を呼ぶ）
-const INIT_CLASSES: &[&str] = &["RsNode", "Screen", "Pause", "Inventory", "DevicePanel", "ActuatorPanel", "Entity", "Text", "Button", "InputField", "Mesh", "Quad", "Viewer", "GameAdapter", "ClientAddon", "SurvivalClient", "KeysPanel", "LightLayer", "LodLayer", "ConstructView", "DecalView", "PlanetView", "TerrainPatch", "CarveView", "SceneView", "UDevicePanel"];
+const INIT_CLASSES: &[&str] = &["RsNode", "Screen", "Pause", "Inventory", "DevicePanel", "ActuatorPanel", "Entity", "Text", "Button", "InputField", "Mesh", "Quad", "Viewer", "GameAdapter", "ClientAddon", "SurvivalClient", "KeysPanel", "LightLayer", "LodLayer", "ConstructView", "DecalView", "PlanetView", "TerrainPatch", "CarveView", "SceneView", "UDevicePanel", "_RsBase", "SoundSystem"];
