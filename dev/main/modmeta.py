@@ -1,4 +1,4 @@
-"""MOD の情報（mods/<MOD名>/mod.json）と、MOD どうしの依存関係。
+"""MOD の情報（mods/<MOD名>/mod.json）と、MOD どうしの依存関係（中身は Rust：game/modmeta.rs）。
 
 mod.json の項目：
     id / name / version / description
@@ -14,105 +14,40 @@ mod.json の項目：
 """
 TYPES = ("addon", "scenario", "assets")
 BUILTIN_MODES = ("survival",)    # 前の版では MOD だった本体の遊び方（mods/ に残っていても一覧に出さない）
-import json
+from . import native
 
-from . import log, paths
-
-L = log.get("modmeta")
+_C = native.require()
 
 
 def read(mod_id, mods_dir=None):
     """mod.json の中身（無い・読めない MOD は最低限の項目だけ）。"""
-    d = (mods_dir or paths.MODS) / mod_id
-    meta = {"id": mod_id, "name": mod_id, "description": "", "requires": [], "builtin": False}
-    mj = d / "mod.json"
-    if mj.exists():
-        try:
-            raw = json.loads(mj.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                meta.update(raw)
-        except Exception as e:  # noqa: BLE001
-            meta["error"] = f"mod.json が読めません: {e}"
-    meta["id"] = mod_id                       # フォルダの名前が ID
-    req = meta.get("requires") or []
-    meta["requires"] = [r for r in req if isinstance(r, str) and r != mod_id] if isinstance(req, list) else []
-    meta["exists"] = d.is_dir()
-    if meta.get("type") not in TYPES:
-        meta["type"] = "addon"
-    return meta
+    return _C.modmeta_read(mod_id, mods_dir)
 
 
 def list_all(mods_dir=None, kind=None):
     """mods/ にある MOD の情報のリスト（kind="addon" / "scenario" でその種類だけ）。本体に入っている MOD を先に。"""
-    root = mods_dir or paths.MODS
-    out = []
-    if not root.exists():
-        return out
-    for d in sorted(root.iterdir()):
-        if d.is_dir() and not d.name.startswith(".") and not d.name.startswith("_") and d.name not in BUILTIN_MODES:
-            m = read(d.name, root)
-            if kind is None or m["type"] == kind:
-                out.append(m)
-    out.sort(key=lambda m: (not m.get("builtin"), str(m.get("category", "")), m["id"]))
-    return out
+    return _C.modmeta_list_all(mods_dir, kind)
 
 
 def is_scenario(mod_id, mods_dir=None):
-    return read(mod_id, mods_dir)["type"] == "scenario"
+    return _C.modmeta_is_scenario(mod_id, mods_dir)
 
 
 def resolve(enabled, mods_dir=None):
     """選んだ MOD に、依存する MOD を足して読み込む順に並べる（依存する方が先）。
     戻り値：(並べた MOD のリスト, 足した MOD のリスト, 見つからない MOD の [(MOD, 必要とした MOD)] )"""
-    order, added, missing = [], [], []
-    visiting = set()
-    chosen = list(dict.fromkeys(enabled))
-
-    def visit(mid, parent):
-        if mid in order:
-            return
-        meta = read(mid, mods_dir)
-        if not meta["exists"]:
-            if parent is not None:
-                missing.append((mid, parent))
-            elif mid not in order:
-                order.append(mid)            # 選ばれているが無い：読み込みのときにエラーにする
-            return
-        if mid in visiting:                  # 循環：そのまま並べる
-            return
-        visiting.add(mid)
-        for r in meta["requires"]:
-            visit(r, mid)
-        visiting.discard(mid)
-        if mid not in order:
-            order.append(mid)
-            if mid not in chosen:
-                added.append(mid)
-    for m in chosen:
-        visit(m, None)
-    return order, added, missing
+    return _C.modmeta_resolve(list(enabled), mods_dir)
 
 
 def dependents(mod_id, selected, mods_dir=None):
     """selected の中で mod_id を（間接的にでも）必要とする MOD。"""
-    out = []
-    for m in selected:
-        if m == mod_id:
-            continue
-        order, _, _ = resolve([m], mods_dir)
-        if mod_id in order:
-            out.append(m)
-    return out
+    return _C.modmeta_dependents(mod_id, list(selected), mods_dir)
 
 
 def name_of(mod_id, mods_dir=None):
-    return read(mod_id, mods_dir).get("name", mod_id)
+    return _C.modmeta_name_of(mod_id, mods_dir)
 
 
 def world_preset(mods, mods_dir=None):
     """選んだ MOD のうち、ワールドの形を決めるもの（最初の1つ）：(MOD の ID, world の設定) か (None, None)。"""
-    for m in mods:
-        w = read(m, mods_dir).get("world")
-        if isinstance(w, dict):
-            return m, w
-    return None, None
+    return _C.modmeta_world_preset(list(mods), mods_dir)

@@ -1,8 +1,5 @@
 """config/settings.json の読み書き。無ければ既定値で作成する。"""
-import copy
-import json
-
-from . import paths, log
+from . import native
 
 DEFAULTS = {
     "window": {"width": 1280, "height": 720, "fullscreen": False, "vsync": True},
@@ -48,25 +45,9 @@ DEFAULTS = {
 
 
 def _merge(base, over):
-    out = copy.deepcopy(base)
-    for k, v in over.items():
-        if isinstance(v, dict) and isinstance(out.get(k), dict):
-            out[k] = _merge(out[k], v)
-        else:
-            out[k] = v
-    return out
+    return native.require().config_merge(base, over)
 
 
 def load() -> dict:
-    p = paths.CONFIG / "settings.json"
-    paths.CONFIG.mkdir(parents=True, exist_ok=True)
-    data = {}
-    if p.exists():
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except Exception as e:  # noqa: BLE001
-            log.get("config").error("settings.json の読み込みに失敗: %s（既定値を使用）", e)
-    cfg = _merge(DEFAULTS, data)
-    if not p.exists():
-        p.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-    return cfg
+    """config/settings.json を読む（無ければ既定値で作る。読み書きは Rust：game/modmeta.rs）。"""
+    return native.require().config_load(DEFAULTS)
