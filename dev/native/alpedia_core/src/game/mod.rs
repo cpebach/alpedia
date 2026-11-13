@@ -9,8 +9,25 @@ pub mod blocks;
 pub mod actuator;
 pub mod buildkit;
 pub mod player;
+pub mod scenery;
+pub mod hooks;
+pub mod survival;
+pub mod control;
+pub mod scripting;
+pub mod modmeta;
 
 use pyo3::prelude::*;
+
+/// モジュールを読み込む（builtins.__import__ を通さない。ゲーム内スクリプトの実行中は __import__ が制限されているため）
+pub fn imp<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyModule>> {
+    let n = std::ffi::CString::new(name).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    unsafe {
+        let top = pyo3::ffi::PyImport_ImportModuleLevel(n.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0);
+        Bound::from_owned_ptr_or_err(py, top)?;          // パッケージの先頭が返る。読み込んだ本体は sys.modules から
+        let mods = Bound::from_borrowed_ptr(py, pyo3::ffi::PyImport_GetModuleDict());
+        Ok(mods.get_item(name)?.downcast_into::<PyModule>()?)
+    }
+}
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(devstate::devstate_normalize, m)?)?;
@@ -88,6 +105,32 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(buildkit::bk_set_light_group, m)?)?;
     m.add_class::<buildkit::Kit>()?;
     m.add_class::<player::Player>()?;
+    m.add_class::<scenery::Map>()?;
+    m.add_class::<scenery::Scenery>()?;
+    m.add_function(wrap_pyfunction!(scenery::scenery_unit, m)?)?;
+    m.add_function(wrap_pyfunction!(scenery::scenery_colliders, m)?)?;
+    m.add_function(wrap_pyfunction!(scenery::scenery_raycast, m)?)?;
+    m.add_function(wrap_pyfunction!(scenery::scenery_push_sphere, m)?)?;
+    m.add_class::<hooks::Addon>()?;
+    m.add_class::<survival::SurvivalRules>()?;
+    m.add_function(wrap_pyfunction!(survival::survival_mode_of, m)?)?;
+    m.add_class::<control::Port>()?;
+    m.add("PortError", m.py().get_type_bound::<control::PortError>())?;
+    m.add_class::<scripting::DeviceHandle>()?;
+    m.add_class::<scripting::ScriptAPI>()?;
+    m.add_class::<scripting::ScriptRunner>()?;
+    m.add_function(wrap_pyfunction!(scripting::script_path, m)?)?;
+    m.add_function(wrap_pyfunction!(scripting::safe_import, m)?)?;
+    m.add_function(wrap_pyfunction!(scripting::display_payload, m)?)?;
+    m.add_function(wrap_pyfunction!(modmeta::modmeta_read, m)?)?;
+    m.add_function(wrap_pyfunction!(modmeta::modmeta_list_all, m)?)?;
+    m.add_function(wrap_pyfunction!(modmeta::modmeta_is_scenario, m)?)?;
+    m.add_function(wrap_pyfunction!(modmeta::modmeta_resolve, m)?)?;
+    m.add_function(wrap_pyfunction!(modmeta::modmeta_dependents, m)?)?;
+    m.add_function(wrap_pyfunction!(modmeta::modmeta_name_of, m)?)?;
+    m.add_function(wrap_pyfunction!(modmeta::modmeta_world_preset, m)?)?;
+    m.add_function(wrap_pyfunction!(modmeta::config_merge, m)?)?;
+    m.add_function(wrap_pyfunction!(modmeta::config_load, m)?)?;
     m.add("SAVE_FORMAT", savefmt::FORMAT)?;
     Ok(())
 }

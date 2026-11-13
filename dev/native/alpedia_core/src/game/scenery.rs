@@ -12,7 +12,7 @@ type R<T> = PyResult<T>;
 type V3 = [f64; 3];
 
 fn v3(o: &Bound<'_, PyAny>) -> R<V3> {
-    let v: Vec<f64> = o.py().import_bound("numpy")?.getattr("asarray")?.call1((o, "float64"))?.call_method0("ravel")?.call_method0("tolist")?.extract()?;
+    let v: Vec<f64> = crate::game::imp(o.py(), "numpy")?.getattr("asarray")?.call1((o, "float64"))?.call_method0("ravel")?.call_method0("tolist")?.extract()?;
     if v.len() < 3 {
         return Err(pyo3::exceptions::PyValueError::new_err("3 つの値が要ります"));
     }
@@ -130,7 +130,7 @@ fn frame_np<'py>(py: Python<'py>, f: [V3; 3]) -> R<Bound<'py, PyArray2<f64>>> {
 }
 
 fn rows3(a: &Bound<'_, PyAny>) -> R<Vec<V3>> {
-    let np = a.py().import_bound("numpy")?;
+    let np = crate::game::imp(a.py(), "numpy")?;
     let x: PyReadonlyArray2<f64> = np.getattr("asarray")?.call1((a, "float64"))?.call_method1("reshape", (-1, 3))?.extract()?;
     Ok(x.as_array().rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect())
 }
@@ -140,7 +140,7 @@ impl Map {
     #[new]
     #[pyo3(signature = (planet, up0, fwd0, craters=None))]
     fn new(py: Python<'_>, planet: PyObject, up0: &Bound<'_, PyAny>, fwd0: &Bound<'_, PyAny>, craters: Option<&Bound<'_, PyAny>>) -> R<Self> {
-        let np = py.import_bound("numpy")?;
+        let np = crate::game::imp(py, "numpy")?;
         let cr = match craters {
             Some(c) => np.getattr("asarray")?.call1((c, "float64"))?.call_method1("reshape", (-1, 4))?,
             None => np.getattr("zeros")?.call1(((0, 4),))?,
@@ -182,7 +182,7 @@ impl Map {
 
 fn vec_or_none(py: Python<'_>, c: Option<&Bound<'_, PyAny>>) -> R<PyObject> {
     Ok(match c {
-        Some(c) if !c.is_none() => py.import_bound("numpy")?.getattr("array")?.call1((c, "float64"))?.unbind(),
+        Some(c) if !c.is_none() => crate::game::imp(py, "numpy")?.getattr("array")?.call1((c, "float64"))?.unbind(),
         _ => py.None(),
     })
 }
@@ -278,7 +278,7 @@ impl Scenery {
     #[allow(clippy::too_many_arguments)]
     fn raw(&self, py: Python<'_>, c: &Bound<'_, PyAny>, r: &Bound<'_, PyAny>, e: &Bound<'_, PyAny>, color: Option<&Bound<'_, PyAny>>,
            glow: Option<&Bound<'_, PyAny>>, group: Option<PyObject>, collide: Option<PyObject>, blink: Option<PyObject>, tag: Option<PyObject>) -> R<usize> {
-        let np = py.import_bound("numpy")?;
+        let np = crate::game::imp(py, "numpy")?;
         let part = PyDict::new_bound(py);
         part.set_item("c", np.getattr("asarray")?.call1((c, "float64"))?)?;
         part.set_item("A", np.getattr("asarray")?.call1((r, "float64"))?.getattr("T")?.call_method0("copy")?)?;
@@ -298,7 +298,7 @@ impl Scenery {
     }
 
     fn point_raw(&self, py: Python<'_>, name: PyObject, p: &Bound<'_, PyAny>) -> R<PyObject> {
-        let v = py.import_bound("numpy")?.getattr("asarray")?.call1((p, "float64"))?;
+        let v = crate::game::imp(py, "numpy")?.getattr("asarray")?.call1((p, "float64"))?;
         self.points.bind(py).set_item(name, &v)?;
         Ok(v.unbind())
     }
@@ -316,7 +316,7 @@ impl Scenery {
     /// 箱を配列（C・A・E・col・center・radius・tags）にまとめる
     fn finish(slf: Bound<'_, Self>) -> R<Bound<'_, Self>> {
         let py = slf.py();
-        let np = py.import_bound("numpy")?;
+        let np = crate::game::imp(py, "numpy")?;
         let parts = slf.borrow().parts.clone_ref(py).into_bound(py);
         let get = |k: &str| -> R<Bound<'_, PyList>> {
             let l = PyList::empty_bound(py);
@@ -366,7 +366,7 @@ impl Scenery {
     }
 
     fn point_velocity(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> R<PyObject> {
-        let np = py.import_bound("numpy")?;
+        let np = crate::game::imp(py, "numpy")?;
         Ok(np.getattr("zeros_like")?.call1((np.getattr("asarray")?.call1((p, "float64"))?,))?.unbind())
     }
 }
@@ -382,7 +382,7 @@ pub fn scenery_colliders<'py>(py: Python<'py>, scenes: &Bound<'py, PyAny>, lo: &
     let ctr = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
     let half = dot(sub(hi, lo), sub(hi, lo)).sqrt() / 2.0;
     let out = PyList::empty_bound(py);
-    let np = py.import_bound("numpy")?;
+    let np = crate::game::imp(py, "numpy")?;
     for s in scenes.iter()? {
         let s = s?;
         let sc = v3(&s.getattr("center")?)?;
@@ -431,7 +431,7 @@ pub fn scenery_raycast<'py>(py: Python<'py>, scenes: &Bound<'py, PyAny>, o: [f64
             continue;
         }
         let e = rows3(&s.getattr("E")?)?;
-        let a: PyReadonlyArray3<f64> = py.import_bound("numpy")?.getattr("ascontiguousarray")?.call1((s.getattr("A")?, "float64"))?.extract()?;
+        let a: PyReadonlyArray3<f64> = crate::game::imp(py, "numpy")?.getattr("ascontiguousarray")?.call1((s.getattr("A")?, "float64"))?.extract()?;
         let aa = a.as_array();
         let ax: Vec<[V3; 3]> = (0..c.len()).map(|b| [[aa[[b, 0, 0]], aa[[b, 0, 1]], aa[[b, 0, 2]]], [aa[[b, 1, 0]], aa[[b, 1, 1]], aa[[b, 1, 2]]],
                                                     [aa[[b, 2, 0]], aa[[b, 2, 1]], aa[[b, 2, 2]]]]).collect();
@@ -457,7 +457,7 @@ pub fn scenery_push_sphere<'py>(py: Python<'py>, host: &Bound<'py, PyAny>, world
         let s = it.get_item(0)?;
         let cc = rows3(&it.get_item(1)?)?;
         let ee = rows3(&it.get_item(3)?)?;
-        let a: PyReadonlyArray3<f64> = py.import_bound("numpy")?.getattr("ascontiguousarray")?.call1((it.get_item(2)?, "float64"))?.extract()?;
+        let a: PyReadonlyArray3<f64> = crate::game::imp(py, "numpy")?.getattr("ascontiguousarray")?.call1((it.get_item(2)?, "float64"))?.extract()?;
         let flat: Vec<f64> = a.as_array().iter().copied().collect();
         let cf: Vec<f64> = cc.iter().flatten().copied().collect();
         let ef: Vec<f64> = ee.iter().flatten().copied().collect();

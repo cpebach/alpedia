@@ -11,7 +11,7 @@ type R<T> = PyResult<T>;
 type V3 = [f64; 3];
 
 fn v3(o: &Bound<'_, PyAny>) -> R<V3> {
-    let v: Vec<f64> = o.py().import_bound("numpy")?.getattr("asarray")?.call1((o, "float64"))?.call_method0("ravel")?.call_method0("tolist")?.extract()?;
+    let v: Vec<f64> = crate::game::imp(o.py(), "numpy")?.getattr("asarray")?.call1((o, "float64"))?.call_method0("ravel")?.call_method0("tolist")?.extract()?;
     if v.len() < 3 {
         return Err(pyo3::exceptions::PyValueError::new_err("3 つの値が要ります"));
     }
@@ -39,7 +39,7 @@ fn norm(a: V3) -> f64 {
 }
 
 fn float_of(v: &Bound<'_, PyAny>) -> R<f64> {
-    v.py().import_bound("builtins")?.getattr("float")?.call1((v,))?.extract()
+    crate::game::imp(v.py(), "builtins")?.getattr("float")?.call1((v,))?.extract()
 }
 
 #[pyclass(module = "alpedia_core", subclass, dict)]
@@ -208,7 +208,7 @@ impl Player {
     }
 
     fn load_dict(&mut self, py: Python<'_>, d: &Bound<'_, PyAny>) -> R<()> {
-        let np = py.import_bound("numpy")?;
+        let np = crate::game::imp(py, "numpy")?;
         let kw = PyDict::new_bound(py);
         kw.set_item("dtype", np.getattr("float64")?)?;
         self.pos = np.getattr("asarray")?.call((d.call_method1("get", ("position", self.pos.bind(py)))?,), Some(&kw))?.unbind();

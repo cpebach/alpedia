@@ -23,7 +23,7 @@ pub const WRITABLE: [&str; 5] = ["throttle", "ignite", "open", "enabled", "runni
 const DIR_NAMES: [&str; 6] = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
 
 fn float_of(v: &Bound<'_, PyAny>) -> R<f64> {
-    v.py().import_bound("builtins")?.getattr("float")?.call1((v,))?.extract()
+    crate::game::imp(v.py(), "builtins")?.getattr("float")?.call1((v,))?.extract()
 }
 
 #[pyclass(module = "alpedia_core", subclass, dict)]
@@ -125,12 +125,12 @@ impl Port {
     }
 
     fn storage<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyAny>> {
-        py.import_bound("main.devices")?.getattr("storage_total")?.call1((&self.c,))
+        crate::game::imp(py, "main.devices")?.getattr("storage_total")?.call1((&self.c,))
     }
 
     fn cavities<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyList>> {
         let out = PyList::empty_bound(py);
-        for it in py.import_bound("main.devices")?.getattr("cavity_report")?.call1((&self.c,))?.iter()? {
+        for it in crate::game::imp(py, "main.devices")?.getattr("cavity_report")?.call1((&self.c,))?.iter()? {
             let it = it?;
             let d = PyDict::new_bound(py);
             d.set_item("cells", it.get_item(1)?)?;
@@ -186,7 +186,7 @@ impl Port {
 
     /// 重心の場所の重力加速度（すべての天体の分を足したもの）[3] m/s²
     fn gravity(&mut self, py: Python<'_>) -> R<PyObject> {
-        let np = py.import_bound("numpy")?;
+        let np = crate::game::imp(py, "numpy")?;
         let p = np.getattr("asarray")?.call1((self.pose(py)?.into_bound(py).get_item(0)?, "float64"))?.call_method1("reshape", (1, 3))?;
         let g = self.w.bind(py).call_method1("gravity", (p,))?;
         Ok(np.getattr("asarray")?.call1((g, "float64"))?.call_method1("reshape", (-1, 3))?.get_item(0)?.unbind())
@@ -221,7 +221,7 @@ impl Port {
     fn devices<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyList>> {
         let out = PyList::empty_bound(py);
         let reg = self.reg(py)?;
-        let ext = py.import_bound("main.extensions")?.getattr("behavior_of")?;
+        let ext = crate::game::imp(py, "main.extensions")?.getattr("behavior_of")?;
         for (i, d) in self.c.bind(py).getattr("devs")?.iter()?.enumerate() {
             let d = d?;
             if d.is_truthy()? {
@@ -315,7 +315,7 @@ impl Port {
 
     fn device_dir(&self, py: Python<'_>, i: i64) -> R<i64> {
         let d = self.dev(py, i)?;
-        py.import_bound("builtins")?.getattr("int")?.call1((d.get_item("dir")?,))?.extract()
+        crate::game::imp(py, "builtins")?.getattr("int")?.call1((d.get_item("dir")?,))?.extract()
     }
 
     /// 構築物の重心から見た、ローカル座標での機器の位置 [x,y,z] (m)
@@ -393,7 +393,7 @@ impl Port {
 
     fn act_attach<'py>(&self, py: Python<'py>, i: i64) -> R<Bound<'py, PyAny>> {
         self.act_dev(py, i)?;
-        py.import_bound("main.actuator")?.getattr("cmd_attach")?.call1((&self.w, &self.c, i))
+        crate::game::imp(py, "main.actuator")?.getattr("cmd_attach")?.call1((&self.w, &self.c, i))
     }
 
     fn act_execute(&self, py: Python<'_>, i: i64) -> R<String> {

@@ -16,7 +16,7 @@ type Cell = (i64, i64, i64);
 const N6: [Cell; 6] = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
 
 fn int_of(v: &Bound<'_, PyAny>) -> R<i64> {
-    v.py().import_bound("builtins")?.getattr("int")?.call1((v,))?.extract()
+    crate::game::imp(v.py(), "builtins")?.getattr("int")?.call1((v,))?.extract()
 }
 
 fn facing(f: &str) -> R<i64> {
@@ -520,7 +520,7 @@ impl Kit {
         let st = PyDict::new_bound(py);
         st.set_item("enabled", on.map_or(Ok(true), |o| o.is_truthy())?)?;
         if let Some(c) = color.filter(|c| !c.is_none()) {
-            let fl = py.import_bound("builtins")?.getattr("float")?;
+            let fl = crate::game::imp(py, "builtins")?.getattr("float")?;
             let l: Vec<f64> = c.iter()?.map(|v| fl.call1((v?,))?.extract::<f64>()).collect::<R<_>>()?;
             st.set_item("color", l)?;
         }
@@ -528,7 +528,7 @@ impl Kit {
             st.set_item("group", g)?;
         }
         if let Some(b) = blink.filter(|b| b.is_truthy().unwrap_or(false)) {
-            st.set_item("blink", py.import_bound("builtins")?.getattr("float")?.call1((b,))?)?;
+            st.set_item("blink", crate::game::imp(py, "builtins")?.getattr("float")?.call1((b,))?)?;
         }
         let dev = PyDict::new_bound(py);
         dev.set_item("def", "light")?;
@@ -785,7 +785,7 @@ pub fn bk_grounded<'py>(py: Python<'py>, v: &Bound<'py, PyAny>, r: PyReadonlyArr
         }
     }
     let p = PyArray1::from_vec_bound(py, pts).reshape([foot.len(), 3])?;
-    let h: Vec<f64> = py.import_bound("numpy")?.getattr("asarray")?.call1((sdf.call1((p,))?, "float64"))?
+    let h: Vec<f64> = crate::game::imp(py, "numpy")?.getattr("asarray")?.call1((sdf.call1((p,))?, "float64"))?
         .call_method0("ravel")?.call_method0("tolist")?.extract()?;
     let out = PyList::empty_bound(py);
     for x in &base_owned {

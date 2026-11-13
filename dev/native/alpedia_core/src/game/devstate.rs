@@ -165,7 +165,7 @@ pub fn coerce<'py>(py: Python<'py>, kind: Kind, v: &Bound<'py, PyAny>) -> PyResu
     if v.is_none() {
         return Ok(v.clone());
     }
-    let b = py.import_bound("builtins")?;
+    let b = crate::game::imp(py, "builtins")?;
     Ok(match kind {
         Kind::Float => b.getattr("float")?.call1((v,))?,
         Kind::Int => b.getattr("int")?.call1((v,))?,
@@ -186,7 +186,7 @@ fn is_coerce_err(py: Python<'_>, e: &PyErr) -> bool {
 }
 
 fn warn(py: Python<'_>, msg: String) -> PyResult<()> {
-    py.import_bound("logging")?.getattr("getLogger")?.call1(("alpedia.devstate",))?.call_method1("warning", (msg,))?;
+    crate::game::imp(py, "logging")?.getattr("getLogger")?.call1(("alpedia.devstate",))?.call_method1("warning", (msg,))?;
     Ok(())
 }
 

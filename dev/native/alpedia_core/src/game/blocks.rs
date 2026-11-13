@@ -12,7 +12,7 @@ use pyo3::types::{PyDict, PyFloat, PyInt, PyList, PyString};
 type R<T> = PyResult<T>;
 
 fn tbl<'py>(py: Python<'py>, name: &str) -> R<Bound<'py, PyAny>> {
-    py.import_bound("main.blocks")?.getattr(name)
+    crate::game::imp(py, "main.blocks")?.getattr(name)
 }
 
 /// node.get(key)（dict でなければ None）
@@ -151,7 +151,7 @@ pub fn blocks_label_parts(label: &str) -> R<Vec<(&'static str, String)>> {
 
 fn py_float(v: &Bound<'_, PyAny>) -> R<Option<f64>> {
     let py = v.py();
-    match py.import_bound("builtins")?.getattr("float")?.call1((v,)) {
+    match crate::game::imp(py, "builtins")?.getattr("float")?.call1((v,)) {
         Ok(f) => Ok(Some(f.extract()?)),
         Err(e) if e.is_instance_of::<PyTypeError>(py) || e.is_instance_of::<PyValueError>(py) => Ok(None),
         Err(e) => Err(e),
@@ -291,7 +291,7 @@ pub fn blocks_slot_kind(py: Python<'_>, stmt_type: &Bound<'_, PyAny>, slot: &Bou
 }
 
 fn deep_copy<'py>(v: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    v.py().import_bound("copy")?.getattr("deepcopy")?.call1((v,))
+    crate::game::imp(v.py(), "copy")?.getattr("deepcopy")?.call1((v,))
 }
 
 #[pyfunction]
@@ -434,7 +434,7 @@ fn hint_list<'py>(py: Python<'py>, cl: &Bound<'py, PyAny>, sl: &Bound<'py, PyAny
 fn dumps_sorted(py: Python<'_>, v: &Bound<'_, PyAny>) -> R<String> {
     let kw = PyDict::new_bound(py);
     kw.set_item("sort_keys", true)?;
-    Ok(py.import_bound("json")?.getattr("dumps")?.call((v,), Some(&kw))?.to_string())
+    Ok(crate::game::imp(py, "json")?.getattr("dumps")?.call((v,), Some(&kw))?.to_string())
 }
 
 /// 今のプログラム cur（エディタが編集中の物そのもの）を、見本 sol と比べて、最初の違いを返す（同じなら None）

@@ -48,7 +48,7 @@ pub fn antenna(c: &Bound<'_, PyAny>) -> PyResult<Option<(f64, [f64; 3])>> {
             continue;
         }
         let params = dd.call_method1("get", ("params", PyDict::new_bound(c.py())))?;
-        let rng: f64 = c.py().import_bound("builtins")?.getattr("float")?.call1((params.call_method1("get", ("range", 3000.0))?,))?.extract()?;
+        let rng: f64 = crate::game::imp(c.py(), "builtins")?.getattr("float")?.call1((params.call_method1("get", ("range", 3000.0))?,))?.extract()?;
         if best.map_or(true, |b| rng > b.0) {
             best = Some((rng, i));
         }

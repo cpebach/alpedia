@@ -108,7 +108,7 @@ fn check_goals(world: &Bound<'_, PyAny>) -> R<()> {
             let d = d?;
             if d.is_truthy()? && d.get_item("def")?.eq("tank")? {
                 let cont = d.get_item("state")?.call_method1("get", ("contents", PyDict::new_bound(py)))?;
-                fuel += py.import_bound("builtins")?.getattr("float")?.call1((cont.call_method1("get", ("fuel", 0.0))?,))?.extract::<f64>()?;
+                fuel += crate::game::imp(py, "builtins")?.getattr("float")?.call1((cont.call_method1("get", ("fuel", 0.0))?,))?.extract::<f64>()?;
             }
         }
     }
@@ -321,9 +321,9 @@ impl SurvivalRules {
     /// 手持ちの燃料が要る（噴かしている間だけ減る）
     fn jetpack(&self, py: Python<'_>, world: &Bound<'_, PyAny>, p: &Bound<'_, PyAny>, dt: f64, thrust_dir: &Bound<'_, PyAny>)
         -> R<(bool, PyObject)> {
-        let rate: f64 = py.import_bound("builtins")?.getattr("float")?.call1((p.getattr("defn")?.call_method1("get", ("jetpack_fuel_rate", 1.0))?,))?.extract()?;
+        let rate: f64 = crate::game::imp(py, "builtins")?.getattr("float")?.call1((p.getattr("defn")?.call_method1("get", ("jetpack_fuel_rate", 1.0))?,))?.extract()?;
         let usef = rate * dt;
-        let np = py.import_bound("numpy")?;
+        let np = crate::game::imp(py, "numpy")?;
         let inv = p.getattr("inventory")?;
         let td: Vec<f64> = np.getattr("asarray")?.call1((thrust_dir, "float64"))?.call_method0("ravel")?.call_method0("tolist")?.extract()?;
         let up: Vec<f64> = np.getattr("asarray")?.call1((p.getattr("up")?, "float64"))?.call_method0("ravel")?.call_method0("tolist")?.extract()?;
@@ -351,7 +351,7 @@ impl SurvivalRules {
 fn fill_tank(world: &Bound<'_, PyAny>, d: &Bound<'_, PyAny>, dd: &Bound<'_, PyAny>) -> R<String> {
     let py = world.py();
     let p = world.getattr("player")?;
-    let fl = py.import_bound("builtins")?.getattr("float")?;
+    let fl = crate::game::imp(py, "builtins")?.getattr("float")?;
     let cap: f64 = fl.call1((dd.get_item("params")?.call_method1("get", ("capacity", 0))?,))?.extract()?;
     let cont = d.get_item("state")?.call_method1("setdefault", ("contents", PyDict::new_bound(py)))?;
     let inv = p.getattr("inventory")?;
@@ -386,7 +386,7 @@ fn fill_tank(world: &Bound<'_, PyAny>, d: &Bound<'_, PyAny>, dd: &Bound<'_, PyAn
 /// 精錬機・加工機：所持品の原料を入れ、できた物を受け取る（何も動かなければ None：ふつうの操作へ）
 fn exchange(world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, d: &Bound<'_, PyAny>, dd: &Bound<'_, PyAny>) -> R<Option<String>> {
     let py = world.py();
-    let dev = py.import_bound("main.devices")?;
+    let dev = crate::game::imp(py, "main.devices")?;
     let p = world.getattr("player")?;
     let inv = p.getattr("inventory")?;
     let mut moved: Vec<String> = Vec::new();

@@ -96,7 +96,7 @@ pub fn savefmt_upgrade_world<'py>(py: Python<'py>, settings: &Bound<'py, PyDict>
     let has = |mods: &Vec<PyObject>, name: &str| mods.iter().any(|m| m.bind(py).eq(name).unwrap_or(false));
     let mut changed = false;
     let fmt: i64 = match s.get_item("format")? {
-        Some(v) if v.is_truthy()? => py.import_bound("builtins")?.getattr("int")?.call1((v,))?.extract()?,
+        Some(v) if v.is_truthy()? => crate::game::imp(py, "builtins")?.getattr("int")?.call1((v,))?.extract()?,
         _ => 0,
     };
     if fmt < 2 {

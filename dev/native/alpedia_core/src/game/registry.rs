@@ -55,7 +55,7 @@ pub fn deep_copy<'py>(v: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         return Ok(out.into_any());
     }
     if v.is_instance_of::<PyTuple>() || v.is_instance_of::<pyo3::types::PySet>() {
-        return py.import_bound("copy")?.getattr("deepcopy")?.call1((v,));
+        return crate::game::imp(py, "copy")?.getattr("deepcopy")?.call1((v,));
     }
     Ok(v.clone())
 }
@@ -83,7 +83,7 @@ pub fn deep_merge<'py>(base: &Bound<'py, PyAny>, over: &Bound<'py, PyDict>) -> P
 }
 
 fn logger(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
-    py.import_bound("logging")?.getattr("getLogger")?.call1(("alpedia.registry",))
+    crate::game::imp(py, "logging")?.getattr("getLogger")?.call1(("alpedia.registry",))
 }
 
 /// pathlib と同じように "." と重なった区切りを消した文字列
@@ -98,7 +98,7 @@ fn norm_path(p: &Path) -> String {
 }
 
 fn path_attr(py: Python<'_>, name: &str) -> PyResult<PathBuf> {
-    let p = py.import_bound("main.paths")?.getattr(name)?;
+    let p = crate::game::imp(py, "main.paths")?.getattr(name)?;
     Ok(PathBuf::from(p.str()?.to_string()))
 }
 

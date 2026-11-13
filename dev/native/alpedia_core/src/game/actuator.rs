@@ -55,7 +55,7 @@ fn corner_bit(c: usize, ax: usize) -> usize {
 }
 
 fn main_mod<'py>(py: Python<'py>, name: &str) -> R<Bound<'py, PyModule>> {
-    py.import_bound(name)
+    crate::game::imp(py, name)
 }
 
 fn link_key<'py>(py: Python<'py>, a: &Bound<'py, PyAny>, b: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
@@ -71,11 +71,11 @@ fn dev_def<'py>(c: &Bound<'py, PyAny>, d: &Bound<'py, PyAny>) -> R<Bound<'py, Py
 }
 
 fn int_of(v: &Bound<'_, PyAny>) -> R<i64> {
-    v.py().import_bound("builtins")?.getattr("int")?.call1((v,))?.extract()
+    crate::game::imp(v.py(), "builtins")?.getattr("int")?.call1((v,))?.extract()
 }
 
 fn float_of(v: &Bound<'_, PyAny>) -> R<f64> {
-    v.py().import_bound("builtins")?.getattr("float")?.call1((v,))?.extract()
+    crate::game::imp(v.py(), "builtins")?.getattr("float")?.call1((v,))?.extract()
 }
 
 fn sget<'py>(st: &Bound<'py, PyAny>, k: &str, default: impl IntoPy<PyObject>) -> R<Bound<'py, PyAny>> {
@@ -718,7 +718,7 @@ pub fn act_execute_preset(world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, i: usi
             Ok(format!("{name}: {}", if ok { "分離しました" } else { "結合しているものがありません" }))
         }
         "attach" => {
-            let r = py.import_bound("main.actuator")?.getattr("cmd_attach")?.call1((world, c, i))?;
+            let r = crate::game::imp(py, "main.actuator")?.getattr("cmd_attach")?.call1((world, c, i))?;
             Ok(format!("{name}: {}", r.str()?))
         }
         _ => Ok(format!("{name}: 不明な動作 {a}")),
