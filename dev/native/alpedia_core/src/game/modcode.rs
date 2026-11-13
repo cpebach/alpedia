@@ -5,7 +5,7 @@
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
-use pyo3::types::{IntoPyDict, PyDict, PyList, PyTuple};
+use pyo3::types::{IntoPyDict, PyDict, PyList, PyTuple, PyType};
 
 use super::imp;
 
@@ -27,24 +27,30 @@ fn sys_modules(py: Python<'_>) -> R<Bound<'_, PyDict>> {
     Ok(imp(py, "sys")?.getattr("modules")?.downcast_into::<PyDict>()?)
 }
 
-/// MOD（定義・プログラム・テクスチャ）や、ワールドが使っている MOD の中身に問題があり、ワールドを始められない
-#[pyclass(extends = PyException, module = "alpedia_core", subclass)]
-pub struct ModLoadError {
-    #[pyo3(get)]
-    errors: PyObject,
-}
+/// MOD（定義・プログラム・テクスチャ）や、ワールドが使っている MOD の中身に問題があり、ワールドを始められない（.errors）。
+/// Python 3.10 以上のどれでも読める形（abi3）では #[pyclass] で例外を継げないので、Python の class 文で作る
+const MOD_LOAD_ERROR_SRC: &str = r#"
+class ModLoadError(Exception):
+    def __init__(self, errors, *a):
+        super().__init__(errors, *a)
+        self.errors = list(errors)
 
-#[pymethods]
-impl ModLoadError {
-    #[new]
-    #[pyo3(signature = (errors, *_a))]
-    fn new(py: Python<'_>, errors: &Bound<'_, PyAny>, _a: &Bound<'_, PyTuple>) -> R<Self> {
-        Ok(ModLoadError { errors: PyList::new_bound(py, errors.iter()?.collect::<R<Vec<_>>>()?).into_any().unbind() })
-    }
-    fn __str__(&self, py: Python<'_>) -> R<String> {
-        let v: Vec<String> = self.errors.bind(py).iter()?.map(|x| Ok(x?.str()?.to_string())).collect::<R<_>>()?;
-        Ok(format!("MOD の読み込みでエラーがあります:\n{}", v.join("\n")))
-    }
+    def __str__(self):
+        return "MOD の読み込みでエラーがあります:\n" + "\n".join(str(x) for x in self.errors)
+"#;
+
+static MOD_LOAD_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
+
+/// ModLoadError の型（alpedia_core.ModLoadError）
+pub fn mod_load_error(py: Python<'_>) -> R<Bound<'_, PyType>> {
+    let t = MOD_LOAD_ERROR.get_or_try_init(py, || -> R<Py<PyType>> {
+        let ns = PyDict::new_bound(py);
+        ns.set_item("__name__", "alpedia_core")?;
+        py.run_bound(MOD_LOAD_ERROR_SRC, Some(&ns), None)?;
+        let t = ns.get_item("ModLoadError")?.expect("ModLoadError");
+        Ok(t.downcast_into::<PyType>()?.unbind())
+    })?;
+    Ok(t.bind(py).clone())
 }
 
 static DEFERRED: GILOnceCell<Py<PyList>> = GILOnceCell::new();

@@ -180,7 +180,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(misc::geom_box_sdf, m)?)?;
     m.add_function(wrap_pyfunction!(misc::geom_ray_boxes, m)?)?;
     m.add_function(wrap_pyfunction!(misc::winperf_boost, m)?)?;
-    m.add("ModLoadError", m.py().get_type_bound::<modcode::ModLoadError>())?;
+    m.add("ModLoadError", modcode::mod_load_error(m.py())?)?;
     m.add_class::<modcode::ClientGuard>()?;
     m.add_function(wrap_pyfunction!(modcode::modcode_deferred, m)?)?;
     m.add_function(wrap_pyfunction!(modcode::modcode_reset, m)?)?;
