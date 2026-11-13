@@ -15,6 +15,7 @@ pub mod survival;
 pub mod control;
 pub mod scripting;
 pub mod modmeta;
+pub mod devices;
 
 use pyo3::prelude::*;
 
@@ -131,6 +132,19 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(modmeta::modmeta_world_preset, m)?)?;
     m.add_function(wrap_pyfunction!(modmeta::config_merge, m)?)?;
     m.add_function(wrap_pyfunction!(modmeta::config_load, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_rebuild_networks, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_is_fluid, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_valve_opening, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_proc_outputs, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_proc_inputs, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_tanks_in, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_fluid_amount, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_storage_total, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_world_axis, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_update, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_cavity_report, m)?)?;
+    m.add_function(wrap_pyfunction!(devices::dev_interact, m)?)?;
+    m.add_class::<devices::Networks>()?;
     m.add("SAVE_FORMAT", savefmt::FORMAT)?;
     Ok(())
 }
