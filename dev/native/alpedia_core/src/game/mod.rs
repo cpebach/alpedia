@@ -26,6 +26,7 @@ pub mod misc;
 pub mod netsync;
 pub mod netgame;
 pub mod gfx;
+pub mod ui;
 pub mod shape_tables;
 
 use pyo3::prelude::*;
@@ -68,6 +69,11 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(gfx::gfx_box_vertices, m)?)?;
     m.add_function(wrap_pyfunction!(gfx::gfx_wire_box, m)?)?;
     m.add_function(wrap_pyfunction!(gfx::gfx_set_box, m)?)?;
+    m.add_function(wrap_pyfunction!(ui::ui_item_tex, m)?)?;
+    m.add_function(wrap_pyfunction!(ui::ui_rect_mesh, m)?)?;
+    m.add_class::<ui::Screen>()?;
+    m.add_class::<ui::Field>()?;
+    m.add_class::<ui::UI>()?;
     m.add_class::<netgame::Peer>()?;
     m.add_class::<netgame::Host>()?;
     m.add_class::<netgame::Joiner>()?;
@@ -319,4 +325,4 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// __init__ を持つ Rust のクラス（作るときに __init__ を呼ぶ）
-const INIT_CLASSES: &[&str] = &["RsNode"];
+const INIT_CLASSES: &[&str] = &["RsNode", "Screen"];
