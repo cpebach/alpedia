@@ -24,6 +24,7 @@ pub mod objio;
 pub mod modcode;
 pub mod misc;
 pub mod netsync;
+pub mod netgame;
 pub mod shape_tables;
 
 use pyo3::prelude::*;
@@ -41,6 +42,16 @@ pub fn imp<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyModule>> {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<buildkit::GroundFn>()?;
+    m.add_class::<netgame::Peer>()?;
+    m.add_class::<netgame::Host>()?;
+    m.add_class::<netgame::Joiner>()?;
+    m.add_class::<netgame::Client>()?;
+    m.add_function(wrap_pyfunction!(netgame::ns_sha1_cached, m)?)?;
+    m.add_function(wrap_pyfunction!(netgame::ns_mod_manifest, m)?)?;
+    m.add_function(wrap_pyfunction!(netgame::ns_default_name, m)?)?;
+    m.add_function(wrap_pyfunction!(netgame::nc_net_dir, m)?)?;
+    m.add_function(wrap_pyfunction!(netgame::nc_mods_cache, m)?)?;
+    m.add_function(wrap_pyfunction!(netgame::nc_sha1, m)?)?;
     m.add_class::<netsync::ConsTracker>()?;
     m.add_class::<netsync::MetaTracker>()?;
     m.add_class::<netsync::FileSync>()?;
