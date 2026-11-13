@@ -34,6 +34,7 @@ pub mod panda;
 pub mod rsclient;
 pub mod viewer;
 pub mod client_misc;
+pub mod client_play;
 pub mod shape_tables;
 
 use pyo3::prelude::*;
@@ -92,6 +93,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     rsclient::register(m)?;
     viewer::register(m)?;
     client_misc::register(m)?;
+    client_play::register(m)?;
     m.add_class::<netgame::Peer>()?;
     m.add_class::<netgame::Host>()?;
     m.add_class::<netgame::Joiner>()?;
