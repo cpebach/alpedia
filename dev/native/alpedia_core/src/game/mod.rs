@@ -16,6 +16,7 @@ pub mod control;
 pub mod scripting;
 pub mod modmeta;
 pub mod devices;
+pub mod construct;
 
 use pyo3::prelude::*;
 
@@ -31,6 +32,11 @@ pub fn imp<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyModule>> {
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<construct::Construct>()?;
+    m.add_function(wrap_pyfunction!(construct::construct_link_key, m)?)?;
+    m.add_function(wrap_pyfunction!(construct::construct_dir_index, m)?)?;
+    m.add_function(wrap_pyfunction!(construct::construct_clean_dev, m)?)?;
+    m.add_function(wrap_pyfunction!(construct::construct_native_planets, m)?)?;
     m.add_function(wrap_pyfunction!(devstate::devstate_normalize, m)?)?;
     m.add_function(wrap_pyfunction!(devstate::devstate_fill, m)?)?;
     m.add_function(wrap_pyfunction!(devstate::devstate_to_saved, m)?)?;
