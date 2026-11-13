@@ -17,45 +17,21 @@ def fcross(a, b):
     return np.stack([a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0], axis=-1)
 
 
-_M1, _M2, _M3, _M4 = (np.uint32(374761393), np.uint32(668265263), np.uint32(2246822519), np.uint32(1274126177))
+def _pts(p):
+    p = np.asarray(p, dtype=np.float64)
+    return np.ascontiguousarray(p.reshape(-1, 3)), p.shape[:-1]
 
 
 def value_noise(p, seed=0):
-    """p: (N,3) → (N,) 0..1 の値ノイズ。"""
-    p = np.asarray(p, dtype=np.float64)
-    fl = np.floor(p)
-    f = p - fl
-    u = f * f * (3 - 2 * f)
-    i = fl.astype(np.int64).astype(np.uint32)
-    s = np.uint32((seed * 1442695041) & 0xFFFFFFFF)
-    out = np.zeros(len(p))
-    with np.errstate(over="ignore"):
-        hx = (i[:, 0] * _M1, (i[:, 0] + np.uint32(1)) * _M1)
-        hy = (i[:, 1] * _M2, (i[:, 1] + np.uint32(1)) * _M2)
-        hz = (i[:, 2] * _M3 + s, (i[:, 2] + np.uint32(1)) * _M3 + s)
-        wx = (1 - u[:, 0], u[:, 0])
-        wy = (1 - u[:, 1], u[:, 1])
-        wz = (1 - u[:, 2], u[:, 2])
-        for dx in (0, 1):
-            for dy in (0, 1):
-                hxy = hx[dx] + hy[dy]
-                wxy = wx[dx] * wy[dy]
-                for dz in (0, 1):
-                    h = hxy + hz[dz]
-                    h = (h ^ (h >> np.uint32(13))) * _M4
-                    h = h ^ (h >> np.uint32(16))
-                    out += wxy * wz[dz] * ((h & np.uint32(0xFFFF)) * (1.0 / 65535.0))
-    return out
+    """p: (..., 3) → (...) 0..1 の値ノイズ（Rust で計算）。"""
+    q, sh = _pts(p)
+    return native.require().noise(q, int(seed), 0).reshape(sh)
 
 
 def fbm(p, seed=0, octaves=3):
-    total, amp, freq, norm = 0.0, 1.0, 1.0, 0.0
-    for o in range(octaves):
-        total = total + amp * value_noise(p * freq, seed + o * 31)
-        norm += amp
-        amp *= 0.5
-        freq *= 2.0
-    return total / norm
+    """値ノイズを octaves 段重ねたもの（0..1、Rust で計算）。"""
+    q, sh = _pts(p)
+    return native.require().noise(q, int(seed), int(octaves)).reshape(sh)
 
 
 def smoothstep(a, b, x):

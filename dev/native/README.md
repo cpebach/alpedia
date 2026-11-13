@@ -20,6 +20,8 @@
 | 完全剛体モードの関節つき剛体 | `art.rs` | `main/fastphys.py` |
 | 惑星の地形（距離場・タイル・池・洞窟・掘削跡）と地面との接触 | `planet.rs`, `lib.rs` | `main/planet.py`, `main/terrain_earth.py`, `main/construct.py` |
 | 重力・構築物どうしの近い点の組 | `lib.rs` | `main/world.py`（scipy の cKDTree） |
+| 構築物の形の芯（2×2×2 の窓ごとの点・線・斜面の三角形）・頂点ごとの当たり判定の芯・形の距離場（描画のメッシュの元） | `topo.rs`, `lib.rs`（`topology`・`build_contacts`・`shape_sdf`） | `main/shape.py` の `topology`・`build_mesh`、`main/construct.py` の `_build_contacts` |
+| 値ノイズ・fbm（地形・色・池・洞窟の生成） | `planet.rs`, `lib.rs`（`noise`） | `main/planet.py` の `value_noise`・`fbm` |
 | 形の等値面（Marching Cubes）・空洞の塗り分け・いちばん近い点・小さな凸包・負にならない最小二乗 | `geomx.rs`, `mc_tables.rs`, `body.rs`（`nnls`） | scikit-image・scipy（`main/shape.py`, `main/airtight.py`, `main/construct.py`） |
 
 Python 側の入り口は `main/fastphys.py`（形合わせなどの関数）、`main/planet.py`（`_nat()`）、`main/native.py`（読み込み）です。

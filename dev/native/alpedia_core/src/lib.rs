@@ -18,6 +18,7 @@ mod devices;
 mod planet;
 mod tick;
 mod geomx;
+mod topo;
 mod mc_tables;
 
 use std::collections::HashMap;
@@ -1512,6 +1513,103 @@ fn convex_hull<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>) -> PyResul
     Ok(PyArray1::from_vec_bound(py, t.into_iter().flatten().collect()).reshape([n, 3])?)
 }
 
+fn irows<const K: usize>(a: &PyReadonlyArray2<'_, i64>, name: &str) -> PyResult<Vec<[i64; K]>> {
+    let v = a.as_array();
+    if v.nrows() > 0 && v.ncols() != K {
+        return Err(PyValueError::new_err(format!("{name}: 列の数が合いません")));
+    }
+    Ok(v.rows().into_iter().map(|r| { let mut o = [0i64; K]; for k in 0..K { o[k] = r[k]; } o }).collect())
+}
+
+/// 構築物の形の芯（点・線・三角形）。hull_start (257)・hull_tris (T,3)：窓の中の結合成分のビット → 三角形の表。
+#[pyfunction]
+fn topology<'py>(py: Python<'py>, cells: PyReadonlyArray2<'py, i64>, links: PyReadonlyArray2<'py, i64>, extras: PyReadonlyArray2<'py, i64>,
+                 kind: PyReadonlyArrayDyn<'py, i64>, hull_start: PyReadonlyArrayDyn<'py, i64>, hull_tris: PyReadonlyArray2<'py, i64>)
+    -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray2<i64>>, Bound<'py, PyArray2<i64>>)> {
+    let c = irows::<3>(&cells, "topology")?;
+    let n = c.len();
+    let chk = |v: Vec<[i64; 2]>| -> PyResult<Vec<[usize; 2]>> {
+        v.into_iter().map(|l| if l[0] >= 0 && l[1] >= 0 && (l[0] as usize) < n && (l[1] as usize) < n {
+            Ok([l[0] as usize, l[1] as usize]) } else { Err(PyValueError::new_err("topology: 番号が範囲の外です")) }).collect()
+    };
+    let l = chk(irows::<2>(&links, "topology")?)?;
+    let e = chk(irows::<2>(&extras, "topology")?)?;
+    let k = kind.as_slice().map_err(|_| PyValueError::new_err("topology: kind"))?.to_vec();
+    let hs = hull_start.as_slice().map_err(|_| PyValueError::new_err("topology: hull_start"))?;
+    let ht = irows::<3>(&hull_tris, "topology")?;
+    if k.len() != n || hs.len() != 257 {
+        return Err(PyValueError::new_err("topology: 配列の大きさが合いません"));
+    }
+    let hull: Vec<Vec<[usize; 3]>> = (0..256).map(|b| ht[hs[b] as usize..hs[b + 1] as usize].iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize]).collect()).collect();
+    let (p, s, t) = py.allow_threads(|| topo::topology(&c, &l, &e, &k, &hull));
+    let (ns, nt) = (s.len(), t.len());
+    Ok((PyArray1::from_vec_bound(py, p), PyArray1::from_vec_bound(py, s.into_iter().flatten().collect()).reshape([ns, 2])?,
+        PyArray1::from_vec_bound(py, t.into_iter().flatten().collect()).reshape([nt, 3])?))
+}
+
+/// 形の距離場：dims・lo・k（1 セルの分割数）・r・m（芯ごとに調べる格子の幅）、
+/// pts (n,3)・segs (ns,2,3)・tris (nt,3,3)（セル単位の座標）と、それぞれ角ばらせるか。戻り値 float32 (dims の積)。
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn shape_sdf<'py>(py: Python<'py>, dims: (usize, usize, usize), lo: (f64, f64, f64), k: f64, r: f64, m: usize,
+                  pts: PyReadonlyArrayDyn<'py, f64>, pf: PyReadonlyArrayDyn<'py, bool>,
+                  segs: PyReadonlyArrayDyn<'py, f64>, sf: PyReadonlyArrayDyn<'py, bool>,
+                  tris: PyReadonlyArrayDyn<'py, f64>, tf: PyReadonlyArrayDyn<'py, bool>) -> PyResult<Bound<'py, PyArray1<f32>>> {
+    let sl = |a: &PyReadonlyArrayDyn<'py, f64>| a.as_slice().map(|x| x.to_vec()).map_err(|_| PyValueError::new_err("shape_sdf: 連続した配列ではありません"));
+    let bl = |a: &PyReadonlyArrayDyn<'py, bool>| a.as_slice().map(|x| x.to_vec()).map_err(|_| PyValueError::new_err("shape_sdf: 連続した配列ではありません"));
+    let (p, s, t) = (sl(&pts)?, sl(&segs)?, sl(&tris)?);
+    let (pf, sf, tf) = (bl(&pf)?, bl(&sf)?, bl(&tf)?);
+    if p.len() != pf.len() * 3 || s.len() != sf.len() * 6 || t.len() != tf.len() * 9 {
+        return Err(PyValueError::new_err("shape_sdf: 配列の大きさが合いません"));
+    }
+    let mut prims: Vec<(u8, [[f64; 3]; 3], bool)> = Vec::with_capacity(pf.len() + sf.len() + tf.len());
+    let v3 = |a: &[f64], o: usize| [a[o], a[o + 1], a[o + 2]];
+    for i in 0..pf.len() {
+        prims.push((0, [v3(&p, i * 3), [0.0; 3], [0.0; 3]], pf[i]));
+    }
+    for i in 0..sf.len() {
+        prims.push((1, [v3(&s, i * 6), v3(&s, i * 6 + 3), [0.0; 3]], sf[i]));
+    }
+    for i in 0..tf.len() {
+        prims.push((2, [v3(&t, i * 9), v3(&t, i * 9 + 3), v3(&t, i * 9 + 6)], tf[i]));
+    }
+    let out = py.allow_threads(|| topo::shape_sdf([dims.0, dims.1, dims.2], [lo.0, lo.1, lo.2], k, r, m, &prims));
+    Ok(PyArray1::from_vec_bound(py, out))
+}
+
+/// 頂点ごとの当たり判定の芯：(ctype (8n), cidx (8n,3))
+#[pyfunction]
+fn build_contacts<'py>(py: Python<'py>, cells: PyReadonlyArray2<'py, i64>, pos: PyReadonlyArray2<'py, f64>, frames: PyReadonlyArrayDyn<'py, f64>,
+                       cen: PyReadonlyArray2<'py, f64>, segs: PyReadonlyArray2<'py, i64>, tris: PyReadonlyArray2<'py, i64>)
+    -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray2<i64>>)> {
+    let c = irows::<3>(&cells, "build_contacts")?;
+    let n = c.len();
+    let p = pos.as_slice().map_err(|_| PyValueError::new_err("build_contacts: pos"))?.to_vec();
+    let f = frames.as_slice().map_err(|_| PyValueError::new_err("build_contacts: frames"))?.to_vec();
+    let ce = pts3(&cen, "build_contacts")?;
+    let s = irows::<2>(&segs, "build_contacts")?;
+    let t = irows::<3>(&tris, "build_contacts")?;
+    if p.len() != n * 24 || f.len() != n * 9 || ce.len() != n
+        || s.iter().flatten().chain(t.iter().flatten()).any(|&x| x < 0 || x as usize >= n) {
+        return Err(PyValueError::new_err("build_contacts: 配列の大きさ・番号が合いません"));
+    }
+    let (ct, ci) = py.allow_threads(|| topo::contacts(&c, &p, &f, &ce, &s, &t));
+    let m = ci.len();
+    Ok((PyArray1::from_vec_bound(py, ct), PyArray1::from_vec_bound(py, ci.into_iter().flatten().collect()).reshape([m, 3])?))
+}
+
+/// 値ノイズ（0..1）を点ごとに：p (n,3)。octaves = 0 なら value_noise、1 以上なら fbm（planet.py と同じ式）。
+#[pyfunction]
+#[pyo3(signature = (p, seed, octaves=0))]
+fn noise<'py>(py: Python<'py>, p: PyReadonlyArray2<'py, f64>, seed: i64, octaves: i64) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let pts = pts3(&p, "noise")?;
+    let out: Vec<f64> = py.allow_threads(|| {
+        pts.par_iter().map(|q| if octaves <= 0 { planet::value_noise(*q, seed) } else { planet::fbm(*q, seed, octaves) }).collect()
+    });
+    Ok(PyArray1::from_vec_bound(py, out))
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -1542,6 +1640,10 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(label_empty, m)?)?;
     m.add_function(wrap_pyfunction!(nearest, m)?)?;
     m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
+    m.add_function(wrap_pyfunction!(topology, m)?)?;
+    m.add_function(wrap_pyfunction!(noise, m)?)?;
+    m.add_function(wrap_pyfunction!(shape_sdf, m)?)?;
+    m.add_function(wrap_pyfunction!(build_contacts, m)?)?;
     m.add_function(wrap_pyfunction!(mesh_pack, m)?)?;
     m.add_class::<Proxy>()?;
     m.add_function(wrap_pyfunction!(step_tick, m)?)?;

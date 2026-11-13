@@ -14,7 +14,7 @@ import itertools
 import numpy as np
 
 from . import native
-from .construct import DIR_TUPLES, CORNER_BITS, link_key
+from .construct import CORNER_BITS
 
 
 def marching_cubes(vol, level=0.0, spacing=(1.0, 1.0, 1.0)):
@@ -53,12 +53,6 @@ class Csr:
 
 OFFS8 = [tuple(int(x) for x in o) for o in itertools.product((0, 1), repeat=3)]
 _pattern_cache = {}
-CUBE_FACES = []  # 2×2×2 窓の6面（各面4頂点のオフセット）
-for _ax in range(3):
-    for _v in (0, 1):
-        CUBE_FACES.append([o for o in OFFS8 if o[_ax] == _v])
-
-
 def _hull_tris(offsets):
     """{0,1}^3 の点の凸包の表面三角形（点の番号の組）。"""
     key = tuple(sorted(offsets))
@@ -93,98 +87,36 @@ def block_kinds(c):
     return out
 
 
+_HULL_TABLE = []
+
+
+def _hull_table():
+    """2×2×2 の窓の中の結合成分（OFFS8 の番号のビット）→ 三角形（OFFS8 の番号）の表（Rust の topology に渡す）。"""
+    if not _HULL_TABLE:
+        start, tris = [0], []
+        for bits in range(256):
+            offs = [OFFS8[k] for k in range(8) if bits >> k & 1]
+            if len(offs) >= 3:
+                for t in _hull_tris(offs):
+                    tris.append([OFFS8.index(o) for o in t])
+            start.append(len(tris))
+        _HULL_TABLE.append((np.array(start, np.int64), np.array(tris, np.int64).reshape(-1, 3)))
+    return _HULL_TABLE[0]
+
+
 def topology(c):
-    """形を作る図形の一覧を返す: dict(points, segs, tris)（ボクセル番号の配列）。
+    """形を作る図形の一覧を返す: dict(points, segs, tris)（ボクセル番号の配列）。Rust（alpedia_core.topology）で作る。
     階段状・L 字の内側を埋める斜面（三角形）は、同じ種類のブロックどうしだけで作る
     （違う種類どうし（内装と外装など）は階段状のまま）。"""
     idx = c.index
-    kind = block_kinds(c)
-    links = c.links
-    n = c.n_vox
-    linked_count = np.zeros(n, int)
-    seg = set()
-    for a, b in links:
-        ia, ib = idx.get(a), idx.get(b)
-        if ia is not None and ib is not None:
-            seg.add((min(ia, ib), max(ia, ib)))
-            linked_count[ia] += 1
-            linked_count[ib] += 1
-    for a, b in getattr(c, "extras", {}):
-        ia, ib = idx.get(a), idx.get(b)
-        if ia is not None and ib is not None:
-            seg.add((min(ia, ib), max(ia, ib)))
-    interior = linked_count >= 6
-    # 2×2×2 の窓
-    anchors = set()
-    for cell in c.cells:
-        for o in OFFS8:
-            anchors.add((cell[0] - o[0], cell[1] - o[1], cell[2] - o[2]))
-    full = set()
-    window_members = {}
-    for a in anchors:
-        mem = []
-        for o in OFFS8:
-            j = idx.get((a[0] + o[0], a[1] + o[1], a[2] + o[2]))
-            if j is not None:
-                mem.append((o, j))
-        if len(mem) < 2:
-            continue
-        window_members[a] = mem
-        if len(mem) == 8:
-            cells_ = [(a[0] + o[0], a[1] + o[1], a[2] + o[2]) for o, _ in mem]
-            ok = all(link_key(x, (x[0] + d[0], x[1] + d[1], x[2] + d[2])) in links
-                     for x in cells_ for d in DIR_TUPLES
-                     if (x[0] + d[0] - a[0]) in (0, 1) and (x[1] + d[1] - a[1]) in (0, 1)
-                     and (x[2] + d[2] - a[2]) in (0, 1))
-            if ok:
-                full.add(a)
-    tris = set()
-    for a, mem in window_members.items():
-        if a in full:
-            # 内部の面は省略し、隣の窓が埋まっていない面だけ作る
-            for f, face in enumerate(CUBE_FACES):
-                ax, v = f // 2, f % 2
-                nb = list(a)
-                nb[ax] += 1 if v == 1 else -1
-                if tuple(nb) in full:
-                    continue
-                m = {o: j for o, j in mem}
-                q = [m[o] for o in face]  # face の順: 0,1,2,3 は格子順
-                # 4点 (00,01,10,11) → 2三角形
-                tris.add(tuple(sorted((q[0], q[1], q[3]))))
-                tris.add(tuple(sorted((q[0], q[3], q[2]))))
-            continue
-        # 窓の中の結合成分
-        parent = {o: o for o, _ in mem}
 
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-        m = {o: j for o, j in mem}
-        for o, _ in mem:
-            for d in DIR_TUPLES:
-                o2 = (o[0] + d[0], o[1] + d[1], o[2] + d[2])
-                if o2 in m and kind[m[o]] == kind[m[o2]]:
-                    ca = (a[0] + o[0], a[1] + o[1], a[2] + o[2])
-                    cb = (a[0] + o2[0], a[1] + o2[1], a[2] + o2[2])
-                    if link_key(ca, cb) in links:
-                        parent[find(o)] = find(o2)
-        comps = {}
-        for o, _ in mem:
-            comps.setdefault(find(o), []).append(o)
-        for comp in comps.values():
-            if len(comp) < 3:
-                continue
-            for t in _hull_tris(comp):
-                tri = tuple(sorted(m[o] for o in t))
-                if not all(interior[list(tri)]):
-                    tris.add(tri)
-    points = np.nonzero(~interior)[0]
-    segs = np.array([s for s in seg if not (interior[s[0]] and interior[s[1]])], dtype=np.int64).reshape(-1, 2)
-    return {"points": points.astype(np.int64), "segs": segs,
-            "tris": np.array(sorted(tris), dtype=np.int64).reshape(-1, 3)}
+    def pairs(keys):
+        out = [(idx.get(a), idx.get(b)) for a, b in keys]
+        return np.array([p for p in out if p[0] is not None and p[1] is not None], np.int64).reshape(-1, 2)
+    hs, ht = _hull_table()
+    pts, segs, tris = native.require().topology(np.asarray(c.cells, np.int64).reshape(-1, 3), pairs(c.links),
+                                                pairs(getattr(c, "extras", {})), block_kinds(c), hs, ht)
+    return {"points": pts, "segs": segs, "tris": tris}
 
 
 # ---------------------------------------------------------------------------
@@ -236,17 +168,7 @@ def dist_triangles(p, a, b, c):
 # 素材の "facet": true（鋼鉄・岩など）は、芯からの距離を球ではなく多面体（面・辺・角を落とした立方体＝
 # 26 面の菱形立方八面体に近い形）で測る。芯（点・線・三角形）は同じなので、直線や階段状に並べたときの
 # つなぎ目・斜面の埋まり方は今までどおり。当たり判定は今までどおり丸い形のまま（坂で転がる）。
-_FN = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1],
-                [1, 1, 0], [1, 0, 1], [0, 1, 1],
-                [1, 1, 1]], dtype=np.float64)
-_FN = _FN / np.linalg.norm(_FN, axis=1, keepdims=True)
-FACET_SCALE = 0.97          # 面の位置（丸い形の半径に対して）。角が少しだけ外へ出て、面は少し内側
-
-
-def facet_norm(v):
-    """多面体の「長さ」：面の向き（軸・辺・角の 7 種）への射影の最大（絶対値で対称）。"""
-    a = np.abs(v)
-    return (a @ _FN.T).max(-1) / FACET_SCALE
+FACET_SCALE = 0.97          # 面の位置（丸い形の半径に対して）。角が少しだけ外へ出て、面は少し内側（Rust の topo.rs と同じ）
 
 
 def facet_voxels(c):
@@ -282,48 +204,23 @@ def build_mesh(c, k=None):
         k = 2
         dims = np.ceil((hi - lo) * k).astype(int) + 1
     m = 2 * k + 3
-    O = np.stack(np.meshgrid(*(np.arange(m),) * 3, indexing="ij"), -1).reshape(-1, 3)
     hard = facet_voxels(c)
 
-    def apply(kind, pts_all, sdf, facet=None):
-        """pts_all (C, q, 3)：芯（点・線分・三角形）の頂点（セル単位）。sdf に距離 − r を書き込む（小さい方）。
-        facet (C,)：その芯を角ばった多面体で太らせるか（かたい素材）。"""
-        if not len(pts_all):
-            return
-        step = max(1, 4_000_000 // len(O))
-        for s0 in range(0, len(pts_all), step):
-            pts = pts_all[s0:s0 + step]                        # (C, q, 3)
-            pmin = pts.min(1) - r - 0.1
-            i0 = np.floor((pmin - lo) * k).astype(int)          # (C,3)
-            idx = i0[:, None, :] + O[None]                      # (C, S, 3)
-            idx = np.clip(idx, 0, dims - 1)
-            g = lo + idx / k
-            if kind == "p":
-                q = np.broadcast_to(pts[:, 0][:, None], g.shape)
-                d = np.linalg.norm(g - q, axis=-1)
-            elif kind == "s":
-                d, q = dist_segments(g, pts[:, 0][:, None], pts[:, 1][:, None])
-            else:
-                d, q = dist_triangles(g, pts[:, 0][:, None], pts[:, 1][:, None], pts[:, 2][:, None])
-            if facet is not None:
-                f = facet[s0:s0 + step]
-                if f.any():
-                    d = np.where(f[:, None], facet_norm(g - q), d)
-            lin = (idx[..., 0] * dims[1] + idx[..., 1]) * dims[2] + idx[..., 2]
-            np.minimum.at(sdf, lin.ravel(), (d - r).ravel().astype(np.float32))
-
     def shape_of(points, segs, tris, extra_segs=None):
-        sdf = np.full(int(np.prod(dims)), 1.0, dtype=np.float32)
-        apply("p", centers[points.reshape(-1, 1)], sdf, hard[points] if len(points) else None)
+        """芯（点・線・三角形）からの距離 − r の格子（Rust の shape_sdf）。"""
         sp = centers[segs] if len(segs) else np.zeros((0, 2, 3))
         sf = hard[segs].all(1) if len(segs) else np.zeros(0, bool)
         if extra_segs is not None and len(extra_segs):
             sp = np.concatenate([sp, extra_segs])
             sf = np.concatenate([sf, np.zeros(len(extra_segs), bool)])
-        apply("s", sp, sdf, sf)
-        apply("t", centers[tris] if len(tris) else np.zeros((0, 3, 3)), sdf,
-              hard[tris].all(1) if len(tris) else None)
-        return sdf
+        f64 = lambda a: np.ascontiguousarray(a, dtype=np.float64)  # noqa: E731
+        b8 = lambda a: np.ascontiguousarray(a, dtype=bool)  # noqa: E731
+        return native.require().shape_sdf(
+            tuple(int(x) for x in dims), tuple(float(x) for x in lo), float(k), float(r), int(m),
+            f64(centers[points].reshape(-1, 3)), b8(hard[points] if len(points) else np.zeros(0, bool)),
+            f64(sp.reshape(-1, 2, 3)), b8(sf),
+            f64(centers[tris].reshape(-1, 3, 3) if len(tris) else np.zeros((0, 3, 3))),
+            b8(hard[tris].all(1) if len(tris) else np.zeros(0, bool)))
 
     points, segs, tris = topo["points"], topo["segs"], topo["tris"]
     gid = c._art_groups() if getattr(c, "rotors", None) and hasattr(c, "_art_groups") else None
@@ -528,15 +425,10 @@ def collision_proxies(c):
     """地面などとの当たり判定に使う球（半径 r）: 各ボクセル中心・結合の中点・三角形の重心。
     戻り値: (P,) 個の重み行列（P×ボクセル数）"""
     n = c.n_vox
-    rows, cols, vals = [], [], []
-    pid = 0
-    for i in range(n):
-        rows.append(pid); cols.append(i); vals.append(1.0)
-        pid += 1
-    for a, b in c.topo["segs"]:
-        rows += [pid, pid]; cols += [int(a), int(b)]; vals += [0.5, 0.5]
-        pid += 1
-    for t in c.topo["tris"]:
-        rows += [pid] * 3; cols += [int(x) for x in t]; vals += [1 / 3] * 3
-        pid += 1
-    return Csr(rows, cols, vals, (pid, n))
+    S = np.asarray(c.topo["segs"], np.int64).reshape(-1, 2)
+    T = np.asarray(c.topo["tris"], np.int64).reshape(-1, 3)
+    ns, nt = len(S), len(T)
+    rows = np.concatenate([np.arange(n), np.repeat(n + np.arange(ns), 2), np.repeat(n + ns + np.arange(nt), 3)])
+    cols = np.concatenate([np.arange(n), S.ravel(), T.ravel()])
+    vals = np.concatenate([np.ones(n), np.full(2 * ns, 0.5), np.full(3 * nt, 1 / 3)])
+    return Csr(rows, cols, vals, (n + ns + nt, n))

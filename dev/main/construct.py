@@ -128,8 +128,9 @@ class Construct:
     # ------------------------------------------------------------------
     @classmethod
     def from_voxels(cls, registry, voxels, origin, rotation=None, velocity=(0, 0, 0),
-                    angular_velocity=(0, 0, 0), size=1.0, links=None, **kw):
-        """voxels: [(cell(tuple), material_id, device_dict|None), ...]"""
+                    angular_velocity=(0, 0, 0), size=1.0, links=None, defer=False, **kw):
+        """voxels: [(cell(tuple), material_id, device_dict|None), ...]
+        defer=True：形の作り直し（rebuild）と回転の速度は呼んだ側がする（読み込みで2回作らないように）。"""
         c = cls(registry, size=size, **kw)
         R = np.eye(3) if rotation is None else np.asarray(rotation, dtype=np.float64)
         origin = np.asarray(origin, dtype=np.float64)
@@ -152,6 +153,8 @@ class Construct:
                         c.links.add(link_key(cell, nb))
         else:
             c.links = set(links)
+        if defer:
+            return c
         c.rebuild()
         w = np.asarray(angular_velocity, dtype=np.float64)
         if np.any(w):
@@ -208,62 +211,76 @@ class Construct:
         self.rotors = []
         for (i_act, _, _) in rotor_of.values():
             self.v_plast[i_act] = 0.0  # アクチュエーター自身は塑性変形させない
-        # 結合（ジョイント）
-        ja, jb, jr, jk, jbrk, jkey = [], [], [], [], [], []
-        good_links = set()
-        for key in self.links:
-            a, b = key
-            ia, ib = self.index.get(a), self.index.get(b)
-            if ia is None or ib is None:
-                continue
-            d = dir_index(np.subtract(b, a))
-            if d < 0:
-                continue
-            good_links.add(key)
-            if key in rotor_of:
-                i_act, d_act, dv = rotor_of[key]
-                i_out = ib if ia == i_act else ia
-                self.v_plast[i_out] = 0.0
-                self.rotors.append({"a": i_act, "b": i_out, "d": d_act, "dev": dv, "key": key,
-                                    "br": max(min(self.v_break[ia], self.v_break[ib]) * 3, 0.3 * self.size)})
-                continue
-            k = min(self.v_jstiff[ia], self.v_jstiff[ib])
-            br = min(self.v_break[ia], self.v_break[ib])
-            for ca, cb in JOINT_PAIRS[d]:
-                ja.append(8 * ia + ca); jb.append(8 * ib + cb); jr.append(0.0)
-                jk.append(k); jbrk.append(br); jkey.append(key)
-        self.links = good_links
+        # 結合（ジョイント）：まとめて numpy で
+        keys = list(self.links)
+        idx = self.index
+        pa = np.array([idx.get(k[0], -1) for k in keys], np.int64)
+        pb = np.array([idx.get(k[1], -1) for k in keys], np.int64)
+        cells_arr = np.asarray(self.cells, np.int64).reshape(-1, 3)
+        ok = (pa >= 0) & (pb >= 0)
+        dcode = np.full(len(keys), -1, np.int64)
+        if ok.any():
+            delta = cells_arr[pb[ok]] - cells_arr[pa[ok]]
+            code = (delta[:, 0] + 1) * 9 + (delta[:, 1] + 1) * 3 + (delta[:, 2] + 1)
+            lut = np.full(27, -1, np.int64)
+            for d_, t_ in enumerate(DIR_TUPLES):
+                lut[(t_[0] + 1) * 9 + (t_[1] + 1) * 3 + (t_[2] + 1)] = d_
+            inrange = (np.abs(delta) <= 1).all(1)
+            dc = np.full(len(delta), -1, np.int64)
+            dc[inrange] = lut[code[inrange]]
+            dcode[np.nonzero(ok)[0]] = dc
+        good = dcode >= 0
+        self.links = {keys[q] for q in np.nonzero(good)[0]}
+        is_rotor = np.array([keys[q] in rotor_of for q in range(len(keys))], bool) if rotor_of else np.zeros(len(keys), bool)
+        for q in np.nonzero(good & is_rotor)[0]:
+            key = keys[q]
+            ia, ib = int(pa[q]), int(pb[q])
+            i_act, d_act, dv = rotor_of[key]
+            i_out = ib if ia == i_act else ia
+            self.v_plast[i_out] = 0.0
+            self.rotors.append({"a": i_act, "b": i_out, "d": d_act, "dev": dv, "key": key,
+                                "br": max(min(self.v_break[ia], self.v_break[ib]) * 3, 0.3 * self.size)})
+        sel = np.nonzero(good & ~is_rotor)[0]
+        A, B, D = pa[sel], pb[sel], dcode[sel]
+        JP = JOINT_PAIRS[D] if len(sel) else np.zeros((0, 4, 2), np.int64)
+        ja = (8 * A[:, None] + JP[:, :, 0]).ravel()
+        jb = (8 * B[:, None] + JP[:, :, 1]).ravel()
+        k_ = np.minimum(self.v_jstiff[A], self.v_jstiff[B]) if len(sel) else np.zeros(0)
+        br_ = np.minimum(self.v_break[A], self.v_break[B]) if len(sel) else np.zeros(0)
+        jr = np.zeros(len(ja))
+        jk = np.repeat(k_, 4)
+        jbrk = np.repeat(br_, 4)
+        jkey = [keys[q] for q in sel for _ in range(4)]
+        xa, xb, xr, xk, xbr = [], [], [], [], []
         for key, lst in list(self.extras.items()):
-            ia, ib = self.index.get(key[0]), self.index.get(key[1])
+            ia, ib = idx.get(key[0]), idx.get(key[1])
             if ia is None or ib is None:
                 del self.extras[key]
                 continue
             k = min(self.v_jstiff[ia], self.v_jstiff[ib])
             br = min(self.v_break[ia], self.v_break[ib])
             for ca, cb, rest in lst:
-                ja.append(8 * ia + ca); jb.append(8 * ib + cb); jr.append(rest)
-                jk.append(k); jbrk.append(br + rest); jkey.append(("x",) + key)
-        self.ja = np.array(ja, dtype=np.int64)
-        self.jb = np.array(jb, dtype=np.int64)
-        self.jr = np.array(jr, dtype=np.float64)
-        self.jk = np.array(jk, dtype=np.float64)
-        self.jbrk = np.array(jbrk, dtype=np.float64)
+                xa.append(8 * ia + ca); xb.append(8 * ib + cb); xr.append(rest)
+                xk.append(k); xbr.append(br + rest); jkey.append(("x",) + key)
+        self.ja = np.concatenate([ja, np.array(xa, np.int64)]).astype(np.int64)
+        self.jb = np.concatenate([jb, np.array(xb, np.int64)]).astype(np.int64)
+        self.jr = np.concatenate([jr, np.array(xr, np.float64)])
+        self.jk = np.concatenate([jk, np.array(xk, np.float64)])
+        self.jbrk = np.concatenate([jbrk, np.array(xbr, np.float64)])
         self.jkey = jkey
         nv = 8 * n
         cnt = np.bincount(self.ja, minlength=nv) + np.bincount(self.jb, minlength=nv)
         self.jcount = np.maximum(cnt, 1).astype(np.float64)
-        # 表面（描画・OBJ出力用）
-        fv, fd = [], []
-        for i, c in enumerate(self.cells):
-            for d in range(6):
-                nb = (c[0] + DIR_TUPLES[d][0], c[1] + DIR_TUPLES[d][1], c[2] + DIR_TUPLES[d][2])
-                if link_key(c, nb) in self.links:
-                    continue
-                fv.append(i)
-                fd.append(d)
-        self.face_vox = np.array(fv, dtype=np.int64)
-        self.face_dir = np.array(fd, dtype=np.int64)
-        self.face_idx = (8 * self.face_vox[:, None] + FACE_QUADS[self.face_dir]) if fv else np.zeros((0, 4), np.int64)
+        # 表面（描画・OBJ出力用）：結合していない向きの面
+        linked = np.zeros((n, 6), bool)
+        gl = np.nonzero(good)[0]
+        if len(gl):
+            linked[pa[gl], dcode[gl]] = True
+            linked[pb[gl], dcode[gl] ^ 1] = True          # 反対の向き（+X↔-X など）
+        fv, fd = np.nonzero(~linked)
+        self.face_vox = fv.astype(np.int64)
+        self.face_dir = fd.astype(np.int64)
+        self.face_idx = (8 * self.face_vox[:, None] + FACE_QUADS[self.face_dir]) if len(fv) else np.zeros((0, 4), np.int64)
         if getattr(self, "force", None) is None or self.force.shape[0] != nv:
             self.force = np.zeros((nv, 3))
         # 形（球＋結合部を埋める図形）と当たり判定用の球
@@ -613,76 +630,14 @@ class Construct:
         return np.einsum("ij,ij->i", rel, rel).min() < (pl.bound + self.size * 2) ** 2
 
     def _build_contacts(self):
-        """各頂点の当たり判定に使う「芯」（点・線・三角形）を選ぶ（ベクトル化）。
+        """各頂点の当たり判定に使う「芯」（点・線・三角形）を選ぶ（Rust の build_contacts）。
         芯の最近点から半径 r が見た目の表面。周りを全部ボクセルに囲まれた頂点（内部）は判定しない。"""
-        from . import shape
-        n = self.n_vox
-        cen = self.voxel_centers()
-        P = self.pos.reshape(n, 8, 3)
-        cells = np.asarray(self.cells, dtype=np.int64)
-        # 頂点のまわり8セルの空き具合 → 外向き
-        lo = cells.min(0) - 2
-        span = cells.max(0) - lo + 3
-
-        def enc(x):
-            x = x - lo
-            return (x[..., 0] * span[1] + x[..., 1]) * span[2] + x[..., 2]
-        occ = np.sort(enc(cells))
-        corner = cells[:, None, :] + CORNER_BITS.astype(np.int64)[None]       # (n,8,3)
-        outward = np.zeros((n, 8, 3))
-        exposed = np.zeros((n, 8), bool)
-        for o in CORNER_BITS.astype(np.int64):
-            cc = corner - 1 + o
-            e = enc(cc)
-            pos = np.searchsorted(occ, e)
-            found = (pos < len(occ)) & (occ[np.minimum(pos, len(occ) - 1)] == e)
-            empty = ~found
-            exposed |= empty
-            outward += empty[..., None] * (o.astype(float) - 0.5)
-        frames = self.voxel_frames()
-        outward = np.einsum("nkj,nji->nki", outward, frames)
-        # 候補（ボクセル, 種類, 芯のボクセル3つ）
-        S, T = self.topo["segs"], self.topo["tris"]
-        cv = [np.arange(n)]
-        ct = [np.zeros(n, np.int64)]
-        ci = [np.stack([np.arange(n)] * 3, 1)]
-        if len(S):
-            for col in (0, 1):
-                cv.append(S[:, col]); ct.append(np.ones(len(S), np.int64))
-                ci.append(np.stack([S[:, 0], S[:, 1], S[:, 1]], 1))
-        if len(T):
-            for col in (0, 1, 2):
-                cv.append(T[:, col]); ct.append(np.full(len(T), 2, np.int64))
-                ci.append(T)
-        cv, ct, ci = np.concatenate(cv), np.concatenate(ct), np.concatenate(ci)
-        V = P[cv]                                                             # (C,8,3)
-        A, B, Cc = cen[ci[:, 0]][:, None], cen[ci[:, 1]][:, None], cen[ci[:, 2]][:, None]
-        D = np.zeros((len(cv), 8))
-        K = np.zeros((len(cv), 8, 3))
-        m = ct == 0
-        D[m] = np.linalg.norm(V[m] - A[m], axis=-1)
-        K[m] = np.broadcast_to(A[m], V[m].shape)
-        m = ct == 1
-        if m.any():
-            D[m], K[m] = shape.dist_segments(V[m], A[m], B[m])
-        m = ct == 2
-        if m.any():
-            D[m], K[m] = shape.dist_triangles(V[m], A[m], B[m], Cc[m])
-        dirv = V - K
-        score = np.einsum("cki,cki->ck", dirv, outward[cv]) / np.maximum(np.linalg.norm(dirv, axis=-1), 1e-9)
-        key = np.round(D, 4) - 1e-6 * score
-        ctype = np.full(8 * n, -1, np.int64)
-        cidx = np.zeros((8 * n, 3), np.int64)
-        for k in range(8):
-            order = np.lexsort((key[:, k], cv))
-            first = np.ones(len(order), bool)
-            first[1:] = cv[order][1:] != cv[order][:-1]
-            pick = order[first]
-            vox = cv[pick]
-            ok = exposed[vox, k]
-            ctype[8 * vox[ok] + k] = ct[pick][ok]
-            cidx[8 * vox[ok] + k] = ci[pick][ok]
-        self.ctype, self.cidx = ctype, cidx
+        self.ctype, self.cidx = native_core().build_contacts(
+            np.asarray(self.cells, np.int64).reshape(-1, 3), np.ascontiguousarray(self.pos, dtype=np.float64),
+            np.ascontiguousarray(self.voxel_frames(), dtype=np.float64),
+            np.ascontiguousarray(self.voxel_centers(), dtype=np.float64),
+            np.ascontiguousarray(self.topo["segs"], dtype=np.int64).reshape(-1, 2),
+            np.ascontiguousarray(self.topo["tris"], dtype=np.int64).reshape(-1, 3))
 
     def contact_cores(self):
         """各頂点に対応する芯の最近点（この点から半径 r が見た目の表面）。"""
@@ -2252,7 +2207,7 @@ class Construct:
         c = cls.from_voxels(registry, voxels, spawn.get("position", [0, 0, 0]), spawn.get("rotation"),
                             spawn.get("velocity", [0, 0, 0]), spawn.get("angular_velocity", [0, 0, 0]),
                             size=data.get("voxel_size", 1.0), links=links, id_=data.get("id"),
-                            name=data.get("name", "構築物"))
+                            name=data.get("name", "構築物"), defer=True)
         for a, b, lst in data.get("extras", []):
             c.extras[link_key(tuple(a), tuple(b))] = [tuple(x) for x in lst]
         c.storage = dict(data.get("storage", {}))
@@ -2265,6 +2220,9 @@ class Construct:
         if rest is not None and len(rest) == c.n_vox:
             c.rest = np.asarray(rest, dtype=np.float64).reshape(-1, 8, 3)
         c.rebuild()
+        w = np.asarray(spawn.get("angular_velocity", [0, 0, 0]), dtype=np.float64)
+        if np.any(w):
+            c.vel += np.cross(w, c.pos - c.center_of_mass())
         if data.get("anchor"):
             c.anchor = {"to": data["anchor"]}      # 動く物体（軌道上の街など）に固定。中身は拡張が決める
         if data.get("soft_ok"):
