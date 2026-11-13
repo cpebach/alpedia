@@ -498,9 +498,9 @@ impl World {
             match r {
                 Ok(c) => constructs.set_item(c.getattr("id")?, c)?,
                 Err(e) if e.is_instance_of::<pyo3::exceptions::PyException>(py) => {
-                    let _g = e.clone_ref(py).restore(py);
-                    lg.call_method1("exception", ("構築物 %s の読み込みに失敗: %s", getd(&cd, "id", py.None())?, e.value_bound(py)))?;
-                    let _ = PyErr::take(py);
+                    let kw = PyDict::new_bound(py);
+                    kw.set_item("exc_info", e.value_bound(py))?;
+                    lg.call_method("exception", ("構築物 %s の読み込みに失敗: %s", getd(&cd, "id", py.None())?, e.value_bound(py)), Some(&kw))?;
                 }
                 Err(e) => return Err(e),
             }
@@ -601,9 +601,9 @@ impl World {
         })();
         match r {
             Err(e) if e.is_instance_of::<pyo3::exceptions::PyException>(py) => {
-                e.restore(py);
-                log(py)?.call_method1("exception", ("見本のロケットを置けません",))?;
-                let _ = PyErr::take(py);
+                let kw = PyDict::new_bound(py);
+                kw.set_item("exc_info", e.value_bound(py))?;
+                log(py)?.call_method("exception", ("見本のロケットを置けません",), Some(&kw))?;
                 Ok(())
             }
             x => x,

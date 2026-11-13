@@ -984,10 +984,10 @@ pub fn bk_ensure<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, key: &Bound<'p
         let c = match make.call0() {
             Ok(c) => c,
             Err(e) if e.is_instance_of::<pyo3::exceptions::PyException>(py) => {
-                e.restore(py);
+                let kw = PyDict::new_bound(py);
+                kw.set_item("exc_info", e.value_bound(py))?;
                 super::imp(py, "main.log")?.call_method1("get", ("buildkit",))?
-                    .call_method1("exception", ("建物を作れません: %s/%s", key, &role))?;
-                let _ = PyErr::take(py);
+                    .call_method("exception", ("建物を作れません: %s/%s", key, &role), Some(&kw))?;
                 continue;
             }
             Err(e) => return Err(e),

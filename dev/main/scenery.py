@@ -41,7 +41,8 @@ Scenery = _C.Scenery      # 景色の箱の集まり（1つの惑星の1か所�
 
 
 class SceneryHost:
-    """Addon に混ぜる：self.scenes（Scenery のリスト）の当たり判定・視線・押し出し（計算は Rust）。"""
+    """Addon に混ぜる：self.scenes（Scenery のリスト）の当たり判定・視線・押し出し（計算は Rust）。
+    Addon（Rust のクラス）と一緒に継承するので、ここは Python のクラスのまま（中身は Rust を呼ぶだけ）。"""
     scenes = ()
     scene_kind = "scenery"           # raycast の結果の "kind"（画面側がどの MOD の物か見分ける）
 
@@ -49,12 +50,7 @@ class SceneryHost:
         return _C.scenery_colliders(list(self.scenes), lo, hi, float(margin))
 
     def raycast(self, world, o, dvec, max_t):
-        r = _C.scenery_raycast(list(self.scenes), [float(x) for x in o], [float(x) for x in dvec], float(max_t))
-        if r is None:
-            return None
-        s, t, k, n = r
-        return {"kind": self.scene_kind, "t": t, "scene": s, "part": k, "point": o + dvec * t,
-                "normal": n, "placeable": True, "tag": s.parts[k]["tag"]}
+        return _C.scenery_raycast_hit(self, o, dvec, float(max_t))
 
     def push_sphere(self, world, center, r):
         return _C.scenery_push_sphere(self, world, center, float(r))

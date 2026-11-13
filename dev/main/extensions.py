@@ -14,32 +14,13 @@
     register_api(名前, fn(api, *args))
         api.名前(...) を足す（api._p が Port）
 """
-DEVICE_METHODS = {}      # behavior → {名前: fn}
-DEVICE_PROPS = {}        # behavior → {名前: fn}
-API_FUNCS = {}           # 名前 → fn
+from . import native
 
-
-def reset():
-    DEVICE_METHODS.clear()
-    DEVICE_PROPS.clear()
-    API_FUNCS.clear()
-    from . import blocks
-    blocks.reset_ext()
-
-
-def register_device(behavior, methods=None, props=None):
-    DEVICE_METHODS.setdefault(behavior, {}).update(methods or {})
-    DEVICE_PROPS.setdefault(behavior, {}).update(props or {})
-
-
-def register_api(name, fn):
-    API_FUNCS[name] = fn
-
-
-def behavior_of(dd):
-    """機器の定義 → スクリプトから見た種類（custom なら behavior）。"""
-    if not dd:
-        return "?"
-    if dd.get("type") == "custom":
-        return str(dd.get("behavior") or "custom")
-    return dd["type"]
+_c = native.require()
+DEVICE_METHODS = _c.ext_device_methods()     # behavior → {名前: fn}
+DEVICE_PROPS = _c.ext_device_props()         # behavior → {名前: fn}
+API_FUNCS = _c.ext_api_funcs()               # 名前 → fn
+reset = _c.ext_reset
+register_device = _c.ext_register_device
+register_api = _c.ext_register_api
+behavior_of = _c.ext_behavior_of             # 機器の定義 → スクリプトから見た種類（custom なら behavior）

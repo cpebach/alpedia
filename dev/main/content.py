@@ -1,6 +1,4 @@
 """ゲーム同梱の文章（スクリプトの説明 README）。チュートリアルなどが使う。"""
-import numpy as np
-
 SCRIPT_README = '''ゲーム内 Python スクリプト
 ========================
 
@@ -91,10 +89,10 @@ api.antenna_range           届く距離 m（送る側と受ける側の短い�
 '''
 
 
-def rot_for(up):
-    """上方向 up に立てた回転行列（列が ローカル x, y, z のワールド方向）。"""
-    up = up / np.linalg.norm(up)
-    fwd = np.cross([1.0, 0, 0], up)
-    fwd /= np.linalg.norm(fwd)
-    right = np.cross(up, fwd)
-    return np.stack([right, up, fwd], axis=1)
+
+def _rot_for():
+    from . import native
+    return native.require().content_rot_for
+
+
+rot_for = _rot_for()                    # 上方向 up に立てた回転行列（列が ローカル x, y, z のワールド方向）

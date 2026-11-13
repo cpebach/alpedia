@@ -4,7 +4,7 @@
 コンピューターのブロックプログラムで姿勢モーターを回し、台が揺れても棒が同じ向きを保つようにする。
 ストーリーのチュートリアル（mods/story）の観測基地で使う。
 """
-from . import blocks as B
+from . import native
 
 SWAY_SCRIPT = '''"""揺らし役：揺らしモーターで台を左右に揺らし続ける（自動）
 
@@ -69,65 +69,8 @@ SIGNS = [
 ]
 
 
-def _devval(prop):
-    return {"type": "devval", "dev": "姿勢モーター", "prop": prop}
 
-
-def _display_stmt(prefix):
-    d = B.new_stmt("display")
-    d["text"] = {"type": "join", "a": {"type": "text", "v": prefix},
-                 "b": {"type": "func", "fn": "四捨五入", "a": _devval("出力の向き")}}
-    d["width"] = {"type": "num", "v": 1.3}
-    return d
-
-
-def starter_program():
-    """課題：棒の向きを表示するだけ。"""
-    p = B.new_program()
-    st = B.new_stmt("on_start")
-    a = B.new_stmt("set_var")
-    a["var"], a["value"] = "目標", {"type": "num", "v": 0}
-    st["body"].append(a)
-    tk = B.new_stmt("on_tick")
-    tk["body"].append(_display_stmt("課題  棒の向き "))
-    p["scripts"] += [st, tk]
-    return p
-
-
-def solution_program():
-    """お手本：誤差のぶんだけ姿勢モーターを回す。"""
-    p = B.new_program()
-    st = B.new_stmt("on_start")
-    a = B.new_stmt("set_var")
-    a["var"], a["value"] = "目標", {"type": "num", "v": 0}
-    st["body"].append(a)
-    tk = B.new_stmt("on_tick")
-    e = B.new_stmt("set_var")
-    e["var"] = "誤差"
-    e["value"] = {"type": "op", "op": "-", "a": {"type": "var", "name": "目標"}, "b": _devval("出力の向き")}
-    r = B.new_stmt("act_rotate_to")
-    r["dev"] = "姿勢モーター"
-    r["angle"] = {"type": "op", "op": "+", "a": _devval("角度"), "b": {"type": "var", "name": "誤差"}}
-    r["speed"] = {"type": "num", "v": 180}
-    tk["body"] += [e, r, _display_stmt("お手本  棒の向き ")]
-    p["scripts"] += [st, tk]
-    return p
-
-
-def apparatus(ctrl_name, blocks_file, script_file):
-    V = [((x, 0, z), "rock", None) for x in range(5) for z in range(3)]
-    V.append(((2, 1, 0), "steel", {"def": "battery", "dir": 2}))
-    V.append(((2, 2, 0), "steel", {"def": "actuator", "dir": 4, "name": "揺らしモーター"}))
-    V.append(((0, 1, 0), "steel", {"def": "computer", "dir": 5, "name": "揺らし役",
-                                   "state": {"script": "sway.py", "running": True}}))
-    V.append(((4, 1, 0), "steel", {"def": "computer", "dir": 5, "name": ctrl_name,
-                                   "state": {"script": script_file, "blocks": blocks_file, "running": True}}))
-    V.append(((4, 1, 2), "steel", {"def": "seat", "dir": 2, "name": "操縦席"}))
-    # 揺れる台（揺らしモーターの出力）
-    V += [((x, 2, 1), "aluminum", None) for x in (1, 2, 3)]
-    # 姿勢モーター（台の上、出力は +Z）と棒
-    V.append(((2, 3, 1), "steel", {"def": "actuator", "dir": 4, "name": "姿勢モーター",
-                                   "state": {"preset": {"action": "rotate", "amount": 15.0, "speed": 45.0}}}))
-    V += [((2, y, 2), "wood", None) for y in range(3, 8)]   # 軽い木の棒（速く振っても折れにくい）
-    V.append(((2, 8, 2), "rubber", None))
-    return V
+_c = native.require()
+starter_program = _c.rod_starter_program     # 課題：棒の向きを表示するだけ
+solution_program = _c.rod_solution_program   # お手本：誤差のぶんだけ姿勢モーターを回す
+apparatus = _c.rod_apparatus                 # 課題装置のボクセル

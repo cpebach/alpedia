@@ -470,3 +470,25 @@ pub fn scenery_push_sphere<'py>(py: Python<'py>, host: &Bound<'py, PyAny>, world
     }
     Ok(out)
 }
+
+/// SceneryHost.raycast の中身：視線が当たった景色の箱の dict（kind・t・scene・part・point・normal・placeable・tag）か None
+#[pyfunction]
+pub fn scenery_raycast_hit<'py>(py: Python<'py>, host: &Bound<'py, PyAny>, o: &Bound<'py, PyAny>, dvec: &Bound<'py, PyAny>, max_t: f64)
+    -> PyResult<Bound<'py, PyAny>> {
+    let scenes: Vec<Bound<'py, PyAny>> = host.getattr("scenes")?.iter()?.collect::<PyResult<_>>()?;
+    let ov = super::construct::v3(o)?;
+    let dv = super::construct::v3(dvec)?;
+    let r = scenery_raycast(py, PyList::new_bound(py, &scenes).as_any(), ov, dv, max_t)?;
+    let (s, tf, k, n) = match r { Some(r) => r, None => return Ok(py.None().into_bound(py)) };
+    let t = tf;
+    let d = PyDict::new_bound(py);
+    d.set_item("kind", host.getattr("scene_kind")?)?;
+    d.set_item("t", &t)?;
+    d.set_item("scene", &s)?;
+    d.set_item("part", &k)?;
+    d.set_item("point", super::construct::a1(py, [ov[0] + dv[0] * tf, ov[1] + dv[1] * tf, ov[2] + dv[2] * tf]))?;
+    d.set_item("normal", n)?;
+    d.set_item("placeable", true)?;
+    d.set_item("tag", s.getattr("parts")?.get_item(&k)?.get_item("tag")?)?;
+    Ok(d.into_any())
+}

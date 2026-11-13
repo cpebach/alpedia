@@ -210,38 +210,11 @@ def report(api, alt, mode):
 '''
 
 
-def drone_voxels():
-    """3×3×3 のドローン。下の段の四隅が推進機（上向きに押す）、その真上にバルブ（開き具合で推力を変える）、
-    真ん中の段の十字に燃料タンク・バッテリー・制御のコンピューター、上にアンテナ。"""
-    V = []
-    corners = {(0, 0): "後左", (2, 0): "後右", (0, 2): "前左", (2, 2): "前右"}     # 前 = +Z、右 = +X
-    for x in range(3):
-        for z in range(3):
-            if (x, z) in corners:
-                V.append(((x, 0, z), "steel", {"def": "thruster", "dir": 2, "name": "推進機 " + corners[(x, z)]}))
-                V.append(((x, 1, z), "steel", {"def": "valve", "dir": 2, "name": "バルブ " + corners[(x, z)],
-                                               "state": {"open": 0.0}}))
-            else:
-                V.append(((x, 0, z), "aluminum", None))
-    mid = {(1, 1): {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}},
-           (1, 0): {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}},
-           (1, 2): {"def": "tank", "dir": 2, "name": "燃料タンク", "state": {"contents": {"fuel": 800.0}}},
-           (0, 1): {"def": "battery", "dir": 2},
-           (2, 1): {"def": "computer", "dir": 0, "name": "ドローン制御",
-                    "state": {"script": "drone.py", "running": True}}}
-    for (x, z), d in mid.items():
-        V.append(((x, 1, z), "steel", d))
-    V.append(((1, 2, 1), "aluminum", {"def": "antenna", "dir": 2, "name": "アンテナ"}))
-    return V
+
+def _core():
+    from . import native
+    return native.require()
 
 
-def remote_voxels():
-    """操縦台：岩の台の上に操縦席（前 = +Z）、正面の台の上にコンピューターの画面、横にアンテナとバッテリー。"""
-    V = [((x, 0, z), "rock", None) for x in range(3) for z in range(3)]
-    V.append(((1, 1, 0), "steel", {"def": "seat", "dir": 4, "name": "操縦席"}))
-    V.append(((1, 1, 2), "aluminum", None))                     # 画面の台
-    V.append(((1, 2, 2), "steel", {"def": "computer", "dir": 5, "name": "送信機",
-                                   "state": {"script": "drone_remote.py", "running": True}}))
-    V.append(((0, 1, 2), "steel", {"def": "battery", "dir": 2}))
-    V.append(((2, 1, 2), "aluminum", {"def": "antenna", "dir": 2, "name": "アンテナ"}))
-    return V
+drone_voxels = _core().drone_voxels           # 3×3×3 のドローン
+remote_voxels = _core().drone_remote_voxels   # 操縦台
