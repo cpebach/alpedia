@@ -115,6 +115,10 @@ impl SamplerState {
 pub struct NoOp {}
 #[pymethods]
 impl NoOp {
+    #[new]
+    fn new() -> Self {
+        NoOp {}
+    }
     #[pyo3(signature = (*_a, **_k))]
     fn __call__(&self, _a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) {}
 }

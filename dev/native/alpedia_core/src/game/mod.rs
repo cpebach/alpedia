@@ -351,4 +351,4 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// __init__ を持つ Rust のクラス（作るときに __init__ を呼ぶ）
-const INIT_CLASSES: &[&str] = &["RsNode", "Screen", "Pause", "Inventory", "DevicePanel", "ActuatorPanel", "Entity", "Text", "Button", "InputField", "Mesh", "Quad", "Viewer", "GameAdapter", "ClientAddon", "SurvivalClient", "KeysPanel", "LightLayer", "LodLayer", "ConstructView", "DecalView", "PlanetView", "TerrainPatch", "CarveView", "SceneView"];
+const INIT_CLASSES: &[&str] = &["RsNode", "Screen", "Pause", "Inventory", "DevicePanel", "ActuatorPanel", "Entity", "Text", "Button", "InputField", "Mesh", "Quad", "Viewer", "GameAdapter", "ClientAddon", "SurvivalClient", "KeysPanel", "LightLayer", "LodLayer", "ConstructView", "DecalView", "PlanetView", "TerrainPatch", "CarveView", "SceneView", "UDevicePanel"];
