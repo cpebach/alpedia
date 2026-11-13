@@ -5,7 +5,7 @@ use pyo3::types::{PyDict, PyTuple};
 
 type R<T> = PyResult<T>;
 type B<'py> = Bound<'py, PyAny>;
-type F = Box<dyn Fn(&Bound<'_, PyTuple>) -> R<PyObject>>;
+type F = Box<dyn Fn(&Bound<'_, PyTuple>, Option<&Bound<'_, PyDict>>) -> R<PyObject>>;
 
 #[pyclass(module = "alpedia_core", name = "_Closure", unsendable)]
 pub struct Closure {
@@ -14,14 +14,18 @@ pub struct Closure {
 
 #[pymethods]
 impl Closure {
-    #[pyo3(signature = (*args, **_kw))]
-    fn __call__(&self, args: &Bound<'_, PyTuple>, _kw: Option<&Bound<'_, PyDict>>) -> R<PyObject> {
-        (self.f)(args)
+    #[pyo3(signature = (*args, **kw))]
+    fn __call__(&self, args: &Bound<'_, PyTuple>, kw: Option<&Bound<'_, PyDict>>) -> R<PyObject> {
+        (self.f)(args, kw)
     }
 }
 
 /// 引数を受け取って値を返す関数
 pub fn clo<'py>(py: Python<'py>, f: impl Fn(&Bound<'_, PyTuple>) -> R<PyObject> + 'static) -> R<B<'py>> {
+    Ok(Bound::new(py, Closure { f: Box::new(move |a, _k| f(a)) })?.into_any())
+}
+/// 引数と名前付きの引数を受け取って値を返す関数
+pub fn clokw<'py>(py: Python<'py>, f: impl Fn(&Bound<'_, PyTuple>, Option<&Bound<'_, PyDict>>) -> R<PyObject> + 'static) -> R<B<'py>> {
     Ok(Bound::new(py, Closure { f: Box::new(f) })?.into_any())
 }
 /// 引数なし・戻り値なし
