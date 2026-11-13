@@ -6,6 +6,9 @@ pub mod airtight;
 pub mod radio;
 pub mod registry;
 pub mod blocks;
+pub mod actuator;
+pub mod buildkit;
+pub mod player;
 
 use pyo3::prelude::*;
 
@@ -46,6 +49,45 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(blocks::blocks_gen_sequence, m)?)?;
     m.add_function(wrap_pyfunction!(blocks::blocks_to_python, m)?)?;
     m.add("BLOCKS_HEADER", blocks::HEADER)?;
+    m.add_function(wrap_pyfunction!(actuator::act_motion, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_actions_for, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_default_preset, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_migrate_device, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_check_action, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_hinge_sides, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_default_hinge_side, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_hinge_pair, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_is_hinge_dev, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_hinge_side, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_hinge_of, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_side_toward, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_mode_name, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_is_actuator, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_stroke, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_output_cell, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_is_attached, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_busy, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_cmd_rotate, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_cmd_extend, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_cmd_detach, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_face_info, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_measure_twist, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_sync_angle, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_output_angle, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_execute_preset, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_preset_text, m)?)?;
+    m.add_function(wrap_pyfunction!(actuator::act_step, m)?)?;
+    m.add("MotionError", m.py().get_type_bound::<actuator::MotionError>())?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_root_cells, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_anchor_cells, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_anchored, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_anchored_inside, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_anchor_center, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_grounded, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_light_devices, m)?)?;
+    m.add_function(wrap_pyfunction!(buildkit::bk_set_light_group, m)?)?;
+    m.add_class::<buildkit::Kit>()?;
+    m.add_class::<player::Player>()?;
     m.add("SAVE_FORMAT", savefmt::FORMAT)?;
     Ok(())
 }
