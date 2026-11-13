@@ -5,6 +5,7 @@ pub mod savefmt;
 pub mod airtight;
 pub mod radio;
 pub mod registry;
+pub mod blocks;
 
 use pyo3::prelude::*;
 
@@ -28,6 +29,23 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<registry::Registry>()?;
     m.add_function(wrap_pyfunction!(registry::registry_defaults, m)?)?;
     m.add_function(wrap_pyfunction!(registry::registry_deep_merge, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_value_kind, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_fits, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_label_parts, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_fmt_num, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_expr_children, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_slot_kind, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_new_stmt, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_find_hint, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_hint_text, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_gen_expr, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_gen_stmt, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_gen_body, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_has_wait, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_gen_sequence, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_to_python, m)?)?;
+    m.add("BLOCKS_HEADER", blocks::HEADER)?;
     m.add("SAVE_FORMAT", savefmt::FORMAT)?;
     Ok(())
 }

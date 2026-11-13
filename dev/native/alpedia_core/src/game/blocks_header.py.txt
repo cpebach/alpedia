@@ -1,0 +1,174 @@
+"""このファイルはブロックプログラム {src} から自動生成されました。
+ここを直接書き換えても、ブロック側には反映されません。
+"""
+import math
+import random
+
+
+def _devs(api, name, kind=None):
+    if name == "*":
+        return api.devices(kind)
+    return api.devices(name=name)
+
+
+def _val(api, name, prop, kind=None):
+    ds = _devs(api, name, kind)
+    if not ds:
+        return 0
+    d = ds[0]
+    if prop == "fuel":
+        return d.contents.get("fuel", 0)
+    try:
+        return getattr(d, prop)
+    except Exception:
+        return 0
+
+
+def _div(a, b):
+    return a / b if b else 0
+
+
+def _round(a):
+    # 無限大（脱出軌道の遠点など）や非数はそのまま（round では止まってしまうため）
+    return round(a) if math.isfinite(a) else a
+
+
+def _mod(a, b):
+    return a % b if b else 0
+
+
+def _sin(a):
+    return math.sin(math.radians(a))
+
+
+def _cos(a):
+    return math.cos(math.radians(a))
+
+
+def _num(a):
+    try:
+        return float(a)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _gravity(api):
+    p = api.planet()
+    if not p:
+        return 0.0
+    r2 = sum((api.position[i] - p["center"][i]) ** 2 for i in range(3))
+    return p["mu"] / max(r2, 1.0)
+
+
+def _pos(a):
+    return a if a > 0 else 0.0
+
+
+# --- 矢印（ベクトル）[x, y, z] ---
+def _V(a):
+    try:
+        return [float(a[0]), float(a[1]), float(a[2])]
+    except (TypeError, ValueError, IndexError, KeyError):
+        return [0.0, 0.0, 0.0]
+
+
+def _vadd(a, b):
+    return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+
+
+def _vsub(a, b):
+    return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+
+
+def _vmul(a, k):
+    return [a[0] * k, a[1] * k, a[2] * k]
+
+
+def _vdiv(a, k):
+    return [a[0] / k, a[1] / k, a[2] / k] if k else [0.0, 0.0, 0.0]
+
+
+def _vdot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _vlen(a):
+    return math.sqrt(_vdot(a, a))
+
+
+def _vunit(a):
+    n = _vlen(a)
+    return _vmul(a, 1.0 / n) if n > 1e-9 else [0.0, 0.0, 0.0]
+
+
+def _vclamp(a, n):
+    k = _vlen(a)
+    return _vmul(a, max(n, 0.0) / k) if k > max(n, 0.0) and k > 0 else list(a)
+
+
+def _vperp(a, b):
+    u = _vunit(b)
+    return _vsub(a, _vmul(u, _vdot(a, u)))
+
+
+def _vangle(a, b):
+    na, nb = _vlen(a), _vlen(b)
+    if na < 1e-9 or nb < 1e-9:
+        return 0.0
+    return math.degrees(math.acos(max(-1.0, min(1.0, _vdot(a, b) / (na * nb)))))
+
+
+def _vtilt(a, b, deg):
+    """矢印 a の向きを、b から deg 度以内にする（長さはそのまま）。"""
+    n, u = _vlen(a), _vunit(b)
+    if n < 1e-9 or _vlen(u) < 0.5:
+        return list(a)
+    d = _vmul(a, 1.0 / n)
+    c, cmax = _vdot(d, u), math.cos(math.radians(max(0.0, min(180.0, deg))))
+    if c >= cmax:
+        return list(a)
+    h = _vunit(_vsub(d, _vmul(u, c)))
+    if _vlen(h) < 0.5:
+        return _vmul(u, n) if deg < 90 else list(a)
+    return _vmul(_vadd(_vmul(u, cmax), _vmul(h, math.sin(math.radians(deg)))), n)
+
+
+def _vship(api, x, y, z):
+    """船から見た (右, 上, 前) → ワールドの矢印。"""
+    X, Y, Z = api.orientation()
+    return [X[i] * x + Y[i] * y + Z[i] * z for i in range(3)]
+
+
+def _vcomp(api, a, axis):
+    if axis in "xyz":
+        return a["xyz".index(axis)]
+    X, Y, Z = api.orientation()
+    return _vdot(a, {{"r": X, "u": Y, "f": Z}}[axis])
+
+
+def _vget(v, name):
+    x = v.get(name)
+    return list(x) if isinstance(x, list) and len(x) == 3 else [0.0, 0.0, 0.0]
+
+
+def _to_planet(api):
+    p = api.planet()
+    return _vsub(p["center"], api.position) if p else [0.0, 0.0, 0.0]
+
+
+def _txt(a):
+    if isinstance(a, list):
+        return "(" + ", ".join("%.1f" % x for x in a) + ")"
+    return str(a)
+
+
+def _radio(api, ch):
+    v = api.latest(str(ch))
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
