@@ -293,7 +293,7 @@ impl Screen {
         let _ = dt;
     }
     fn build(&self) {}
-    fn close(slf: &Bound<'_, Self>) -> R<()> {
+    pub fn close(slf: &Bound<'_, Self>) -> R<()> {
         Self::root(slf).call_method0("removeNode")?;
         slf.borrow().ui.bind(slf.py()).call_method1("closed", (slf,))?;
         Ok(())
