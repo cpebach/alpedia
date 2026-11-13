@@ -17,6 +17,7 @@ pub mod scripting;
 pub mod modmeta;
 pub mod devices;
 pub mod construct;
+pub mod world;
 
 use pyo3::prelude::*;
 
@@ -33,6 +34,14 @@ pub fn imp<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyModule>> {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<construct::Construct>()?;
+    m.add_class::<world::World>()?;
+    m.add_class::<world::AsPlayer>()?;
+    m.add_function(wrap_pyfunction!(world::world_default_bodies, m)?)?;
+    m.add_function(wrap_pyfunction!(world::world_read_json, m)?)?;
+    m.add_function(wrap_pyfunction!(world::world_write_json, m)?)?;
+    m.add_function(wrap_pyfunction!(world::world_drop_fuel_generators, m)?)?;
+    m.add_function(wrap_pyfunction!(world::world_missing_references, m)?)?;
+    m.add_function(wrap_pyfunction!(world::world_limit_dv, m)?)?;
     m.add_function(wrap_pyfunction!(construct::construct_link_key, m)?)?;
     m.add_function(wrap_pyfunction!(construct::construct_dir_index, m)?)?;
     m.add_function(wrap_pyfunction!(construct::construct_clean_dev, m)?)?;
