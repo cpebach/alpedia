@@ -1,69 +1,9 @@
-"""画面側の拡張の口。ワールド側の拡張（hooks.Addon）と組で使う。
+"""画面側の拡張の口。ワールド側の拡張（hooks.Addon）と組で使う。本体は Rust（alpedia_core.ClientAddon）。
 
-ゲーム画面（game.Game）は拡張の中身を知らず、次の口だけを呼ぶ。
+ゲーム画面は拡張の中身を知らず、次の口だけを呼ぶ（くわしくは help(ClientAddon)）：
+on_key・interact・aim・emotes・bgm・on_photo・on_camera・nearby・player_body・nearby_priority・seat_camera・update・destroy。
 拡張はワールドの中身を直接触らず、自分のワールド側（world.addon(名前)）の問い合わせ関数を使う。
 """
+from .. import native
 
-
-class ClientAddon:
-    name = "addon"
-    help_text = ""                      # 操作説明に足す行
-
-    def __init__(self, game):
-        self.game = game
-        self.world = game.world
-
-    def on_key(self, key):
-        """キーが押された。使ったら True。"""
-        return False
-
-    def interact(self, hit):
-        """E で hit（視線の先）を使う。使ったら True（コアの操作はしない）。"""
-        return False
-
-    def aim(self, hit):
-        """視線の先の説明。(文, ブロックを置ける面なら True) か None（この拡張のものでない）。"""
-        return None
-
-    def emotes(self):
-        """カメラモードで選べるモーション：{表示名: pose(t)}（pose は秒 t を受け取り、骨の向きの辞書を返す関数）。
-        辞書の書き方は mods/README.md の「モーション」。体の見た目の MOD（VRM の見た目など）が使う。"""
-        return {}
-
-    def bgm(self):
-        """今流したい BGM：(曲の ID, 始める秒) か None（決めない）。曲の ID は mods/bgm/bgm.json の tracks。
-        いちばん先に None 以外を返した拡張の曲が流れる。毎フレーム呼ばれる。"""
-        return None
-
-    def on_photo(self, path):
-        """カメラモードで写真を保存した（path：保存した画像）。"""
-
-    def on_camera(self, on):
-        """カメラモードに入った（on=True）・終わった（False）。"""
-
-    def nearby(self, pos, radius):
-        """プレイヤーの近く（pos から radius m 以内）にある、この拡張の触れるもの（お店・NPC など）。
-        画面右にボタンが出て、押す（または E）と interact(hit) が呼ばれる。
-        [{"label": 表示, "hit": interact に渡すもの, "kind": "e", "dist": 距離, "icon": "interact"}]"""
-        return []
-
-    def player_body(self, player):
-        """プレイヤー（自分・マルチプレイのほかの人）の体の見た目を引き受けるなら、そのオブジェクトを返す。
-        オブジェクトは update(origin, shown, dt) を毎フレーム受け取り（shown: 見せるか）、destroy() で消える。
-        player の pos・up・vel・look_fwd（見ている向き）・pitch・seated などを読んで動かす。
-        見た目を変えたら作り直す。プレイ中にファイルを読まないように、モデルは拡張を作るときに読んでおく。"""
-        return None
-
-    def nearby_priority(self, target):
-        """近くのボタンの並び順の補正（小さいほど上）。今の目標の機器を上にするときなどに負の数を返す。"""
-        return 0.0
-
-    def seat_camera(self, construct):
-        """座っている構築物（操縦台など）が遠隔操作の台なら、カメラで追う構築物を返す（ドローンなど）。違えば None。"""
-        return None
-
-    def update(self, origin, far):
-        """毎フレームの描画。origin はカメラの位置（浮動原点）。"""
-
-    def destroy(self):
-        """ゲーム画面を閉じる。"""
+ClientAddon = native.require().ClientAddon
