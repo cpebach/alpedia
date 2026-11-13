@@ -25,6 +25,7 @@ pub mod modcode;
 pub mod misc;
 pub mod netsync;
 pub mod netgame;
+pub mod gfx;
 pub mod shape_tables;
 
 use pyo3::prelude::*;
@@ -40,8 +41,33 @@ pub fn imp<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyModule>> {
     }
 }
 
+/// Rust のクラスの __init__（#[pymethods] の中の普通のメソッド）を、作るときに呼ばれるようにする。
+/// （型の __init__ を入れ直すと、Python が作るときに呼ぶ口（tp_init）がそれに替わる。Python の子クラスの super().__init__ もそのまま動く）
+pub fn enable_init(m: &Bound<'_, PyModule>, name: &str) -> PyResult<()> {
+    let t = m.getattr(name)?;
+    if let Some(f) = t.getattr("__dict__")?.get_item("__init__").ok() {
+        t.setattr("__init__", f)?;
+    }
+    Ok(())
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<buildkit::GroundFn>()?;
+    m.add_class::<gfx::RsTex>()?;
+    m.add_class::<gfx::RsNode>()?;
+    m.add_class::<gfx::RsDynamicMesh>()?;
+    m.add_class::<gfx::RsText>()?;
+    m.add_class::<gfx::RsDisplayView>()?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_active, m)?)?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_start, m)?)?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_set_view, m)?)?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_tex, m)?)?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_tex_rgba, m)?)?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_font, m)?)?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_quad, m)?)?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_box_vertices, m)?)?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_wire_box, m)?)?;
+    m.add_function(wrap_pyfunction!(gfx::gfx_set_box, m)?)?;
     m.add_class::<netgame::Peer>()?;
     m.add_class::<netgame::Host>()?;
     m.add_class::<netgame::Joiner>()?;
@@ -286,5 +312,11 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(devices::dev_interact, m)?)?;
     m.add_class::<devices::Networks>()?;
     m.add("SAVE_FORMAT", savefmt::FORMAT)?;
+    for c in INIT_CLASSES {
+        enable_init(m, c)?;
+    }
     Ok(())
 }
+
+/// __init__ を持つ Rust のクラス（作るときに __init__ を呼ぶ）
+const INIT_CLASSES: &[&str] = &["RsNode"];
