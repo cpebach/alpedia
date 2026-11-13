@@ -943,3 +943,138 @@ pub fn blocks_to_python(py: Python<'_>, prog: &Bound<'_, PyAny>, src_name: &str)
     }
     Ok(lines.join("\n") + "\n")
 }
+
+// ---------------------------------------------------------------- プログラムの読み書き・MOD が足すブロック
+
+const FORMAT: &str = "alpedia-blocks";
+
+#[pyfunction]
+pub fn blocks_new_program(py: Python<'_>) -> R<Bound<'_, PyDict>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("format", FORMAT)?;
+    d.set_item("version", 1)?;
+    d.set_item("scripts", PyList::empty_bound(py))?;
+    Ok(d)
+}
+
+#[pyfunction]
+pub fn blocks_load<'py>(py: Python<'py>, path: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    let kw = pyo3::types::IntoPyDict::into_py_dict_bound([("encoding", "utf-8")], py);
+    let t = path.call_method("read_text", (), Some(&kw))?;
+    let data = crate::game::imp(py, "json")?.call_method1("loads", (t,))?;
+    if !data.call_method1("get", ("format",))?.eq(FORMAT)? {
+        return Err(PyValueError::new_err("ブロックプログラムの形式ではありません"));
+    }
+    Ok(data)
+}
+
+#[pyfunction]
+pub fn blocks_save(py: Python<'_>, path: &Bound<'_, PyAny>, prog: &Bound<'_, PyAny>) -> R<()> {
+    let kw = pyo3::types::IntoPyDict::into_py_dict_bound([("ensure_ascii", false.into_py(py)), ("indent", 1.into_py(py))], py);
+    let t = crate::game::imp(py, "json")?.call_method("dumps", (prog,), Some(&kw))?;
+    path.call_method("write_text", (t,), Some(&pyo3::types::IntoPyDict::into_py_dict_bound([("encoding", "utf-8")], py)))?;
+    Ok(())
+}
+
+static BASE: pyo3::sync::GILOnceCell<PyObject> = pyo3::sync::GILOnceCell::new();
+const TABLES: [&str; 7] = ["STATEMENTS", "STMT_DEFAULTS", "SENSORS", "BOOL_SENSORS", "VSENSORS", "DEVPROPS", "DEVBOOLS"];
+
+fn keep_base(py: Python<'_>) -> R<()> {
+    if BASE.get(py).is_some() {
+        return Ok(());
+    }
+    let b = crate::game::imp(py, "main.blocks")?;
+    let copy = crate::game::imp(py, "copy")?;
+    let tables = PyList::empty_bound(py);
+    for t in TABLES {
+        tables.append(copy.call_method1("deepcopy", (b.getattr(t)?,))?)?;
+    }
+    let pal = PyList::new_bound(py, b.getattr("EXPR_PALETTE")?.iter()?.collect::<R<Vec<_>>>()?);
+    let cats = PyList::new_bound(py, b.getattr("CATEGORIES")?.iter()?.collect::<R<Vec<_>>>()?);
+    let _ = BASE.set(py, (tables, pal, cats).into_py(py));
+    Ok(())
+}
+
+/// MOD が足したブロックを消して、本体のブロックだけに戻す（extensions.reset から）
+#[pyfunction]
+pub fn blocks_reset_ext(py: Python<'_>) -> R<()> {
+    let base = match BASE.get(py) { Some(b) => b.bind(py).clone(), None => return Ok(()) };
+    let b = crate::game::imp(py, "main.blocks")?;
+    for (t, bt) in TABLES.iter().zip(base.get_item(0)?.iter()?) {
+        let d = b.getattr(*t)?;
+        d.call_method0("clear")?;
+        d.call_method1("update", (bt?,))?;
+    }
+    let all = pyo3::types::PySlice::full_bound(py);
+    b.getattr("EXPR_PALETTE")?.set_item(&all, base.get_item(1)?)?;
+    b.getattr("CATEGORIES")?.set_item(&all, base.get_item(2)?)?;
+    let cc = b.getattr("CAT_COLOR")?;
+    cc.call_method0("clear")?;
+    for c in b.getattr("CATEGORIES")?.iter()? {
+        let c = c?;
+        cc.set_item(c.get_item(0)?, c.get_item(2)?)?;
+    }
+    Ok(())
+}
+
+/// MOD がブロックを足す（文・センサー・矢印のセンサー・パレット・機器の値・種類）
+#[pyfunction]
+#[pyo3(signature = (statements=None, defaults=None, sensors=None, bool_sensors=None, vsensors=None, palette=None, devprops=None, devbools=None, categories=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn blocks_register_ext(py: Python<'_>, statements: Option<&Bound<'_, PyAny>>, defaults: Option<&Bound<'_, PyAny>>, sensors: Option<&Bound<'_, PyAny>>,
+                           bool_sensors: Option<&Bound<'_, PyAny>>, vsensors: Option<&Bound<'_, PyAny>>, palette: Option<&Bound<'_, PyAny>>,
+                           devprops: Option<&Bound<'_, PyAny>>, devbools: Option<&Bound<'_, PyAny>>, categories: Option<&Bound<'_, PyAny>>) -> R<()> {
+    keep_base(py)?;
+    let b = crate::game::imp(py, "main.blocks")?;
+    let some = |x: Option<&Bound<'_, PyAny>>| -> R<bool> { Ok(match x { Some(v) => !v.is_none() && v.is_truthy()?, None => false }) };
+    let merge = b.getattr("CAT_MERGE")?;
+    let cc = b.getattr("CAT_COLOR")?;
+    if some(categories)? {
+        for cat in categories.unwrap().iter()? {
+            let cat = cat?;
+            let k = cat.get_item(0)?;
+            if merge.contains(&k)? {
+                continue;                 // まとめた種類（機器・迎撃など）はアクチュエーターに入る
+            }
+            if !cc.contains(&k)? {
+                b.getattr("CATEGORIES")?.call_method1("append", (pyo3::types::PyTuple::new_bound(py, cat.iter()?.collect::<R<Vec<_>>>()?),))?;
+                cc.set_item(&k, cat.get_item(2)?)?;
+            }
+        }
+    }
+    if some(statements)? {
+        let st = b.getattr("STATEMENTS")?;
+        for (kind, spec) in statements.unwrap().downcast::<PyDict>()?.iter() {
+            let c = spec.call_method1("get", ("cat",))?;
+            let spec = if merge.contains(&c)? {
+                let d = PyDict::new_bound(py);
+                d.update(spec.downcast::<PyDict>()?.as_mapping())?;
+                d.set_item("cat", merge.get_item(&c)?)?;
+                d.set_item("orig_cat", &c)?;
+                d.into_any()
+            } else { spec };
+            st.set_item(kind, spec)?;
+        }
+    }
+    for (t, v) in [("STMT_DEFAULTS", defaults), ("SENSORS", sensors), ("BOOL_SENSORS", bool_sensors), ("VSENSORS", vsensors),
+                   ("DEVPROPS", devprops), ("DEVBOOLS", devbools)] {
+        if some(v)? {
+            b.getattr(t)?.call_method1("update", (v.unwrap(),))?;
+        }
+    }
+    let pal = b.getattr("EXPR_PALETTE")?;
+    for (v, cat, ty) in [(sensors, "sensor", "sensor"), (bool_sensors, "sensor", "bsensor"), (vsensors, "vec", "vsensor")] {
+        if some(v)? {
+            for (k, spec) in v.unwrap().downcast::<PyDict>()?.iter() {
+                let node = PyDict::new_bound(py);
+                node.set_item("type", ty)?;
+                node.set_item("name", &k)?;
+                pal.call_method1("append", ((cat, spec.get_item(0)?, node),))?;
+            }
+        }
+    }
+    if some(palette)? {
+        pal.call_method1("extend", (palette.unwrap(),))?;
+    }
+    Ok(())
+}

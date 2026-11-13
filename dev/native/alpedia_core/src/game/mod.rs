@@ -23,6 +23,7 @@ pub mod planet;
 pub mod objio;
 pub mod modcode;
 pub mod misc;
+pub mod netsync;
 pub mod shape_tables;
 
 use pyo3::prelude::*;
@@ -40,6 +41,32 @@ pub fn imp<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyModule>> {
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<buildkit::GroundFn>()?;
+    m.add_class::<netsync::ConsTracker>()?;
+    m.add_class::<netsync::MetaTracker>()?;
+    m.add_class::<netsync::FileSync>()?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_sleep, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_apply_construct, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_rot, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_advance, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_dev_public, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_meta_of, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_default, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_dumps, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_jsonable, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_apply_meta, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_dev_patch, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_dev_base, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_apply_dev_patch, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_pack_import, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_unpack_import, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_player_public, m)?)?;
+    m.add_function(wrap_pyfunction!(netsync::netsync_apply_player_public, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_new_program, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_load, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_save, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_reset_ext, m)?)?;
+    m.add_function(wrap_pyfunction!(blocks::blocks_register_ext, m)?)?;
     m.add_function(wrap_pyfunction!(scenery::scenery_raycast_hit, m)?)?;
     m.add_function(wrap_pyfunction!(misc::ext_device_methods, m)?)?;
     m.add_function(wrap_pyfunction!(misc::ext_device_props, m)?)?;

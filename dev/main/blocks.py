@@ -8,7 +8,6 @@
   文 :  {"type": "if", "cond": 式, "body": [文...], "else": [文...]}
   式 :  {"type": "num", "v": 1.0} / {"type": "op", "op": "+", "a": 式, "b": 式} など
 """
-import json
 
 from . import native
 
@@ -238,168 +237,34 @@ TEXT_TYPES = {"text", "join"}
 VEC_TYPES = {"vsensor", "vvar", "vec", "vto", "vop", "vscale", "vnorm", "vclamp", "vperp", "vtilt"}
 
 
-def _core():
-    return native.require()
 
-
-def value_kind(node):
-    return _core().blocks_value_kind(node)
-
-
-def fits(node, slot):
-    """式ブロック node を、種類 slot（num/bool/text）の入力欄に入れられるか。
-    条件は数値の欄にも入れられる（はい＝1、いいえ＝0 として計算）。文字の欄には何でも入る。
-    矢印は矢印の欄にだけ入る（数にするには「長さ」「成分」などのブロックを使う）。"""
-    return _core().blocks_fits(node, slot)
-
-
-def new_stmt(kind):
-    return _core().blocks_new_stmt(kind)
-
-
-def new_program():
-    return {"format": FORMAT, "version": 1, "scripts": []}
-
-
-def load(path):
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("format") != FORMAT:
-        raise ValueError("ブロックプログラムの形式ではありません")
-    return data
-
-
-def save(path, prog):
-    path.write_text(json.dumps(prog, ensure_ascii=False, indent=1), encoding="utf-8")
-
-
-def slot_kind(stmt_type, slot):
-    return _core().blocks_slot_kind(stmt_type, slot)
-
-
-def label_parts(label):
-    """'もし {cond} なら' → [('text','もし '), ('slot','cond'), ('text',' なら')]"""
-    return _core().blocks_label_parts(label)
-
-
-def _fmt_num(v):
-    return _core().blocks_fmt_num(v)
-
-
-def summary(node):
-    """表示用の要約。"""
-    return _core().blocks_summary(node)
-
-
-def expr_children(node):
-    """式ノードの中の入力欄: [(キー, 種類)]"""
-    return _core().blocks_expr_children(node)
-
-
+_C = native.require()
+value_kind = _C.blocks_value_kind
+fits = _C.blocks_fits                    # 式ブロック node を、種類 slot（num/bool/text/vec）の入力欄に入れられるか
+new_stmt = _C.blocks_new_stmt
+new_program = _C.blocks_new_program
+load = _C.blocks_load
+save = _C.blocks_save
+slot_kind = _C.blocks_slot_kind
+label_parts = _C.blocks_label_parts      # 'もし {cond} なら' → [('text','もし '), ('slot','cond'), ('text',' なら')]
+_fmt_num = _C.blocks_fmt_num
+summary = _C.blocks_summary              # 表示用の要約
+expr_children = _C.blocks_expr_children  # 式ノードの中の入力欄: [(キー, 種類)]
 _MENU_FIELDS = ("op", "fn", "frame", "axis", "prop")
+find_hint = _C.blocks_find_hint          # 今のプログラムを見本と比べて、最初の違い（同じなら None）
+hint_text = _C.blocks_hint_text          # ヒントの説明（画面の下に出す文）
 
-
-def find_hint(cur, sol):
-    """今のプログラム cur（エディタが編集中の物そのもの）を、見本 sol と比べて、最初の違いを返す（同じなら None）。
-    {"kind": "insert", "list", "index", "type"}：list の index に type のブロックを置く
-    {"kind": "expr", "owner", "key", "node"}：owner[key] の欄に node の形の式ブロックを入れる
-    {"kind": "value", "owner", "key", "value"}：owner[key] の欄に value を入れる（数値・文字・機器の名前など）
-    見本より多いブロックは気にしない。"""
-    return _core().blocks_find_hint(cur, sol)
-
-
-def hint_text(h):
-    """ヒントの説明（画面の下に出す文）。"""
-    return _core().blocks_hint_text(h)
-
-
-# ---------------------------------------------------------------------------
 # MOD が足すブロック（extensions.reset で元に戻す）
 #   statements の "code"：Python の行のリスト。{入力欄の名前} にその欄の式が入る（機器は名前の文字列）
 #   sensors / vsensors / bool_sensors：{ID: (表示名, Python の式)}　palette：[(カテゴリ, 表示名, ノード)]
-# ---------------------------------------------------------------------------
-_BASE = None
+reset_ext = _C.blocks_reset_ext
+register_ext = _C.blocks_register_ext
 
-
-def _tables():
-    return (STATEMENTS, STMT_DEFAULTS, SENSORS, BOOL_SENSORS, VSENSORS, DEVPROPS, DEVBOOLS)
-
-
-def _keep_base():
-    global _BASE
-    if _BASE is None:
-        import copy
-        _BASE = ([copy.deepcopy(t) for t in _tables()], list(EXPR_PALETTE), [c for c in CATEGORIES])
-
-
-def reset_ext():
-    if _BASE is None:
-        return
-    tables, pal, cats = _BASE
-    for t, base in zip(_tables(), tables):
-        t.clear()
-        t.update(base)
-    EXPR_PALETTE[:] = pal
-    CATEGORIES[:] = cats
-    CAT_COLOR.clear()
-    CAT_COLOR.update({k: c for k, _, c in CATEGORIES})
-
-
-def register_ext(statements=None, defaults=None, sensors=None, bool_sensors=None, vsensors=None, palette=None,
-                 devprops=None, devbools=None, categories=None):
-    _keep_base()
-    for cat in categories or []:
-        if cat[0] in CAT_MERGE:
-            continue                      # まとめた種類（機器・迎撃など）はアクチュエーターに入る
-        if cat[0] not in CAT_COLOR:
-            CATEGORIES.append(tuple(cat))
-            CAT_COLOR[cat[0]] = cat[2]
-    for kind, spec in (statements or {}).items():
-        c = spec.get("cat")
-        if c in CAT_MERGE:
-            spec = dict(spec, cat=CAT_MERGE[c], orig_cat=c)
-        STATEMENTS[kind] = spec
-    STMT_DEFAULTS.update(defaults or {})
-    SENSORS.update(sensors or {})
-    BOOL_SENSORS.update(bool_sensors or {})
-    VSENSORS.update(vsensors or {})
-    DEVPROPS.update(devprops or {})
-    DEVBOOLS.update(devbools or {})
-    for k, (name, _) in (sensors or {}).items():
-        EXPR_PALETTE.append(("sensor", name, {"type": "sensor", "name": k}))
-    for k, (name, _) in (bool_sensors or {}).items():
-        EXPR_PALETTE.append(("sensor", name, {"type": "bsensor", "name": k}))
-    for k, (name, _) in (vsensors or {}).items():
-        EXPR_PALETTE.append(("vec", name, {"type": "vsensor", "name": k}))
-    EXPR_PALETTE.extend(palette or [])
-
-
-# ---------------------------------------------------------------------------
 # Python への変換（Rust）
-# ---------------------------------------------------------------------------
-HEADER = native.require().BLOCKS_HEADER
-
-
-def gen_expr(node, kind="num"):
-    return _core().blocks_gen_expr(node, kind)
-
-
-def gen_stmt(node):
-    """文 → Python の行のリスト（インデントなし）"""
-    return _core().blocks_gen_stmt(node)
-
-
-def gen_body(body):
-    return _core().blocks_gen_body(body)
-
-
-def has_wait(body):
-    return _core().blocks_has_wait(body)
-
-
-def gen_sequence(body, k, restart):
-    """順番に動かすプログラム（インデントなし）。restart：最後まで行ったら最初から。"""
-    return _core().blocks_gen_sequence(body, k, restart)
-
-
-def to_python(prog, src_name="(ブロック)"):
-    return _core().blocks_to_python(prog, src_name)
+HEADER = _C.BLOCKS_HEADER
+gen_expr = _C.blocks_gen_expr
+gen_stmt = _C.blocks_gen_stmt            # 文 → Python の行のリスト（インデントなし）
+gen_body = _C.blocks_gen_body
+has_wait = _C.blocks_has_wait
+gen_sequence = _C.blocks_gen_sequence    # 順番に動かすプログラム（インデントなし）。restart：最後まで行ったら最初から
+to_python = _C.blocks_to_python
