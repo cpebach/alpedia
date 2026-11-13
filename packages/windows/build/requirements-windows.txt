@@ -1,6 +1,4 @@
 # Alpedia パッケージ版（Windows 64bit / Python 3.12）に同梱するライブラリ。動作確認した版に固定している。
 numpy==2.5.3
-scipy==1.18.1
 pillow==12.3.0
-scikit-image==0.26.0
 av==19.0.2

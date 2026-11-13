@@ -250,7 +250,7 @@ config/   設定（settings.json）
   ブロックの境目に輪郭の線、くぼんだ所に軽い陰（環境光の遮り）を付けます。
   `config/settings.json` の `graphics.block_edges`（輪郭の線）・`graphics.block_ao`（陰）で切り替えられます。
   テクスチャの無い機器は `px_device.png`（機器の外板）を使います。
-  この形を作るのに `scikit-image` を使います（必須）。
+  この形（等値面、Marching Cubes）は Rust の物理コアで作ります。
   ブロックを狙ったときの枠と、OBJ 読み込み時のボクセル化は立方体のままです。OBJ 出力は丸い形で書き出します。
 - **ポリゴンのボクセル**: 各ボクセルは自分の8頂点を持ち、隣のボクセルと同じ位置の頂点同士が結合しています。
   素材の `stiffness`（形の保ちやすさ）、`joint_stiffness`（頂点間の動きにくさ）、`break_distance`（ちぎれる距離）、
@@ -553,7 +553,7 @@ Rust で書いた物理コア `alpedia_core`（`native/`、`lib/alpedia_core.pyd
 剛体・完全剛体・関節つき剛体も）と、構築物どうしの押し出しは Rust でまとめて計算し、その間は Python を止めないので、
 構築物ごとの計算が複数コアで本当に同時に進みます。大きな構築物（256 ブロック以上）は、その中のブロックごとの計算を複数コアに分けます。
 MOD のプログラム・ブロックプログラム・ゲームの決まりごとは Python のままです。
-作り方は `native/README.md`（Windows は `native\build_windows.bat` をダブルクリック）。前の版の numba（Python の高速化）はもう使いません。
+作り方は `native/README.md`（Windows は `native\build_windows.bat` をダブルクリック）。前の版の numba（Python の高速化）・scipy・scikit-image はもう使いません。
 
 - `config/settings.json` の `physics.threads` で使うスレッド数を指定できます（0 = 自動）。
 

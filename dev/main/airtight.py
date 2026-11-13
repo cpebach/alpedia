@@ -1,6 +1,7 @@
 """気密判定：ボクセルで完全に囲まれた空洞を探す。"""
 import numpy as np
-from scipy import ndimage
+
+from . import native
 
 AIR_DENSITY_1ATM = 1.2   # kg/m^3
 ATM_KPA = 101.3
@@ -18,7 +19,8 @@ def find_cavities(cells):
         return []  # 大きすぎる場合は省略
     solid = np.zeros(shape, bool)
     solid[tuple((arr - lo).T)] = True
-    lab, n = ndimage.label(~solid)  # 6近傍
+    lab, n = native.require().label_empty(np.ascontiguousarray(solid))  # 空いている所を6近傍でつながりごとに（Rust）
+    lab = lab.reshape(shape)
     if n <= 1:
         return []
     border = set(np.unique(np.concatenate([

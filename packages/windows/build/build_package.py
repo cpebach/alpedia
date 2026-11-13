@@ -45,7 +45,7 @@ EMBED_URL = f"https://www.python.org/ftp/python/{PY_VER}/python-{PY_VER}-embed-a
 GAME_ITEMS = ["main", "sauce", "run.py", "README.md"]          # 毎回入れ替える
 GAME_KEEP = ["mods"]                                           # 足りないものだけ足す（本体の MOD は入れ替える）
 SKIP_NAMES = {"__pycache__", ".trash", ".git"}
-TRIM_TESTS = ("numpy", "scipy", "skimage", "networkx", "PIL", "imageio", "tifffile", "av")
+TRIM_TESTS = ("numpy", "PIL", "av")
 
 
 def log(*a):

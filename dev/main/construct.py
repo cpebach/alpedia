@@ -1351,10 +1351,9 @@ class Construct:
         rn = fcross(rk, N)
         wk = 1.0 / M + np.einsum("ij,ij->i", rn, rn @ Iinv.T)
         # めり込み（法線方向）：接点ごとの押し戻し量 λ≥0 を、全接点が同時に地面の上に出るように一度に解く
-        from scipy.optimize import nnls
         A = (N @ N.T) / M + rn @ Iinv @ rn.T
         try:
-            lam_n, _ = nnls(A, D, maxiter=200)
+            lam_n = native_core().nnls(np.ascontiguousarray(A, dtype=np.float64), np.ascontiguousarray(D, dtype=np.float64))
         except Exception:  # noqa: BLE001
             lam_n = np.zeros(len(P))
             lam_n[0] = D[0] / wk[0]
@@ -2139,13 +2138,11 @@ class Construct:
         """再結合する素材同士が近づいていたら結合を追加。"""
         if not self.v_rebond.any():
             return False
-        from scipy.spatial import cKDTree
         idx = np.nonzero(self.v_rebond)[0]
-        centers = self.voxel_centers()[idx]
-        tree = cKDTree(centers)
-        pairs = tree.query_pairs(self.size * 1.15, output_type="ndarray")
+        centers = np.ascontiguousarray(self.voxel_centers()[idx], dtype=np.float64)
+        pa, pb = native_core().pairs_within(centers, self.size * 1.15)
         added = False
-        for a, b in pairs:
+        for a, b in zip(pa.tolist(), pb.tolist()):
             ia, ib = idx[a], idx[b]
             key = link_key(self.cells[ia], self.cells[ib])
             if key in self.links or key in self.extras:

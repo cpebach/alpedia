@@ -13,9 +13,43 @@ import itertools
 
 import numpy as np
 
+from . import native
 from .construct import DIR_TUPLES, CORNER_BITS, link_key
 
-from skimage.measure import marching_cubes
+
+def marching_cubes(vol, level=0.0, spacing=(1.0, 1.0, 1.0)):
+    """等値面（Rust の Marching Cubes）：(頂点 (n,3)、三角形 (m,3)、None、None)。頂点は配列の番号 × spacing、
+    値が level 以下の所を中とし、三角形は外向き（前の scikit-image と同じ形の戻り値）。"""
+    v, f = native.require().marching_cubes(np.ascontiguousarray(vol, dtype=np.float32), float(level),
+                                           tuple(float(x) for x in spacing))
+    return v, f, None, None
+
+
+class Csr:
+    """疎な行列（行ごとに、列の番号と値）。前の scipy.sparse.csr_matrix の代わりに、当たり判定の点の重みに使う。"""
+
+    def __init__(self, rows, cols, vals, shape):
+        rows, cols, vals = np.asarray(rows, np.int64), np.asarray(cols, np.int64), np.asarray(vals, np.float64)
+        order = np.lexsort((cols, rows))
+        self.indices, self.data, r = cols[order], vals[order], rows[order]
+        self.indptr = np.zeros(shape[0] + 1, np.int64)
+        np.add.at(self.indptr, r + 1, 1)
+        self.indptr = np.cumsum(self.indptr)
+        self.rows = r
+        self.shape = shape
+
+    def tocsr(self):
+        return self
+
+    def sort_indices(self):
+        pass
+
+    def __matmul__(self, x):
+        x = np.asarray(x, dtype=np.float64)
+        prod = self.data.reshape((-1,) + (1,) * (x.ndim - 1)) * x[self.indices]
+        out = np.zeros((self.shape[0],) + x.shape[1:], np.float64)
+        np.add.at(out, self.rows, prod)
+        return out
 
 OFFS8 = [tuple(int(x) for x in o) for o in itertools.product((0, 1), repeat=3)]
 _pattern_cache = {}
@@ -43,9 +77,7 @@ def _hull_tris(offsets):
             for k in range(1, len(order) - 1):
                 tris.append((order[0], order[k], order[k + 1]))
         elif rank == 3:
-            from scipy.spatial import ConvexHull
-            h = ConvexHull(P)
-            tris = [tuple(int(x) for x in s) for s in h.simplices]
+            tris = [tuple(int(x) for x in s) for s in native.require().convex_hull(np.ascontiguousarray(P))]
     res = [tuple(key[a] for a in t) for t in tris]
     _pattern_cache[key] = res
     return res
@@ -336,9 +368,8 @@ def build_mesh(c, k=None):
     for vol_g, allowed in parts:
         if vol_g.min() >= 0:
             continue
-        try:
-            verts, faces, normals, _ = marching_cubes(vol_g, level=0.0)
-        except (ValueError, RuntimeError):
+        verts, faces, _, _ = marching_cubes(vol_g, level=0.0)
+        if not len(faces):
             continue
         p = lo + verts / k                                     # セル単位
         # 面の向きをそろえる（外向き）：閉じた面の符号付き体積が正になる向き
@@ -434,9 +465,9 @@ def _owner(c, p, centers, allowed=None):
         owner[(owner >= 0) & ~allowed[np.maximum(owner, 0)]] = -1
     miss = owner < 0
     if miss.any():
-        from scipy.spatial import cKDTree
         cand = np.arange(len(centers)) if allowed is None else np.nonzero(allowed)[0]
-        _, nn = cKDTree(centers[cand]).query(p[miss])
+        nn = native.require().nearest(np.ascontiguousarray(centers[cand], dtype=np.float64),
+                                      np.ascontiguousarray(p[miss], dtype=np.float64))
         owner[miss] = cand[nn]
     return owner
 
@@ -496,7 +527,6 @@ def closest_on_shape(c, p, max_dist):
 def collision_proxies(c):
     """地面などとの当たり判定に使う球（半径 r）: 各ボクセル中心・結合の中点・三角形の重心。
     戻り値: (P,) 個の重み行列（P×ボクセル数）"""
-    from scipy.sparse import csr_matrix
     n = c.n_vox
     rows, cols, vals = [], [], []
     pid = 0
@@ -509,4 +539,4 @@ def collision_proxies(c):
     for t in c.topo["tris"]:
         rows += [pid] * 3; cols += [int(x) for x in t]; vals += [1 / 3] * 3
         pid += 1
-    return csr_matrix((vals, (rows, cols)), shape=(pid, n))
+    return Csr(rows, cols, vals, (pid, n))

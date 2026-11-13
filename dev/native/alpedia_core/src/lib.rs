@@ -17,6 +17,8 @@ mod contacts;
 mod devices;
 mod planet;
 mod tick;
+mod geomx;
+mod mc_tables;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -1453,6 +1455,63 @@ fn pairs_between<'py>(py: Python<'py>, a: RoF<'py>, b: RoF<'py>, r: f64) -> PyRe
 }
 
 /// 読み込めたかの確認用
+/// 等値面（Marching Cubes）：vol (nx, ny, nz) の level の面。戻り値 (頂点 (n,3)、三角形 (m,3))。
+#[pyfunction]
+#[pyo3(signature = (vol, level=0.0, spacing=(1.0, 1.0, 1.0)))]
+fn marching_cubes<'py>(py: Python<'py>, vol: PyReadonlyArrayDyn<'py, f32>, level: f32, spacing: (f64, f64, f64))
+    -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<i64>>)> {
+    let sh = vol.shape().to_vec();
+    if sh.len() != 3 {
+        return Err(PyValueError::new_err("marching_cubes: 3次元の配列にしてください"));
+    }
+    let data = vol.as_slice().map_err(|_| PyValueError::new_err("marching_cubes: 連続した配列ではありません"))?.to_vec();
+    let dims = [sh[0], sh[1], sh[2]];
+    let (v, f) = py.allow_threads(|| geomx::marching_cubes(&data, dims, level, [spacing.0, spacing.1, spacing.2]));
+    let nv = v.len();
+    let nf = f.len();
+    let va = PyArray1::from_vec_bound(py, v.into_iter().flatten().collect()).reshape([nv, 3])?;
+    let fa = PyArray1::from_vec_bound(py, f.into_iter().flatten().collect()).reshape([nf, 3])?;
+    Ok((va, fa))
+}
+
+/// 空いている所（solid が偽）を6近傍のつながりごとに番号付け（1 から）。戻り値 (番号の配列（形は solid と同じ）, 個数)。
+#[pyfunction]
+fn label_empty<'py>(py: Python<'py>, solid: PyReadonlyArrayDyn<'py, bool>) -> PyResult<(Bound<'py, PyArray1<i32>>, i32)> {
+    let sh = solid.shape().to_vec();
+    if sh.len() != 3 {
+        return Err(PyValueError::new_err("label_empty: 3次元の配列にしてください"));
+    }
+    let data = solid.as_slice().map_err(|_| PyValueError::new_err("label_empty: 連続した配列ではありません"))?.to_vec();
+    let (lab, n) = py.allow_threads(|| geomx::label_empty(&data, [sh[0], sh[1], sh[2]]));
+    Ok((PyArray1::from_vec_bound(py, lab), n))
+}
+
+fn pts3(a: &PyReadonlyArray2<'_, f64>, name: &str) -> PyResult<Vec<[f64; 3]>> {
+    let v = a.as_array();
+    if v.ncols() != 3 {
+        return Err(PyValueError::new_err(format!("{name}: (n,3) にしてください")));
+    }
+    Ok(v.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect())
+}
+
+/// 点ごとに、いちばん近い候補の番号。
+#[pyfunction]
+fn nearest<'py>(py: Python<'py>, cands: PyReadonlyArray2<'py, f64>, pts: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray1<i64>>> {
+    let c = pts3(&cands, "nearest")?;
+    let p = pts3(&pts, "nearest")?;
+    let r = py.allow_threads(|| geomx::nearest(&c, &p));
+    Ok(PyArray1::from_vec_bound(py, r))
+}
+
+/// 小さな点の集まりの凸包の三角形 (m,3)。
+#[pyfunction]
+fn convex_hull<'py>(py: Python<'py>, pts: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let p = pts3(&pts, "convex_hull")?;
+    let t = geomx::convex_hull(&p);
+    let n = t.len();
+    Ok(PyArray1::from_vec_bound(py, t.into_iter().flatten().collect()).reshape([n, 3])?)
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -1479,6 +1538,10 @@ fn alpedia_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Body>()?;
     m.add_function(wrap_pyfunction!(rigid_end, m)?)?;
     m.add_function(wrap_pyfunction!(nnls, m)?)?;
+    m.add_function(wrap_pyfunction!(marching_cubes, m)?)?;
+    m.add_function(wrap_pyfunction!(label_empty, m)?)?;
+    m.add_function(wrap_pyfunction!(nearest, m)?)?;
+    m.add_function(wrap_pyfunction!(convex_hull, m)?)?;
     m.add_function(wrap_pyfunction!(mesh_pack, m)?)?;
     m.add_class::<Proxy>()?;
     m.add_function(wrap_pyfunction!(step_tick, m)?)?;

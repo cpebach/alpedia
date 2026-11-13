@@ -167,17 +167,46 @@ class TestPlanet(unittest.TestCase):
 
 @unittest.skipIf(core is None, "Rust の物理コアがありません")
 class TestPairs(unittest.TestCase):
-    def test_pairs_match_kdtree(self):
-        from scipy.spatial import cKDTree
+    def test_pairs_match_brute_force(self):
         rng = np.random.default_rng(7)
         a, b = rng.random((800, 3)) * 10, rng.random((600, 3)) * 10 + 2
-        pr = cKDTree(a).query_pairs(0.6, output_type="ndarray")
+        D = np.linalg.norm(a[:, None] - a[None], axis=2)
+        ref = {(i, j) for i, j in zip(*np.nonzero(np.triu(D <= 0.6, 1)))}
         x, y = core.pairs_within(a, 0.6)
-        self.assertEqual(set(map(tuple, pr.tolist())), set(zip(x.tolist(), y.tolist())))
-        res = cKDTree(a).query_ball_tree(cKDTree(b), 0.7)
-        ref = {(i, j) for i, lst in enumerate(res) for j in lst}
+        self.assertEqual(ref, set(zip(x.tolist(), y.tolist())))
+        D = np.linalg.norm(a[:, None] - b[None], axis=2)
+        ref = {(i, j) for i, j in zip(*np.nonzero(D <= 0.7))}
         x, y = core.pairs_between(a, b, 0.7)
         self.assertEqual(ref, set(zip(x.tolist(), y.tolist())))
+
+    def test_nearest_label_hull_mc(self):
+        """前は scipy・scikit-image でしていた計算（いちばん近い点・空洞の塗り分け・凸包・等値面）。"""
+        rng = np.random.default_rng(9)
+        A, B = rng.random((300, 3)), rng.random((200, 3)) * 1.2 - 0.1
+        ref = np.argmin(np.linalg.norm(B[:, None] - A[None], axis=2), axis=1)
+        self.assertTrue((core.nearest(A, B) == ref).all())
+        solid = np.ones((7, 7, 7), bool)
+        solid[1:3, 1:3, 1:3] = False                     # 中の空洞
+        solid[4:6, 4:6, 4:6] = False                     # もう1つ
+        solid[0, 0, 0] = False                           # 角（外）
+        lab, n = core.label_empty(solid)
+        lab = lab.reshape(solid.shape)
+        self.assertEqual(n, 3)
+        self.assertEqual(len({int(lab[1, 1, 1]), int(lab[5, 5, 5]), int(lab[0, 0, 0])}), 3)
+        cube = np.array([[x, y, z] for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1)], float)
+        t = core.convex_hull(cube)
+        vol = abs(np.einsum("ij,ij->", cube[t[:, 0]], np.cross(cube[t[:, 1]], cube[t[:, 2]]))) / 6
+        self.assertAlmostEqual(vol, 8.0)
+        g = np.linspace(-1, 1, 20)
+        X, Y, Z = np.meshgrid(g, g, g, indexing="ij")
+        v, f = core.marching_cubes((np.sqrt(X ** 2 + Y ** 2 + Z ** 2) - 0.7).astype(np.float32), 0.0, (1.0, 1.0, 1.0))
+        r = np.linalg.norm(v - 9.5, axis=1) / 9.5        # 格子の番号 → 半径（中心は 9.5）
+        self.assertLess(np.abs(r - 0.7).max(), 0.02)
+        svol = np.einsum("ij,ij->", v[f[:, 0]], np.cross(v[f[:, 1]], v[f[:, 2]])) / 6
+        self.assertGreater(svol, 0)                       # 外向き
+        from collections import Counter
+        E = Counter(tuple(sorted(e)) for t_ in f.tolist() for e in ((t_[0], t_[1]), (t_[1], t_[2]), (t_[2], t_[0])))
+        self.assertTrue(all(n_ == 2 for n_ in E.values()))   # 閉じている
 
     def test_collide_matches_python(self):
         """地面との接触：Rust と Python で、同じ頂点が同じだけ押し戻される。"""
@@ -499,16 +528,18 @@ class TestStep(unittest.TestCase):
         self.assertGreater(np.abs(a[0].pos - self._make(self.SLAB, 0.0, seed=1).pos).max(), 1e-4)   # 本当に押し出した
 
     def test_nnls(self):
-        from scipy.optimize import nnls
+        """負にならない最小二乗：最適の条件（x≥0、x>0 の所は傾き 0、x=0 の所は傾き ≥0）を満たす。"""
         rng = np.random.default_rng(4)
         for n in (1, 3, 8, 32):
             J = rng.normal(size=(n, 6))
             A = J @ J.T
             b = rng.normal(size=n) + 0.3
-            x1, _ = nnls(A, b, maxiter=200)
-            x2 = core.nnls(np.ascontiguousarray(A), b)
-            self.assertTrue((x2 >= 0).all())
-            self.assertLess(np.abs(A @ x1 - A @ x2).max(), 1e-7)    # 解が1つでなくても、押し戻しの結果は同じ
+            x = core.nnls(np.ascontiguousarray(A), b)
+            g = A.T @ (A @ x - b)
+            tol = 1e-6 * max(1.0, np.abs(A).max() ** 2 * max(1.0, np.abs(b).max()))
+            self.assertTrue((x >= 0).all())
+            self.assertLess(np.abs(g[x > 1e-9]).max(initial=0.0), tol)
+            self.assertGreater(g[x <= 1e-9].min(initial=0.0), -tol)
 
 
 @unittest.skipIf(core is None or not hasattr(core, "mesh_pack"), "Rust の物理コア（描画用）がありません")

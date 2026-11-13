@@ -16,10 +16,9 @@ from collections import deque
 from contextlib import contextmanager
 
 import numpy as np
-from scipy.spatial import cKDTree
 
 from . import paths, log, devices, objio, savefmt
-from .construct import Construct, DIRS, REST_UNIT, link_key
+from .construct import Construct, DIRS, REST_UNIT
 from .planet import make_planet
 from .player import Player
 from .registry import Registry
@@ -758,165 +757,7 @@ class World:
         if not active:
             return []
         from . import native
-        from .construct import NATIVE_STEP_OFF
-        if native.core is not None and hasattr(native.core, "contacts") and not NATIVE_STEP_OFF:
-            return self._voxel_collisions_native(native.core, active, sleeping)
-        cons = list(active) + list(sleeping)
-        n_active = len(active)
-        pts, owner, row, is_ctr, inv, sizes = [], [], [], [], [], []
-        Ws = []
-        for k, c in enumerate(cons):
-            n = c.n_vox
-            W = c.proxW
-            cache = getattr(c, "_prox_cache", None)
-            if k >= n_active and cache is not None and cache[0] == (c.sleep_epoch, c.version):
-                X = cache[1]          # 静止中の構築物は当たり判定の点を作り直さない
-            else:
-                X = W @ c.voxel_centers()
-                if k >= n_active:
-                    c._prox_cache = ((c.sleep_epoch, c.version), X)
-            P = X.shape[0]
-            Ws.append(W.tocsr())
-            pts.append(X)
-            owner.append(np.full(P, k))
-            row.append(np.arange(P))
-            flag = np.zeros(P, bool)
-            flag[:n] = True
-            is_ctr.append(flag)
-            vinv = c.collision_inv()
-            inv.append(W @ vinv)
-            sizes.append(np.full(P, c.size))
-        offs = np.cumsum([0] + [len(x) for x in pts])
-        pts_list = pts
-        pts = np.concatenate(pts)
-        if len(pts) < 2:
-            return []
-        owner = np.concatenate(owner)
-        row = np.concatenate(row)
-        is_ctr = np.concatenate(is_ctr)
-        inv = np.concatenate(inv)
-        sizes = np.concatenate(sizes)
-        # 近い点の組を探す。全点をまとめて探すと同じ構築物の中の組が大量に出て遅いので、
-        # 同じ構築物の中はボクセル中心どうしだけ、別の構築物どうしは外枠（AABB）が重なる組だけ調べる。
-        pa_list, pb_list = [], []
-        trees = {}
-
-        def tree_of(k):
-            if k not in trees:
-                c = cons[k]
-                tc = getattr(c, "_prox_tree", None)
-                key = (c.sleep_epoch, c.version)
-                if k >= n_active and tc is not None and tc[0] == key:
-                    trees[k] = tc[1]          # 静止中の構築物は木も使い回す
-                else:
-                    trees[k] = cKDTree(pts_list[k])
-                    if k >= n_active:
-                        c._prox_tree = (key, trees[k])
-            return trees[k]
-        from . import native
-        nat = native.core          # Rust があれば、近い点の組は Rust で探す（cKDTree の代わり）
-        for k in range(n_active):
-            n = cons[k].n_vox
-            if n > 1 and nat is not None:
-                pa, pb = nat.pairs_within(np.ascontiguousarray(pts_list[k][:n]), 0.92 * cons[k].size)
-                if len(pa):
-                    pa_list.append(pa + offs[k])
-                    pb_list.append(pb + offs[k])
-            elif n > 1:
-                t = cKDTree(pts_list[k][:n])
-                pr = t.query_pairs(0.92 * cons[k].size, output_type="ndarray")
-                if len(pr):
-                    pa_list.append(pr[:, 0] + offs[k])
-                    pb_list.append(pr[:, 1] + offs[k])
-        lo = np.array([x.min(0) for x in pts_list])
-        hi = np.array([x.max(0) for x in pts_list])
-        csz = np.array([c.size for c in cons])
-        rr = 0.46 * (csz[:, None] + csz[None, :])
-        ov = np.all((lo[:, None, :] <= hi[None, :, :] + rr[..., None]) &
-                    (lo[None, :, :] <= hi[:, None, :] + rr[..., None]), axis=2)
-        ov = np.triu(ov, 1)
-        ov[n_active:, n_active:] = False          # 静止中どうしは調べない
-        for k1, k2 in zip(*np.nonzero(ov)):
-            k1, k2 = int(k1), int(k2)
-            r = rr[k1, k2]
-            if nat is not None:
-                ia, ib = nat.pairs_between(np.ascontiguousarray(pts_list[k1]), np.ascontiguousarray(pts_list[k2]), r)
-                if len(ia):
-                    pa_list.append(ia + offs[k1])
-                    pb_list.append(ib + offs[k2])
-                continue
-            res = tree_of(k1).query_ball_tree(tree_of(k2), r)
-            ia = [i for i, lst in enumerate(res) for _ in lst]
-            if not ia:
-                continue
-            ib = [j for lst in res for j in lst]
-            pa_list.append(np.asarray(ia, np.int64) + offs[k1])
-            pb_list.append(np.asarray(ib, np.int64) + offs[k2])
-        if not pa_list:
-            return []
-        a = np.concatenate(pa_list)
-        b = np.concatenate(pb_list)
-        d = pts[b] - pts[a]
-        dist = np.linalg.norm(d, axis=1)
-        mind = 0.46 * (sizes[a] + sizes[b])
-        over = dist < mind
-        a, b, d, dist, mind = a[over], b[over], d[over], dist[over], mind[over]
-        keep = np.ones(len(a), bool)
-        for k in range(len(a)):
-            if owner[a[k]] == owner[b[k]]:
-                c = cons[owner[a[k]]]
-                key = link_key(c.cells[row[a[k]]], c.cells[row[b[k]]])
-                if key in c.links or key in c.extras:
-                    keep[k] = False
-        if not keep.any():
-            return []
-        a, b, d, dist, mind = a[keep], b[keep], d[keep], dist[keep], mind[keep]
-        n = d / np.maximum(dist, 1e-9)[:, None]
-        pen = (mind - dist)
-        wa, wb = inv[a], inv[b]
-        ws = wa + wb
-        woke = set()
-        # 別の構築物どうしの接触：動いている相手と触れている間は静止扱いにしない。
-        # 剛体として動いている構築物が速くぶつかったら、ブロックごとの計算に戻す（壊れ方を残す）
-        diff = owner[a] != owner[b]
-        if diff.any():
-            vels = {}
-            for oa, ob in set(zip(owner[a][diff].tolist(), owner[b][diff].tolist())):
-                for o in (oa, ob):
-                    if o not in vels:
-                        vels[o] = cons[o].velocity() if o < n_active else np.zeros(3)
-                rel = float(np.linalg.norm(vels[oa] - vels[ob]))
-                if rel > 0.05:
-                    cons[oa]._touch_moving = True
-                    cons[ob]._touch_moving = True
-                if rel > 2.0:
-                    for o in (oa, ob):
-                        if getattr(cons[o], "mode", "soft") == "rigid":
-                            cons[o]._want_soft = True
-
-        def move(k_con, prow, vec):
-            c = cons[k_con]
-            W = Ws[k_con]
-            s0, s1 = W.indptr[prow], W.indptr[prow + 1]
-            for j in W.indices[s0:s1]:
-                c.pos[8 * j:8 * j + 8] += vec
-
-        for k in range(len(a)):
-            oa, ob = owner[a[k]], owner[b[k]]
-            corr = n[k] * pen[k]
-            if oa >= n_active and pen[k] < 0.01 * cons[oa].size:
-                move(ob, row[b[k]], corr)  # 眠っている側は動かさない
-                continue
-            if ob >= n_active and pen[k] < 0.01 * cons[ob].size:
-                move(oa, row[a[k]], -corr)
-                continue
-            move(oa, row[a[k]], -corr * (wa[k] / ws[k]))
-            move(ob, row[b[k]], corr * (wb[k] / ws[k]))
-            if oa >= n_active:
-                woke.add(oa)
-            if ob >= n_active:
-                woke.add(ob)
-        return [cons[k] for k in woke]
+        return self._voxel_collisions_native(native.require(), active, sleeping)
 
     def _native_tick(self, cons, sleeping, h, anchored_ids, settle_acc, fixed_pos):
         """1ティックの物理（サブステップの繰り返し）を Rust でまとめて進める。
