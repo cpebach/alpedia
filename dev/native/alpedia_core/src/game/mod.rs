@@ -28,6 +28,7 @@ pub mod netgame;
 pub mod gfx;
 pub mod ui;
 pub mod screens;
+pub mod screens_dev;
 pub mod shape_tables;
 
 use pyo3::prelude::*;
@@ -77,6 +78,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ui::UI>()?;
     m.add_class::<screens::Pause>()?;
     m.add_class::<screens::Inventory>()?;
+    m.add_class::<screens_dev::DevicePanel>()?;
+    m.add_class::<screens_dev::ActuatorPanel>()?;
+    m.add_class::<screens_dev::RowStep>()?;
+    m.add_class::<screens_dev::Fmt>()?;
     m.add_class::<netgame::Peer>()?;
     m.add_class::<netgame::Host>()?;
     m.add_class::<netgame::Joiner>()?;
@@ -328,4 +333,4 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// __init__ を持つ Rust のクラス（作るときに __init__ を呼ぶ）
-const INIT_CLASSES: &[&str] = &["RsNode", "Screen", "Pause", "Inventory"];
+const INIT_CLASSES: &[&str] = &["RsNode", "Screen", "Pause", "Inventory", "DevicePanel", "ActuatorPanel"];

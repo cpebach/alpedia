@@ -116,6 +116,21 @@ pub fn nearest(cands: &[[f64; 3]], pts: &[[f64; 3]]) -> Vec<i64> {
     if cands.is_empty() {
         return vec![-1; pts.len()];
     }
+    let d2 = |a: &[f64; 3], b: &[f64; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+    let brute = |p: &[f64; 3]| {
+        let mut best = (f64::INFINITY, -1i64);
+        for (i, c) in cands.iter().enumerate() {
+            let d = d2(p, c);
+            if d < best.0 || best.1 < 0 {
+                best = (d, i as i64);
+            }
+        }
+        best.1
+    };
+    if cands.len() <= 64 {
+        // 候補が少ないときは全部調べる（候補が1点・同じ位置のときに格子が細かくなりすぎて止まらなくなるのを避ける）
+        return pts.iter().map(brute).collect();
+    }
     let mut lo = cands[0];
     let mut hi = cands[0];
     for c in cands {
@@ -124,8 +139,8 @@ pub fn nearest(cands: &[[f64; 3]], pts: &[[f64; 3]]) -> Vec<i64> {
             hi[k] = hi[k].max(c[k]);
         }
     }
-    let ext = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f64, f64::max).max(1e-9);
-    let cell = (ext / (cands.len() as f64).cbrt().max(1.0)).max(1e-6);
+    let ext = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f64, f64::max);
+    let cell = if ext < 1e-6 { 1.0 } else { (ext / (cands.len() as f64).cbrt().max(1.0)).max(1e-6) };
     let key = |p: &[f64; 3]| {
         [((p[0] - lo[0]) / cell).floor() as i64, ((p[1] - lo[1]) / cell).floor() as i64, ((p[2] - lo[2]) / cell).floor() as i64]
     };
@@ -133,7 +148,6 @@ pub fn nearest(cands: &[[f64; 3]], pts: &[[f64; 3]]) -> Vec<i64> {
     for (i, c) in cands.iter().enumerate() {
         grid.entry(key(c)).or_default().push(i);
     }
-    let d2 = |a: &[f64; 3], b: &[f64; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
     pts.iter()
         .map(|p| {
             let k0 = key(p);
@@ -162,8 +176,8 @@ pub fn nearest(cands: &[[f64; 3]], pts: &[[f64; 3]]) -> Vec<i64> {
                     break;
                 }
                 r += 1;
-                if r > 4096 {
-                    break;
+                if r > 256 {
+                    return brute(p);         // 遠すぎる点は全部調べる
                 }
             }
             best.1
