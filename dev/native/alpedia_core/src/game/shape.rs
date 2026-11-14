@@ -190,6 +190,37 @@ pub fn facet_v(c: &Bound<'_, PyAny>) -> R<Vec<bool>> {
     }
     Ok(out)
 }
+/// ボクセルごとの「透けるか」（素材の opacity が 1 未満。ガラスなど。機器は透けない）
+pub fn clear_v(c: &Bound<'_, PyAny>) -> R<Vec<bool>> {
+    let reg = c.getattr("reg")?;
+    let mut cache: HashMap<String, bool> = HashMap::new();
+    let mut out = vec![];
+    for (m, d) in c.getattr("mats")?.iter()?.zip(c.getattr("devs")?.iter()?) {
+        let (m, d) = (m?, d?);
+        if d.is_truthy()? {
+            out.push(false);
+            continue;
+        }
+        let key = m.repr()?.to_string();
+        let v = match cache.get(&key) {
+            Some(v) => *v,
+            None => {
+                let md = reg.call_method1("material", (&m,))?;
+                let v = if md.is_truthy()? {
+                    let o = md.call_method1("get", ("opacity", 1.0))?;
+                    !o.is_none() && o.extract::<f64>().unwrap_or(1.0) < 0.999
+                } else {
+                    false
+                };
+                cache.insert(key, v);
+                v
+            }
+        };
+        out.push(v);
+    }
+    Ok(out)
+}
+
 #[pyfunction]
 pub fn shape_facet_voxels<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     Ok(PyArray1::from_vec_bound(py, facet_v(c)?).into_any())
@@ -285,20 +316,39 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
         py.allow_threads(|| crate::topo::shape_sdf(dims, lo, kf, r, m, &prims))
     };
     let has_rotors = match opt(c, "rotors")? { Some(x) => x.is_truthy()?, None => false };
-    let gid: Option<Vec<usize>> = if has_rotors && c.hasattr("_art_groups")? {
+    let rotor_gid: Option<Vec<usize>> = if has_rotors && c.hasattr("_art_groups")? {
         Some(iv(&c.call_method0("_art_groups")?)?.into_iter().map(|x| x as usize).collect())
     } else { None };
+    // 透ける素材（ガラス）と透けない素材は別の部分（別の形）にする。1つの形だと、ガラスと接した所に
+    // 透けないブロックの面ができず、ガラス越しに隣のブロックの中（裏側）が見えてしまうため。
+    // 別の部分にすると、境に両側の切り口の面ができる（アクチュエーターで別に動く部分と同じ作り方）
+    let clear = clear_v(c)?;
+    let split_clear = clear.iter().any(|x| *x) && clear.iter().any(|x| !*x);
+    let gid: Option<Vec<usize>> = match (&rotor_gid, split_clear) {
+        (Some(g), true) => Some(g.iter().zip(&clear).map(|(g, t)| g * 2 + *t as usize).collect()),
+        (None, true) => Some(clear.iter().map(|t| *t as usize).collect()),
+        (g, false) => g.clone(),
+    };
     let mut parts: Vec<(Vec<f32>, Option<Vec<bool>>)> = vec![];
     match &gid {
         Some(g) if g.iter().copied().max().unwrap_or(0) > 0 => {
-            // 回転ジョイント（アクチュエーター）で別に動く部分ごとに、別の形・別のメッシュにする
+            // 回転ジョイント（アクチュエーター）で別に動く部分・透けるかどうかごとに、別の形・別のメッシュにする
             let mut rotor_pairs: Vec<(usize, usize)> = vec![];
-            for r_ in c.getattr("rotors")?.iter()? {
-                let r_ = r_?;
+            let rotors = match opt(c, "rotors")? { Some(x) if !x.is_none() => x.iter()?.collect::<R<Vec<_>>>()?, _ => vec![] };
+            for r_ in rotors {
                 let (a, b): (usize, usize) = (r_.get_item("a")?.extract()?, r_.get_item("b")?.extract()?);
                 let key = (a.min(b), a.max(b));
                 if !rotor_pairs.contains(&key) {
                     rotor_pairs.push(key);
+                }
+            }
+            // 部分をまたぐ結合（ガラスと鋼鉄のつなぎ目など）も、両側から真ん中まで伸ばして、つながった形を保つ
+            for s in &segs {
+                if g[s[0]] != g[s[1]] {
+                    let key = (s[0].min(s[1]), s[0].max(s[1]));
+                    if !rotor_pairs.contains(&key) {
+                        rotor_pairs.push(key);
+                    }
                 }
             }
             let gn = g.iter().copied().max().unwrap() + 1;
