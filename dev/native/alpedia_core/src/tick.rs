@@ -39,6 +39,8 @@ impl BoxGroup {
 
 pub struct SoftPart<'a> {
     pub rest: &'a mut [f64],
+    /// まとまりの基準の並び（無ければ空）
+    pub crest: &'a mut [f64],
     pub act_scale: &'a [f64],
     pub last_r: &'a mut [f64],
     pub quat: &'a mut [f64],
@@ -226,7 +228,7 @@ pub fn run(
                 Part::Soft(s) => {
                     body::soft_begin(
                         j.pos, j.vel, j.prev, j.force, s.rest, s.act_scale, s.last_r, s.quat, t, planets, scale, h, iters,
-                        &s.angles, s.parallel, &j.cav, soft,
+                        &s.angles, s.parallel, &j.cav, soft, s.crest,
                     );
                     for &g in &j.boxes {
                         box_contacts(k, step, g, &groups[g], j.pos, j.prev, j.vel, t, false, &mut o.hits);
@@ -307,7 +309,7 @@ pub fn run(
             let slot = kind_slot(&j.part);
             match &mut j.part {
                 Part::Soft(s) => {
-                    let (br, rot) = body::soft_end(j.pos, j.vel, j.prev, s.rest, s.act_scale, s.last_r, t, h, &s.angles);
+                    let (br, rot) = body::soft_end(j.pos, j.vel, j.prev, s.rest, s.act_scale, s.last_r, t, h, &s.angles, s.crest);
                     if !br.is_empty() || !rot.is_empty() {
                         o.broken.push((k, br, rot));
                         stop = true;

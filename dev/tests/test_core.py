@@ -1002,5 +1002,107 @@ class TestFuelAndFlow(CoreCase):
         self.assertEqual([d["def"] for d in c.devs], ["pipe", "valve"])
         self.assertEqual(c.devs[1]["state"]["open"], 1.0)
 
+
+class TestLimits(CoreCase):
+    """L-01〜03：大きな構築物の固さ・空気の抵抗・掘った穴の水と天井の崩れ。"""
+
+    def test_long_beam_and_tall_column_stay_stiff(self):
+        """やわらかいブロックのモードでも、長い梁はたわまず、高い柱は自分の重さで崩れない（L-03）。"""
+        w = self.world()
+        n = 16
+        vox = [((x, 3, z), "steel", None) for x in range(n) for z in range(2)]
+        vox += [((x, y, z), "steel", None) for x in (0, n - 1) for y in range(3) for z in range(2)]
+        c = self.put(w, vox, extra=0.6)
+        cells = np.array(c.cells)
+        top = cells[:, 1] == 3
+        mid = top & (np.abs(cells[:, 0] - (n - 1) / 2) <= 0.5)
+        ends = top & ((cells[:, 0] == 0) | (cells[:, 0] == n - 1))
+        self.run_for(w, 3.0)
+        up = np.array([0, 1.0, 0])
+        C = c.voxel_centers()
+        sag = float((C[ends].mean(0) - C[mid].mean(0)) @ up)
+        self.assertLess(sag, 0.02, "8 m の鋼鉄の梁が 2 cm 以上たわんだ")
+        w2 = self.world()
+        col = self.put(w2, [((x, y, z), "steel", None) for x in range(2) for y in range(28) for z in range(2)], extra=0.3)
+        self.run_for(w2, 3.0)
+        self.assertEqual(len(w2.constructs), 1, "14 m の鋼鉄の柱が自分の重さで崩れた")
+        self.assertEqual(col.n_vox, 112)
+
+    def test_air_drag(self):
+        """大気のある惑星では、軽い物ほど空気の抵抗で遅く落ちる。大気の無い月では同じ（L-02）。"""
+        def fall(planet, mat):
+            w = self.world(full_rigid=True, planets=[{"def": planet, "position": [0, 0, 0], "craters": []}])
+            c = self.put(w, [((x, 0, z), mat, None) for x in range(3) for z in range(3)], extra=60.0)
+            self.run_for(w, 2.5)
+            return float(np.linalg.norm(c.velocity()))
+        steel, wood = fall("terra", "steel"), fall("terra", "wood")
+        self.assertLess(wood, steel - 0.3, f"木 {wood:.2f} m/s・鋼鉄 {steel:.2f} m/s")
+        self.assertAlmostEqual(fall("luna", "steel"), fall("luna", "wood"), delta=0.02)
+
+    def _gaia(self):
+        w = self.world(full_rigid=True, planets=[{"def": "gaia", "position": [0, 0, 0], "craters": []}])
+        pl = w.planets[0]
+        rng = np.random.default_rng(1)
+        dirs = rng.normal(size=(8000, 3))
+        dirs /= np.linalg.norm(dirs, axis=1)[:, None]
+        return w, pl, dirs, np.asarray(pl._sample(dirs))
+
+    def test_dug_hole_floods_from_nearby_water(self):
+        """海・池のすぐそばを水面より深く掘ると、少しずつ水が満ちる。水から遠い穴は乾いたまま（L-01）。"""
+        w, pl, dirs, s = self._gaia()
+        w.step(DT)
+        shore = None
+        for i in np.where(s[:, 1] > s[:, 0])[0][:2000]:
+            t = np.cross(dirs[i], [0, 1.0, 0])
+            t /= np.linalg.norm(t)
+            for k in range(1, 40):
+                d = dirs[i] + t * (k * 0.1 / pl.radius)
+                d /= np.linalg.norm(d)
+                sd = np.asarray(pl._sample(d[None]))[0]
+                if sd[0] > sd[1] + 0.05:
+                    shore = (d, sd)
+                    break
+            if shore:
+                break
+        self.assertIsNotNone(shore)
+        d, sd = shore
+        for k in range(3):
+            w.dig({"kind": "terrain", "planet": pl, "point": pl.center + d * (sd[0] - 0.6 * (k + 1))}, 1.2)
+        q = pl.center + d * (sd[1] - 0.3)
+        self.run_for(w, 0.2)
+        self.assertLess(float(pl.water_depth(q[None])[0]), 0.0, "掘ってすぐに満ちた（少しずつ満ちるはず）")
+        self.run_for(w, 5.0)
+        self.assertAlmostEqual(float(pl.water_depth(q[None])[0]), 0.3, delta=0.05)
+        w2 = self.reload(w)                      # 読み直しても満ちたまま
+        w2.step(DT)
+        self.assertAlmostEqual(float(w2.planets[0].water_depth(q[None])[0]), 0.3, delta=0.05)
+        i = int(np.argmax(s[:, 0] - s[:, 1]))  # 一番高い所
+        d2, s2 = dirs[i], s[i]
+        w.dig({"kind": "terrain", "planet": pl, "point": pl.center + d2 * (s2[0] - 0.5)}, 1.2)
+        self.run_for(w, 1.0)
+        self.assertLess(float(pl.water_depth((pl.center + d2 * (s2[0] - 1.0))[None])[0]), 0.0)
+
+    def test_thin_roof_caves_in(self):
+        """地中を浅く掘ると天井が崩れて地表まで開き、土が落ちる。深い所は崩れない（L-01）。"""
+        w, pl, dirs, s = self._gaia()
+        land = np.where(s[:, 0] - s[:, 1] > 3.0)[0]
+        d, r = dirs[land[5]], float(s[land[5]][0])
+        n0 = len(w.constructs)
+        w.dig({"kind": "terrain", "planet": pl, "point": pl.center + d * (r - 1.3)}, 1.0)
+        self.assertGreater(float(pl.sdf((pl.center + d * (r - 0.15))[None])[0]), 0.0, "天井が開いていない")
+        debris = list(w.constructs.values())[n0:]
+        self.assertGreater(len(debris), 0)
+        self.assertTrue(all(c.name == "崩れた土" for c in debris))
+        self.run_for(w, 3.0)
+        for c in debris:                         # 落ちて止まる（飛ばされない）
+            self.assertLess(float(pl.sdf(c.center_of_mass()[None])[0]), 1.5)
+            self.assertLess(float(np.linalg.norm(c.velocity())), 0.5)
+        d2, r2 = dirs[land[9]], float(s[land[9]][0])
+        nc, n1 = len(pl.craters), len(w.constructs)
+        w.dig({"kind": "terrain", "planet": pl, "point": pl.center + d2 * (r2 - 8.0)}, 1.0)
+        self.assertEqual(len(pl.craters), nc + 1)
+        self.assertEqual(len(w.constructs), n1)
+
+
 if __name__ == "__main__":
     unittest.main()

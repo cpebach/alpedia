@@ -2006,7 +2006,23 @@ impl TerrainPatch {
         // 水面
         let water = s.getattr("water")?;
         if pl.getattr("has_water")?.is_truthy()? {
-            let wet: Vec<bool> = (0..nv).map(|i| wr[i] > r_nat[i]).collect();
+            // 掘った穴に満ちた水：穴の上の格子点（少し外まで）は、その水面の高さにする（外側は地面の下で見えない）
+            let mut wr = wr.clone();
+            let mut wet: Vec<bool> = (0..nv).map(|i| wr[i] > r_nat[i]).collect();
+            let fl: Vec<[f64; 5]> = match pl.getattr("floods_now") { Ok(v) => v.extract().unwrap_or_default(), Err(_) => vec![] };
+            for f in &fl {
+                let fc = [f[0], f[1], f[2]];
+                let lc = rnorm(&fc).max(1e-9);
+                let fd = [fc[0] / lc, fc[1] / lc, fc[2] / lc];
+                let cosr = ((f[3] + step * 1.5) / lc).min(1.0).asin().cos();
+                for i in 0..nv {
+                    let dd = d[i * 3] * fd[0] + d[i * 3 + 1] * fd[1] + d[i * 3 + 2] * fd[2];
+                    if dd >= cosr {
+                        wr[i] = wr[i].max(f[4]);
+                        wet[i] = true;
+                    }
+                }
+            }
             let wq: Vec<[i64; 4]> = quads.iter().filter(|q| q.iter().any(|&k| wet[k as usize])).cloned().collect();
             if !wq.is_empty() {
                 let sh_c = [0.2, 0.42, 0.75];

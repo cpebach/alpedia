@@ -322,7 +322,15 @@ pub fn construct_native_planets<'py>(py: Python<'py>, planets: &Bound<'py, PyAny
             return Ok(py.None());
         }
         let f = |k: &str| -> R<f64> { pl.getattr(k)?.extract::<f64>() };
-        out.append((nat, f("bound")?, f("lipschitz")?, f("gm")?, f("radius")?, pl.getattr("has_water")?.is_truthy()?))?;
+        // 大気：地表の空気の密度（気圧に比例。101.3 kPa で 1.225 kg/m³）と、密度が 1/e になる高さ（空の色と同じ：半径の 1/4、30 m 以上）
+        let kpa: f64 = match pl.getattr("defn")?.call_method1("get", ("atmosphere_pressure", 101.3)) {
+            Ok(v) if !v.is_none() => v.extract().unwrap_or(101.3),
+            _ => 101.3,
+        };
+        let rad = f("radius")?;
+        let air = 1.225 * (kpa / 101.3).max(0.0);
+        out.append((nat, f("bound")?, f("lipschitz")?, f("gm")?, rad, pl.getattr("has_water")?.is_truthy()?, air,
+                    (rad * 0.25).max(30.0)))?;
     }
     Ok(out.into_any().unbind())
 }
@@ -1635,9 +1643,44 @@ impl Construct {
             f("jcount")?, f("inv_mass")?, f("mass")?, f("damp")?, f("fric")?, f("v_stiff")?, f("v_plast")?, f("v_yield")?,
             f("v_density")?, i("ctype")?, i("cidx")?, iarr(py, ra, &[nr])?, iarr(py, rva, &[nr, 4])?, iarr(py, rvb, &[nr, 4])?,
             arr(py, rbr, &[nr])?, iarr(py, hk, &[nr, 2])?]);
-        let body = core(py)?.getattr("Body")?.call1(args)?;
+        // まとまりの形合わせ（大きな構築物の固さ）：セルと、まとまりに入れてよいブロック（アクチュエーターは入れない）
+        let n = Self::n(slf)?;
+        let mut cells = Vec::with_capacity(3 * n);
+        for c in Self::g(slf, "cells")?.iter()? {
+            for x in c?.iter()?.take(3) {
+                cells.push(x?.call_method0("__int__")?.extract::<i64>()?);
+            }
+        }
+        let mut ok = vec![true; n];
+        for i in Self::actuator_indices(slf)?.iter()? {
+            let i: usize = i?.extract()?;
+            if i < n {
+                ok[i] = false;
+            }
+        }
+        let kw = PyDict::new_bound(py);
+        if cells.len() == 3 * n {
+            kw.set_item("cells", iarr(py, cells, &[n, 3])?)?;
+            kw.set_item("cluster_ok", ok)?;
+        }
+        let body = core(py)?.getattr("Body")?.call(args, Some(&kw))?;
         Self::set(slf, "_nb_cache", (key, &body))?;
         Ok(body)
+    }
+
+    /// まとまりの基準の並び（Body ごと。作り直した Body では NaN から：最初の計算で今の形から作る）
+    fn _crest<'py>(slf: &Bound<'py, Self>, body: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+        let py = slf.py();
+        if let Some(c) = opt(slf.as_any(), "_crest_cache")? {
+            if c.get_item(0)?.is(body) {
+                return c.get_item(1);
+            }
+        }
+        let m: usize = body.getattr("n_cluster_members")?.extract()?;
+        let a = arr(py, vec![f64::NAN; 3 * m.max(1)], &[3 * m.max(1)])?;
+        let a = if m == 0 { arr(py, vec![], &[0])? } else { a };
+        Self::set(slf, "_crest_cache", (body, &a))?;
+        Ok(a)
     }
 
     /// 構築物どうしの押し出しに使う Rust の Proxy（形が変わったら作り直す）
@@ -1723,7 +1766,7 @@ impl Construct {
             let args: Vec<PyObject> = vec![pos.unbind(), vel.unbind(), prev.unbind(), force.unbind(), Self::g(slf, "rest")?.unbind(),
                 Self::g(slf, "act_scale")?.unbind(), Self::g(slf, "_last_R")?.unbind(), Self::g(slf, "_quat")?.unbind(), pls.clone().unbind(),
                 gscale.into_py(py), h.into_py(py), iters.into_py(py), Self::_rotor_angles(slf)?.into_py(py), par.into_py(py), cav.unbind(),
-                soft.into_py(py)];
+                soft.into_py(py), Self::_crest(slf, &body)?.unbind()];
             body.call_method1("soft_begin", PyTuple::new_bound(py, args))?;
         }
         let ecs: Vec<Bound<'_, PyAny>> = Self::g(slf, "ext_colliders")?.iter()?.collect::<R<_>>()?;
@@ -1818,6 +1861,7 @@ impl Construct {
             job.set_item("last_r", Self::g(slf, "_last_R")?)?;
             job.set_item("quat", Self::g(slf, "_quat")?)?;
             job.set_item("angles", Self::_rotor_angles(slf)?)?;
+            job.set_item("crest", Self::_crest(slf, &body)?)?;
         }
         Ok(job.into_any())
     }
@@ -1973,7 +2017,7 @@ impl Construct {
             None => zeros(py, &[0])?,
         };
         let r = body.call_method1("soft_end", (Self::g(slf, "pos")?, Self::g(slf, "vel")?, Self::g(slf, "_prev")?, Self::g(slf, "rest")?,
-            Self::g(slf, "act_scale")?, last_r, h, Self::_rotor_angles(slf)?))?;
+            Self::g(slf, "act_scale")?, last_r, h, Self::_rotor_angles(slf)?, Self::_crest(slf, &body)?))?;
         let broken: Vec<usize> = iv(&r.get_item(0)?)?.into_iter().map(|x| x as usize).collect();
         let rot: Vec<usize> = iv(&r.get_item(1)?)?.into_iter().map(|x| x as usize).collect();
         let broke = !broken.is_empty() || !rot.is_empty();

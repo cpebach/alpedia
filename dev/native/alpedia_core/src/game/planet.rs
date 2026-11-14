@@ -127,6 +127,11 @@ pub struct Planet {
     pub lipschitz: f64,
     nat: Option<PyObject>,
     nat_ncr: i64,
+    /// 掘削跡ごとの、満ちる水面（目標）と今の水面の半径（-inf は水なし）。掘削跡の数が変わったら目標を計算し直す
+    flood_target: Vec<f64>,
+    flood_now: Vec<f64>,
+    flood_ncr: i64,
+    flood_acc: f64,
 }
 
 impl Planet {
@@ -146,6 +151,7 @@ impl Planet {
             craters: PyList::empty_bound(py).into_any().unbind(),
             version: 0, bound: radius + amp * 1.5 + 2.0, lipschitz,
             defn: d.into_any().unbind(), nat: None, nat_ncr: -1,
+            flood_target: Vec::new(), flood_now: Vec::new(), flood_ncr: -1, flood_acc: 0.0,
         })
     }
     fn ctr(slf: &Bound<'_, Self>) -> R<V3> {
@@ -258,6 +264,7 @@ impl Planet {
             let mut b = slf.borrow_mut();
             b.nat = Some(s.unbind());
             b.nat_ncr = -1;
+            b.flood_ncr = -1;          // 作り直した地形には水の満ちた穴も渡し直す
         }
         let s = slf.borrow().nat.as_ref().unwrap().clone_ref(py).into_bound(py);
         let cr = slf.borrow().craters.clone_ref(py).into_bound(py);
@@ -269,6 +276,76 @@ impl Planet {
         }
         Ok(s)
     }
+    /// 掘った穴の水：掘削跡が増えたら、どこまで水が満ちるかを計算し直し、今の水面を毎秒 1 m ずつ上げる。
+    /// 読み込んだときの穴は、はじめから満ちた状態。水面が変わったら（0.25 秒ごとに）version を上げて描き直させる
+    fn update_water(slf: &Bound<'_, Self>, dt: f64) -> R<bool> {
+        let py = slf.py();
+        if !slf.getattr("has_water")?.is_truthy()? {
+            return Ok(false);
+        }
+        let nat = Self::_nat(slf)?;
+        let n = slf.borrow().craters.bind(py).len()? as i64;
+        let mut changed = false;
+        if slf.borrow().flood_ncr != n {
+            let tg: Vec<f64> = nat.call_method0("flood_targets")?.extract()?;
+            let cr: Vec<Vec<f64>> = slf.borrow().craters.bind(py).extract()?;
+            let mut b = slf.borrow_mut();
+            let first = b.flood_ncr < 0 && b.flood_now.is_empty();
+            let old = b.flood_now.clone();
+            b.flood_now = (0..tg.len())
+                .map(|i| {
+                    if !tg[i].is_finite() {
+                        f64::NEG_INFINITY
+                    } else if first {
+                        tg[i]
+                    } else if i < old.len() && old[i].is_finite() {
+                        old[i].min(tg[i])
+                    } else {
+                        // 新しく水が来た穴：底から満ちる
+                        let c = &cr[i];
+                        ((c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt() - c[3]).min(tg[i])
+                    }
+                })
+                .collect();
+            b.flood_target = tg;
+            b.flood_ncr = n;
+            changed = true;
+        }
+        {
+            let mut b = slf.borrow_mut();
+            let (tg, now) = (b.flood_target.clone(), &mut b.flood_now);
+            for i in 0..now.len().min(tg.len()) {
+                if now[i].is_finite() && now[i] < tg[i] {
+                    now[i] = (now[i] + dt).min(tg[i]);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return Ok(false);
+        }
+        let fl = Self::floods_now(slf)?;
+        let flat: Vec<f64> = fl.iter().flatten().copied().collect();
+        nat.call_method1("set_floods", (np(py)?.call_method1("ascontiguousarray", (super::construct::arr(py, flat, &[fl.len() * 5])?,))?,))?;
+        let mut b = slf.borrow_mut();
+        b.flood_acc += dt;
+        let filling = b.flood_now.iter().zip(b.flood_target.iter()).any(|(a, t)| a.is_finite() && a < t);
+        if b.flood_acc >= 0.25 || !filling {
+            b.flood_acc = 0.0;
+            b.version += 1;
+        }
+        Ok(true)
+    }
+    /// 水の満ちた掘削跡 [[x, y, z, 半径, 水面の半径]]（惑星ローカル。描画・水深に使う）
+    #[getter]
+    fn floods_now(slf: &Bound<'_, Self>) -> R<Vec<[f64; 5]>> {
+        let py = slf.py();
+        let cr: Vec<Vec<f64>> = slf.borrow().craters.bind(py).extract()?;
+        let b = slf.borrow();
+        Ok(cr.iter().zip(b.flood_now.iter()).filter(|(c, l)| l.is_finite() && c.len() >= 4)
+            .map(|(c, l)| [c[0], c[1], c[2], c[3], *l]).collect())
+    }
+
     /// 単位方向 (N,3) における地表半径（ノイズを直接計算）
     fn surface_radius_exact<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         Self::_nat(slf)?.call_method1("surface_radius_exact", (rows3(slf.py(), &v3s(dirs)?)?,))
@@ -355,7 +432,13 @@ impl Planet {
     fn water_depth<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let (d, r) = Self::dirs_of(&v3s(p)?, Self::ctr(slf)?);
         let s = Self::sample_v(slf, &d)?;
-        let v: Vec<f64> = s.iter().zip(&r).map(|(s, r)| if s[1] > s[0] { s[1] - r } else { -1e9 }).collect();
+        let mut v: Vec<f64> = s.iter().zip(&r).map(|(s, r)| if s[1] > s[0] { s[1] - r } else { -1e9 }).collect();
+        let fl = Self::floods_now(slf)?;
+        if !fl.is_empty() {
+            for (k, (dd, rr)) in d.iter().zip(&r).enumerate() {
+                v[k] = v[k].max(crate::flood_depth(&fl, [dd[0] * rr, dd[1] * rr, dd[2] * rr]));
+            }
+        }
         let n = v.len();
         arr(slf.py(), v, &[n])
     }
@@ -967,7 +1050,13 @@ impl EarthPlanet {
     fn water_depth<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let (d, r) = Planet::dirs_of(&v3s(p)?, Planet::ctr(&sup(slf))?);
         let s = Self::sample_v(slf, &d)?;
-        let v: Vec<f64> = s.iter().zip(&r).map(|(s, r)| if s[1] > s[0] { s[1] - r } else { -1e9 }).collect();
+        let mut v: Vec<f64> = s.iter().zip(&r).map(|(s, r)| if s[1] > s[0] { s[1] - r } else { -1e9 }).collect();
+        let fl = Planet::floods_now(&sup(slf))?;
+        if !fl.is_empty() {
+            for (k, (dd, rr)) in d.iter().zip(&r).enumerate() {
+                v[k] = v[k].max(crate::flood_depth(&fl, [dd[0] * rr, dd[1] * rr, dd[2] * rr]));
+            }
+        }
         let n = v.len();
         arr(slf.py(), v, &[n])
     }

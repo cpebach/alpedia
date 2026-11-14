@@ -10,6 +10,7 @@
 mod art;
 mod artstep;
 mod body;
+mod cluster;
 mod kernels;
 mod mesh;
 mod pairs;
@@ -257,6 +258,21 @@ struct PlanetShape {
     shape: Arc<planet::Shape>,
     center: [f64; 3],
     craters: RwLock<Vec<[f64; 4]>>,
+    /// 水の満ちた掘削跡（惑星ローカルの [x, y, z, 半径, 水面の半径]）
+    floods: RwLock<Vec<[f64; 5]>>,
+}
+
+/// 掘削跡の中の水深（球の中で、水面より下なら 水面 − 半径。無ければ -1e9）。q は惑星ローカル
+pub(crate) fn flood_depth(floods: &[[f64; 5]], q: [f64; 3]) -> f64 {
+    let r = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
+    let mut best = -1e9f64;
+    for f in floods {
+        let d = [q[0] - f[0], q[1] - f[1], q[2] - f[2]];
+        if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < f[3] * f[3] && r < f[4] {
+            best = best.max(f[4] - r);
+        }
+    }
+    best
 }
 
 fn rows3(a: &[f64]) -> Vec<[f64; 3]> {
@@ -325,7 +341,8 @@ impl PlanetShape {
                 })
             }
         };
-        Ok(PlanetShape { shape: Arc::new(planet::Shape::new(radius, amp, freq, seed, e)), center, craters: RwLock::new(Vec::new()) })
+        Ok(PlanetShape { shape: Arc::new(planet::Shape::new(radius, amp, freq, seed, e)), center, craters: RwLock::new(Vec::new()),
+                         floods: RwLock::new(Vec::new()) })
     }
 
     /// 掘削跡（惑星ローカル座標の [x, y, z, 半径]）を入れ替える
@@ -333,6 +350,68 @@ impl PlanetShape {
         let c = ro(&craters, "craters")?;
         *self.craters.write().unwrap() = c.chunks_exact(4).map(|v| [v[0], v[1], v[2], v[3]]).collect();
         Ok(())
+    }
+
+    /// 水の満ちた掘削跡を入れ替える（[x, y, z, 半径, 水面の半径] の並び）
+    fn set_floods(&self, floods: RoF) -> PyResult<()> {
+        let c = ro(&floods, "floods")?;
+        *self.floods.write().unwrap() = c.chunks_exact(5).map(|v| [v[0], v[1], v[2], v[3], v[4]]).collect();
+        Ok(())
+    }
+
+    /// 掘削跡ごとの、満ちる水面の半径（水が来ない穴は -inf）。海・池の水面に触れている穴から、
+    /// 重なっている穴へ、底が水面より低い限り広がる（水の無い惑星では全部 -inf）
+    fn flood_targets(&self, py: Python<'_>) -> Vec<f64> {
+        let cr = self.craters.read().unwrap().clone();
+        let n = cr.len();
+        if self.shape.earth.is_none() || n == 0 {
+            return vec![f64::NEG_INFINITY; n];
+        }
+        py.allow_threads(|| {
+            let mut lvl = vec![f64::NEG_INFINITY; n];
+            for (i, c) in cr.iter().enumerate() {
+                let rc = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt().max(1e-9);
+                let u = [c[0] / rc, c[1] / rc, c[2] / rc];
+                let rf = if u[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+                let mut t1 = [u[1] * rf[2] - u[2] * rf[1], u[2] * rf[0] - u[0] * rf[2], u[0] * rf[1] - u[1] * rf[0]];
+                let l1 = (t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]).sqrt();
+                t1 = [t1[0] / l1, t1[1] / l1, t1[2] / l1];
+                let t2 = [u[1] * t1[2] - u[2] * t1[1], u[2] * t1[0] - u[0] * t1[2], u[0] * t1[1] - u[1] * t1[0]];
+                // 穴の縁から 0.75 m 以内に海・池の水があれば、しみ出して満ちる（内側の輪と外側の輪で調べる）
+                let mut dirs = vec![u];
+                for a in [(c[3] * 0.6) / rc, (c[3] + 0.75) / rc] {
+                    for k in 0..12 {
+                        let th = k as f64 * std::f64::consts::TAU / 12.0;
+                        let v = [u[0] + (t1[0] * th.cos() + t2[0] * th.sin()) * a, u[1] + (t1[1] * th.cos() + t2[1] * th.sin()) * a,
+                                 u[2] + (t1[2] * th.cos() + t2[2] * th.sin()) * a];
+                        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                        dirs.push([v[0] / l, v[1] / l, v[2] / l]);
+                    }
+                }
+                for d in dirs {
+                    let s = self.shape.sample(d);
+                    if s[1] > s[0] {
+                        lvl[i] = lvl[i].max(s[1]);
+                    }
+                }
+            }
+            // 重なっている穴へ広げる（底が水面より低い穴だけを通って）
+            let bottom: Vec<f64> = cr.iter().map(|c| (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt() - c[3]).collect();
+            let mut queue: Vec<usize> = (0..n).filter(|&i| lvl[i] > bottom[i]).collect();
+            while let Some(i) = queue.pop() {
+                for j in 0..n {
+                    if j == i || lvl[j] >= lvl[i] || bottom[j] >= lvl[i] {
+                        continue;
+                    }
+                    let d = [cr[i][0] - cr[j][0], cr[i][1] - cr[j][1], cr[i][2] - cr[j][2]];
+                    if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() < (cr[i][3] + cr[j][3]) * 0.98 {
+                        lvl[j] = lvl[i];
+                        queue.push(j);
+                    }
+                }
+            }
+            (0..n).map(|i| if lvl[i] > bottom[i] { lvl[i] } else { f64::NEG_INFINITY }).collect()
+        })
     }
 
     /// 単位方向 (N,3) → タイルから引いた (地表半径, 水面半径) (N,2)
@@ -484,7 +563,8 @@ impl PlanetShape {
         let r = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
         let ri = r.max(1e-9);
         let s = self.shape.sample([q[0] / ri, q[1] / ri, q[2] / ri]);
-        if s[1] > s[0] { s[1] - r } else { -1e9 }
+        let base = if s[1] > s[0] { s[1] - r } else { -1e9 };
+        base.max(flood_depth(&self.floods.read().unwrap(), q))
     }
 
     /// 球面行進で地表との交点 (t, 点) か None（planet.raycast）
@@ -640,17 +720,25 @@ struct Body {
 fn planet_ctx(planets: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<body::PlanetCtx>> {
     let mut out = Vec::with_capacity(planets.len());
     for it in planets.iter() {
-        let (ps, bound, lipschitz, gm, radius, has_water): (Bound<'_, PlanetShape>, f64, f64, f64, f64, bool) = it.extract()?;
+        let tu = it.downcast::<pyo3::types::PyTuple>()?;
+        let (ps, bound, lipschitz, gm, radius, has_water): (Bound<'_, PlanetShape>, f64, f64, f64, f64, bool) =
+            tu.get_slice(0, 6).extract()?;
+        // 7・8 番目（無ければ大気なし）：地表の空気の密度、密度が 1/e になる高さ
+        let air: f64 = if tu.len() > 6 { tu.get_item(6)?.extract()? } else { 0.0 };
+        let air_h: f64 = if tu.len() > 7 { tu.get_item(7)?.extract()? } else { 1.0 };
         let p = ps.get();
         out.push(body::PlanetCtx {
             shape: p.shape.clone(),
             center: p.center,
             craters: p.craters.read().unwrap().clone(),
+            floods: p.floods.read().unwrap().clone(),
             bound,
             lipschitz,
             gm,
             radius,
             has_water,
+            air,
+            air_h,
         });
     }
     Ok(out)
@@ -678,11 +766,11 @@ impl Body {
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (size, ja, jb, jr, jk, jbrk, jcount, inv_mass, mass, damp, fric, stiff, plast, yield_, density, ctype, cidx,
-                        rotor_avox, rotor_a, rotor_b, rotor_br, rotor_hk=None))]
+                        rotor_avox, rotor_a, rotor_b, rotor_br, rotor_hk=None, cells=None, cluster_ok=None))]
     fn new(
         size: f64, ja: RoI, jb: RoI, jr: RoF, jk: RoF, jbrk: RoF, jcount: RoF, inv_mass: RoF, mass: RoF, damp: RoF, fric: RoF,
         stiff: RoF, plast: RoF, yield_: RoF, density: RoF, ctype: RoI, cidx: RoI, rotor_avox: RoI, rotor_a: RoI, rotor_b: RoI,
-        rotor_br: RoF, rotor_hk: Option<RoI>,
+        rotor_br: RoF, rotor_hk: Option<RoI>, cells: Option<RoI>, cluster_ok: Option<Vec<bool>>,
     ) -> PyResult<Self> {
         let nvox = ro(&stiff, "stiff")?.len();
         let nv = 8 * nvox;
@@ -708,7 +796,7 @@ impl Body {
                 br: rbr[q],
             })
             .collect();
-        let t = body::Topo {
+        let mut t = body::Topo {
             size,
             nvox,
             ja,
@@ -728,6 +816,8 @@ impl Body {
             ctype: ro(&ctype, "ctype")?.to_vec(),
             cidx: ro(&cidx, "cidx")?.to_vec(),
             rotors,
+            clusters: Default::default(),
+            drag_area: Vec::new(),
         };
         need(
             t.jr.len() == nj && t.jk.len() == nj && t.jbrk.len() == nj && t.jcount.len() == nv && t.inv_mass.len() == nv
@@ -735,17 +825,33 @@ impl Body {
                 && t.yield_.len() == nvox && t.density.len() == nvox && t.ctype.len() == nv && t.cidx.len() == 3 * nv,
             "Body",
         )?;
+        if let Some(c) = &cells {
+            let c = ro(c, "cells")?;
+            let ok = cluster_ok.unwrap_or_else(|| vec![true; nvox]);
+            if c.len() == 3 * nvox && ok.len() == nvox {
+                t.clusters = cluster::build(nvox, c, &ok, &t.ja, &t.jb, &t.mass, &t.stiff, &t.plast, &t.yield_);
+            }
+            if c.len() == 3 * nvox {
+                t.drag_area = body::drag_areas(c, nvox, size);
+            }
+        }
         Ok(Body { t })
+    }
+
+    /// まとまりの形合わせの、まとまりに入っているブロックの数の合計（基準の並び crest の長さは この3倍）
+    #[getter]
+    fn n_cluster_members(&self) -> usize {
+        self.t.clusters.n_members()
     }
 
     /// ブロックごとの計算の1サブステップの前半（重力・浮力・減衰・積分・形合わせ・結合・回転ジョイント・地面）。
     /// angles：回転ジョイントの角度（ラジアン）。cav：気密の空洞の6方向のボクセル番号 (K,6) か None
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (pos, vel, prev, force, rest, act_scale, last_r, quat, planets, scale, h, iters, angles, parallel, cav, soft))]
+    #[pyo3(signature = (pos, vel, prev, force, rest, act_scale, last_r, quat, planets, scale, h, iters, angles, parallel, cav, soft, crest=None))]
     fn soft_begin(
         &self, py: Python<'_>, mut pos: RwF, mut vel: RwF, mut prev: RwF, force: RoF, rest: RoF, act_scale: RoF,
         mut last_r: RwF, mut quat: RwF, planets: &Bound<'_, pyo3::types::PyList>, scale: f64, h: f64, iters: i64,
-        angles: Vec<f64>, parallel: bool, cav: Option<RoI>, soft: f64,
+        angles: Vec<f64>, parallel: bool, cav: Option<RoI>, soft: f64, mut crest: Option<RwF>,
     ) -> PyResult<()> {
         let t = &self.t;
         let pls = planet_ctx(planets)?;
@@ -760,15 +866,18 @@ impl Body {
                 && cv.iter().flatten().all(|&j| j < t.nvox as i64),
             "soft_begin",
         )?;
-        py.allow_threads(|| body::soft_begin(p, v, pv, f, r, s, lr, q, t, &pls, scale, h, iters, &angles, parallel, &cv, soft));
+        let mut none: [f64; 0] = [];
+        let cr: &mut [f64] = match crest.as_mut() { Some(c) => rw(c, "crest")?, None => &mut none };
+        py.allow_threads(|| body::soft_begin(p, v, pv, f, r, s, lr, q, t, &pls, scale, h, iters, &angles, parallel, &cv, soft, cr));
         Ok(())
     }
 
     /// 後半：速度・塑性変形・ちぎれの判定。戻り値 (ちぎれた結合の番号, ちぎれた回転ジョイントの番号)
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[pyo3(signature = (pos, vel, prev, rest, act_scale, last_r, h, angles, crest=None))]
     fn soft_end<'py>(
         &self, py: Python<'py>, pos: RoF<'py>, mut vel: RwF<'py>, prev: RoF<'py>, mut rest: RwF<'py>, act_scale: RoF<'py>,
-        last_r: RoF<'py>, h: f64, angles: Vec<f64>,
+        last_r: RoF<'py>, h: f64, angles: Vec<f64>, mut crest: Option<RwF<'py>>,
     ) -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>)> {
         let t = &self.t;
         let (p, pv, s, lr) = (ro(&pos, "pos")?, ro(&prev, "prev")?, ro(&act_scale, "act_scale")?, ro(&last_r, "lastR")?);
@@ -779,7 +888,9 @@ impl Body {
                 && (lr.is_empty() || lr.len() == 9 * t.nvox) && angles.len() == t.rotors.len(),
             "soft_end",
         )?;
-        let (br, rot) = py.allow_threads(|| body::soft_end(p, v, pv, r, s, lr, t, h, &angles));
+        let mut none: [f64; 0] = [];
+        let cr: &mut [f64] = match crest.as_mut() { Some(c) => rw(c, "crest")?, None => &mut none };
+        let (br, rot) = py.allow_threads(|| body::soft_end(p, v, pv, r, s, lr, t, h, &angles, cr));
         Ok((PyArray1::from_vec_bound(py, br), PyArray1::from_vec_bound(py, rot)))
     }
 
@@ -1235,7 +1346,7 @@ fn step_tick<'py>(
         let kind: i64 = req(d, "kind")?;
         let (a, b, v) = match kind {
             0 => (
-                [opt_rw(d, "rest")?, opt_rw(d, "last_r")?, opt_rw(d, "quat")?, None, None, None],
+                [opt_rw(d, "rest")?, opt_rw(d, "last_r")?, opt_rw(d, "quat")?, opt_rw(d, "crest")?, None, None],
                 [opt_ro(d, "act_scale")?, None, None],
                 [req(d, "angles")?, Vec::new(), Vec::new(), Vec::new()],
             ),
@@ -1285,7 +1396,9 @@ fn step_tick<'py>(
         let [b0, b1, _] = &ja.b;
         let part = match ja.kind {
             0 => {
+                let crest: &mut [f64] = match a3.as_mut() { Some(c) => rw(c, "crest")?, None => &mut [] };
                 let s = tick::SoftPart {
+                    crest,
                     rest: take(a0, "rest")?,
                     last_r: take(a1, "last_r")?,
                     quat: take(a2, "quat")?,

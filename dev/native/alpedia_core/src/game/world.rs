@@ -1285,6 +1285,12 @@ impl World {
                 c.call_method0("try_rebond")?;
             }
         }
+        for pl in Self::g(slf, "planets")?.iter()? {
+            let pl = pl?;
+            if pl.hasattr("update_water")? {
+                pl.call_method1("update_water", (dt,))?;    // 掘った穴に水が満ちる（水のある惑星）
+            }
+        }
         let cu_t: f64 = timers.get_item("cleanup")?.extract::<f64>()? + dt;
         timers.set_item("cleanup", cu_t)?;
         let cl = Self::settings(slf)?.get_item("cleanup")?;
@@ -2235,11 +2241,126 @@ impl World {
         }
         let pl = hit.get_item("planet")?;
         let res = pl.call_method1("resource_at", (hit.get_item("point")?,))?;      // 掘る前の場所で判定
+        if pl.hasattr("update_water")? {
+            pl.call_method1("update_water", (0.0,))?;    // 今までの穴の水を確かめておく（新しい穴は底から満ちる）
+        }
         pl.call_method1("dig", (hit.get_item("point")?, radius))?;
+        Self::_cave_in(slf, &pl, &hit.get_item("point")?, radius)?;
         for a in Self::addons_v(slf)? {
             a.call_method1("on_dig", (slf, hit, &res))?;
         }
         Ok(true)
+    }
+    /// 掘った穴の上が薄い（地中を掘って天井が薄い・深く掘って穴の縁が張り出した）とき、上を崩す：
+    /// 穴の上に縦の掘削跡を足して地表まで開け、崩れた土を土のブロックのかたまり（構築物）として落とす
+    fn _cave_in(slf: &Bound<'_, Self>, pl: &Bound<'_, PyAny>, point: &Bound<'_, PyAny>, radius: f64) -> R<()> {
+        let py = slf.py();
+        let ctr = v3(&pl.getattr("center")?)?;
+        let p = v3(point)?;
+        let c = sub(p, ctr);
+        let rc = norm(c);
+        if rc < 1e-6 || radius <= 0.0 {
+            return Ok(());
+        }
+        let up = [c[0] / rc, c[1] / rc, c[2] / rc];
+        let surf: f64 = pl.call_method1("surface_radius_exact", (a1(py, up).call_method1("reshape", (1, 3))?,))?.get_item(0)?.extract()?;
+        let roof = surf - (rc + radius);          // 穴の上の土の厚さ（負なら地表に開いている）
+        let depth = surf - rc;                    // 穴の中心の深さ
+        let roof_min = (radius * 1.2).clamp(1.0, 3.0);
+        let thin_roof = roof > 0.0 && roof < roof_min;
+        let overhang = roof <= 0.0 && depth > radius * 0.5;
+        if !(thin_roof || overhang) {
+            return Ok(());
+        }
+        // 上がまだ土か（すでに掘ってあれば崩す物は無い）
+        let rf = if up[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+        let t1 = { let v = cross(up, rf); let l = norm(v); [v[0] / l, v[1] / l, v[2] / l] };
+        let t2 = cross(up, t1);
+        let top = surf + 0.2;
+        let rr = radius * 0.9;
+        // 崩れる所の土（0.5 m おきの点で、今は土の所）
+        let mut pts: Vec<V3> = vec![];
+        let mut h = rc + radius * 0.5;
+        while h < top {
+            let mut x = -rr;
+            while x <= rr {
+                let mut y = -rr;
+                while y <= rr {
+                    if x * x + y * y <= rr * rr {
+                        pts.push([ctr[0] + up[0] * h + t1[0] * x + t2[0] * y, ctr[1] + up[1] * h + t1[1] * x + t2[1] * y,
+                                  ctr[2] + up[2] * h + t1[2] * x + t2[2] * y]);
+                    }
+                    y += 0.5;
+                }
+                x += 0.5;
+            }
+            h += 0.5;
+        }
+        if pts.is_empty() {
+            return Ok(());
+        }
+        let flat: Vec<f64> = pts.iter().flatten().copied().collect();
+        let n = pts.len();
+        let sd: Vec<f64> = pl.call_method1("sdf", (super::construct::arr(py, flat, &[n, 3])?,))?.extract()?;
+        let solid: Vec<V3> = pts.iter().zip(sd.iter()).filter(|(_, d)| **d < -0.1).map(|(q, _)| *q).collect();
+        if solid.len() < 2 {
+            return Ok(());
+        }
+        // 縦に掘削跡を重ねて地表まで開ける
+        let step = rr * 0.8;
+        let mut k = 1.0;
+        loop {
+            let h = rc + step * k;
+            let q = [ctr[0] + up[0] * h, ctr[1] + up[1] * h, ctr[2] + up[2] * h];
+            pl.call_method1("dig", (a1(py, q), rr))?;
+            if h - rr > top {
+                break;
+            }
+            k += 1.0;
+            if k > 40.0 {
+                break;
+            }
+        }
+        // 崩れた土：開けた縦穴の真ん中に、下から積んで落とす（壁にめり込まないように）。穴が太ければ 2×2×2 のかたまり
+        // （1 m 角）、細ければ1ブロック。数は崩れた土の量まで（多すぎるときは 8 個まで）
+        let big = rr >= 0.8;
+        let per = if big { 8 } else { 1 };
+        let edge = if big { 1.0 } else { 0.5 };
+        let n_chunk = ((solid.len() + per - 1) / per).clamp(1, 8);
+        let rot = super::misc::content_rot_for(py, &a1(py, up))?;
+        let soil = if Self::g(slf, "registry")?.call_method1("material", ("soil",)).map(|m| m.is_truthy().unwrap_or(false)).unwrap_or(false) {
+            "soil"
+        } else {
+            "clay"
+        };
+        let h0 = rc - radius * 0.5;
+        for q in 0..n_chunk {
+            let h = h0 + q as f64 * (edge + 0.15);
+            if h + edge > top + 2.0 {
+                break;
+            }
+            // かたまりの真ん中が縦穴の軸に来るように（from_voxels の原点はブロック (0,0,0) の中心）
+            let half = (edge - 0.5) * 0.5;
+            let off = v3(&rot.call_method1("dot", (a1(py, [half, half, half]),))?)?;
+            let o = [ctr[0] + up[0] * h - off[0], ctr[1] + up[1] * h - off[1], ctr[2] + up[2] * h - off[2]];
+            let vox = PyList::empty_bound(py);
+            let k = if big { 2 } else { 1 };
+            for x in 0..k {
+                for y in 0..k {
+                    for z in 0..k {
+                        vox.append((PyTuple::new_bound(py, [x, y, z]), soil, py.None()))?;
+                    }
+                }
+            }
+            let kw = PyDict::new_bound(py);
+            kw.set_item("size", 0.5)?;
+            kw.set_item("name", "崩れた土")?;
+            let cn = imp(py, "main.construct")?.getattr("Construct")?.call_method("from_voxels",
+                (Self::g(slf, "registry")?, vox, a1(py, o), &rot), Some(&kw))?;
+            Self::add_construct(slf, &cn)?;
+        }
+        Self::message(slf, "掘った穴の上が崩れた")?;
+        Ok(())
     }
     /// ジェットパックを使えるか（燃料などは MOD が決める）：(使えるか, 噴射の向き)
     fn jetpack<'py>(slf: &Bound<'py, Self>, player: &Bound<'py, PyAny>, dt: f64, thrust_dir: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {

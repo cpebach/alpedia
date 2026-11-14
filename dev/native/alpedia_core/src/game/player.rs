@@ -322,6 +322,20 @@ impl Player {
             }
         }
         slf.setattr("in_water", in_water)?;
+        if !pl.is_none() && !on_ground_prev && in_water <= 0.0 {
+            // 空気の抵抗（構築物と同じ大気：気圧に比例、高さとともに薄くなる）。人の Cd × 面積 ≒ 0.7 m²（終端速度 約 55 m/s）
+            let kpa = match pl.getattr("defn")?.call_method1("get", ("atmosphere_pressure", 101.3)) {
+                Ok(v) if !v.is_none() => float_of(&v).unwrap_or(101.3),
+                _ => 101.3,
+            };
+            let prad = float_of(&pl.getattr("radius")?)?;
+            let alt = (norm(sub(pos, v3(&pl.getattr("center")?)?)) - prad).max(0.0);
+            let rho = 1.225 * (kpa / 101.3).max(0.0) * (-alt / (prad * 0.25).max(30.0)).exp();
+            let m = float_of(&slf.getattr("mass")?).unwrap_or(80.0).max(1.0);
+            let s = norm(vel);
+            let f = (0.5 * rho * 0.7 * s / m * dt).min(0.9);
+            vel = mul(vel, 1.0 - f);
+        }
         let d = defn.bind(py);
         if flying && norm(td) > 0.0 {
             vel = add(vel, mul(td, float_of(&d.get_item("jetpack_accel")?)? * dt));

@@ -17,16 +17,36 @@ pub struct PlanetCtx {
     pub shape: Arc<Shape>,
     pub center: [f64; 3],
     pub craters: Vec<[f64; 4]>,
+    /// 水の満ちた掘削跡 [x, y, z, 半径, 水面の半径]（惑星ローカル）
+    pub floods: Vec<[f64; 5]>,
     pub bound: f64,
     pub lipschitz: f64,
     pub gm: f64,
     pub radius: f64,
     pub has_water: bool,
+    /// 地表の空気の密度（kg/m³。大気が無ければ 0）と、密度が 1/e になる高さ（m）
+    pub air: f64,
+    pub air_h: f64,
 }
 
 impl PlanetCtx {
     fn local(&self, p: [f64; 3]) -> [f64; 3] {
         [p[0] - self.center[0], p[1] - self.center[1], p[2] - self.center[2]]
+    }
+
+    /// その点の空気の密度（kg/m³）。高さとともに指数で薄くなる
+    pub fn air_density(&self, p: [f64; 3]) -> f64 {
+        if !(self.air > 0.0) {
+            return 0.0;
+        }
+        let q = self.local(p);
+        let alt = (dot(q, q).sqrt() - self.radius).max(0.0);
+        let x = alt / self.air_h.max(1.0);
+        if x > 30.0 {
+            0.0
+        } else {
+            self.air * (-x).exp()
+        }
     }
 
     /// 水深（水面からの深さ。水の外は -1e9）
@@ -35,10 +55,11 @@ impl PlanetCtx {
         let r = dot(q, q).sqrt();
         let ri = r.max(1e-9);
         let s = self.shape.sample([q[0] / ri, q[1] / ri, q[2] / ri]);
-        if s[1] > s[0] {
-            s[1] - r
+        let base = if s[1] > s[0] { s[1] - r } else { -1e9 };
+        if self.floods.is_empty() {
+            base
         } else {
-            -1e9
+            base.max(crate::flood_depth(&self.floods, q))
         }
     }
 }
@@ -74,6 +95,10 @@ pub struct Topo {
     pub ctype: Vec<i64>,
     pub cidx: Vec<i64>,
     pub rotors: Vec<Rotor>,
+    /// まとまりの形合わせ（大きな構築物の固さ。cluster.rs）
+    pub clusters: crate::cluster::Clusters,
+    /// 頂点ごとの空気の抵抗の面積（m²。ブロックの外に出ている面の面積の 1/4 を8頂点に分ける。空なら抵抗なし）
+    pub drag_area: Vec<f64>,
 }
 
 #[inline]
@@ -289,11 +314,77 @@ pub(crate) fn integrate_forces(
             vel[3 * i + a] += (g[a] + force[3 * i + a] * t.inv_mass[i]) * h;
         }
     }
+    air_drag(pos, vel, t, planets, h);
     for pl in planets {
         if pl.has_water && near_planet(pos, t.nvox, t.size, pl) {
             buoyancy(pos, vel, t, pl, planets, scale, h, cav);
         }
     }
+}
+
+/// 空気の抵抗（大気のある惑星の近く）：F = ½ ρ Cd A |v| v を頂点ごとに。速さを逆向きにする前で止める
+/// （1サブステップで速さの 90% まで）。大気は惑星と一緒に止まっている（風は無い）
+pub(crate) const DRAG_CD: f64 = 1.0;
+
+fn air_drag(pos: &[f64], vel: &mut [f64], t: &Topo, planets: &[PlanetCtx], h: f64) {
+    let nv = pos.len() / 3;
+    if t.drag_area.len() != nv {
+        return;
+    }
+    let near: Vec<&PlanetCtx> = planets
+        .iter()
+        .filter(|pl| {
+            if !(pl.air > 0.0) {
+                return false;
+            }
+            let q = pl.local(v3(pos, 0));
+            dot(q, q).sqrt() - pl.radius < pl.air_h * 30.0
+        })
+        .collect();
+    if near.is_empty() {
+        return;
+    }
+    for i in 0..nv {
+        let a = t.drag_area[i];
+        if !(a > 0.0) || !(t.inv_mass[i] > 0.0) {
+            continue;
+        }
+        let p = v3(pos, i);
+        let rho: f64 = near.iter().map(|pl| pl.air_density(p)).sum();
+        if !(rho > 0.0) {
+            continue;
+        }
+        let v = v3(vel, i);
+        let s = dot(v, v).sqrt();
+        let f = (0.5 * rho * DRAG_CD * a * s * t.inv_mass[i] * h).min(0.9);
+        for k in 0..3 {
+            vel[3 * i + k] -= v[k] * f;
+        }
+    }
+}
+
+/// ブロックの外に出ている面の数から、頂点ごとの抵抗の面積（cells：ブロックのセル）
+pub fn drag_areas(cells: &[i64], nvox: usize, size: f64) -> Vec<f64> {
+    use std::collections::HashSet;
+    let set: HashSet<[i64; 3]> = (0..nvox).map(|i| [cells[3 * i], cells[3 * i + 1], cells[3 * i + 2]]).collect();
+    let mut out = vec![0.0; 8 * nvox];
+    for i in 0..nvox {
+        let c = [cells[3 * i], cells[3 * i + 1], cells[3 * i + 2]];
+        let mut open = 0;
+        for (a, d) in [(0, 1), (0, -1), (1, 1), (1, -1), (2, 1), (2, -1)] {
+            let mut n = c;
+            n[a] += d;
+            if !set.contains(&n) {
+                open += 1;
+            }
+        }
+        // 凸な物の、いろいろな向きから見た影の面積の平均は 表面積 / 4
+        let area = open as f64 * size * size / 4.0;
+        for k in 0..8 {
+            out[8 * i + k] = area / 8.0;
+        }
+    }
+    out
 }
 
 /// 回転ジョイントの目標の位置（construct._rotor_targets）
@@ -382,9 +473,10 @@ fn solve_rotors(pos: &mut [f64], t: &Topo, angles: &[f64]) {
 pub fn soft_begin(
     pos: &mut [f64], vel: &mut [f64], prev: &mut [f64], force: &[f64], rest: &[f64], act_scale: &[f64], last_r: &mut [f64],
     quat: &mut [f64], t: &Topo, planets: &[PlanetCtx], scale: f64, h: f64, iters: i64, angles: &[f64], parallel: bool,
-    cav: &[[i64; 6]], soft: f64,
+    cav: &[[i64; 6]], soft: f64, crest: &mut [f64],
 ) {
     integrate_forces(pos, vel, force, t, planets, scale, h, cav);
+    crate::cluster::init_rest(pos, crest, &t.clusters);
     let nv = pos.len() / 3;
     // 減衰は構築物全体の並進運動にはかけない
     let msum: f64 = t.mass.iter().sum();
@@ -410,13 +502,48 @@ pub fn soft_begin(
     let iters = if t.rotors.is_empty() { iters } else { iters * 2 };
     let near: Vec<&PlanetCtx> = planets.iter().filter(|pl| near_planet(pos, t.nvox, t.size, pl)).collect();
     let vox: Vec<i64> = (0..t.nvox as i64).collect();
+    // まとまりのある（大きな）構築物は、地面の押し返しを形合わせの前にも、反復ごとにも入れる（後だけだと、重さが
+    // 一番下の段の結合に集まってつぶれ、ちぎれる。高い柱が自分の重さで崩れていた）。反復ごとに調べ直すのは、
+    // 前で地面に触れていた頂点だけ（全部を毎回調べると重い。新しく触れた頂点は最後の全体の判定で拾う）
+    let mut touching: Vec<Vec<bool>> = Vec::new();
+    if !t.clusters.is_empty() {
+        let r = t.size * 0.5;
+        for pl in &near {
+            let k = cores(pos, t);
+            let (up, rs) = ground_ref(pos, pl);
+            let (_, hit) = collide_planet(pos, prev, vel, &k, &t.fric, r, pl, up, rs, false, 0.0, soft, true);
+            let mut m = vec![false; nv];
+            for (i, _, _) in hit {
+                m[i] = true;
+            }
+            touching.push(m);
+        }
+    }
     for _ in 0..iters {
         kernels::shape_match(pos, rest, act_scale, &t.stiff, &vox, last_r, quat, parallel);
+        crate::cluster::solve(pos, crest, &t.clusters);
         if !t.ja.is_empty() {
             kernels::solve_joints(pos, &t.ja, &t.jb, &t.jr, &t.jk, &t.inv_mass, &t.jcount);
         }
         if !t.rotors.is_empty() {
             solve_rotors(pos, t, angles);
+        }
+        if !t.clusters.is_empty() {
+            // 地面の押し返しも反復ごとに（まとまりの形合わせと交互に解いて、支えを全体に伝える）
+            let r = t.size * 0.5;
+            for (pl, m) in near.iter().zip(touching.iter()) {
+                if !m.iter().any(|&x| x) {
+                    continue;
+                }
+                let mut k = cores(pos, t);
+                for i in 0..nv {
+                    if !m[i] {
+                        k[3 * i..3 * i + 3].fill(f64::NAN);
+                    }
+                }
+                let (up, rs) = ground_ref(pos, pl);
+                collide_planet(pos, prev, vel, &k, &t.fric, r, pl, up, rs, false, 0.0, soft, true);
+            }
         }
     }
     let r = t.size * 0.5;
@@ -432,12 +559,13 @@ pub fn soft_begin(
 #[allow(clippy::too_many_arguments)]
 pub fn soft_end(
     pos: &[f64], vel: &mut [f64], prev: &[f64], rest: &mut [f64], act_scale: &[f64], last_r: &[f64], t: &Topo, h: f64,
-    angles: &[f64],
+    angles: &[f64], crest: &mut [f64],
 ) -> (Vec<i64>, Vec<i64>) {
     for i in 0..pos.len() {
         vel[i] = (pos[i] - prev[i]) / h;
     }
     plasticity(pos, rest, act_scale, last_r, t, h);
+    crate::cluster::plasticity(pos, crest, &t.clusters, t.size, h);
     let mut rot = Vec::new();
     for (q, r) in t.rotors.iter().enumerate() {
         let tg = rotor_target(pos, r, angles[q]);
