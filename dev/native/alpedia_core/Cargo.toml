@@ -9,7 +9,7 @@ name = "alpedia_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "0.22" }
 numpy = "0.22"
 rayon = "1.10"
 nalgebra = "0.33"
@@ -20,6 +20,10 @@ socket2 = { version = "0.5", features = ["all"] }
 libc = "0.2"
 
 [features]
+# ふだんは Python の拡張モジュールとして作る。Rust の単体テスト（cargo test）は --no-default-features で、
+# Python 3.12 につないで動かす（native/README.md の「テスト」）
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
 # Python 3.10 以上のどれでも読める形（python3.dll を使う）。パッケージ版（Python 3.12 だけ）には使わない
 abi3 = ["pyo3/abi3-py310"]
 

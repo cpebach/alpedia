@@ -11,6 +11,8 @@ mod art;
 mod artstep;
 mod body;
 mod cluster;
+#[cfg(test)]
+mod tests_core;
 mod kernels;
 mod mesh;
 mod pairs;

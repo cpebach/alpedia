@@ -93,7 +93,18 @@ python -m unittest discover -s tests -v
 `tests/test_native.py` が、物理コアの計算の性質（動かない物は動かさない・式どおり）と、テストの中に numpy で書いた同じ計算との一致を確かめます
 （前にあった「Python 版の本体」はもう無いので、比べる相手はテストの中の式だけです）。ゲーム本体（`game/`）は、ほかのテスト
 （`test_core.py`・`test_mods.py`・`test_net.py`・`test_story.py` など）が Python から動かして確かめます。
-Rust の中の単体テスト（`cargo test`）はまだありません。
+Rust の中の単体テスト（`cargo test`、`alpedia_core/src/tests_core.rs`）は、Python に頼らない計算を数値で確かめます：
+形合わせ（回して動かしただけなら変えない・つぶれた形を戻す）、結合、まとまりの形合わせ（全部を含む・アクチュエーターをまたがない・
+曲がりを戻す・降伏を超えたときだけ曲がったまま）、空気の抵抗（外に出ている面の面積・高さで薄くなる・式どおりの減速）、重力、
+惑星の形と掘削跡、掘った穴の水深。
+
+```
+native	est_windows.bat
+```
+
+（中でしていること：拡張モジュールとしてではなく同梱の Python 3.12 につなぐため、`--no-default-features` で
+`cargo +stable-x86_64-pc-windows-gnu test --lib` を、`PYO3_CONFIG_FILE` を 3.12 の設定にし、`python312.dll` のある場所を PATH に入れて動かす。
+Linux では `cargo test --no-default-features --lib`。）
 
 ## 画面（alpedia_view）
 
