@@ -65,6 +65,7 @@ struct Mesh {
     overlay: bool,
     cutoff: f32,
     add: bool,                // 足し算で重ねる（光る物）
+    extra: [f32; 4],          // x：立体映像（ホログラム）の描き方、y：時刻（ムービーの道具が使う）
 }
 
 /// 骨で曲げる形（VRM の人物など）：もとの頂点。体ごとの部品（SkinPart）がこれを共有する。
@@ -160,9 +161,85 @@ struct Gfx {
     tex_bgl: wgpu::BindGroupLayout,
     sampler_lin: wgpu::Sampler,
     sampler_near: wgpu::Sampler,
+    sampler_clamp: wgpu::Sampler,
     white: wgpu::TextureView,
     tex_bg: HashMap<(i64, i64), wgpu::BindGroup>,
+    dof: Option<DofPipe>,
 }
+
+/// 窓の代わりに描く先（ムービーの道具：窓の大きさに縛られずに描いて、画素を読み出す）
+struct Target {
+    w: u32,
+    h: u32,
+    color: wgpu::Texture,
+    color_view: wgpu::TextureView,
+    depth_view: wgpu::TextureView,
+    out: wgpu::Texture,          // ピントのぼかしをかけた画
+    out_view: wgpu::TextureView,
+    dof_bg: wgpu::BindGroup,
+    blurred: bool,               // 直前の render でぼかしをかけたか（読み出すのは out）
+}
+
+/// ピントのぼかし（被写界深度）の仕上げ
+struct DofPipe {
+    pipe: wgpu::RenderPipeline,
+    bgl: wgpu::BindGroupLayout,
+    buf: wgpu::Buffer,
+}
+
+// ピントの距離 focus（m）、絞り aperture（大きいほどぼける）。円形のぼけを、黄金角のらせん状の 64 点で集める。
+// 手前のぼけた物が奥のくっきりした物ににじむように、集める点の重みはその点のぼけの大きさで決める。
+// 奥行きは逆向きの無限遠の投影（d = near / z）。
+const DOF_WGSL: &str = r#"
+struct Dof {
+    p: vec4<f32>,     // focus, aperture, max_px, near
+    s: vec4<f32>,     // 幅, 高さ
+};
+@group(0) @binding(0) var<uniform> dof: Dof;
+@group(0) @binding(1) var ctex: texture_2d<f32>;
+@group(0) @binding(2) var dtex: texture_depth_2d;
+@group(0) @binding(3) var samp: sampler;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let x = f32(i32(i & 1u) * 4 - 1);
+    let y = f32(i32(i >> 1u) * 4 - 1);
+    return vec4<f32>(x, y, 0.5, 1.0);
+}
+
+fn lin(d: f32) -> f32 {
+    return dof.p.w / max(d, 1e-7);
+}
+fn coc(z: f32) -> f32 {
+    return clamp(dof.p.y * abs(1.0 / z - 1.0 / dof.p.x) * dof.p.x, 0.0, dof.p.z);
+}
+
+@fragment
+fn fs_main(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
+    let size = dof.s.xy;
+    let maxpx = dof.p.z;
+    let p = fc.xy;
+    let z0 = lin(textureLoad(dtex, vec2<i32>(p), 0));
+    let c0 = coc(z0);
+    var acc = textureSampleLevel(ctex, samp, p / size, 0.0).rgb;
+    var wsum = 1.0;
+    for (var i = 1; i < 64; i++) {
+        let r = sqrt(f32(i) / 64.0);
+        let a = f32(i) * 2.39996323;
+        let sp = clamp(p + vec2<f32>(cos(a), sin(a)) * r * maxpx, vec2<f32>(0.5), size - vec2<f32>(0.5));
+        let zs = lin(textureLoad(dtex, vec2<i32>(sp), 0));
+        let cs = coc(zs);
+        var reach = min(cs, c0);
+        if (zs < z0) {
+            reach = cs;
+        }
+        let w = smoothstep(r * maxpx - 1.5, r * maxpx + 0.5, reach);
+        acc += textureSampleLevel(ctex, samp, sp / size, 0.0).rgb * w;
+        wsum += w;
+    }
+    return vec4<f32>(acc / wsum, 1.0);
+}
+"#;
 
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MODEL_STRIDE: u64 = 256;
@@ -278,10 +355,15 @@ impl Gfx {
         });
         let sampler_lin = mk_sampler(wgpu::FilterMode::Linear);
         let sampler_near = mk_sampler(wgpu::FilterMode::Nearest);
+        let sampler_clamp = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let white = Self::upload_tex(&device, &queue, 1, 1, &[255, 255, 255, 255], false);
         Ok(Gfx {
             window, surface, device, queue, config, depth, shader, layout, pipes: HashMap::new(), cam_buf, cam_bg, ui_buf, ui_bg, model_bgl,
-            model_buf: None, tex_bgl, sampler_lin, sampler_near, white, tex_bg: HashMap::new(),
+            model_buf: None, tex_bgl, sampler_lin, sampler_near, sampler_clamp, white, tex_bg: HashMap::new(), dof: None,
         })
     }
 
@@ -370,6 +452,118 @@ impl Gfx {
         self.depth = Self::make_depth(&self.device, &self.config);
     }
 
+    fn dof_pipe(&mut self) {
+        if self.dof.is_some() {
+            return;
+        }
+        let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("dof"),
+            source: wgpu::ShaderSource::Wgsl(DOF_WGSL.into()),
+        });
+        let bgl = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipe = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("dof"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState { format: self.config.format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                compilation_options: Default::default(),
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.dof = Some(DofPipe { pipe, bgl, buf });
+    }
+
+    fn make_target(&mut self, w: u32, h: u32) -> Target {
+        let format = self.config.format;
+        self.dof_pipe();
+        let mk = |device: &wgpu::Device, format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let cu = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC;
+        let color = mk(&self.device, format, cu);
+        let out = mk(&self.device, format, cu);
+        let depth = mk(&self.device, DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
+        let color_view = color.create_view(&Default::default());
+        let out_view = out.create_view(&Default::default());
+        let depth_view = depth.create_view(&Default::default());
+        let depth_only = depth.create_view(&wgpu::TextureViewDescriptor { aspect: wgpu::TextureAspect::DepthOnly, ..Default::default() });
+        let d = self.dof.as_ref().unwrap();
+        let dof_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &d.bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: d.buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&color_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&depth_only) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.sampler_clamp) },
+            ],
+        });
+        Target { w, h, color, color_view, depth_view, out, out_view, dof_bg, blurred: false }
+    }
+
     fn pipe(&mut self, k: PipeKey) -> &wgpu::RenderPipeline {
         if !self.pipes.contains_key(&k) {
             let attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32, 4 => Float32x2];
@@ -433,6 +627,7 @@ struct App {
     size: (u32, u32),
     vsync: bool,
     grab: bool,
+    hidden: bool,
 }
 
 fn key_name(k: &Key) -> String {
@@ -464,7 +659,8 @@ impl ApplicationHandler for App {
         }
         let attrs = Window::default_attributes()
             .with_title(self.title.clone())
-            .with_inner_size(winit::dpi::LogicalSize::new(self.size.0, self.size.1));
+            .with_inner_size(winit::dpi::LogicalSize::new(self.size.0, self.size.1))
+            .with_visible(!self.hidden);
         match el.create_window(attrs) {
             Ok(w) => match Gfx::new(Arc::new({ w.set_ime_allowed(true); w }), self.vsync) {
                 Ok(g) => self.gfx = Some(g),
@@ -557,6 +753,9 @@ struct View {
     font: Option<Font>,
     skins: Vec<SkinGeom>,
     parts: Vec<SkinPart>,
+    target: Option<Target>,
+    dof: [f32; 3],            // ピントの距離・絞り・ぼけの最大の半径（px）
+    near: f32,
 }
 
 fn ro<'a, T: numpy::Element>(a: &'a PyReadonlyArrayDyn<'_, T>, name: &str) -> PyResult<&'a [T]> {
@@ -600,12 +799,12 @@ impl View {
 #[pymethods]
 impl View {
     #[new]
-    #[pyo3(signature = (width=1280, height=720, title="Alpedia".to_string(), vsync=true))]
-    fn new(width: u32, height: u32, title: String, vsync: bool) -> PyResult<Self> {
+    #[pyo3(signature = (width=1280, height=720, title="Alpedia".to_string(), vsync=true, visible=true))]
+    fn new(width: u32, height: u32, title: String, vsync: bool, visible: bool) -> PyResult<Self> {
         let el = EventLoop::new().map_err(|e| PyValueError::new_err(e.to_string()))?;
         let mut v = View {
             el,
-            app: App { title, size: (width, height), vsync, ..Default::default() },
+            app: App { title, size: (width, height), vsync, hidden: !visible, ..Default::default() },
             nodes: vec![Node { parent: None, local: IDENT, visible: true, alive: true, tint: [1.0; 4] }],
             free_nodes: vec![],
             meshes: vec![],
@@ -617,6 +816,9 @@ impl View {
             font: None,
             skins: vec![],
             parts: vec![],
+            target: None,
+            dof: [10.0, 0.0, 0.0],
+            near: 0.1,
         };
         // 窓ができるまで回す
         for _ in 0..200 {
@@ -642,6 +844,9 @@ impl View {
     }
 
     fn size(&self) -> (u32, u32) {
+        if let Some(t) = &self.target {
+            return (t.w, t.h);
+        }
         self.app.gfx.as_ref().map(|g| (g.config.width, g.config.height)).unwrap_or(self.app.size)
     }
 
@@ -734,6 +939,66 @@ impl View {
             }
         }
         self.view_proj = m;
+        self.near = near as f32;
+    }
+
+    /// 描く先を、窓の代わりに width×height の画（窓の外）にする（0 で窓に戻す）。ムービーの道具が使う。
+    /// このあと size() はこの大きさを返し、render() はここへ描く（窓には出さない）。画素は read_target() で読む
+    fn set_target(&mut self, width: u32, height: u32) -> PyResult<()> {
+        if width == 0 || height == 0 {
+            self.target = None;
+            return Ok(());
+        }
+        let g = self.app.gfx.as_mut().ok_or_else(|| PyValueError::new_err("画面がありません"))?;
+        let lim = g.device.limits().max_texture_dimension_2d;
+        if width > lim || height > lim {
+            return Err(PyValueError::new_err(format!("大きすぎます（{lim} まで）")));
+        }
+        self.target = Some(g.make_target(width, height));
+        Ok(())
+    }
+
+    /// ピントのぼかし（set_target で描くときだけ）：ピントの距離（m）・絞り（0 でぼかさない）・ぼけの最大の半径（px）
+    fn set_dof(&mut self, focus: f32, aperture: f32, max_px: f32) {
+        self.dof = [focus.max(0.05), aperture, max_px];
+    }
+
+    /// set_target の画の画素（RGB、上の行から、幅×高さ×3 バイト）。直前の render() で描いた物
+    fn read_target<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyBytes>> {
+        let t = self.target.as_ref().ok_or_else(|| PyValueError::new_err("set_target をしていません"))?;
+        let g = self.app.gfx.as_ref().ok_or_else(|| PyValueError::new_err("画面がありません"))?;
+        let (w, h) = (t.w, t.h);
+        let row = (w * 4).div_ceil(256) * 256;
+        let buf = g.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false });
+        let mut enc = g.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            (if t.blurred { &t.out } else { &t.color }).as_image_copy(),
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        g.queue.submit(Some(enc.finish()));
+        let sl = buf.slice(..);
+        sl.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = g.device.poll(wgpu::Maintain::Wait);
+        let data = sl.get_mapped_range();
+        let bgr = matches!(g.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut px = vec![0u8; (w * h * 3) as usize];
+        for y in 0..h as usize {
+            let src = &data[y * row as usize..y * row as usize + w as usize * 4];
+            let dst = &mut px[y * w as usize * 3..(y + 1) * w as usize * 3];
+            for x in 0..w as usize {
+                let (a, b, c) = (src[x * 4], src[x * 4 + 1], src[x * 4 + 2]);
+                let (r, gg, bb) = if bgr { (c, b, a) } else { (a, b, c) };
+                dst[x * 3] = r;
+                dst[x * 3 + 1] = gg;
+                dst[x * 3 + 2] = bb;
+            }
+        }
+        drop(data);
+        buf.unmap();
+        Ok(pyo3::types::PyBytes::new_bound(py, &px))
     }
 
     // ---- ノード ----
@@ -839,7 +1104,7 @@ impl View {
         self.check_node(node)?;
         let m = Mesh {
             node, verts: vec![], idx: vec![], dirty_v: false, dirty_i: false, vbuf: None, ibuf: None, n_idx: 0, tex: [None, None],
-            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false, cutoff: 0.0, add: false,
+            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false, cutoff: 0.0, add: false, extra: [0.0; 4],
         };
         Ok(if let Some(k) = self.free_meshes.pop() {
             self.meshes[k] = m;
@@ -908,6 +1173,14 @@ impl View {
     }
 
     /// 不透明さがこれより小さい所は描かない（VRM の MASK）
+    /// 立体映像（ホログラム）の描き方にする（on）・その時刻（走査線が流れる）。頂点の色は (縁の光り方, 高さ m, 明るさの倍率)、
+    /// 不透明度は濃さ、ノードの色（tint）が光の色。ムービーの道具が使う
+    fn mesh_holo(&mut self, m: usize, on: bool, time: f32) -> PyResult<()> {
+        self.check_mesh(m)?;
+        self.meshes[m].extra = [if on { 1.0 } else { 0.0 }, time, 0.0, 0.0];
+        Ok(())
+    }
+
     fn mesh_cutoff(&mut self, m: usize, cutoff: f32) -> PyResult<()> {
         self.check_mesh(m)?;
         self.meshes[m].cutoff = cutoff;
@@ -1272,7 +1545,7 @@ impl View {
         }
         // 半透明は後に（描く順 bin で）
         draw.sort_by_key(|&(k, _, _)| (self.meshes[k].overlay, self.meshes[k].blend || self.meshes[k].add, self.meshes[k].bin));
-        let View { app, meshes, textures, view_proj, clear, capture, .. } = self;
+        let View { app, meshes, textures, view_proj, clear, capture, target, dof, near, .. } = self;
         let g = match app.gfx.as_mut() {
             Some(g) => g,
             None => return Ok(0),
@@ -1347,7 +1620,7 @@ impl View {
                 layout: &g.model_bgl,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &b, offset: 0, size: wgpu::BufferSize::new(96) }),
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &b, offset: 0, size: wgpu::BufferSize::new(112) }),
                 }],
             });
             g.model_buf = Some((b, cap, bg));
@@ -1360,11 +1633,13 @@ impl View {
             data[o..o + 64].copy_from_slice(bytemuck::cast_slice(&w));
             data[o + 64..o + 80].copy_from_slice(bytemuck::cast_slice(&tint));
             data[o + 80..o + 96].copy_from_slice(bytemuck::cast_slice(&flags));
+            data[o + 96..o + 112].copy_from_slice(bytemuck::cast_slice(&m.extra));
         }
         g.queue.write_buffer(&g.model_buf.as_ref().unwrap().0, 0, &data);
         g.queue.write_buffer(&g.cam_buf, 0, bytemuck::cast_slice(view_proj));
         // 画面の上（overlay）：縦の高さが 1、真ん中が原点、x 右・y 上
-        let aspect = g.config.width as f32 / g.config.height.max(1) as f32;
+        let (tw, th) = target.as_ref().map(|t| (t.w, t.h)).unwrap_or((g.config.width, g.config.height));
+        let aspect = tw as f32 / th.max(1) as f32;
         let ui: [f32; 16] = [2.0 / aspect, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0];
         g.queue.write_buffer(&g.ui_buf, 0, bytemuck::cast_slice(&ui));
         // テクスチャの組の bind group
@@ -1394,21 +1669,31 @@ impl View {
             let pk = PipeKey { blend: m.blend, add: m.add, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset, overlay: m.overlay };
             g.pipe(pk);
         }
-        let frame = match g.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(_) => {
-                g.surface.configure(&g.device, &g.config);
-                return Ok(0);
+        // 描く先：窓（surface）か、窓の外の画（set_target）
+        let frame = if target.is_some() {
+            None
+        } else {
+            match g.surface.get_current_texture() {
+                Ok(f) => Some(f),
+                Err(_) => {
+                    g.surface.configure(&g.device, &g.config);
+                    return Ok(0);
+                }
             }
         };
-        let view = frame.texture.create_view(&Default::default());
+        let frame_view = frame.as_ref().map(|f| f.texture.create_view(&Default::default()));
+        let (view, depth_view) = match (target.as_ref(), frame_view.as_ref()) {
+            (Some(t), _) => (&t.color_view, &t.depth_view),
+            (None, Some(v)) => (v, &g.depth),
+            (None, None) => return Ok(0),
+        };
         let mut enc = g.device.create_command_encoder(&Default::default());
         {
             let lin = |x: f64| x;
             let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: lin(clear[0]), g: lin(clear[1]), b: lin(clear[2]), a: 1.0 }),
@@ -1416,7 +1701,7 @@ impl View {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &g.depth,
+                    view: depth_view,
                     depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                     stencil_ops: None,
                 }),
@@ -1442,7 +1727,30 @@ impl View {
                 rp.draw_indexed(0..m.n_idx, 0, 0..1);
             }
         }
+        // ピントのぼかし（窓の外の画に描いたときだけ）
+        let blur = target.is_some() && dof[1] > 0.0 && dof[2] >= 0.5;
+        if blur {
+            let t = target.as_ref().unwrap();
+            let d = g.dof.as_ref().unwrap();
+            let u: [f32; 8] = [dof[0], dof[1], dof[2], *near, t.w as f32, t.h as f32, 0.0, 0.0];
+            g.queue.write_buffer(&d.buf, 0, bytemuck::cast_slice(&u));
+            let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &t.out_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rp.set_pipeline(&d.pipe);
+            rp.set_bind_group(0, &t.dof_bg, &[]);
+            rp.draw(0..3, 0..1);
+        }
         let shot = capture.take().and_then(|path| {
+            let frame = frame.as_ref()?;
             if !g.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
                 return None;
             }
@@ -1477,7 +1785,12 @@ impl View {
             buf.unmap();
             let _ = image::save_buffer(&path, &px, w, h, image::ColorType::Rgba8);
         }
-        frame.present();
+        if let Some(t) = target.as_mut() {
+            t.blurred = blur;
+        }
+        if let Some(frame) = frame {
+            frame.present();
+        }
         Ok(draw.len())
     }
 }

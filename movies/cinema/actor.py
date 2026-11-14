@@ -72,86 +72,22 @@ def load_vrm(path):
     return MovieVRM(path)
 
 
-VERT = """#version 330
-uniform mat4 p3d_ModelViewProjectionMatrix;
-uniform mat4 p3d_ModelMatrix;
-uniform samplerBuffer bones;
-uniform float ew[8];
-in vec4 p3d_Vertex;
-in vec3 p3d_Normal;
-in vec2 p3d_MultiTexCoord0;
-in vec4 joints;
-in vec4 weights;
-in vec3 e0; in vec3 e1; in vec3 e2; in vec3 e3; in vec3 e4; in vec3 e5; in vec3 e6; in vec3 e7;
-out vec2 v_uv;
-out vec3 v_n;
-out vec3 v_p;
-out float v_h;
+def _smoothstep(a, b, x):
+    t = np.clip((x - a) / (b - a), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
 
-mat4 bone(float j) {
-    int i = int(j + 0.5) * 3;
-    return transpose(mat4(texelFetch(bones, i), texelFetch(bones, i + 1), texelFetch(bones, i + 2), vec4(0, 0, 0, 1)));
-}
 
-void main() {
-    mat4 m = bone(joints.x) * weights.x + bone(joints.y) * weights.y
-           + bone(joints.z) * weights.z + bone(joints.w) * weights.w;
-    vec3 d = e0 * ew[0] + e1 * ew[1] + e2 * ew[2] + e3 * ew[3] + e4 * ew[4] + e5 * ew[5] + e6 * ew[6] + e7 * ew[7];
-    vec4 p = m * vec4(p3d_Vertex.xyz + d, 1.0);
-    gl_Position = p3d_ModelViewProjectionMatrix * vec4(p.xyz, 1.0);
-    v_n = mat3(p3d_ModelMatrix) * (mat3(m) * p3d_Normal);
-    v_p = (p3d_ModelMatrix * vec4(p.xyz, 1.0)).xyz;
-    v_h = p.y;
-    v_uv = p3d_MultiTexCoord0;
-}
-"""
-
-FRAG = """#version 330
-uniform sampler2D p3d_Texture0;
-uniform vec3 key_dir;
-uniform vec3 key_col;
-uniform vec3 shade;
-uniform vec3 fill_col;
-uniform vec3 rim_col;
-uniform vec4 base_color;
-uniform float cutoff;
-uniform float holo;
-uniform vec3 holo_col;
-uniform float time;
-in vec2 v_uv;
-in vec3 v_n;
-in vec3 v_p;
-in float v_h;
-out vec4 o_color;
-
-void main() {
-    vec4 c = texture(p3d_Texture0, v_uv) * base_color;
-    if (c.a < cutoff) discard;
-    float l = length(v_n);
-    vec3 n = l > 1e-6 ? v_n / l : vec3(0, 1, 0);
-    vec3 v = normalize(-v_p);
-    float ndl = dot(n, key_dir);
-    float k = smoothstep(-0.05, 0.18, ndl);              // トゥーン調：明るい面と影の面
-    vec3 lit = c.rgb * mix(shade * fill_col, key_col, k);
-    float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
-    lit += rim_col * rim * (0.4 + 0.6 * smoothstep(-0.3, 0.4, dot(n, -key_dir)));
-    if (holo > 0.0) {
-        // ホログラム：単色・走査線・ちらつき・縁が光る
-        float lum = dot(c.rgb, vec3(0.3, 0.59, 0.11));
-        float scan = 0.6 + 0.4 * sin(v_h * 260.0 - time * 12.0);
-        float band = smoothstep(0.0, 0.04, fract(v_h * 1.7 - time * 0.6)) * 0.25 + 0.75;
-        float fres = pow(1.0 - abs(dot(n, v)), 2.0);
-        vec3 hc = holo_col * (0.1 + 0.4 * lum + 0.8 * fres) * scan * band;
-        o_color = vec4(hc * holo, holo * (0.3 + 0.4 * fres + 0.1 * scan));
-        return;
-    }
-    o_color = vec4(lit, c.a);
-}
-"""
+RIM_GAIN = 1.5      # 縁の光の強さ（下の「陰影」を参照）
 
 
 class _Model:
-    """1つの VRM の形（役者どうしで共有）。"""
+    """1つの VRM の形（役者どうしで共有）。テクスチャは Rust の画面に1回だけ渡す。
+
+    描き方：骨の行列で頂点を曲げるのも、陰影（トゥーン調の明るい面・影の面と、縁の光）も、ここ（numpy）で頂点ごとに計算して、
+    頂点の色として Rust の画面（alpedia_view）に渡す。ゲームの VRM の体と同じ「陰影は頂点の色に焼き込む」やり方で、
+    映画用の表情（8 つ）・役者ごとの照明・立体映像を足すために、曲げる所をこちらで持つ。
+    縁の光は頂点の色に足すので、テクスチャの色がかかる（暗い髪では弱くなる）。その分 RIM_GAIN で少し強めてある。
+    """
     cache = {}
 
     @classmethod
@@ -162,78 +98,37 @@ class _Model:
         return cls.cache[key]
 
     def __init__(self, path):
-        from panda3d.core import (Geom, GeomNode, GeomTriangles, GeomVertexArrayFormat, GeomVertexData,
-                                  GeomVertexFormat, InternalName, NodePath, Shader, Texture, Vec3, Vec4)
+        from main.client import gfx
         self.v = vrm = load_vrm(path)
-        sk = _skin()
-        self.template = NodePath("vrm_actor")
-        self.shader = Shader.make(Shader.SL_GLSL, vertex=VERT, fragment=FRAG)
-        a = GeomVertexArrayFormat()
-        a.addColumn(InternalName.getVertex(), 3, Geom.NT_float32, Geom.C_point)
-        a.addColumn(InternalName.getNormal(), 3, Geom.NT_float32, Geom.C_normal)
-        a.addColumn(InternalName.getTexcoord(), 2, Geom.NT_float32, Geom.C_texcoord)
-        a.addColumn(InternalName.make("joints"), 4, Geom.NT_float32, Geom.C_other)
-        a.addColumn(InternalName.make("weights"), 4, Geom.NT_float32, Geom.C_other)
-        for k in range(8):
-            a.addColumn(InternalName.make(f"e{k}"), 3, Geom.NT_float32, Geom.C_vector)
-        f = GeomVertexFormat()
-        f.addArray(a)
-        fmt = GeomVertexFormat.registerFormat(f)
-        from vrmskin.view import _texture
-        white = Texture("white")
-        white.setup2dTexture(1, 1, Texture.T_unsigned_byte, Texture.F_rgba8)
-        white.setRamImage(b"\xff\xff\xff\xff")
-        texs = {}
+        self.sk = _skin()
+        self.texs = {}
         for m in vrm.materials:
             ti = m["texture"]
-            if ti is not None and ti not in texs:
-                data, mime = vrm.image_bytes(ti)
-                texs[ti] = _texture(data, mime, f"actor_tex{ti}")
+            if ti is not None and ti not in self.texs:
+                data, _mime = vrm.image_bytes(ti)
+                tid = gfx.VIEW.tex_bytes(data, False)
+                if tid < 0:
+                    raise RuntimeError(f"{path}: テクスチャ {ti} を読めません")
+                self.texs[ti] = gfx.RsTex(tid, f"actor_tex{ti}")
+        default = {"texture": None, "color": [1, 1, 1, 1], "shade": [0.7, 0.7, 0.75], "alpha": "OPAQUE",
+                   "cutoff": 0.5, "double": False, "uv": ((0.0, 0.0), (1.0, 1.0)), "name": "vrm"}
+        self.meshes = []            # [(メッシュ, 骨の番号 (V,4), [部品 …])]
         for mesh in vrm.meshes:
-            n = len(mesh.pos)
-            arr = np.zeros((n, 16 + 24), np.float32)
-            arr[:, 0:3] = mesh.pos
-            arr[:, 3:6] = mesh.nrm
-            arr[:, 8:12] = mesh.joints
-            arr[:, 12:16] = mesh.weights
-            for k in range(8):
-                arr[:, 16 + 3 * k:19 + 3 * k] = mesh.morphs[k]
-            vdatas = {}
+            parts = []
             for idx, mat_i in mesh.parts:
                 m = vrm.materials[mat_i] if 0 <= mat_i < len(vrm.materials) else None
-                uvt = m["uv"] if m else ((0.0, 0.0), (1.0, 1.0))
-                vd = vdatas.get(uvt)
-                if vd is None:
-                    (ox, oy), (sx, sy) = uvt
-                    arr[:, 6] = mesh.uv[:, 0] * sx + ox
-                    arr[:, 7] = 1.0 - (mesh.uv[:, 1] * sy + oy)
-                    vd = vdatas[uvt] = GeomVertexData("actor", fmt, Geom.UH_static)
-                    vd.uncleanSetNumRows(n)
-                    memoryview(vd.modifyArray(0)).cast("B")[:] = arr.tobytes()
-                tris = GeomTriangles(Geom.UH_static)
-                tris.setIndexType(Geom.NT_uint32)
-                h = tris.modifyVertices()
-                h.uncleanSetNumRows(len(idx))
-                memoryview(h).cast("B")[:] = np.ascontiguousarray(idx, np.uint32).tobytes()
-                g = Geom(vd)
-                g.addPrimitive(tris)
-                node = GeomNode(m["name"] if m else "vrm")
-                node.addGeom(g)
-                np_ = self.template.attachNewNode(node)
-                m = m or {"texture": None, "color": [1, 1, 1, 1], "shade": [0.7, 0.7, 0.75], "alpha": "OPAQUE",
-                          "cutoff": 0.5, "double": False}
-                np_.setTexture(texs.get(m["texture"], white), 1)
-                np_.setShaderInput("base_color", Vec4(*m["color"]))
-                np_.setShaderInput("shade", Vec3(*m["shade"]))
-                np_.setShaderInput("cutoff", m["cutoff"] if m["alpha"] == "MASK" else -1.0)
-                if m["double"]:
-                    np_.setTwoSided(True)
-                if m["alpha"] == "BLEND":
-                    from panda3d.core import TransparencyAttrib
-                    np_.setTransparency(TransparencyAttrib.M_alpha)
-                    np_.setBin("transparent", 10)
-                    np_.setDepthWrite(False)
-        self.sk = sk
+                m = m or default
+                idx = np.asarray(idx, np.int64).reshape(-1)
+                src, inv = np.unique(idx, return_inverse=True)       # この部品が使う頂点だけ
+                (ox, oy), (sx, sy) = m.get("uv") or ((0.0, 0.0), (1.0, 1.0))
+                uv = np.empty((len(src), 2), np.float32)
+                uv[:, 0] = mesh.uv[src, 0] * sx + ox
+                uv[:, 1] = 1.0 - (mesh.uv[src, 1] * sy + oy)         # ゲームの VRM の体と同じ向き
+                col = np.asarray(m["color"], np.float64)
+                parts.append({"src": src, "tris": inv.reshape(-1, 3), "uv": uv, "mat": m, "color": col,
+                              "shade": np.asarray(m["shade"], np.float64),
+                              "lum": float(col[:3] @ np.array([0.3, 0.59, 0.11]))})
+            self.meshes.append((mesh, np.asarray(mesh.joints).astype(np.int64), parts))
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +160,7 @@ class Actor:
     """役者1人。pos（足元）・向き（yaw 度、0 で +Z を向く）・ポーズ・表情・見る先を時刻の関数やキーで決める。"""
 
     def __init__(self, stage, vrm_path, name="actor", scale=1.0):
-        from panda3d.core import GeomEnums, NodePath, OmniBoundingVolume, Texture, Vec3
+        from main.client import gfx
         self.stage = stage
         self.name = name
         self.model = _Model.get(vrm_path)
@@ -274,22 +169,20 @@ class Actor:
         self.motion = sk.motion.Motion(v)
         self.spring = sk.spring.Spring(v)
         self.scale = scale
-        self.root = NodePath(f"actor_{name}")
-        self.root.reparentTo(stage.root)
-        self.root.node().setBounds(OmniBoundingVolume())
-        self.root.node().setFinal(True)
-        self.model.template.instanceTo(self.root)
-        nj = len(v.joint_node)
-        self.bones = Texture(f"bones_{name}")
-        self.bones.setupBufferTexture(nj * 3, Texture.T_float, Texture.F_rgba32, GeomEnums.UH_dynamic)
-        self.root.setShader(self.model.shader)
-        self.root.setShaderInput("bones", self.bones)
-        self.root.setShaderInput("ew", [0.0] * 8)
-        self.root.setLightOff(1)
+        self.root = gfx.RsNode(stage.root, f"actor_{name}")
+        # 部品（材質ごと）のメッシュ。頂点は毎コマ書き直す（三角形・UV・テクスチャはそのまま）
+        self.parts = []             # [(メッシュの番号, 部品の番号, RsDynamicMesh, 頂点の入れ物 (n,12))]
+        for mi, (_mesh, _joints, parts) in enumerate(self.model.meshes):
+            for pi, part in enumerate(parts):
+                dm = gfx.RsDynamicMesh(self.root, f"actor_{name}")
+                buf = np.zeros((len(part["src"]), 12), np.float32)
+                buf[:, 10:12] = part["uv"]
+                dm.set(buf, part["tris"])
+                self.parts.append((mi, pi, dm, buf))
+        self._holo_on = False
+        self._holo_col = (0.3, 0.9, 1.0)
+        self._style(False)
         self.light(key_dir=(0.4, 0.7, -0.6))
-        self.root.setShaderInput("holo", 0.0)
-        self.root.setShaderInput("holo_col", Vec3(0.3, 0.9, 1.0))
-        self.root.setShaderInput("time", 0.0)
         # 時刻の関数（場面が決める）
         self.place = lambda t: ((0.0, 0.0, 0.0), 0.0)          # → (足元の位置, 向き yaw 度)
         self.poses = [(0.0, {})]                                # [(時刻, ポーズ)] つなぎはなめらかに
@@ -304,19 +197,36 @@ class Actor:
 
     def light(self, key_dir=(0.4, 0.7, -0.6), key_col=(1.0, 0.97, 0.92), fill_col=(0.85, 0.88, 1.0),
               rim_col=(0.25, 0.35, 0.5)):
-        from panda3d.core import Vec3
-        self.root.setShaderInput("key_dir", Vec3(*anim.unit(key_dir)))
-        self.root.setShaderInput("key_col", Vec3(*key_col))
-        self.root.setShaderInput("fill_col", Vec3(*fill_col))
-        self.root.setShaderInput("rim_col", Vec3(*rim_col))
+        self.key_dir = np.asarray(anim.unit(key_dir), float)
+        self.key_col = np.asarray(key_col, float)
+        self.fill_col = np.asarray(fill_col, float)
+        self.rim_col = np.asarray(rim_col, float)
 
     def holo_mode(self, color=(0.35, 0.85, 1.0)):
-        from panda3d.core import ColorBlendAttrib, Vec3
-        self.root.setShaderInput("holo_col", Vec3(*color))
-        self.root.setAttrib(ColorBlendAttrib.make(ColorBlendAttrib.M_add, ColorBlendAttrib.O_incoming_alpha,
-                                                  ColorBlendAttrib.O_one))
-        self.root.setDepthWrite(False)
-        self.root.setBin("fixed", 20)
+        """立体映像（通信のホログラム）として描く：足し算で重ね、奥行きは書かない。濃さは self.holo(t)。"""
+        self._holo_col = tuple(float(x) for x in color)
+        self._holo_on = True
+        self._style(True)
+
+    def _style(self, holo):
+        """部品ごとの描き方（半透明・両面・切り抜き／立体映像）を Rust の画面に伝える。"""
+        V = self.stage.view
+        for mi, pi, dm, _buf in self.parts:
+            m = self.model.meshes[mi][2][pi]["mat"]
+            if holo:
+                V.mesh_props(dm.mid, False, False, bool(m["double"]), 0, 120)
+                V.mesh_add(dm.mid, True)
+            else:
+                blend = m["alpha"] == "BLEND"
+                V.mesh_props(dm.mid, blend, not blend, bool(m["double"]), 0, 10 if blend else 0)
+                V.mesh_add(dm.mid, False)
+            tex = self.model.texs.get(m["texture"])
+            V.mesh_tex(dm.mid, 0, tex.id if tex is not None else -1)
+            V.mesh_cutoff(dm.mid, float(m["cutoff"]) if m["alpha"] == "MASK" else 0.0)
+            V.mesh_holo(dm.mid, bool(holo), 0.0)
+        c = self._holo_col if holo else (1.0, 1.0, 1.0)
+        for _mi, _pi, dm, _buf in self.parts:           # 色はノードごと（親の色は子に伝わらない）
+            dm.np.setColorScale(c[0], c[1], c[2], 1.0)
 
     # --- 時刻 → 姿勢 -----------------------------------------------------
     def pose_at(self, t):
@@ -374,14 +284,60 @@ class Actor:
                 self._pose(t - (30 - k) * dt, dt, origin, write=False)
             self._last_t = t - dt
         self._pose(t, dt, origin, write=True)
-        self.root.setShaderInput("ew", [float(x) for x in self.weights(t)])
-        self.root.setShaderInput("time", float(t))
-        if hv is not None:
-            self.root.setShaderInput("holo", float(hv))
+        _t, M, rows, place = self._last
+        self._write(t, M, rows, place - origin, self.weights(t), hv if self._holo_on else None)
         self._last_t = t
 
+    def _write(self, t, M, rows, c, ew, holo):
+        """骨の行列 M（(J,3,4)）で頂点を曲げ、陰影を頂点の色にして、部品ごとに Rust の画面へ渡す。
+        rows：形の座標 → ワールドの向き・大きさ（行ベクトルにかける形）、c：カメラから見た足元の位置、ew：表情の重み、
+        holo：立体映像の濃さ（ふつうの描き方なら None）。"""
+        V = self.stage.view
+        M = np.asarray(M, np.float64)
+        scale = float(np.linalg.norm(rows[0])) or 1.0
+        skinned = {}
+        for mi, pi, dm, buf in self.parts:
+            mesh, joints, parts = self.model.meshes[mi]
+            if mi not in skinned:
+                pos = np.asarray(mesh.pos, np.float64)
+                for k in np.nonzero(ew > 1e-4)[0]:               # 表情（まばたき・口・喜怒哀驚）
+                    pos = pos + mesh.morphs[k] * float(ew[k])
+                Mw = np.einsum("vk,vkij->vij", np.asarray(mesh.weights, np.float64), M[joints])
+                P = np.einsum("vij,vj->vi", Mw[:, :, :3], pos) + Mw[:, :, 3]
+                N = np.einsum("vij,vj->vi", Mw[:, :, :3], np.asarray(mesh.nrm, np.float64))
+                Nw = N @ rows                                      # ワールドでの向き
+                Nw /= np.linalg.norm(Nw, axis=1, keepdims=True) + 1e-12
+                Pw = P @ rows + c                                  # カメラ（原点）から見た位置
+                view = -Pw / (np.linalg.norm(Pw, axis=1, keepdims=True) + 1e-12)
+                ndv = np.einsum("ij,ij->i", Nw, view)
+                if holo is None:
+                    ndl = Nw @ self.key_dir
+                    k = _smoothstep(-0.05, 0.18, ndl)             # トゥーン調：明るい面と影の面
+                    rim = (1.0 - np.clip(ndv, 0.0, None)) ** 3 * (0.4 + 0.6 * _smoothstep(-0.3, 0.4, -ndl))
+                    skinned[mi] = (P, N, k, rim, None)
+                else:
+                    skinned[mi] = (P, N, None, None, (1.0 - np.abs(ndv)) ** 2)
+            P, N, k, rim, fres = skinned[mi]
+            part = parts[pi]
+            src = part["src"]
+            buf[:, 0:3] = P[src]
+            buf[:, 3:6] = N[src]
+            if holo is None:
+                kk = k[src][:, None]
+                lit = (part["shade"] * self.fill_col) * (1 - kk) + self.key_col * kk
+                lit = lit + self.rim_col * (rim[src][:, None] * RIM_GAIN)
+                buf[:, 6:9] = lit * part["color"][:3]
+                buf[:, 9] = part["color"][3]
+            else:
+                # 立体映像：色の欄に (縁の光り方, 高さ m, 明るさの倍率)、不透明度に濃さ（alpedia_view の mesh_holo の決まり）
+                buf[:, 6] = fres[src]
+                buf[:, 7] = P[src, 1] * scale
+                buf[:, 8] = part["lum"]
+                buf[:, 9] = float(holo)
+                V.mesh_holo(dm.mid, True, float(t))
+            V.mesh_set(dm.mid, buf)
+
     def _pose(self, t, dt, origin, write=True):
-        from panda3d.core import LMatrix4f
         mo = self.motion
         pos, yaw = self.place(t)
         pos = np.asarray(pos, float)
@@ -437,9 +393,9 @@ class Actor:
             self._head_world = (t, local @ rows + place)
         self._last = (t, M, rows, place)
         if write:
-            self.bones.setRamImage(np.ascontiguousarray(M, np.float32).tobytes())
             c = place - origin
-            self.root.setMat(LMatrix4f(*rows[0], 0, *rows[1], 0, *rows[2], 0, *[float(x) for x in c], 1))
+            self.root.setMat([*[float(x) for x in rows[0]], 0.0, *[float(x) for x in rows[1]], 0.0,
+                              *[float(x) for x in rows[2]], 0.0, *[float(x) for x in c], 1.0])
 
     def bone_world(self, name, t=None):
         """骨（VRM の名前：rightHand など）の、直前に描いた姿勢でのワールド位置。"""

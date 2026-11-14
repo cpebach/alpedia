@@ -1,5 +1,8 @@
 """撮影所：ゲームの描画（ブロックの構築物・惑星）を、画面なし（オフスクリーン）で 1 コマずつ描く。
 
+描くのはゲームと同じ Rust の画面（alpedia_view）。窓は見えないまま開き、描く先を「窓の外の画」（set_target）にして、
+描いた画素を読み出す（read_target）。ピントのぼかしも alpedia_view がかける（set_dof）。
+
 位置はすべてワールド座標（m）で書く。描くときはゲームと同じ「浮動原点」で、カメラの位置を原点にしてから
 GPU に渡す（遠くても精度が落ちない）。
 """
@@ -33,24 +36,24 @@ GLOWING = {k for k in MOVIE_MATERIALS if k.startswith("g_")}
 class Stage:
     def __init__(self, width=1920, height=816, fps=30, near=0.1, far=60000.0, fov=40.0,
                  sun=(0.5, 0.45, -0.75), ambient=0.3, bg=(0.0, 0.0, 0.0), mods=("story",)):
-        from ursina import Ursina, Entity, camera, window, color, application
-        self.app = Ursina(window_type="offscreen", size=(width, height), development_mode=False,
-                          show_ursina_splash=False)
+        # ゲームの定義（素材・機器）と描画の設定
+        from main import log, native
+        log.setup("WARNING")
+        native.require()                     # Rust の本体（lib/ を読めるようにする）
+        import alpedia_view
+        from main.registry import Registry
+        from main.client import gfx, render
+        # Rust の画面（alpedia_view）を、見えない小さな窓で開き、描く先を「窓の外の画」（width×height）にする
+        self.view = alpedia_view.View(320, 180, "Alpedia movies", False, False)
+        gfx.set_view(self.view)
+        self.view.set_target(int(width), int(height))
+        self.view.set_clear(*[float(x) for x in bg])
+        self.gfx = gfx
         self.w, self.h, self.fps = width, height, fps
-        self.U = dict(Entity=Entity, camera=camera, window=window, color=color, application=application)
-        window.color = color.rgb(*bg)
-        camera.position = (0, 0, 0)
-        camera.fov = fov
-        camera.clip_plane_near = near
-        camera.clip_plane_far = far
+        self.fov = fov
         self.near, self.far = near, far
         self.vertical_fov = True
-        self.loader = application.base.loader
-        # ゲームの定義（素材・機器）と描画の設定
-        from main import log
-        log.setup("WARNING")
-        from main.registry import Registry
-        from main.client import render
+        self.loader = None                   # 前の画面（Panda3D）の名残り。今の描画は使わない
         self.render = render
         self.reg = Registry().load(list(mods))
         base = dict(self.reg.material("steel"))
@@ -67,11 +70,11 @@ class Stage:
         render.EDGE_TEXTURE = str(tex / "px_edge.png")
         render.DEVICE_TEXTURE = str(tex / "px_device.png")
         render.preload(self.loader, self.reg)
-        self.root = Entity()                 # 浮動原点の根
+        self.root = gfx.RsNode(None, "movie_root")     # 浮動原点の根
         self.items = []                      # update(t, origin) を持つ物
         self.cam_pos = np.zeros(3)
-        from .post import DOF
-        self.dof = DOF(camera, width, height, near, far)
+        self.cam_basis = np.eye(3)
+        self.vfov = fov
         self._sprite_tex = {}
 
     # ------------------------------------------------------------------
@@ -81,19 +84,21 @@ class Stage:
 
     def camera(self, pos, target, up=(0, 1, 0), roll=0.0, fov=None, focus=None, aperture=0.0, max_blur=14.0):
         """カメラ：位置・見る点・上の目安・回転（度）・画角（縦、度）・ピントの距離（None で見る点まで）・ぼけの強さ。"""
-        from panda3d.core import LPoint3f, LVector3f
-        cam = self.U["camera"]
         pos = np.asarray(pos, float)
         B = anim.look_basis(np.asarray(target, float) - pos, up, roll)
         self.cam_pos = pos
         self.cam_basis = B
-        cam.lookAt(LPoint3f(*B[2].astype(np.float32)), LVector3f(*B[1].astype(np.float32)))
         if fov is not None:
-            # fov は縦の画角（度）。Ursina の camera.fov は横の画角なので直す
-            asp = self.w / self.h
-            cam.fov = math.degrees(2 * math.atan(math.tan(math.radians(fov) / 2) * asp)) if self.vertical_fov else fov
+            self.fov = fov
+        # fov は縦の画角（度）。vertical_fov が False の場面は横の画角として書いてあるので、縦に直す
+        vfov = self.fov
+        if not self.vertical_fov:
+            vfov = math.degrees(2 * math.atan(math.tan(math.radians(self.fov) / 2) * self.h / self.w))
+        self.vfov = vfov
+        # 浮動原点：カメラはいつも原点。物のほうを、カメラの位置を引いてから置く
+        self.view.camera([0.0, 0.0, 0.0], [float(x) for x in B[2]], [float(x) for x in B[1]], float(vfov), float(self.near))
         f = float(np.linalg.norm(np.asarray(target, float) - pos)) if focus is None else float(focus)
-        self.dof.set(f, aperture, max_blur)
+        self.view.set_dof(max(f, 0.05), float(aperture), float(max_blur) if aperture > 0 else 0.0)
 
     def draw(self, t):
         """時刻 t の場面を描いて、画（高さ×幅×3 の uint8）を返す。"""
@@ -107,14 +112,13 @@ class Stage:
                 if not shown:
                     continue
             it.update(t, o)
-        self.app.step()
+        self.view.pump()                     # 窓の知らせを流しておく（止まった窓と見なされないように）
+        self.view.render()
         return self.grab()
 
     def grab(self):
-        from ursina import application
-        tex = application.base.win.getScreenshot()
-        a = np.frombuffer(tex.getRamImageAs("RGB"), np.uint8).reshape(tex.getYSize(), tex.getXSize(), 3)
-        return a[::-1].copy()
+        """直前に描いた画（ピントのぼかし込み）。"""
+        return np.frombuffer(self.view.read_target(), np.uint8).reshape(self.h, self.w, 3).copy()
 
     # --- 部品 --------------------------------------------------------------
     def ship(self, voxels, size=1.0, pivot=None, name="ship", sun=None, ambient=None):
@@ -134,7 +138,6 @@ class Stage:
         """光の玉・煙・火花のテクスチャ（作ったものを使い回す）。"""
         if kind in self._sprite_tex:
             return self._sprite_tex[kind]
-        from panda3d.core import Texture, SamplerState
         n = 128
         yy, xx = np.mgrid[0:n, 0:n]
         r = np.sqrt((xx - n / 2 + 0.5) ** 2 + (yy - n / 2 + 0.5) ** 2) / (n / 2)
@@ -159,11 +162,7 @@ class Stage:
         img = np.zeros((n, n, 4), np.uint8)
         img[..., :3] = 255
         img[..., 3] = (a * 255).astype(np.uint8)
-        t = Texture(kind)
-        t.setup2dTexture(n, n, Texture.T_unsigned_byte, Texture.F_rgba8)
-        t.setRamImageAs(img[::-1].tobytes(), "RGBA")
-        t.setMinfilter(SamplerState.FT_linear_mipmap_linear)
-        t.setMagfilter(SamplerState.FT_linear)
+        t = self.gfx.tex_rgba(n, n, img.tobytes(), f"sprite_{kind}", False)     # なめらかに（縮小した段つき）
         self._sprite_tex[kind] = t
         return t
 

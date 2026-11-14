@@ -168,7 +168,7 @@ def render(film, out_path, scale=1.0, t_from=0.0, t_to=None, log=print, audio=Tr
         log("音を作っています…")
         film.audio(wav)
         subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(vid), "-ss", f"{t_from:.3f}", "-i", str(wav),
-                        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart",
+                        "-c:v", "copy", "-c:a", "aac", "-strict", "-2", "-b:a", "192k", "-shortest", "-movflags", "+faststart",
                         str(out_path)], check=True)
         vid.unlink()
     return out_path

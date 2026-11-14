@@ -18,7 +18,7 @@
 | G-01 | 管理 | 高 | Rust への書き直しを含む 69 コミットが GitHub に上がっていない | `git status`：`main...origin/main [ahead 69]` | 済 | 2026-11-14 | `origin/main` へ push（この表と報告書のコミットまで） |
 | G-02 | 管理 | 高 | ビルドに要る修正（`ModLoadError` を abi3 で作れる形に）が未コミット。`alpedia_view/Cargo.lock` も | `dev/native/alpedia_core/src/game/modcode.rs`・`mod.rs` | 済 | 2026-11-14 | コミット `d0de1a5`（3 ファイル）。コミット済みのソースからの作り直しは未確認 |
 | B-01 | 配布 | 高 | パッケージ版が書き直し前の中身のまま（`main`・`mods` は 11-11 の Python 版、`lib` だけ新しい）。同梱の Python に使わないライブラリが残る | `packages/windows/Alpedia/game/`・`runtime/Lib/site-packages`（panda3d・ursina・numba・scipy・skimage） | 済 | 2026-11-14 | 作り直した（1.1 GB → 792 MB。ライブラリは numpy・pillow・av だけ、`main`・`mods` は開発版と同じ）。描画なしの起動テストと、同梱の Python 3.12 でのシナリオ・MOD・街のテスト 34 件が通った。画面を出しての起動・前からあるセーブ（`world1`）の読み込みは未確認。原因は X-01・X-02 |
-| M-01 | ムービー | 高 | ムービーを作る道具が、消した ursina・panda3d と Python 版の描画に頼っていて動かない見込み（未実行） | `movies/cinema/stage.py`・`actor.py`・`post.py` | 未 | | |
+| M-01 | ムービー | 高 | ムービーを作る道具が、消した ursina・panda3d と Python 版の描画に頼っていて動かない（実行して確認：`画面がまだありません（gfx.start）` で止まる） | `movies/cinema/stage.py`・`actor.py`・`post.py` | 済 | 2026-11-14 | 道具を Rust の画面（`alpedia_view`）で描くように直した。`alpedia_view` に、窓なしで描く（`set_target`・`read_target`）・ピントのぼかし（`set_dof`）・立体映像（`mesh_holo`）を足し、`movies/cinema/` の `stage`・`actor`・`fx`・`post` から Panda3D・ursina を外した（場面のファイルは変更なし）。本編 11 本とパイロット版 2 本を数コマずつ描いて止まらないこと、前のムービーと同じコマの色の差が 1〜3 階調であること、音つき mp4 の書き出し（半分の大きさ・パイロット版 1 本）を確認。本編を元の大きさで通して描き直すことはしていない。見え方の違いは `movies/README.md` |
 | D-01 | 文書 | 中 | 「Rust が無くても numba で動きます」が誤り。`alpedia_view` の説明が無い | `docs/開発の進め方.md` 43 行目ほか | 済 | 2026-11-14 | numba の記述を消し、Rust が本体で無いと起動しないこと・`alpedia_view`・`tools`・`movies` を足した |
 | D-02 | 文書 | 中 | 「コード構成」が `main/*.py` を本体として説明（今は Rust の入口だけ）。「決まりごとは Python のまま」も古い | `dev/README.md`「コード構成」「高速化」 | 済 | 2026-11-14 | 「コード構成」を Rust のファイルと Python の入口の対応表に書き直し、「高速化」「画面」「フォルダ構成」も今の作りに |
 | D-03 | 文書 | 中 | 「Rust 版と Python 版を比べるテスト」の説明が古い。`src/game/` の説明が無い | `dev/native/README.md` | 済 | 2026-11-14 | 2つのモジュールの説明と「ゲーム本体（`src/game/`）」の節を足し、テストの説明・ビルドでできる物を今の形に |
@@ -61,6 +61,7 @@
 |---|---|---|---|---|---|
 | X-01 | 2026-11-14 | 配布 | パッケージを作るとき、ダウンロードの置き場に残っている wheel を全部同梱していた（requirements から外した Panda3D・ursina・numba・scipy なども入り続ける） | 毎回、今の requirements に要る物だけを空のフォルダに集め直す。消せずに残った空のフォルダももう一度消す | `packages/windows/build/build_package.py`（`download_wheels`・`_clear`） |
 | X-02 | 2026-11-14 | 配布 | 本体の印（`builtin`）が無い同梱 MOD（VRM の見た目・モーション・BGM・例）は足りないファイルを足すだけで、変わったプログラムが入れ替わらなかった。前の版のサバイバルの MOD も残り続けていた | 開発版のほうが新しいファイルは入れ替える。今は無い本体の MOD は消す | `packages/windows/build/build_package.py`（`copy_game`） |
+| X-03 | 2026-11-14 | ムービー | この PC の `ffmpeg`（PATH にある 2013 年の版）では、音を重ねる所で「aac は実験的」と止まる（`imageio-ffmpeg` が入っていないとき） | `-strict -2` を付けて古い版でも通るようにした | `movies/cinema/film.py`・`movies/remix_audio.py` |
 
 ## 更新の記録
 
@@ -70,3 +71,5 @@
 | 2026-11-14 | G-01・G-02 を済に |
 | 2026-11-14 | B-01 を済に。X-01・X-02 を追加 |
 | 2026-11-14 | D-01〜D-06 を済に（文書を今の作りに合わせた）。T-01 の書き方を正確に |
+| 2026-11-14 | M-01 を調査（作業中に。当面の描き方を確認） |
+| 2026-11-14 | M-01 を済に（道具を Rust の画面で描くように）。X-03 を追加 |

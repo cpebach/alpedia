@@ -1,5 +1,5 @@
 """描いた画の仕上げ：
-  ・GPU（シェーダー）：被写界深度（ピントの合う距離から離れるほどぼかす。奥行きの画を使う）
+  ・GPU：被写界深度（ピントの合う距離から離れるほどぼかす）は、描くときに Rust の画面（alpedia_view の set_dof）がかける
   ・CPU（numpy / Pillow）：光のにじみ（ブルーム）・色の調整・周辺を暗く・フィルムの粒・閃光・フェード・黒帯・字幕
 そして ffmpeg で mp4 に書き出す。
 """
@@ -9,95 +9,6 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
-
-DOF_VERT = """#version 330
-uniform mat4 p3d_ModelViewProjectionMatrix;
-in vec4 p3d_Vertex;
-in vec2 p3d_MultiTexCoord0;
-out vec2 uv;
-void main() {
-    gl_Position = p3d_ModelViewProjectionMatrix * p3d_Vertex;
-    uv = p3d_MultiTexCoord0;
-}
-"""
-
-# ピントの距離 focus（m）、絞り aperture（大きいほどぼける。ぼけの半径 px = aperture × |1/z − 1/focus| × 焦点の目安）
-# 円形のぼけを、黄金角のらせん状の 64 点で集める。手前のぼけた物が奥のくっきりした物ににじむように、
-# 集める点の重みはその点のぼけの大きさで決める（散らばる形の近似）。
-DOF_FRAG = """#version 330
-uniform sampler2D tex;
-uniform sampler2D dtex;
-uniform float focus;
-uniform float aperture;
-uniform float max_px;
-uniform float near;
-uniform float far;
-uniform vec2 px;
-in vec2 uv;
-out vec4 o;
-
-float lin(float d) { return near * far / (far - d * (far - near)); }
-float coc(float z) { return clamp(aperture * abs(1.0 / z - 1.0 / focus) * focus, 0.0, max_px); }
-
-void main() {
-    float z0 = lin(texture(dtex, uv).r);
-    float c0 = coc(z0);
-    vec4 base = texture(tex, uv);
-    if (max_px < 0.5 || aperture <= 0.0) { o = base; return; }
-    vec3 acc = base.rgb;
-    float wsum = 1.0;
-    float rad = max(c0, 0.0);
-    const int N = 64;
-    for (int i = 1; i < N; i++) {
-        float r = sqrt(float(i) / float(N));
-        float a = float(i) * 2.39996323;
-        vec2 off = vec2(cos(a), sin(a)) * r * max_px;
-        vec2 suv = uv + off * px;
-        float zs = lin(texture(dtex, suv).r);
-        float cs = coc(zs);
-        // その点のぼけがこの画素まで届いているか（手前の物は自分の大きさでにじむ）
-        float reach = (zs < z0) ? cs : min(cs, c0);
-        float w = smoothstep(r * max_px - 1.5, r * max_px + 0.5, reach);
-        acc += texture(tex, suv).rgb * w;
-        wsum += w;
-    }
-    o = vec4(acc / wsum, 1.0);
-}
-"""
-
-
-class DOF:
-    """ピントのシェーダー。場面を色と奥行き（32 ビット）の画に描いてから、画面に仕上げる。
-    （Ursina の camera.shader は奥行きが 16 ビットで、遠くの惑星や星が消えてしまうので使わない）"""
-
-    def __init__(self, camera, width, height, near, far):
-        from direct.filter.FilterManager import FilterManager
-        from panda3d.core import FrameBufferProperties, Shader, Texture
-        from ursina import application
-        base = application.base
-        self.fm = FilterManager(base.win, base.cam)
-        self.ctex, self.dtex = Texture("color"), Texture("depth")
-        fbp = FrameBufferProperties()
-        fbp.setRgbColor(True)
-        fbp.setRgbaBits(8, 8, 8, 8)
-        fbp.setDepthBits(32)
-        fbp.setFloatDepth(True)
-        self.quad = self.fm.renderSceneInto(colortex=self.ctex, depthtex=self.dtex, fbprops=fbp)
-        self.quad.setShader(Shader.make(Shader.SL_GLSL, DOF_VERT, DOF_FRAG))
-        q = self.quad
-        q.setShaderInput("tex", self.ctex)
-        q.setShaderInput("dtex", self.dtex)
-        q.setShaderInput("near", float(near))
-        q.setShaderInput("far", float(far))
-        q.setShaderInput("px", (1.0 / width, 1.0 / height))
-        self.set(10.0, 0.0, 0.0)
-
-    def set(self, focus, aperture, max_px=16.0):
-        q = self.quad
-        q.setShaderInput("focus", float(max(focus, 0.05)))
-        q.setShaderInput("aperture", float(aperture))
-        q.setShaderInput("max_px", float(max_px) if aperture > 0 else 0.0)
-
 
 # ---------------------------------------------------------------------------
 # 仕上げ（1コマごと）

@@ -34,7 +34,7 @@ def remix(name):
             film.audio(wav)
         out = Path(td) / "out.mp4"
         subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", str(mp4), "-i", str(wav), "-map", "0:v:0",
-                        "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest",
+                        "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-strict", "-2", "-b:a", "160k", "-shortest",
                         "-movflags", "+faststart", str(out)], check=True)
         mp4.write_bytes(out.read_bytes())
     print("音を作り直しました:", mp4.name)

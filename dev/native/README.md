@@ -110,6 +110,12 @@ Rust の中の単体テスト（`cargo test`）はまだありません。
   描くメッシュが使うテクスチャだけ GPU に送る。線形のテクスチャ（文字・アイコン・VRM）は縮小した段（ミップマップ）も作る。
   `tex_update` は画素の差し替え（ムービーの1コマ）。
 - 窓：`set_size`・`set_fullscreen`（設定の解像度・フルスクリーン）。
+- 窓なしで描く（ムービーを作る道具 `movies/` が使う）：`View(幅, 高さ, 題名, vsync, visible=False)` で窓を見せずに開き、
+  `set_target(幅, 高さ)` で描く先を「窓の外の画」にする（窓の大きさに縛られない。`size()` もこの大きさを返す。0 で窓に戻す）。
+  `render()` のあと `read_target()` で画素（RGB、上の行から）を読む。
+  `set_dof(ピントの距離, 絞り, ぼけの最大の半径 px)` で、`set_target` に描くときだけピントのぼかし（被写界深度）をかける。
+- 立体映像（ホログラム）：`mesh_holo(メッシュ, on, 時刻)`。頂点の色の欄を (縁の光り方, 高さ m, 明るさの倍率)、不透明度を濃さ、
+  ノードの色を光の色として、走査線つきの単色で描く（足し算で重ねるのは `mesh_add`）。
 - 音：`alpedia_view.Audio`（rodio）。`load`（wav・mp3 など）・`load_pcm`（読み解いた音。ムービーの音）・`play(番号, 始める秒)`・
   `stop`・`playing`・`set_volume`・`set_loop`。音の出口が無い PC では何も鳴らさないだけ（`ok()` が False）。
   Linux で作るときは ALSA の開発用ファイル（`libasound2-dev`）が要ります。

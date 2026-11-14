@@ -19,7 +19,6 @@ class Sprites:
     玉: (位置, 大きさ(m), (r,g,b,a), 回転(rad))、伸びた玉: ("line", 始点, 終点, 太さ, (r,g,b,a))"""
 
     def __init__(self, stage, kind="glow", blend="add", order=10):
-        from panda3d.core import ColorBlendAttrib, TransparencyAttrib
         self.stage = stage
         self.mesh = stage.render.DynamicMesh(stage.root, f"sprites_{kind}")
         np_ = self.mesh.np
@@ -27,10 +26,9 @@ class Sprites:
         np_.setDepthWrite(False)
         np_.setBin("fixed", order)
         if blend == "add":
-            np_.setAttrib(ColorBlendAttrib.make(ColorBlendAttrib.M_add, ColorBlendAttrib.O_incoming_alpha,
-                                                ColorBlendAttrib.O_one))
+            np_.setBlendAdd(True)            # 足し算で重ねる（色 × 不透明度 を足す）
         else:
-            np_.setTransparency(TransparencyAttrib.M_alpha)
+            np_.setTransparency(True)
         self.blend = blend
         self.emitters = []
         stage.add(self)
@@ -324,35 +322,15 @@ class Debris:
 # ---------------------------------------------------------------------------
 # 遠景：惑星（大気の縁の光つき）・星空・太陽
 # ---------------------------------------------------------------------------
-ATMO_VERT = """#version 330
-uniform mat4 p3d_ModelViewProjectionMatrix;
-uniform mat4 p3d_ModelMatrix;
-in vec4 p3d_Vertex;
-in vec3 p3d_Normal;
-out vec3 vn;
-out vec3 vp;
-void main() {
-    gl_Position = p3d_ModelViewProjectionMatrix * p3d_Vertex;
-    vn = mat3(p3d_ModelMatrix) * p3d_Normal;     // 描画の座標（カメラが原点）
-    vp = (p3d_ModelMatrix * p3d_Vertex).xyz;
-}
-"""
-ATMO_FRAG = """#version 330
-uniform vec3 sun_v;
-uniform vec3 tint;
-uniform float strength;
-in vec3 vn;
-in vec3 vp;
-out vec4 o;
-void main() {
-    vec3 n = normalize(vn);
-    vec3 v = normalize(-vp);
-    float rim = 1.0 - abs(dot(n, v));
-    float lit = smoothstep(-0.35, 0.6, dot(n, sun_v));
-    float a = pow(rim, 3.5) * (0.08 + 0.92 * lit) * strength * 0.9;
-    o = vec4(tint * a, a);
-}
-"""
+def _mat(rows, c):
+    """行ベクトルにかける 4×4 の行列（上の 3 行が向きと大きさ、4 行目が位置）を、ノードに渡す 16 個の数に。"""
+    return [*[float(x) for x in rows[0]], 0.0, *[float(x) for x in rows[1]], 0.0, *[float(x) for x in rows[2]], 0.0,
+            *[float(x) for x in c], 1.0]
+
+
+def _smoothstep(a, b, x):
+    t = np.clip((x - a) / (b - a), 0.0, 1.0)
+    return t * t * (3 - 2 * t)
 
 
 def _cube_sphere(n):
@@ -415,8 +393,7 @@ class Planet:
 
     def __init__(self, stage, defn_id, center, scale=1.0, style="terra", spin=0.0, n=128, seed=3, tilt=None,
                  atmo=1.0):
-        from main.world import make_planet
-        from panda3d.core import ColorBlendAttrib, TransparencyAttrib
+        from main.planet import make_planet
         st = STYLES[style]
         base = stage.reg.get("planets", defn_id)
         pl = make_planet(base, [0, 0, 0], None)
@@ -455,19 +432,25 @@ class Planet:
             a = np.clip((cn + band - (1 - st["clouds"])) / 0.22, 0, 1) ** 1.3 * 0.9
             ccol = np.ones((len(dirs), 3)) * 0.97
             self.clouds = self._mesh(dirs * pl.radius * 1.012, dirs, ccol, tris, "clouds", alpha=a)
-            self.clouds.np.setTransparency(TransparencyAttrib.M_alpha)
+            self.clouds.np.setTransparency(True)
             self.clouds.np.setDepthWrite(False)
             self.clouds.np.setBin("fixed", 1)
         self.atmo = None
         if st["atmo"] is not None and atmo > 0:
-            from panda3d.core import Shader
-            am = self._mesh(dirs, dirs, np.ones((len(dirs), 3)), tris, "atmo")
-            e = am.np
-            e.setShader(Shader.make(Shader.SL_GLSL, ATMO_VERT, ATMO_FRAG))
-            e.setShaderInput("tint", tuple(st["atmo"]))
-            e.setShaderInput("strength", float(atmo))
-            e.setShaderInput("sun_v", tuple(float(x) for x in stage.render.SUN))
-            e.setAttrib(ColorBlendAttrib.make(ColorBlendAttrib.M_add, ColorBlendAttrib.O_one, ColorBlendAttrib.O_one))
+            # 大気の縁の光：惑星より少し大きい球を足し算で重ねる。縁ほど・昼の側ほど明るい。
+            # 明るさは見る向きで変わるので、毎コマ頂点ごとに計算して不透明度に入れる（色 × 不透明度 が足される）
+            self.atmo_dirs = dirs
+            self.atmo_v = np.zeros((len(dirs), 12), np.float32)
+            self.atmo_v[:, 0:3] = dirs
+            self.atmo_v[:, 3:6] = dirs
+            self.atmo_v[:, 6:9] = np.asarray(st["atmo"], np.float32)
+            self.atmo_strength = float(atmo)
+            self.atmo_lit = 0.08 + 0.92 * _smoothstep(-0.35, 0.6, dirs @ np.asarray(stage.render.SUN, float))
+            self.atmo_mesh = stage.render.DynamicMesh(stage.root, "atmo")
+            self.atmo_mesh.set(self.atmo_v, tris)
+            e = self.atmo_mesh.np
+            e.setTwoSided(False)
+            e.setBlendAdd(True)
             e.setDepthWrite(False)
             e.setBin("fixed", 2)
             self.atmo = e
@@ -488,24 +471,28 @@ class Planet:
         return m
 
     def update(self, t, origin):
-        from panda3d.core import LMatrix4f
         R = self.tilt @ anim.axis_angle((0, 1, 0), self.spin * t)
         c = self.center - origin
         for m, extra in ((self.mesh, 1.0), (self.clouds, 1.0)):
             if m is None:
                 continue
             M = R.T * self.scale * extra
-            m.np.setMat(LMatrix4f(*M[0], 0, *M[1], 0, *M[2], 0, *c, 1))
+            m.np.setMat(_mat(M, c))
         if self.atmo is not None:
             s = self.radius * self.scale * 1.045
-            self.atmo.setMat(LMatrix4f(s, 0, 0, 0, 0, s, 0, 0, 0, 0, s, 0, *c, 1))
+            d = self.atmo_dirs
+            vp = d * s + c                                   # カメラ（原点）から見た位置
+            vv = -vp / (np.linalg.norm(vp, axis=1, keepdims=True) + 1e-12)
+            rim = 1.0 - np.abs(np.einsum("ij,ij->i", d, vv))
+            self.atmo_v[:, 9] = rim ** 3.5 * self.atmo_lit * self.atmo_strength * 0.9
+            self.atmo_mesh.set(self.atmo_v)
+            self.atmo.setMat(_mat(np.eye(3) * s, c))
 
 
 class Stars:
     """星空（カメラといっしょに動く遠い球面の点）。"""
 
     def __init__(self, stage, n=2600, dist=None, seed=5, milky=True):
-        from ursina import Entity, Mesh
         rng = _rng(seed)
         d = rng.normal(size=(n, 3))
         d /= np.linalg.norm(d, axis=1)[:, None]
@@ -517,16 +504,37 @@ class Stars:
         far = (dist or stage.far * 0.8)
         b = rng.uniform(0.25, 1.0, len(d)) ** 2.2
         tint = rng.uniform(0.8, 1.0, (len(d), 3))
-        col = stage.U["color"]
-        cols = [col.rgba(float(bb * tt[0]), float(bb * tt[1]), float(bb), 1.0) for bb, tt in zip(b, tint)]
-        self.e = Entity(parent=stage.root, model=Mesh(vertices=(d * far).tolist(), colors=cols, mode="point",
-                                                      thickness=2.0), unlit=True)
-        self.e.setBin("background", 5)
-        self.e.setDepthWrite(False)
-        self.e.setLightOff()
+        # 星は 2 画素の四角（どの画角でも同じ大きさに見えるように、毎コマ大きさだけ決め直す）。
+        # カメラはいつも原点にあり、星は決まった向きにあるので、四角の向きは作るときに決められる
+        self.stage, self.far_d = stage, far
+        n_s = len(d)
+        a = np.cross(d, np.where(np.abs(d[:, 1:2]) < 0.9, [[0.0, 1.0, 0.0]], [[1.0, 0.0, 0.0]]))
+        a /= np.linalg.norm(a, axis=1, keepdims=True)
+        bb = np.cross(d, a)
+        self.base = np.repeat(d * far, 4, axis=0)
+        self.off = np.empty((n_s * 4, 3))
+        for j, (sa, sb) in enumerate(((-1, -1), (1, -1), (1, 1), (-1, 1))):
+            self.off[j::4] = a * sa + bb * sb
+        self.v = np.zeros((n_s * 4, 12), np.float32)
+        self.v[:, 3:6] = np.repeat(-d, 4, axis=0)
+        col = np.stack([b * tint[:, 0], b * tint[:, 1], b], 1)
+        self.v[:, 6:9] = np.repeat(col, 4, axis=0)
+        self.v[:, 9] = 1.0
+        self.mesh = stage.render.DynamicMesh(stage.root, "stars")
+        self.mesh.set(self.v, stage.render.quad_tris(n_s))
+        self.e = self.mesh.np
+        # 背景：ほかの何よりも先に描き、奥行きは書かない（遠くの惑星の手前に出ないように）
+        self.e._set(bin=-95, depth_write=False)
+        self._half = None
         stage.add(self)
 
     def update(self, t, origin):
+        st = self.stage
+        half = self.far_d * math.tan(math.radians(st.vfov) / 2) * 2.0 / st.h      # 1 画素ぶん（星は 2 画素四方）
+        if self._half != half:
+            self._half = half
+            self.v[:, 0:3] = self.base + self.off * half
+            self.mesh.set(self.v)
         self.e.setPos(0, 0, 0)
 
 
@@ -618,9 +626,7 @@ class Ground:
                      + H[i0, j0 + 1] * (1 - fi) * fj + H[i0 + 1, j0 + 1] * fi * fj)
 
     def update(self, t, origin):
-        from panda3d.core import LMatrix4f
-        c = self.c - origin
-        self.mesh.np.setMat(LMatrix4f(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, *c, 1))
+        self.mesh.np.setMat(_mat(np.eye(3), self.c - origin))
 
 
 class Sky:
@@ -644,8 +650,7 @@ class Sky:
         v[:, 9] = 1.0
         self.mesh = stage.render.DynamicMesh(stage.root, "sky")
         self.mesh.set(v, tris)
-        self.mesh.np.setBin("background", 1)
-        self.mesh.np.setDepthWrite(False)
+        self.mesh.np._set(bin=-99, depth_write=False)      # 背景：いちばん先に描く（星より先）
         stage.add(self)
 
     def update(self, t, origin):
