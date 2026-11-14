@@ -20,7 +20,9 @@ _ui_cache = {}
 # 機器ブロックの表面に貼る記号（デカール）
 DECAL_TYPES = ["thruster", "tank", "pipe", "valve", "battery", "generator", "solar", "crank", "computer", "actuator",
                "processor", "seat", "air_vent", "antenna", "turret", "radar", "launcher", "pump", "hinge", "bend", "piston",
-               "anchor", "light", "other"]
+               "anchor", "light", "other",
+               # 面ごとの印（推進機・アクチュエーターの、向きの面と反対の面）
+               "nozzle", "thrust_face", "shaft", "rod", "hinge_face", "mount"]
 DECAL_VARIANTS = ["plain", "side", "front", "back"]
 DECAL_CELL = 128
 _atlas = None

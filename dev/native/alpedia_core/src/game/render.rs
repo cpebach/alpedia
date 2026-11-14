@@ -1353,6 +1353,24 @@ impl DecalView {
                 } else {
                     ("plain", default_up)
                 };
+                // 推進機・アクチュエーターは、向きの面と反対の面に、その面の役割の印を貼る
+                // （推進機：向きの面＝押す面、反対の面＝噴射口のノズル。アクチュエーター：向きの面＝出力の軸・棒・板、反対の面＝土台に付ける板）
+                let ks: String = kind.extract().unwrap_or_default();
+                let face: Option<(&str, &str)> = match (ks.as_str(), var) {
+                    ("thruster", "front") => Some(("thrust_face", "front")),
+                    ("thruster", "back") => Some(("nozzle", "plain")),
+                    ("actuator", "front") => Some(("shaft", "front")),
+                    ("piston", "front") => Some(("rod", "front")),
+                    ("hinge", "front") => Some(("hinge_face", "front")),
+                    ("actuator" | "piston" | "hinge", "back") => Some(("mount", "plain")),
+                    _ => None,
+                };
+                if let Some((fk, fv)) = face {
+                    if let Some(uv) = uvmap.get_item((fk, fv)).ok() {
+                        push(i, n, up, &uv)?;
+                        continue;
+                    }
+                }
                 push(i, n, up, &uvmap.get_item((&kind, var))?)?;
             }
         }
