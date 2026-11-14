@@ -13,7 +13,23 @@ import numpy as np
 from .vrm import qaxis, qinv, qmul, qrot
 
 PARAMS = ("leg_l", "leg_r", "knee_l", "knee_r", "arm_l", "arm_r", "swing_l", "swing_r", "elbow_l", "elbow_r",
-          "lean", "twist", "bob", "head", "seat", "spread")
+          "lean", "twist", "bob", "head", "seat", "spread", "grip")
+
+FINGERS = ("Thumb", "Index", "Middle", "Ring", "Little")
+# 手の形：指ごとの (曲げる角度 rad, 横に開く角度 rad)。曲げは付け根・中・先の3つの関節に 1.0・1.1・0.8 倍で分ける。
+# 親指は (手のひらへ寄せる角度, 曲げる角度)
+HANDS = {
+    "relax": {"Thumb": (0.35, 0.25), "Index": (0.3, 0.03), "Middle": (0.38, 0.0), "Ring": (0.46, -0.03), "Little": (0.54, -0.06)},
+    "open": {"Thumb": (0.1, 0.05), "Index": (0.04, 0.08), "Middle": (0.04, 0.0), "Ring": (0.05, -0.08), "Little": (0.06, -0.16)},
+    "flat": {"Thumb": (0.25, 0.05), "Index": (0.02, 0.0), "Middle": (0.02, 0.0), "Ring": (0.02, 0.0), "Little": (0.02, 0.0)},
+    "fist": {"Thumb": (0.75, 0.7), "Index": (1.45, 0.0), "Middle": (1.5, 0.0), "Ring": (1.5, 0.0), "Little": (1.45, 0.0)},
+    "grip": {"Thumb": (0.6, 0.45), "Index": (1.05, 0.0), "Middle": (1.1, 0.0), "Ring": (1.1, 0.0), "Little": (1.05, 0.0)},
+    "point": {"Thumb": (0.7, 0.6), "Index": (0.02, 0.0), "Middle": (1.5, 0.0), "Ring": (1.5, 0.0), "Little": (1.45, 0.0)},
+    "peace": {"Thumb": (0.75, 0.65), "Index": (0.02, 0.18), "Middle": (0.02, -0.12), "Ring": (1.5, 0.0), "Little": (1.45, 0.0)},
+    "paw": {"Thumb": (0.5, 0.35), "Index": (0.9, 0.0), "Middle": (0.95, 0.0), "Ring": (1.0, 0.0), "Little": (1.0, 0.0)},
+    "pinch": {"Thumb": (0.65, 0.35), "Index": (0.75, 0.0), "Middle": (0.55, 0.0), "Ring": (0.6, 0.0), "Little": (0.7, 0.0)},
+}
+JOINT_SHARE = (1.0, 1.1, 0.8)
 
 
 class Motion:
@@ -38,6 +54,7 @@ class Motion:
             "leftUpperArm": d("leftUpperArm", "leftLowerArm", -self.R), "rightUpperArm": d("rightUpperArm", "rightLowerArm", self.R),
             "leftLowerArm": d("leftLowerArm", "leftHand", -self.R), "rightLowerArm": d("rightLowerArm", "rightHand", self.R),
         }
+        self._setup_hands()
         self.leg_len = float(np.linalg.norm(P("leftUpperLeg") - P("leftLowerLeg"))
                              + np.linalg.norm(P("leftLowerLeg") - (P("leftFoot") if "leftFoot" in h else P("leftLowerLeg") - self.U * 0.4)))
         self.hips_h = float((P("hips") - vrm.bounds()[0]) @ self.U)
@@ -47,6 +64,103 @@ class Motion:
         self.t = 0.0
         self.blink_t = random.uniform(1.0, 4.0)
         self.blink = 0.0
+
+    # --- 手と指 ------------------------------------------------------------------
+    def _setup_hands(self):
+        """指の骨の並び・向きと、手のひらの向き（初期姿勢）を調べておく。指の骨が無いモデルでは何もしない。"""
+        h, P = self.node, self.v.bone_pos
+        self.hands = {}
+        for s in ("left", "right"):
+            if f"{s}Hand" not in h or f"{s}MiddleProximal" not in h:
+                continue
+            hand = P(f"{s}Hand")
+            d_hand = P(f"{s}MiddleProximal") - hand
+            d_hand /= np.linalg.norm(d_hand)
+            across = P(f"{s}IndexProximal") - P(f"{s}LittleProximal") if f"{s}LittleProximal" in h else self.F
+            palm = np.cross(d_hand, across)                       # 手のひらの向き（甲の反対）
+            palm /= np.linalg.norm(palm)
+            if palm @ self.U > 0:                                 # 初期姿勢（T ポーズ）では手のひらは下向き
+                palm = -palm
+            fingers = {}
+            for f in FINGERS:
+                names = ([f"{s}ThumbMetacarpal", f"{s}ThumbProximal", f"{s}ThumbDistal"] if f == "Thumb"
+                         and f"{s}ThumbMetacarpal" in h else
+                         [f"{s}{f}Proximal", f"{s}{f}Intermediate", f"{s}{f}Distal"])
+                names = [n for n in names if n in h]
+                if not names:
+                    continue
+                chain = []
+                for k, n in enumerate(names):
+                    nxt = P(names[k + 1]) if k + 1 < len(names) else None
+                    d = (nxt - P(n)) if nxt is not None else (chain[-1][1] if chain else d_hand)
+                    d = d / max(np.linalg.norm(d), 1e-9)
+                    chain.append((h[n], d))
+                fingers[f] = chain
+            across = across - d_hand * (across @ d_hand)
+            across /= max(np.linalg.norm(across), 1e-9)               # 小指 → 人さし指（親指の側）
+            self.hands[s] = {"dir": d_hand, "palm": palm, "across": across, "fingers": fingers, "node": h[f"{s}Hand"]}
+
+    def hand_quats(self, side, shape="relax", amount=1.0):
+        """手の形 shape（HANDS の名前か、{指: (曲げ, 開き)} の辞書）→ {指の骨のノード: 四元数}。amount で弱める。"""
+        H = self.hands.get(side)
+        if H is None:
+            return {}
+        key = (side, shape, amount) if isinstance(shape, str) else None
+        cache = self.__dict__.setdefault("_hand_cache", {})
+        if key is not None and key in cache:                      # 名前の形はいつも同じなので使い回す（毎フレーム・人数分）
+            return cache[key]
+        out = self._hand_quats(H, side, shape, amount)
+        if key is not None:
+            cache[key] = out
+        return out
+
+    def _hand_quats(self, H, side, shape, amount):
+        sh = HANDS.get(shape, HANDS["relax"]) if not isinstance(shape, dict) else {**HANDS["relax"], **shape}
+        palm, d_hand, across = H["palm"], H["dir"], H["across"]
+        out = {}
+        for f, chain in H["fingers"].items():
+            curl, spread = (float(x) * amount for x in sh.get(f, (0.0, 0.0)))
+            if f == "Thumb":
+                # 親指：付け根（中手骨）を、手に沿う・手のひらの側へ・小指の側へ の向きにする（curl＝寄せる量 0〜1 くらい）。
+                # 先の2つは手のひらの側へ曲げる（spread＝曲げる角度）
+                opp = curl
+                want = d_hand * (0.85 - 0.3 * opp) + palm * (0.2 + 0.55 * opp) + across * (0.55 - 1.05 * opp)
+                q0 = _arc(chain[0][1], want)
+                out[chain[0][0]] = q0
+                toward = qrot(qinv(q0), palm - across * 0.4)          # 付け根を回した後の、手のひらの側（初期姿勢の向きで）
+                for k, (node, d) in enumerate(chain[1:], 1):
+                    ax = np.cross(d, toward)
+                    n = np.linalg.norm(ax)
+                    out[node] = qaxis(ax / n, spread * JOINT_SHARE[k]) if n > 1e-6 else np.array([0.0, 0.0, 0.0, 1.0])
+                continue
+            for k, (node, d) in enumerate(chain):
+                toward = palm
+                ang = curl * JOINT_SHARE[min(k, 2)]
+                ax = np.cross(d, toward)
+                n = np.linalg.norm(ax)
+                q = qaxis(ax / n, ang) if n > 1e-6 and abs(ang) > 1e-4 else np.array([0.0, 0.0, 0.0, 1.0])
+                if k == 0 and f != "Thumb" and abs(spread) > 1e-4:
+                    # 付け根で横に開く（人さし指側へ +。左右とも親指側が +）
+                    q = qmul(q, qaxis(palm, -spread if side == "right" else spread))
+                out[node] = q
+        return out
+
+    def palm_quat(self, side, arm_rot, want):
+        """手首をひねって、手のひらを want（モデル座標の向き）へ向ける回転（手の骨、初期姿勢の向きで）。
+        arm_rot：上腕と前腕の回転を合わせたもの（初期姿勢 → 今）。指の向きは前腕に沿ったまま、ひねりだけ"""
+        H = self.hands.get(side)
+        if H is None:
+            return None
+        d, p0 = H["dir"], H["palm"]
+        t = qrot(qinv(arm_rot), np.asarray(want, float))          # 前腕の向きに戻して考える
+        t = t - d * (t @ d)
+        p = p0 - d * (p0 @ d)
+        if np.linalg.norm(t) < 1e-6 or np.linalg.norm(p) < 1e-6:
+            return None
+        t, p = t / np.linalg.norm(t), p / np.linalg.norm(p)
+        ang = math.atan2(float(np.cross(p, t) @ d), float(p @ t))
+        ang = max(-2.0, min(2.0, ang))                            # 手首がねじれすぎないように
+        return qaxis(d, ang)
 
     # --- 状態 → 目標の姿勢 ------------------------------------------------------
     def target(self, st, dt):
@@ -163,6 +277,10 @@ class Motion:
         put(ch, qaxis(np.cross(U, F), p["lean"] * 0.4))
         put("neck", qaxis(np.cross(U, -F), p["head"] * 0.4 - p["lean"] * 0.5))
         put("head", qaxis(np.cross(U, -F), p["head"] * 0.6 - p["lean"] * 0.3))
+        # 指：ふだんは力を抜いて軽く曲げる（T ポーズのまっすぐ開いた手にしない）。座っている間は握る
+        for s_ in ("left", "right"):
+            shape = "grip" if p["seat"] > 0.5 else "relax"
+            out.update(self.hand_quats(s_, shape))
         return out
 
     # --- MOD のモーション（カメラモードなどで選ぶ） ------------------------------------
@@ -172,6 +290,9 @@ class Motion:
     #   "spine"/"chest"：胴の上の向き (右, 上, 前)  "head"：顔の向き (右, 上, 前)  "tilt"：首をかしげる角度（右へ +）
     #   "twist"：腰のひねり（rad）  "bob"：腰の上下（m）  "face"：体全体の向きのずれ（rad、左回り +）
     #   "blink"：目を閉じる 0-1（無ければ自動のまばたき）
+    #   "hand_l"/"hand_r"：手の形（"relax" 力を抜く・"open" 開く・"flat" そろえて伸ばす・"fist" にぎる・"grip" 物を持つ・
+    #                     "point" 指さす・"peace" ピース・"paw" うさぎの手・"pinch" つまむ。{指: (曲げ, 開き)} の辞書でもよい）
+    #   "palm_l"/"palm_r"：手のひらを向ける向き（体の向きで (外, 上, 前)。腕を書いたときだけ。手首と前腕をひねる）
     # 書いていない骨は、ふだんの動き（立つ・歩くなど）のまま。始めと終わりはなめらかにつなぐ。
     def _emote(self, rot, hips, blink, seat, emote, et, dt):
         a = 1.0 - math.exp(-dt * 8.0)
@@ -211,12 +332,14 @@ class Motion:
     def _emote_quats(self, pose):
         h = self.node
         out = {}
+        ident = np.array([0.0, 0.0, 0.0, 1.0])
         for s_, sl in (("left", "l"), ("right", "r")):
             for upper, lower, ku, kl in ((f"{s_}UpperArm", f"{s_}LowerArm", f"arm_{sl}", f"fore_{sl}"),
                                          (f"{s_}UpperLeg", f"{s_}LowerLeg", f"thigh_{sl}", f"shin_{sl}")):
                 if upper not in h:
                     continue
                 qu = None
+                ql = None
                 if ku in pose:
                     qu = _arc(self.dir[upper], self._body(pose[ku], s_))
                     out[h[upper]] = qu
@@ -229,6 +352,19 @@ class Motion:
                     if "Leg" in upper and f"{s_}Foot" in h:
                         tot = qmul(qu, ql) if qu is not None else ql
                         out[h[f"{s_}Foot"]] = qinv(tot)       # 足先は地面と平行のまま
+                if "Arm" in upper:
+                    if f"hand_{sl}" in pose:
+                        out.update(self.hand_quats(s_, pose[f"hand_{sl}"]))
+                    if f"palm_{sl}" in pose and qu is not None and s_ in self.hands:
+                        arm = qmul(qu, ql if ql is not None else ident)
+                        tw = self.palm_quat(s_, arm, self._body(pose[f"palm_{sl}"], s_))
+                        if tw is not None:
+                            # ひねりは前腕に 6 割、手首に 4 割（手首だけをひねると、肌がしぼったようにねじれる）
+                            d = self.hands[s_]["dir"]
+                            ang = 2.0 * math.atan2(float(np.linalg.norm(tw[:3])), float(tw[3])) * (1 if tw[:3] @ d >= 0 else -1)
+                            if lower in h:
+                                out[h[lower]] = qmul(ql if ql is not None else ident, qaxis(d, ang * 0.6))
+                            out[self.hands[s_]["node"]] = qaxis(d, ang * 0.4)
         for key, bone in (("spine", "spine"), ("chest", "upperChest" if "upperChest" in h else "chest")):
             if key in pose and bone in h:
                 out[h[bone]] = _arc(self.U, self._body(pose[key]))
