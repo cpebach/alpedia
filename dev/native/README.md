@@ -76,6 +76,10 @@ Rust と同じ計算をする Python の予備（numpy 版）はもうありま�
   リンクは `python312.dll` に直接します）。
 - Rust のコードを変えたら、もう一度ダブルクリックします。
 
+### Python の DLL へのつなぎ方（Windows・GNU）
+
+物理コアと画面は、Python の取り込みライブラリにつないで作ります（元のフォルダ用はこの PC の Python の `libs\python3.lib`、パッケージ版用は同梱の `python312.dll` から `make_import_lib.py` が作る `libpython312.dll.a`）。DLL に直接つなぐと、Python のデータへの参照を読み込むときに書き換える仕組み（auto-import）が使われ、Windows が DLL を離れた所に置いたときに読み込みで落ちます（作るたびに落ちたり落ちなかったりする。問題点一覧の X-07）。`alpedia_core/.cargo/config.toml`・`alpedia_view/.cargo/config.toml` でこの仕組みを使えなくしているので、取り込みライブラリなしでつなごうとするとリンクで失敗します。
+
 ## Linux / macOS でビルドする
 
 ```

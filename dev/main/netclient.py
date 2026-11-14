@@ -31,7 +31,7 @@ class JoinError(Exception):
 class Joiner(_c.Joiner):
     """参加の準備（別スレッド）。status に今していること、done / error / result（中身は Rust）。"""
 
-    def __init__(self, host, port, name, skin=None):
+    def __init__(self, host, port, name, skin=None, password=""):
         self._begin()
 
 

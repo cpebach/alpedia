@@ -131,7 +131,11 @@ impl RsClient {
     fn join(slf: &Bound<'_, Self>, host: &Bound<'_, PyAny>, port: &Bound<'_, PyAny>, name: &Bound<'_, PyAny>) -> R<()> {
         let py = slf.py();
         let menu = g!(slf, menu);
-        let j = imp(py, "main.netclient")?.getattr("Joiner")?.call1((host, port, name))?;
+        // 合言葉（マルチプレイの画面で入れた物。ホストが合言葉を決めているときに使う）
+        let mp = g!(slf, cfg).call_method1("get", ("multiplayer", pyo3::types::PyDict::new_bound(py)))?;
+        let kw = pyo3::types::PyDict::new_bound(py);
+        kw.set_item("password", mp.call_method1("get", ("password", ""))?)?;
+        let j = imp(py, "main.netclient")?.getattr("Joiner")?.call((host, port, name), Some(&kw))?;
         let cancel = Py::new(py, JoinCancel { j: j.clone().unbind(), menu: menu.clone().unbind() })?;
         menu.call_method1("show_joining", (&j, cancel))?;
         slf.borrow_mut().joining = j.unbind();

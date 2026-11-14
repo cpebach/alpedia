@@ -197,5 +197,108 @@ class NetCase(unittest.TestCase):
         self.assertEqual(out["c"], m["c"])
 
 
+class TestNetSafety(NetCase):
+    """S-02：合言葉・ホストの MOD のプログラムの確認・ホストのファイルを読ませない・大きすぎるメッセージ。"""
+
+    def _try_join(self, password="", answer=None, empty_mods=False):
+        orig = paths.MODS
+        if empty_mods:
+            paths.MODS = self.tmp / "my_mods"            # 自分の mods/ が空：ホストの MOD のプログラムは全部「違う」
+            paths.MODS.mkdir(exist_ok=True)
+        try:
+            j = netclient.Joiner("127.0.0.1", self.host.port, "bob", password=password)
+        finally:
+            paths.MODS = orig
+        end = time.time() + 30
+        asked = None
+        while not (j.done or j.error) and time.time() < end:
+            if getattr(j, "consent", None) and answer is not None and asked is None:
+                asked = list(j.consent)
+                j.consent_answer = answer
+            self.hw.step(DT)
+            self.host.tick(DT)
+            time.sleep(0.002)
+        return j, asked
+
+    def test_password(self):
+        cfg = json.loads(json.dumps(CFG))
+        cfg["multiplayer"]["password"] = "あいことば"
+        w, _ = self.make_host(["example_mod"])
+        self.host.close()
+        self.host = netserver.Host(w, cfg, port=0)
+        self.assertTrue(self.host._info()["locked"])
+        j, _ = self._try_join("")
+        self.assertIn("合言葉が要ります", j.error or "")
+        j, _ = self._try_join("ちがう")
+        self.assertIn("合言葉が違います", j.error or "")
+        j, _ = self._try_join("あいことば")
+        self.assertIsNone(j.error)
+        self.assertTrue(j.done)
+
+    def test_foreign_mod_code_needs_consent(self):
+        self.make_host(["example_mod", "cute_motions"])     # cute_motions にはプログラム（code/*.py）がある
+        j, asked = self._try_join(answer=False, empty_mods=True)
+        self.assertTrue(asked and any("cute_motions" in a for a in asked), asked)
+        self.assertFalse(any("example_mod" in a for a in asked), "プログラムの無い MOD は聞かない")
+        self.assertIn("動かさない", j.error or "")
+        self.assertFalse((self.tmp / "cache" / "cute_motions" / "code").exists(), "断ったのにプログラムを受け取った")
+        j, asked = self._try_join(answer=True, empty_mods=True)
+        self.assertTrue(asked)
+        self.assertTrue(j.done, j.error)
+        # 自分の mods/ と同じ物なら聞かない
+        j, asked = self._try_join(answer=False)
+        self.assertIsNone(asked)
+        self.assertTrue(j.done, j.error)
+
+    def test_host_only_sends_listed_mod_files(self):
+        from main import net
+        self.make_host(["example_mod"])
+        conn = net.connect("127.0.0.1", self.host.port, 5.0)
+
+        def pump(secs=0.5):
+            out, end = [], time.time() + secs
+            while time.time() < end:
+                self.host.tick(DT)
+                try:
+                    out.append(conn.inbox.get(timeout=0.02)[1])
+                except Exception:  # noqa: BLE001
+                    pass
+            return out
+        bad = [["..", "main/config.py"], ["example_mod", "../../main/config.py"], [str(paths.ROOT), "run.py"]]
+        conn.send({"t": "get_files", "files": bad})
+        self.assertEqual([m for m in pump() if m.get("t") == "file"], [], "受け付ける前にファイルを送った")
+        conn.send({"t": "hello", "name": "eve", "proto": net.PROTO})
+        pump()
+        conn.send({"t": "get_files", "files": bad + [["example_mod", "mod.json"]]})
+        files = [m for m in pump(1.0) if m.get("t") == "file"]
+        got = {(m["mod"], m["rel"]): m for m in files}
+        for mid, rel in bad:
+            self.assertTrue(got[(mid, rel)].get("missing"), f"{mid}/{rel} を送った")
+            self.assertEqual(got[(mid, rel)]["data"], b"")
+        self.assertFalse(got[("example_mod", "mod.json")].get("missing"))
+        conn.close()
+
+    def test_oversized_message_is_refused(self):
+        from main import net
+        import struct
+        import zlib
+        # 展開すると大きすぎる物（圧縮爆弾）は、展開しきる前に断る
+        z = zlib.compressobj(9)
+        chunk = b"\0" * (1 << 20)
+        bomb = b"".join(z.compress(chunk) for _ in range(600)) + z.flush()
+        with self.assertRaises(Exception):
+            net.decode(1, bomb)
+        # 嘘の長さ（4 GB 近く）のメッセージ：そのつながりだけ切れて、ホストは動き続ける
+        self.make_host([])
+        import socket
+        s = socket.create_connection(("127.0.0.1", self.host.port), timeout=5)
+        s.sendall(struct.pack("<IB", 0xFFFFFFF0, 0))
+        time.sleep(0.3)
+        self.host.tick(DT)
+        s.close()
+        j, _ = self._try_join()                          # ほかの人はふつうに参加できる
+        self.assertTrue(j.done, j.error)
+
+
 if __name__ == "__main__":
     unittest.main()

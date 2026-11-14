@@ -31,17 +31,16 @@ if not defined PYDIR for /f "delims=" %%i in ('py -3 -c "import sys,os;print(os.
 if defined PYDIR if not exist "%PYDIR%\python3.dll" for /f "delims=" %%i in ('py -3 -c "import sys,os;print(os.path.dirname(sys.executable))" 2^>nul') do set "PYDIR=%%i"
 echo Python: %PYDIR% >> "%LOG%"
 if not defined PYDIR goto skip_abi3
-if not exist "%PYDIR%\python3.dll" goto skip_abi3
+rem Python の取り込みライブラリ（libs\python3.lib）につなぐ。DLL に直接つなぐと、読み込みで落ちることがある（X-07）
+if not exist "%PYDIR%\libs\python3.lib" goto skip_abi3
 echo [2/3] 元のフォルダ用をビルドしています（初回は数分かかります）...
-if not exist "%WORK%\py3" mkdir "%WORK%\py3"
-copy /Y "%PYDIR%\python3.dll" "%WORK%\py3\python3.dll" >nul
 set "CFG=%WORK%\pyo3_abi3.txt"
 > "%CFG%" echo implementation=CPython
 >> "%CFG%" echo version=3.10
 >> "%CFG%" echo shared=true
 >> "%CFG%" echo abi3=true
 >> "%CFG%" echo lib_name=python3
->> "%CFG%" echo lib_dir=%WORK%\py3
+>> "%CFG%" echo lib_dir=%PYDIR%\libs
 >> "%CFG%" echo pointer_width=64
 >> "%CFG%" echo suppress_build_script_link_lines=false
 set "PYO3_CONFIG_FILE=%CFG%"
@@ -64,7 +63,7 @@ set BUILT=1
 goto after_abi3
 :skip_abi3
 echo [2/3] この PC の Python が見つからないので、元のフォルダ用は作りません
-echo python が見つからない、または python3.dll がありません >> "%LOG%"
+echo python が見つからない、または libs\python3.lib がありません（python.org の Python を入れてください） >> "%LOG%"
 :after_abi3
 
 rem ---------------------------------------------------------------- パッケージ版用（同梱の Python 3.12）
@@ -73,6 +72,9 @@ if not exist "%RT%\python312.dll" goto skip_312
 echo [3/3] パッケージ版用をビルドしています...
 if not exist "%WORK%\py312" mkdir "%WORK%\py312"
 copy /Y "%RT%\python312.dll" "%WORK%\py312\python312.dll" >nul
+rem 同梱の Python には取り込みライブラリが無いので、DLL から作る（DLL に直接つなぐと読み込みで落ちることがある。X-07）
+"%RT%\python.exe" "%HERE%make_import_lib.py" "%RT%\python312.dll" "%WORK%\py312" >> "%LOG%" 2>&1
+if errorlevel 1 goto fail
 set "CFG=%WORK%\pyo3_cp312.txt"
 > "%CFG%" echo implementation=CPython
 >> "%CFG%" echo version=3.12

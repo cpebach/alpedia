@@ -852,16 +852,28 @@ impl MainMenu {
         let nm: PyObject = if nm.is_truthy()? { nm.unbind() } else { po(py, menu_default_name(py)?) };
         let name = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()), ("default_value", nm),
             ("position", po(py, (-0.2, 0.32))), ("scale", po(py, (0.5, 0.05))), ("character_limit", po(py, 24))])?))?;
+        t(s, "合言葉", (0.12, 0.32), 0.9, L, None)?;
+        let pw = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()),
+            ("default_value", mp.call_method1("get", ("password", ""))?.unbind()),
+            ("position", po(py, (0.42, 0.32))), ("scale", po(py, (0.3, 0.05))), ("character_limit", po(py, 40))])?))?;
+        // 合言葉を設定に書く（参加するとき・戻るとき）。参加するときに使い、自分が LAN に公開するときは参加する人に求める
+        let (pwk, mpk2) = (pw.unbind(), mp.clone().unbind());
+        let save_pw = clo0(py, move |py| {
+            let p = strip(&field_text(pwk.bind(py))?)?;
+            mpk2.bind(py).set_item("password", p)?;
+            Ok(())
+        })?;
         panel(s, (-0.2, 0.03), (0.92, 0.46), None)?;
         t(s, "LAN で公開中のワールド", (-0.64, 0.23), 0.9, L, None)?;
         let rows = u.get_item("Entity")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind())])?))?;
         let state = PyDict::new_bound(py);
         state.set_item("key", py.None())?;
         state.set_item("t", 0.0)?;
-        let (sk, mpk, namek) = (keep_(s), mp.clone().unbind(), name.unbind());
+        let (sk, mpk, namek, spk) = (keep_(s), mp.clone().unbind(), name.unbind(), save_pw.clone().unbind());
         let join = clo(py, move |a| {
             let py = a.py();
             let (s, mp) = (sk.bind(py), mpk.bind(py));
+            spk.bind(py).call0()?;
             let n = strip(&field_text(namek.bind(py))?)?;
             mp.set_item("name", if n.is_empty() { menu_default_name(py)? } else { n })?;
             match menu_mod(py)?.call_method1("save_config", (s.getattr("cfg")?,)) {
@@ -909,8 +921,9 @@ impl MainMenu {
                 let (ip, port, info) = (f.get_item(0)?, f.get_item(1)?, f.get_item(2)?);
                 let y = 0.16 - k as f64 * 0.07;
                 let g = |k: &str, d: PyObject| -> R<String> { fmt(py, &info.call_method1("get", (k, d))?, "") };
-                let label = format!("{}   ホスト {}  /  {} 人  /  {}:{}", g("world", po(py, "?"))?, g("host", po(py, "?"))?, g("players", po(py, 1))?,
-                    fmt(py, &ip, "")?, fmt(py, &port, "")?);
+                let lock = if info.call_method1("get", ("locked", false))?.is_truthy()? { "  ［合言葉］" } else { "" };
+                let label = format!("{}   ホスト {}  /  {} 人  /  {}:{}{}", g("world", po(py, "?"))?, g("host", po(py, "?"))?, g("players", po(py, 1))?,
+                    fmt(py, &ip, "")?, fmt(py, &port, "")?, lock);
                 let bt = u.get_item("Button")?.call((), Some(&kw(py, vec![("parent", rows.clone().unbind()), ("text", po(py, label)), ("position", po(py, (-0.2, y))),
                     ("scale", po(py, (0.88, 0.06))), ("color", color(s)?.call_method1("rgb", (0.15, 0.25, 0.35))?.unbind()), ("text_size", po(py, 0.8))])?))?;
                 let te = bt.getattr("text_entity")?;
@@ -956,10 +969,17 @@ impl MainMenu {
         })?;
         b(s, "参加", (0.18, -0.26), &join_addr, (0.16, 0.05), Some(rgb(s, 0.2, 0.5, 0.3)?), true)?;
         t(s, "ホストになるには：ワールドで遊んで Esc →「LAN に公開」。ワールド・セーブ・MOD はホストの PC のものを使い、\n\
-            参加する人には MOD が自動で届きます。保存はホストが行います（参加者は F9 で構築物を自分の PC に出力できます）。", (0.0, -0.36), 0.62, C, Some(lgray()?))?;
-        let sk = keep_(s);
+            参加する人には MOD が自動で届きます（自分の物と違うプログラムは、動かす前に確かめます）。保存はホストが行います。\n\
+            合言葉：参加するときに入れます。自分が LAN に公開するときは、参加する人にこの合言葉を求めます（空なら誰でも参加できます）。", (0.0, -0.38), 0.62, C, Some(lgray()?))?;
+        let (sk, spk) = (keep_(s), save_pw.clone().unbind());
         let back = clo0(py, move |py| {
             let s = sk.bind(py);
+            spk.bind(py).call0()?;
+            match menu_mod(py)?.call_method1("save_config", (s.getattr("cfg")?,)) {
+                Ok(_) => {}
+                Err(e) if is_exc(py, &e) => {}
+                Err(e) => return Err(e),
+            }
             s.call_method0("_close_browser")?;
             s.call_method0("_back")?;
             Ok(())
@@ -994,6 +1014,30 @@ impl MainMenu {
             Ok(())
         })?))?;
         b(s, "やめる", (0.0, -0.15), on_cancel, (0.25, 0.055), Some(rgb(s, 0.4, 0.3, 0.2)?), true)?;
+        // ホストの MOD に、自分の物と違うプログラムがあるとき：一覧を見せて、動かしてよいかを聞く（Joiner が答えを待つ）
+        let ask = t(s, "", (0.0, -0.3), 0.75, C, Some(rgb(s, 1.0, 0.85, 0.5)?))?;
+        let (ak, jk, sk) = (ask.unbind(), joiner.clone().unbind(), keep_(s));
+        let shown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        hook(py, &s.getattr("root")?, None, Some(clo0(py, move |py| {
+            let j = jk.bind(py);
+            let c = match j.getattr("consent") { Ok(c) => c, Err(_) => return Ok(()) };
+            if c.is_none() || !c.is_truthy()? || shown.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            let names: Vec<String> = c.iter()?.map(|x| x?.str().map(|s| s.to_string())).collect::<R<_>>()?;
+            ak.bind(py).setattr("text", format!(
+                "ホストの次の MOD には、あなたの PC の物と違う（か、あなたに無い）プログラムがあります：\n{}\n\
+                 参加すると、このプログラムがあなたの PC で動きます（ふつうのプログラムと同じことができます）。\n\
+                 よく知っている相手のワールドのときだけ「動かして参加する」を押してください。",
+                names.join("、")))?;
+            let jk2 = j.clone().unbind();
+            let yes = clo0(py, move |py| {
+                jk2.bind(py).setattr("consent_answer", true)?;
+                Ok(())
+            })?;
+            b(sk.bind(py), "動かして参加する", (0.0, -0.5), &yes, (0.3, 0.055), Some(rgb(sk.bind(py), 0.5, 0.35, 0.15)?), true)?;
+            Ok(())
+        })?))?;
         Ok(())
     }
     fn _select(slf: &Bound<'_, Self>, name: &B<'_>) -> R<()> {

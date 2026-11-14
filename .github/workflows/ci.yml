@@ -44,6 +44,7 @@ jobs:
       - name: Python のライブラリ
         run: python -m pip install -r dev/requirements.txt
 
+      # Python の取り込みライブラリ（libs\python3.lib・python312.lib）につなぐ（DLL に直接つなぐと読み込みで落ちることがある。X-07）
       - name: pyo3 の設定（build_windows.bat・test_windows.bat と同じ）
         run: |
           PYDIR=$(python -c "import sys, os; print(os.path.dirname(sys.executable))")
@@ -53,7 +54,7 @@ jobs:
           shared=true
           abi3=true
           lib_name=python3
-          lib_dir=$PYDIR
+          lib_dir=$PYDIR\libs
           pointer_width=64
           suppress_build_script_link_lines=false
           EOF
@@ -63,7 +64,7 @@ jobs:
           shared=true
           abi3=false
           lib_name=python312
-          lib_dir=$PYDIR
+          lib_dir=$PYDIR\libs
           pointer_width=64
           suppress_build_script_link_lines=false
           EOF

@@ -1485,7 +1485,8 @@ impl Viewer {
         } else if !net.is_none() {
             let a = net.call_method0("addresses")?.get_item(pyo3::types::PySlice::new_bound(py, 0, 1, 1))?;
             let j = PyString::new_bound(py, "  ").call_method1("join", (a,))?;
-            lines.push(format!("LAN に公開中 {}  {} 人", j.str()?, 1 + ga(&w, "remote")?.len()?));
+            let locked = net.call_method0("_info")?.call_method1("get", ("locked", false))?.is_truthy()?;
+            lines.push(format!("LAN に公開中 {}  {} 人{}", j.str()?, 1 + ga(&w, "remote")?.len()?, if locked { "（合言葉あり）" } else { "" }));
         }
         let ft = gd(s, "fps_text", tb(py, ""));
         if ft.is_truthy()? && gd(s, "debug_hud", tb(py, false)).is_truthy()? {

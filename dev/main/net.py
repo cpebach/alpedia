@@ -10,7 +10,7 @@
 """
 from . import native
 
-PROTO = 1
+PROTO = 2
 PORT = 47620            # TCP（ゲーム）
 DISCOVERY_PORT = 47621  # UDP（LAN のワールドの知らせ）
 MAGIC = "alpedia-lan"

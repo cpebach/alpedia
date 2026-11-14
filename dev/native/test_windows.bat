@@ -13,6 +13,8 @@ set "RT=%ROOT%\..\packages\windows\Alpedia\runtime"
 if not exist "%RT%\python312.dll" goto nopy
 if not exist "%WORK%\py312" mkdir "%WORK%\py312"
 copy /Y "%RT%\python312.dll" "%WORK%\py312\python312.dll" >nul
+"%RT%\python.exe" "%HERE%make_import_lib.py" "%RT%\python312.dll" "%WORK%\py312" >nul
+if errorlevel 1 exit /b 1
 set "CFG=%WORK%\pyo3_cp312.txt"
 > "%CFG%" echo implementation=CPython
 >> "%CFG%" echo version=3.12

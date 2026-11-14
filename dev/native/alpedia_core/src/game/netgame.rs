@@ -119,6 +119,35 @@ pub fn ns_mod_manifest<'py>(py: Python<'py>, mod_ids: &Bound<'py, PyAny>) -> R<B
     Ok(out)
 }
 
+/// 相手から届いたファイル名・フォルダ名の1つ分として使ってよいか（区切り・ドライブ・「..」を含まない）
+fn safe_seg(s: &str) -> bool {
+    !s.is_empty() && s != "." && s != ".." && s.len() <= 200
+        && !s.chars().any(|c| matches!(c, '/' | '\\' | ':' | '\0' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control())
+}
+/// 相手から届いた相対パス（a/b/c）として使ってよいか
+fn safe_rel(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 400 && !s.starts_with('/') && s.split('/').all(safe_seg)
+}
+/// p が root の中か（resolve して確かめる。名前の確かめに加えて念のため）
+fn inside(root: &Bound<'_, PyAny>, p: &Bound<'_, PyAny>) -> R<bool> {
+    let r = root.call_method0("resolve")?;
+    let q = p.call_method0("resolve")?;
+    Ok(q.call_method1("is_relative_to", (&r,))?.is_truthy()? && !q.eq(&r)?)
+}
+/// 合言葉の確かめ：HMAC-SHA256(合言葉, 問い)。合言葉そのものはネットワークに流さない
+fn auth_mac(py: Python<'_>, password: &str, nonce: &str) -> R<String> {
+    imp(py, "hmac")?.call_method1("new", (password.as_bytes(), nonce.as_bytes(), "sha256"))?.call_method0("hexdigest")?.extract()
+}
+/// ホストの合言葉（設定の multiplayer.password。空なら無し）
+fn host_password(py: Python<'_>, cfg: &Bound<'_, PyAny>) -> R<String> {
+    if cfg.is_none() {
+        return Ok(String::new());
+    }
+    let mp = cfg.call_method1("get", ("multiplayer", PyDict::new_bound(py)))?;
+    let p = mp.call_method1("get", ("password", ""))?;
+    Ok(if p.is_none() { String::new() } else { p.str()?.to_string().trim().to_string() })
+}
+
 #[pyclass(module = "alpedia_core", subclass, dict)]
 pub struct Peer {
     #[pyo3(get, set)]
@@ -263,6 +292,7 @@ impl Host {
         let w = Self::g(slf, "w")?;
         dict(py, vec![("world", w.getattr("name")?.unbind()), ("host", Self::g(slf, "name")?.unbind()), ("port", Self::g(slf, "port")?.unbind()),
             ("players", (1 + w.getattr("remote")?.len()?).into_py(py)),
+            ("locked", (!host_password(py, &Self::g(slf, "cfg").unwrap_or_else(|_| py.None().into_bound(py)))?.is_empty()).into_py(py)),
             ("mods", PyList::new_bound(py, w.getattr("mods")?.iter()?.collect::<R<Vec<_>>>()?).into_any().unbind())])
     }
     fn addresses(slf: &Bound<'_, Self>) -> R<Vec<String>> {
@@ -504,6 +534,9 @@ impl Host {
                 Self::_leave(slf, &peer)
             }
             "hello" => Self::_hello(slf, &peer, m),
+            "auth" => Self::_auth(slf, &peer, m),
+            // 受け付ける前（名前・合言葉の前）は、ファイルも準備も受け付けない
+            "get_files" | "ready" if peer.getattr("pid")?.is_none() => Ok(()),
             "get_files" => Self::_send_files(slf, &peer, &m.call_method1("get", ("files", PyList::empty_bound(py)))?),
             "ready" => Self::_ready(slf, &peer, m),
             _ => {
@@ -520,6 +553,15 @@ impl Host {
         let conn = peer.getattr("conn")?;
         if !m.call_method1("get", ("proto",))?.eq(net(py)?.getattr("PROTO")?)? {
             conn.call_method1("send", (dict(py, vec![("t", "error".into_py(py)), ("text", "ゲームの版が違うので参加できません（ホストと同じ版にしてください）".into_py(py))])?,))?;
+            return Ok(());
+        }
+        let cfg = Self::g(slf, "cfg").unwrap_or_else(|_| py.None().into_bound(py));
+        if !host_password(py, &cfg)?.is_empty() && !peer.hasattr("_authed")? {
+            // 合言葉があるワールド：問い（毎回違う乱数）を送り、答え（auth）が合ってから受け付ける
+            let nonce: String = imp(py, "secrets")?.call_method1("token_hex", (16,))?.extract()?;
+            peer.setattr("_nonce", &nonce)?;
+            peer.setattr("_hello_msg", m)?;
+            conn.call_method1("send", (dict(py, vec![("t", "challenge".into_py(py)), ("nonce", nonce.into_py(py))])?,))?;
             return Ok(());
         }
         let n0 = m.call_method1("get", ("name",))?;
@@ -557,6 +599,30 @@ impl Host {
             ("manifest", Self::g(slf, "_manifest")?.unbind()), ("host", Self::g(slf, "name")?.unbind())])?,))?;
         Ok(())
     }
+    /// 合言葉の答え。合えば申し込み（hello）の続き、違えば断って切る
+    fn _auth(slf: &Bound<'_, Self>, peer: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>) -> R<()> {
+        let py = slf.py();
+        let conn = peer.getattr("conn")?;
+        let nonce = match peer.getattr("_nonce") {
+            Ok(n) if !n.is_none() => n.str()?.to_string(),
+            _ => return Ok(()),
+        };
+        peer.setattr("_nonce", py.None())?;                    // 1つの問いに答えは1回だけ
+        let cfg = Self::g(slf, "cfg").unwrap_or_else(|_| py.None().into_bound(py));
+        let want = auth_mac(py, &host_password(py, &cfg)?, &nonce)?;
+        let got = m.call_method1("get", ("mac", ""))?.str()?.to_string();
+        let ok: bool = imp(py, "hmac")?.call_method1("compare_digest", (want, got))?.extract()?;
+        if !ok {
+            slog(py, "netserver")?.call_method1("warning", ("合言葉が違うので断りました: %s", peer.getattr("addr")?))?;
+            conn.call_method1("send", (dict(py, vec![("t", "error".into_py(py)), ("text", "合言葉が違います".into_py(py))])?,))?;
+            imp(py, "time")?.call_method1("sleep", (0.05,))?;
+            conn.call_method0("close")?;
+            return Ok(());
+        }
+        peer.setattr("_authed", true)?;
+        let hello = peer.getattr("_hello_msg")?;
+        Self::_hello(slf, peer, &hello)
+    }
     fn _send_files(slf: &Bound<'_, Self>, peer: &Bound<'_, PyAny>, files: &Bound<'_, PyAny>) -> R<()> {
         let py = slf.py();
         let conn = peer.getattr("conn")?;
@@ -564,9 +630,27 @@ impl Host {
         for it in files.iter()? {
             let it = it?;
             let (mid, rel) = (it.get_item(0)?, it.get_item(1)?);
+            // 参加者が頼めるのは、このワールドの MOD の一覧（manifest）に載っているファイルだけ（名前も場所も確かめる。
+            // 前は MOD の名前に「..」や「C:/…」を入れると、ホストの PC のどのファイルでも読めた）
+            let (ms, rs) = (mid.str()?.to_string(), rel.str()?.to_string());
+            let listed = {
+                let mf = Self::g(slf, "_manifest")?;
+                let mut ok = false;
+                if !mf.is_none() && safe_seg(&ms) && safe_rel(&rs) {
+                    if let Some(lst) = mf.downcast::<PyDict>()?.get_item(&ms)? {
+                        for e in lst.iter()? {
+                            if e?.get_item(0)?.str()?.to_string() == rs {
+                                ok = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                ok
+            };
             let root = div(&mods, &mid)?.call_method0("resolve")?;
             let f = div(&root, &rel)?.call_method0("resolve")?;
-            let inside = f.getattr("parents")?.contains(&root)?;
+            let inside = listed && f.getattr("parents")?.contains(&root)? && inside(&mods, &root)?;
             if !inside || !f.call_method0("is_file")?.is_truthy()? {
                 conn.call_method1("send", (dict(py, vec![("t", "file".into_py(py)), ("mod", mid.unbind()), ("rel", rel.unbind()),
                     ("data", PyBytes::new_bound(py, b"").into_any().unbind()), ("last", true.into_py(py)), ("missing", true.into_py(py))])?,))?;
@@ -918,6 +1002,9 @@ pub struct Joiner {
     cancelled: bool,
     #[pyo3(get, set)]
     orig_mods: PyObject,
+    /// 合言葉（ホストが決めているときに使う。空なら無し）
+    #[pyo3(get, set)]
+    password: PyObject,
 }
 
 impl Joiner {
@@ -932,12 +1019,14 @@ impl Joiner {
 #[pymethods]
 impl Joiner {
     #[new]
-    #[pyo3(signature = (host, port, name, skin=None))]
-    fn new(py: Python<'_>, host: &Bound<'_, PyAny>, port: &Bound<'_, PyAny>, name: PyObject, skin: Option<PyObject>) -> R<Self> {
+    #[pyo3(signature = (host, port, name, skin=None, password=None))]
+    fn new(py: Python<'_>, host: &Bound<'_, PyAny>, port: &Bound<'_, PyAny>, name: PyObject, skin: Option<PyObject>,
+           password: Option<PyObject>) -> R<Self> {
         Ok(Joiner {
             status: format!("{}:{} につないでいます…", host.str()?, port.str()?),
             host: host.clone().unbind(), port: port.call_method0("__int__")?.extract()?, name, skin: skin.unwrap_or_else(|| py.None()),
             done: false, error: py.None(), result: py.None(), conn: py.None(), cancelled: false, orig_mods: paths(py)?.getattr("MODS")?.unbind(),
+            password: password.unwrap_or_else(|| "".into_py(py)),
         })
     }
     /// 別スレッドで参加の準備を始める（Python の Joiner(...) から呼ばれる）
@@ -1046,10 +1135,78 @@ impl Joiner {
         slf.borrow_mut().conn = conn.clone().unbind();
         conn.call_method1("send", (dict(py, vec![("t", "hello".into_py(py)), ("name", Self::g(slf, "name")?.unbind()), ("proto", net.getattr("PROTO")?.unbind())])?,))?;
         Self::set_status(slf, "ホストの返事を待っています…".into());
-        let w = Self::_wait(slf, vec!["welcome".into()], 60.0)?;
+        let mut w = Self::_wait(slf, vec!["welcome".into(), "challenge".into()], 60.0)?;
+        if w.get_item("t")?.eq("challenge")? {
+            let pw = match slf.as_any().getattr("password") { Ok(p) if !p.is_none() => p.str()?.to_string().trim().to_string(), _ => String::new() };
+            if pw.is_empty() {
+                return Err(join_err(py, "このワールドには合言葉が要ります（マルチプレイの画面の「合言葉」に、ホストから聞いた合言葉を入れてください）".into())?);
+            }
+            let nonce = w.get_item("nonce")?.str()?.to_string();
+            conn.call_method1("send", (dict(py, vec![("t", "auth".into_py(py)), ("mac", auth_mac(py, &pw, &nonce)?.into_py(py))])?,))?;
+            Self::set_status(slf, "合言葉を確かめています…".into());
+            w = Self::_wait(slf, vec!["welcome".into()], 60.0)?;
+        }
         slf.as_any().setattr("welcome", &w)?;
+        // ホストから届いた MOD の名前・ファイルの場所を確かめる（前は「..」などで、この PC のどこにでも書けて、消せた）
+        for (mid, files) in w.get_item("manifest")?.downcast::<PyDict>()?.iter() {
+            let ms = mid.str()?.to_string();
+            if !safe_seg(&ms) {
+                return Err(join_err(py, format!("ホストから届いた MOD の名前が正しくありません（{ms}）"))?);
+            }
+            for f in files.iter()? {
+                let rel = f?.get_item(0)?.str()?.to_string();
+                if !safe_rel(&rel) {
+                    return Err(join_err(py, format!("ホストから届いた MOD のファイルの場所が正しくありません（{ms}/{rel}）"))?);
+                }
+            }
+        }
+        // 自分の mods/ と違う（か、自分に無い）プログラム（.py）を持つ MOD は、動かしてよいかを先に聞く
+        {
+            let orig = Self::g(slf, "orig_mods")?;
+            let mut foreign: Vec<String> = vec![];
+            for (mid, files) in w.get_item("manifest")?.downcast::<PyDict>()?.iter() {
+                let mut n_py = 0;
+                let mut differ = false;
+                for f in files.iter()? {
+                    let f = f?;
+                    let rel = f.get_item(0)?.str()?.to_string();
+                    if !rel.to_lowercase().ends_with(".py") {
+                        continue;
+                    }
+                    n_py += 1;
+                    let (size, sha) = (f.get_item(1)?.extract::<i64>()?, f.get_item(2)?.str()?.to_string());
+                    let mine = div(&div(&orig, &mid)?, &rel)?;
+                    let same = mine.call_method0("is_file")?.is_truthy()?
+                        && mine.call_method0("stat")?.getattr("st_size")?.extract::<i64>()? == size && sha1_file(py, &mine)? == sha;
+                    differ |= !same;
+                }
+                if n_py > 0 && differ {
+                    foreign.push(format!("{}（プログラム {} 個）", mid.str()?, n_py));
+                }
+            }
+            if !foreign.is_empty() {
+                slf.as_any().setattr("consent", PyList::new_bound(py, &foreign))?;
+                slf.as_any().setattr("consent_answer", py.None())?;
+                Self::set_status(slf, "ホストの MOD のプログラムを動かしてよいか、確かめてください".into());
+                loop {
+                    if slf.borrow().cancelled {
+                        return Err(join_err(py, "やめました".into())?);
+                    }
+                    let a = slf.as_any().getattr("consent_answer")?;
+                    if !a.is_none() {
+                        if !a.is_truthy()? {
+                            return Err(join_err(py, "やめました（ホストの MOD のプログラムを動かさないことにしました）".into())?);
+                        }
+                        break;
+                    }
+                    imp(py, "time")?.call_method1("sleep", (0.1,))?;
+                }
+                slf.as_any().setattr("consent", py.None())?;
+            }
+        }
         // MOD：足りない物だけ受け取る
         let need = PyList::empty_bound(py);
+        let mut asked: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
         let mut total: f64 = 0.0;
         let cache = nc(py)?.call_method0("mods_cache")?;
         let orig = Self::g(slf, "orig_mods")?;
@@ -1086,6 +1243,10 @@ impl Joiner {
                     imp(py, "shutil")?.call_method1("copyfile", (&mine, &t))?;
                     continue;
                 }
+                if !inside(&cache, &t)? {
+                    return Err(join_err(py, format!("ホストから届いた MOD のファイルの場所が正しくありません（{}/{}）", mid.str()?, rel.str()?))?);
+                }
+                asked.insert((mid.str()?.to_string(), rel.str()?.to_string()));
                 need.append(PyList::new_bound(py, [mid.clone(), rel]))?;
                 total += size as f64;
             }
@@ -1101,6 +1262,9 @@ impl Joiner {
                     break;
                 }
                 let (md, rel) = (m.get_item("mod")?, m.get_item("rel")?);
+                if !asked.contains(&(md.str()?.to_string(), rel.str()?.to_string())) {
+                    continue;                      // 頼んでいないファイルは書かない
+                }
                 let key = PyTuple::new_bound(py, [&md, &rel]);
                 let tmp = div(&div(&cache, &md)?, format!("{}.part", rel.str()?))?;
                 tmp.getattr("parent")?.call_method("mkdir", (), Some(&[("parents", true), ("exist_ok", true)].into_py_dict_bound(py)))?;
@@ -1134,6 +1298,10 @@ impl Joiner {
         let enc = [("encoding", "utf-8")].into_py_dict_bound(py);
         let jkw = [("ensure_ascii", false)].into_py_dict_bound(py);
         for (fname, data) in m.get_item("files")?.downcast::<PyDict>()?.iter() {
+            let fs = fname.str()?.to_string();
+            if !safe_seg(&fs) || !fs.ends_with(".json") {
+                continue;                          // ワールドのファイルは、フォルダを含まない .json だけ
+            }
             let text = imp(py, "json")?.call_method("dumps", (data,), Some(&jkw))?;
             div(&wd, fname)?.call_method("write_text", (text,), Some(&enc))?;
         }

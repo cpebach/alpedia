@@ -442,12 +442,20 @@ pub struct Msg {
 }
 
 /// 受けた本体（フラグの後ろ）→ メッセージ（GIL なしでできるところまで）
+/// 1つのメッセージの大きさの上限（送られてきた長さのまま確保すると、嘘の長さでメモリを使い切らされる）
+pub const MAX_FRAME: usize = 256 << 20;
+/// 展開したあとの大きさの上限（小さく縮めた物を展開させてメモリを使い切らせる「圧縮爆弾」を断る）
+pub const MAX_INFLATE: u64 = 512 << 20;
+
 pub fn decode_raw(flag: u8, body: &[u8]) -> Result<Msg, String> {
     let owned;
     let body: &[u8] = if flag & 1 != 0 {
-        let mut d = ZlibDecoder::new(body);
+        let mut d = ZlibDecoder::new(body).take(MAX_INFLATE + 1);
         let mut v = Vec::new();
         d.read_to_end(&mut v).map_err(|e| format!("展開できません: {e}"))?;
+        if v.len() as u64 > MAX_INFLATE {
+            return Err("展開すると大きすぎるメッセージ".into());
+        }
         owned = v;
         &owned
     } else {
@@ -752,6 +760,9 @@ impl ConnInner {
                 let ln = u32::from_le_bytes(h[0..4].try_into().unwrap()) as usize;
                 if ln == 0 {
                     return Err("長さ 0 のメッセージ".into());
+                }
+                if ln > MAX_FRAME {
+                    return Err(format!("大きすぎるメッセージ（{} MB）", ln >> 20));
                 }
                 let mut body = vec![0u8; ln - 1];
                 read_exact(&mut s, &mut body)?;

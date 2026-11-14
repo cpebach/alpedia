@@ -1,0 +1,7 @@
+# Windows の GNU ツールチェーン：Python の DLL へのつなぎ方を確かめる（X-07）。
+# 「auto-import」（読み込むときに Python のデータへの参照を 32 ビットのずれで書き換える仕組み）を使わせない。
+# 使うと、Windows が DLL を 2 GB 以上離れた所に置いたときに読み込みで落ちる（落ちたり落ちなかったりする）。
+# Python の取り込みライブラリ（libs\python3.lib、または make_import_lib.py で作った物）につなげば要らない。
+# 取り込みライブラリなしで DLL に直接つなごうとすると、ここでリンクが失敗する（落ちる物を作らない）。
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-Wl,--disable-auto-import"]
