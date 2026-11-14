@@ -234,6 +234,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<world::AsPlayer>()?;
     m.add_function(wrap_pyfunction!(world::world_default_bodies, m)?)?;
     m.add_function(wrap_pyfunction!(world::world_read_json, m)?)?;
+    m.add_function(wrap_pyfunction!(world::world_step_prof, m)?)?;
     m.add_function(wrap_pyfunction!(world::world_write_json, m)?)?;
     m.add_function(wrap_pyfunction!(world::world_drop_fuel_generators, m)?)?;
     m.add_function(wrap_pyfunction!(world::world_missing_references, m)?)?;

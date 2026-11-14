@@ -8,6 +8,13 @@ use pyo3::types::{PyCFunction, PyDict, PyFrozenSet, PyList, PySet, PyString, PyT
 use super::construct::{a1, a3, arr, cross, dot, fv, iv, norm, opt, sub, truthy, v3, v3s, with_rw, R, V3};
 use super::imp;
 
+use crate::prof::add as prof_add;
+/// 物理の内訳（秒の合計）を返して 0 に戻す
+#[pyfunction]
+pub fn world_step_prof() -> Vec<(String, f64)> {
+    crate::prof::take()
+}
+
 fn log<'py>(py: Python<'py>) -> R<Bound<'py, PyAny>> {
     imp(py, "main.log")?.call_method1("get", ("world",))
 }
@@ -37,6 +44,13 @@ fn zero_inplace(o: &Bound<'_, PyAny>) -> R<()> {
     Ok(())
 }
 fn any_nonzero(o: &Bound<'_, PyAny>) -> R<bool> {
+    // 写さずにその場で見る（大きな建物の速度の配列を毎ティック写していて重かった）
+    if let Ok(r) = o.extract::<numpy::PyReadonlyArrayDyn<f64>>() {
+        return Ok(match r.as_slice() {
+            Ok(s) => s.iter().any(|x| *x != 0.0),
+            Err(_) => r.as_array().iter().any(|x| *x != 0.0),
+        });
+    }
     Ok(fv(o)?.iter().any(|x| *x != 0.0))
 }
 
@@ -947,6 +961,7 @@ impl World {
         let mv = r#move.map(|x| x.clone()).unwrap_or_else(z);
         let jp = jump.map(|x| x.clone()).unwrap_or_else(|| false.into_py(py).into_bound(py));
         let td = thrust_dir.map(|x| x.clone()).unwrap_or_else(z);
+        let mut pt = std::time::Instant::now();
         slf.borrow_mut().time += dt;
         let time = slf.borrow().time;
         let ambient = 0.0;
@@ -977,6 +992,7 @@ impl World {
         }
         let far = Self::g(slf, "_far")?;
         let runner = Self::runner(slf)?.into_bound(py);
+        prof_add(7, &mut pt);
         for c in Self::cons_v(slf)? {
             let cid = c.getattr("id")?;
             if far.contains(&cid)? {
@@ -1005,7 +1021,9 @@ impl World {
                 Some(s) => s.iter()?.collect::<R<Vec<_>>>()?,
                 None => vec![],
             })?;
+            prof_add(7, &mut pt);
             super::devices::dev_update(py, &c, cdt, Some(keys.as_any()), in_seat, ambient)?;
+            prof_add(0, &mut pt);
             if let Some(n) = opt(&c, "notes")? {
                 if n.is_truthy()? {
                     for m in n.iter()? {
@@ -1015,7 +1033,9 @@ impl World {
                 }
             }
             runner.call_method1("tick", (&c, cdt))?;
+            prof_add(1, &mut pt);
         }
+        prof_add(7, &mut pt);
         Self::g(slf, "player")?.call_method1("update", (slf, dt, &mv, &jp, &td))?;
         for p in Self::g(slf, "remote")?.call_method0("values")?.iter()? {
             // 参加者の体は参加者の PC が動かす。ジェットパックの燃料と体重だけここで
@@ -1061,6 +1081,7 @@ impl World {
                 }
             }
         }
+        prof_add(2, &mut pt);
         let substeps = slf.borrow().substeps;
         let iters = slf.borrow().iters;
         let h = dt / substeps as f64;
@@ -1085,6 +1106,7 @@ impl World {
                 anchored_ids.add(cid)?;
             }
         }
+        prof_add(3, &mut pt);
         let mut cons: Vec<Bound<'_, PyAny>> = vec![];
         let mut sleeping: Vec<Bound<'_, PyAny>> = vec![];
         let gravity_fn = slf.getattr("gravity")?;
@@ -1127,10 +1149,13 @@ impl World {
                 cons.push(c);
             }
         }
+        prof_add(21, &mut pt);
         for c in &cons {
             Self::_prep_ext(slf, c, dt)?;
         }
+        prof_add(22, &mut pt);
         sleeping = Self::_sleeping_near(slf, cons.clone(), sleeping, dt)?;
+        prof_add(23, &mut pt);
         let broken = PySet::empty_bound(py)?;
         let mut fixed_pos: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>)> = vec![];
         for c in &sleeping {
@@ -1141,6 +1166,7 @@ impl World {
         let settle_acc = fget(&phys(&Self::g(slf, "cfg")?)?, "merge_settle_acc", 30.0)?;
         let mut done = 0i64;
         let fp = PyList::new_bound(py, fixed_pos.iter().map(|(a, b)| PyTuple::new_bound(py, [a, b])));
+        prof_add(3, &mut pt);
         let res = Self::_native_tick(slf, cons.clone(), sleeping.clone(), h, &anchored_ids, settle_acc, &fp)?;
         if !res.is_none() {                    // Rust でまとめて進めた（途中で止まったら、残りはここで今までどおり）
             done = res.get_item(0)?.extract()?;
@@ -1152,6 +1178,7 @@ impl World {
                 sleeping = Self::still_sleeping(sleeping, &anchored_ids)?;
             }
         }
+        prof_add(4, &mut pt);
         let gs = Self::gscale(slf)?;
         for _ in 0..(substeps - done).max(0) {
             let mut settling = vec![];
@@ -1208,6 +1235,7 @@ impl World {
                 sleeping = Self::still_sleeping(sleeping, &anchored_ids)?;
             }
         }
+        prof_add(5, &mut pt);
         for c in &cons {
             c.call_method1("update_sleep", (dt,))?;
             let st: f64 = match opt(c, "_settle")? { Some(v) => v.extract()?, None => 0.0 };
@@ -1225,6 +1253,7 @@ impl World {
         for c in &cons {
             c.setattr("ext_events", PyList::empty_bound(py))?;
         }
+        prof_add(6, &mut pt);
         for cid in broken.iter() {
             let c = constructs.call_method1("get", (&cid,))?;
             if c.is_none() {
@@ -1263,6 +1292,7 @@ impl World {
             Self::_cleanup(slf, cu_t)?;
             timers.set_item("cleanup", 0.0)?;
         }
+        prof_add(7, &mut pt);
         Ok(())
     }
 
@@ -1466,6 +1496,7 @@ impl World {
         if cons.is_empty() {
             return Ok(none());
         }
+        let mut pt = std::time::Instant::now();
         let core = imp(py, "alpedia_core")?;
         let pls = super::construct::construct_native_planets(py, &Self::g(slf, "planets")?)?.into_bound(py);
         let gidx = PyDict::new_bound(py);
@@ -1482,6 +1513,7 @@ impl World {
             j.set_item("settle_cap", if ok { settle_acc * h } else { 0.0 })?;
             jobs.append(j)?;
         }
+        prof_add(8, &mut pt);
         let fixed: Vec<usize> = fixed_pos.iter()?.map(|x| Ok(x?.get_item(0)?.as_ptr() as usize)).collect::<R<_>>()?;
         let sl = PyList::empty_bound(py);
         for c in &sleeping {
@@ -1489,11 +1521,13 @@ impl World {
             sl.append((c.call_method0("native_proxy")?, c.getattr("pos")?, c.getattr("vel")?, c.getattr("mode")?.eq("rigid")?,
                 fixed.contains(&(c.as_ptr() as usize)), !anchored_ids.contains(c.getattr("id")?)?))?;
         }
+        prof_add(9, &mut pt);
         let imp_s: f64 = imp(py, "main.construct")?.getattr("Construct")?.getattr("IMPACT_SPEED")?.extract()?;
         let args: Vec<PyObject> = vec![jobs.into_any().unbind(), sl.into_any().unbind(), glst.clone().into_any().unbind(), pls.unbind(),
             Self::gscale(slf)?.into_py(py), h.into_py(py), slf.borrow().substeps.into_py(py), slf.borrow().iters.into_py(py),
             imp_s.into_py(py), super::construct::CONTACT_SOFT.into_py(py)];
         let r = core.call_method1("step_tick", PyTuple::new_bound(py, args))?;
+        prof_add(10, &mut pt);
         let (done, woke, touch, want, broken, hits) = (r.get_item(0)?, r.get_item(1)?, r.get_item(2)?, r.get_item(3)?, r.get_item(4)?, r.get_item(5)?);
         let allc: Vec<&Bound<'_, PyAny>> = cons.iter().chain(sleeping.iter()).collect();
         for ((c, t), w) in allc.iter().zip(touch.iter()?).zip(want.iter()?) {
@@ -1556,6 +1590,7 @@ impl World {
         for q in woke.iter()? {
             wl.append(&sleeping[q?.extract::<usize>()?])?;
         }
+        prof_add(11, &mut pt);
         Ok(PyTuple::new_bound(py, [done, wl.into_any(), broke.into_any()]).into_any())
     }
     /// _voxel_collisions の Rust 版（同じ計算を1回の呼び出しで）

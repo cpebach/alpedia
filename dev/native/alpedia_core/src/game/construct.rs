@@ -1314,8 +1314,22 @@ impl Construct {
 
     /// ブロック i の中心（ワールド座標）
     fn voxel_center<'py>(slf: &Bound<'py, Self>, i: usize) -> R<Bound<'py, PyAny>> {
+        let py = slf.py();
+        // そのブロックの 8 頂点だけを読む（毎フレーム音などから呼ばれ、全部の頂点を写すと大きな構築物で重い）
+        let pa = slf.borrow().pos.clone_ref(py);
+        if let Ok(r) = pa.bind(py).extract::<numpy::PyReadonlyArrayDyn<f64>>() {
+            if let Ok(s) = r.as_slice() {
+                if s.len() >= 24 * (i + 1) {
+                    let mut q = [[0.0; 3]; 8];
+                    for (k, row) in q.iter_mut().enumerate() {
+                        row.copy_from_slice(&s[3 * (8 * i + k)..3 * (8 * i + k) + 3]);
+                    }
+                    return Ok(a1(py, mean8(&q)));
+                }
+            }
+        }
         let p = Self::pos_v(slf)?;
-        Ok(a1(slf.py(), mean8(&p[8 * i..8 * i + 8])))
+        Ok(a1(py, mean8(&p[8 * i..8 * i + 8])))
     }
     fn voxel_centers<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
         a3(slf.py(), &Self::centers(slf)?)

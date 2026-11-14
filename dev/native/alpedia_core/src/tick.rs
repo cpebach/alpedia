@@ -213,11 +213,14 @@ pub fn run(
     // 眠っている物の当たり判定の点はティックの間変わらない（押されて動いたら起きるので、そこで止める）
     let spts: Vec<Vec<f64>> = sleepers.iter().map(|s| contacts::proxy_points_of(s.proxy, s.pos)).collect();
     let mut arts: Vec<ArtState> = (0..nj).map(|_| ArtState::default()).collect();
+    let mut pt = std::time::Instant::now();
+    let kind_slot = |p: &Part| match p { Part::Soft(_) => 13, Part::Rigid(_) => 14, Part::Art(_) => 15 };
     for step in 0..substeps {
         // ---- 前半 ----
         let mut v0s: Vec<Option<Vec<f64>>> = Vec::with_capacity(nj);
         for (k, j) in jobs.iter_mut().enumerate() {
             v0s.push(if j.settle_cap > 0.0 { Some(j.vel.to_vec()) } else { None });
+            let slot = kind_slot(&j.part);
             let t = j.t;
             match &mut j.part {
                 Part::Soft(s) => {
@@ -273,6 +276,7 @@ pub fn run(
                     st.lam = lam;
                 }
             }
+            crate::prof::add(slot, &mut pt);
         }
         // ---- 構築物どうしの押し出し ----
         let woke = {
@@ -295,10 +299,12 @@ pub fn run(
                 s.pos.copy_from_slice(p0);
             }
         }
+        crate::prof::add(16, &mut pt);
         // ---- 後半 ----
         let mut stop = false;
         for (k, j) in jobs.iter_mut().enumerate() {
             let t = j.t;
+            let slot = kind_slot(&j.part);
             match &mut j.part {
                 Part::Soft(s) => {
                     let (br, rot) = body::soft_end(j.pos, j.vel, j.prev, s.rest, s.act_scale, s.last_r, t, h, &s.angles);
@@ -320,6 +326,7 @@ pub fn run(
             if let Some(v0) = &v0s[k] {
                 limit_dv(j.vel, v0, j.settle_cap);
             }
+            crate::prof::add(slot, &mut pt);
         }
         o.done = step + 1;
         let woke: Vec<usize> = woke.into_iter().filter(|&q| q >= nj && sleepers[q - nj].can_wake).map(|q| q - nj).collect();

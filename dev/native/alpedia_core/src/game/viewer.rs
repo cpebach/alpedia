@@ -130,6 +130,17 @@ pub struct AddonCall {
     name: String,
     args: Py<PyTuple>,
 }
+// 場面の用意（_render）の内訳（開発用）：前置き・構築物の見た目・遠くの箱・明かり・地形・街などの飾り
+const SCENE_PARTS: [&str; 6] = ["s_pre", "s_views", "s_lod", "s_light", "s_terr", "s_deco"];
+static SCENE_PROF: std::sync::Mutex<[f64; 6]> = std::sync::Mutex::new([0.0; 6]);
+fn scene_prof(i: usize, t: &mut std::time::Instant) {
+    let now = std::time::Instant::now();
+    if let Ok(mut p) = SCENE_PROF.lock() {
+        p[i] += (now - *t).as_secs_f64();
+    }
+    *t = now;
+}
+
 #[pymethods]
 impl AddonCall {
     fn __call__(&self, py: Python<'_>, a: &B<'_>) -> R<PyObject> {
@@ -1016,10 +1027,21 @@ impl Viewer {
             net.call_method1("tick", (dt,))?; // 参加者へ送る・参加者の操作を行う
         }
         let t1 = pc()?;
+        let mut marks: Vec<(&str, f64)> = Vec::with_capacity(8);
         let cam = s.call_method1("_camera", (dt, &look_o, &up_o))?;
         let (origin, cam_look, cam_up) = (cam.get_item(0)?, cam.get_item(1)?, cam.get_item(2)?);
-        s.call_method1("_render", (&origin,))?;
-        s.call_method1("_bodies", (&origin,))?;
+        marks.push(("cam", pc()?));
+        // 画面いっぱいを覆う画面（ムービーなど、covers_screen = True）を開いている間は、隠れた世界の用意を飛ばす
+        let ed = ga(s, "editor")?;
+        let covered = !ed.is_none() && gd(&ed, "covers_screen", tb(py, false)).is_truthy()?;
+        if !covered {
+            s.call_method1("_render", (&origin,))?;
+        }
+        marks.push(("scene", pc()?));
+        if !covered {
+            s.call_method1("_bodies", (&origin,))?;
+        }
+        marks.push(("bodies", pc()?));
         let g = cfg.get_item("graphics")?;
         let view = ga(s, "view")?;
         let sz = view.call_method0("size")?;
@@ -1038,6 +1060,7 @@ impl Viewer {
         let far = f64of(&get(&g, "view_distance", 3000)?)?;
         let f = acall(py, "update", vec![origin.clone().unbind(), far.into_py(py)])?;
         Self::_each_addon(slf, &f, false)?;
+        marks.push(("mod", pc()?));
         if !cam_mode.is_none() && !ga(&cam_mode, "frame_on")?.is_truthy()? {
             s.setattr("hit", py.None())?;
             ga(s, "highlight")?.call_method0("hide")?;
@@ -1047,8 +1070,10 @@ impl Viewer {
             s.call_method1("_aim", (&origin, &look_o))?;
         }
         s.call_method1("_overlay", (&ww, &hh))?;
+        marks.push(("aim_ui", pc()?));
         sh.call_method1("frame", (&view, dt))?; // 今までの画面の部品（プログラムの画面など）
         s.call_method1("_update_sound", (dt,))?;
+        marks.push(("shim_snd", pc()?));
         view.call_method0("render")?;
         let t2 = pc()?;
         let perf = ga(s, "perf")?;
@@ -1057,6 +1082,20 @@ impl Viewer {
         perf.set_item("frames", frames)?;
         perf.set_item("phys", pi("phys")? + (t1 - t0))?;
         perf.set_item("rend", pi("rend")? + (t2 - t1))?;
+        marks.push(("gpu", t2));
+        {
+            // 描画の内訳（F3・ログ用）
+            let parts = match perf.get_item("parts") {
+                Ok(d) => d,
+                Err(_) => { let d = PyDict::new_bound(py).into_any(); perf.set_item("parts", &d)?; d }
+            };
+            let mut prev = t1;
+            for (k, t) in &marks {
+                let old: f64 = parts.get_item(*k).ok().map(|v| v.extract().unwrap_or(0.0)).unwrap_or(0.0);
+                parts.set_item(*k, old + (t - prev))?;
+                prev = *t;
+            }
+        }
         let ticks: i64 = perf.get_item("ticks")?.extract::<i64>()? + n;
         perf.set_item("ticks", ticks)?;
         let el = t2 - pi("t")?;
@@ -1065,11 +1104,38 @@ impl Viewer {
             let txt = format!("fps {}  物理 {} ms/回  描画 {} ms", pf(py, fr / el, ".0f")?, pf(py, pi("phys")? / (ticks.max(1) as f64) * 1000.0, ".1f")?,
                 pf(py, pi("rend")? / fr * 1000.0, ".1f")?);
             s.setattr("fps_text", &txt)?;
+            let mut detail = String::new();
+            if let Ok(parts) = perf.get_item("parts") {
+                for k in ["cam", "scene", "bodies", "mod", "aim_ui", "shim_snd", "gpu"] {
+                    let v: f64 = parts.get_item(k).ok().map(|v| v.extract().unwrap_or(0.0)).unwrap_or(0.0);
+                    detail.push_str(&format!(" {} {:.1}", k, v / fr * 1000.0));
+                }
+            }
+            s.setattr("fps_detail", &detail)?; // F3 にはフレームの内訳だけ
+            // ログには場面の用意（1フレームあたり）と物理（1回あたり）の内訳も（0.05 ms 未満は省く）
+            let mut full = detail.clone();
+            {
+                let mut p = SCENE_PROF.lock().unwrap_or_else(|e| e.into_inner());
+                full.push_str("  場面:");
+                for (k, v) in SCENE_PARTS.iter().zip(p.iter()) {
+                    if v / fr * 1000.0 >= 0.05 {
+                        full.push_str(&format!(" {} {:.1}", k, v / fr * 1000.0));
+                    }
+                }
+                *p = [0.0; 6];
+            }
+            full.push_str("  物理:");
+            for (k, v) in super::world::world_step_prof() {
+                let ms = v / (ticks.max(1) as f64) * 1000.0;
+                if ms >= 0.05 {
+                    full.push_str(&format!(" {} {:.1}", k, ms));
+                }
+            }
             let pl: i64 = gd(s, "_perf_log", tb(py, 0)).extract::<i64>()? + 1;
             s.setattr("_perf_log", pl)?;
             if pl % 10 == 1 {
                 // ログは 10 秒ごと
-                lg(py)?.call_method1("info", ("重さ: %s（構築物 %d）", &txt, ga(&w, "constructs")?.len()?))?;
+                lg(py)?.call_method1("info", ("重さ: %s（構築物 %d）内訳 ms:%s", &txt, ga(&w, "constructs")?.len()?, &full))?;
             }
             let np = PyDict::new_bound(py);
             np.set_item("frames", 0)?;
@@ -1425,6 +1491,10 @@ impl Viewer {
         if ft.is_truthy()? && gd(s, "debug_hud", tb(py, false)).is_truthy()? {
             // F3：処理の重さ
             lines.push(ft.str()?.to_string());
+            let fd = gd(s, "fps_detail", tb(py, ""));
+            if fd.is_truthy()? {
+                lines.push(format!("  内訳 ms:{}", fd.str()?));
+            }
         }
         if gd(s, "show_help", tb(py, false)).is_truthy()? {
             // F1：操作の説明
@@ -1478,6 +1548,7 @@ impl Viewer {
     }
     fn _render(slf: &Bound<'_, Self>, origin: &B<'_>) -> R<()> {
         let py = slf.py();
+        let mut pt = std::time::Instant::now();
         let s = slf.as_any();
         let w = ga(s, "w")?;
         let views = ga(s, "views")?;
@@ -1536,6 +1607,7 @@ impl Viewer {
         let static_root = ga(s, "static_root")?;
         let anchor_ver = ga(s, "anchor_ver")?;
         let hash = py.import_bound("builtins")?.getattr("hash")?;
+        scene_prof(0, &mut pt);
         for (c, dist) in cs.iter().zip(dists.iter()) {
             let cid = ga(c, "id")?;
             if !cons.call_method1("get", (&cid,))?.is(c) {
@@ -1596,7 +1668,9 @@ impl Viewer {
                 v.call_method1("update_displays", (origin, far))?;
             }
         }
+        scene_prof(1, &mut pt);
         ga(s, "lod")?.call_method1("update", (lod_list, origin))?;
+        scene_prof(2, &mut pt);
         let lc = PyList::empty_bound(py);
         for k in loaded.iter()? {
             let k = k?;
@@ -1605,6 +1679,7 @@ impl Viewer {
             }
         }
         ga(s, "lights")?.call_method1("update", (lc, origin, f64of(&ga(&w, "time")?)?))?;
+        scene_prof(3, &mut pt);
         let ppos = ga(&player, "pos")?;
         let npl = w.call_method1("nearest_planet", (&ppos,))?;
         let carve = ga(s, "carve")?;
@@ -1615,6 +1690,7 @@ impl Viewer {
             let pv = pv?;
             pv.call_method1("update", (origin, &ppos, patch.call_method1("frame_for", (ga(&pv, "p")?,))?))?;
         }
+        scene_prof(4, &mut pt);
         let now = time.call_method0("time")?;
         for x in ga(s, "scenes")?.iter()? {
             let x = x?;
@@ -1630,6 +1706,7 @@ impl Viewer {
             let alt = (norm(sub(o, v3(&ga(&npl, "center")?)?)) - rad).max(0.0);
             air = p * (-alt / (rad * 0.25).max(30.0)).exp();
         }
+        scene_prof(5, &mut pt);
         let c: Vec<f64> = (0..3).map(|i| SKY_SPACE[i] + (SKY_DAY[i] - SKY_SPACE[i]) * air).collect();
         ga(s, "view")?.call_method1("set_clear", (c[0], c[1], c[2]))?;
         Ok(())

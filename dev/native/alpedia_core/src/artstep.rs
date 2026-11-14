@@ -164,6 +164,7 @@ pub fn predict(
     r: &mut [f64], vl: &mut [f64], vl0: &[f64], ext_applied: &mut [f64], ext_want: &[f64], ext_speed: &[f64],
     planets: &[PlanetCtx], scale: f64, h: f64, cav: &[[i64; 6]],
 ) -> (Vec<usize>, Vec<[f64; 3]>) {
+    let mut pt = std::time::Instant::now();
     body::integrate_forces(pos, vel, force, t, planets, scale, h, cav);
     fit(pos, x, r, vl, &t.mass, at);
     let nv = t.mass.len();
@@ -235,6 +236,7 @@ pub fn predict(
         art::rot_left(&mut r[9 * k..9 * k + 9], w[3 * k] * h, w[3 * k + 1] * h, w[3 * k + 2] * h);
     }
     write(pos, x, r, vl, at);
+    crate::prof::add(17, &mut pt);
     defo
 }
 
@@ -255,18 +257,28 @@ pub fn solve(
     pos: &mut [f64], prev: &[f64], t: &Topo, at: &ArtTopo, x: &mut [f64], r: &mut [f64], vl: &[f64],
     applied: &mut [f64], want: &[f64], rot_speed: &[f64], planets: &[PlanetCtx], h: f64, boxes: &[Contact],
 ) -> (Vec<Contact>, Vec<f64>, Vec<f64>) {
+    let mut pt = std::time::Instant::now();
     let rad = t.size * 0.5;
     let mut cs: Vec<Contact> = Vec::new();
     for pl in planets {
         if !body::near_planet(pos, t.nvox, t.size, pl) {
             continue;
         }
-        let k = body::cores(pos, t);
+        let mut k = body::cores(pos, t);
+        if !at.fixed.is_empty() {
+            // 固定の部分の頂点は地面を調べない（めり込んでいてよく、下で捨てる接触なので先に外す）
+            for i in 0..t.mass.len() {
+                if at.is_fixed(at.vg[i] as usize) {
+                    k[3 * i..3 * i + 3].fill(f64::NAN);
+                }
+            }
+        }
         let (up, rs) = body::ground_ref(pos, pl);
         let vz = vec![0.0; pos.len()];
         let (_, hit) = body::collide_planet(pos, prev, &vz, &k, &t.fric, rad, pl, up, rs, false, 0.0, 1.0, false);
         cs.extend(hit.into_iter().map(|(i, d, n)| Contact { p: i, d: -d, n, vs: [0.0; 3], ci: -1 }));
     }
+    crate::prof::add(18, &mut pt);
     cs.extend_from_slice(boxes);
     if !at.fixed.is_empty() {
         // 固定の部分は地面にめり込んでいてよい（接触を解かない）
@@ -345,6 +357,7 @@ pub fn solve(
         &cmu, h, at.iters, &mut lam, &at.hk,
     );
     write(pos, x, r, vl, at);
+    crate::prof::add(19, &mut pt);
     (kept, cl, lam)
 }
 

@@ -689,9 +689,15 @@ impl ScriptAPI {
 pub struct ScriptRunner {
     #[pyo3(get)]
     world: PyObject,
-    /// スクリプト名 → (更新時刻, 大きさ, コード)
+    /// スクリプト名 → ((更新時刻, 大きさ), コード, ファイルを確かめた時刻)
     #[pyo3(get)]
     cache: Py<PyDict>,
+}
+
+/// プログラムの読み込みで使う時計（秒、起動からの経過）
+fn script_clock() -> f64 {
+    static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
 }
 
 fn safe_builtins<'py>(py: Python<'py>) -> R<Bound<'py, PyDict>> {
@@ -720,23 +726,33 @@ impl ScriptRunner {
     }
 
     fn _load<'py>(&self, py: Python<'py>, name: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+        // 外部エディタでの書き換えを見るためのファイルの確かめは、スクリプトごとに 1 秒に 1 回まで
+        // （OneDrive などのフォルダではファイルを調べるのが遅く、毎回だとプログラムの処理の半分を占めていた）
+        let now = script_clock();
+        let cache = self.cache.bind(py);
+        if let Some(ent) = cache.get_item(name)? {
+            if ent.len()? >= 3 && now - ent.get_item(2)?.extract::<f64>()? < 1.0 {
+                return ent.get_item(1);
+            }
+        }
         let path = script_path(&self.world.bind(py).getattr("dir")?, name)?;
         if !path.call_method0("exists")?.is_truthy()? {
             return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!("スクリプト {} が scripts/ にありません", name.str()?)));
         }
         let stt = path.call_method0("stat")?;
         let mt = PyTuple::new_bound(py, [stt.getattr("st_mtime_ns")?, stt.getattr("st_size")?]).into_any();
-        let cache = self.cache.bind(py);
         if let Some(ent) = cache.get_item(name)? {
             if ent.get_item(0)?.eq(&mt)? {
-                return ent.get_item(1);
+                let code = ent.get_item(1)?;
+                cache.set_item(name, (&mt, &code, now))?;
+                return Ok(code);
             }
         }
         let kw = PyDict::new_bound(py);
         kw.set_item("encoding", "utf-8")?;
         let src = path.call_method("read_text", (), Some(&kw))?;
         let code = crate::game::imp(py, "builtins")?.getattr("compile")?.call1((src, path.str()?, "exec"))?;
-        cache.set_item(name, (&mt, &code))?;
+        cache.set_item(name, (&mt, &code, now))?;
         crate::game::imp(py, "logging")?.getattr("getLogger")?.call1(("alpedia.script",))?.call_method1("info", ("スクリプト読み込み: %s", name))?;
         Ok(code)
     }
@@ -794,10 +810,8 @@ impl ScriptRunner {
                 continue;
             }
             st.set_item("_acc", 0.0)?;
-            let mut path: Option<Bound<'_, PyAny>> = None;
+            let sname = st.call_method1("get", ("script", ""))?;
             let res: R<()> = (|| {
-                let sname = st.call_method1("get", ("script", ""))?;
-                path = Some(script_path(&world.getattr("dir")?, &sname)?);
                 let code = slf.borrow()._load(py, &sname)?;
                 let mut env = st.call_method1("get", ("_env",))?;
                 let stale = env.is_none() || !env.call_method1("get", ("__code__",))?.is(&code);
@@ -846,7 +860,8 @@ impl ScriptRunner {
                     line = ev.getattr("lineno").ok().and_then(|l| l.extract().ok());
                 }
                 if line.is_none() {
-                    if let Some(p) = &path {
+                    // ファイルの場所はエラーの時だけ作る（毎回作ると遅い）
+                    if let Ok(p) = script_path(&world.getattr("dir")?, &sname) {
                         let ps = p.str()?.to_string();
                         let tb = e.traceback_bound(py);
                         if let Some(tb) = tb {

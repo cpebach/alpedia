@@ -22,6 +22,7 @@ def movie_path(name):
 class MoviePlayer:
     """ムービー：PyAV で読み解いた1コマを、時間に合わせて Rust の画面のテクスチャへ。音は Rust で鳴らす。"""
     MAX_W = 1280                       # 送る大きさ（これより大きい動画は縮める）
+    covers_screen = True               # 画面いっぱいを黒で覆う：流している間、後ろの世界の用意を飛ばしてよい
 
     def __init__(self, game, name, on_done):
         from ursina import Entity, Text, Button, camera, color, window

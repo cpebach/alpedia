@@ -1184,6 +1184,31 @@ fn take_ro<'a>(o: &'a Option<RoF<'_>>, name: &str) -> PyResult<&'a [f64]> {
     }
 }
 
+/// 物理1回の内訳（開発用。F3 とログで使う）
+pub mod prof {
+    /// dev 機器 / prog プログラム / player 人 / prep 前処理 / core Rust のまとめ（下の c_* に分かれる）/ sub 残りのサブステップ /
+    /// post 後処理 / etc ほか ／ core の中：c_job 構築物の用意・c_sl 眠っている物の用意・c_rs Rust の計算・c_post 結果を戻す ／
+    /// c_rs の中：r_conv 受け渡し・r_soft・r_rigid・r_art（ブロックごと・剛体・関節）・r_cont 構築物どうし
+    pub const PARTS: [&str; 25] = ["dev", "prog", "player", "prep", "core", "sub", "post", "etc", "c_job", "c_sl", "c_rs", "c_post",
+                                   "r_conv", "r_soft", "r_rigid", "r_art", "r_cont",
+                                   "a_pred", "a_gnd", "a_solve", "a_end",
+                                   "p_scan", "p_ext", "p_near", "e_loop"];
+    static P: std::sync::Mutex<[f64; 25]> = std::sync::Mutex::new([0.0; 25]);
+    pub fn add(i: usize, t: &mut std::time::Instant) {
+        let now = std::time::Instant::now();
+        if let Ok(mut p) = P.lock() {
+            p[i] += (now - *t).as_secs_f64();
+        }
+        *t = now;
+    }
+    pub fn take() -> Vec<(String, f64)> {
+        let mut p = P.lock().unwrap_or_else(|e| e.into_inner());
+        let out = PARTS.iter().zip(p.iter()).map(|(k, v)| (k.to_string(), *v)).collect();
+        *p = [0.0; 25];
+        out
+    }
+}
+
 /// 1ティックの物理をまとめて進める。
 /// jobs：動いている構築物ごとの dict（kind 0 ブロックごと / 1 剛体 / 2 完全剛体 / 3 関節つき剛体）。
 /// sleepers：[(Proxy, pos, vel, 剛体か, 固定か, 起きてよいか)]。groups：MOD の箱 [(C, A, E, 部分)]。
@@ -1196,6 +1221,7 @@ fn step_tick<'py>(
     groups: Vec<(RoF<'py>, RoF<'py>, RoF<'py>, RoI<'py>)>, planets: &Bound<'py, pyo3::types::PyList>, scale: f64, h: f64,
     substeps: usize, iters: i64, impact_speed: f64, soft: f64,
 ) -> PyResult<(usize, Vec<usize>, Vec<bool>, Vec<bool>, Vec<(usize, Vec<i64>, Vec<i64>)>, Vec<tick::Hit>)> {
+    let mut pt = std::time::Instant::now();
     let pls = planet_ctx(planets)?;
     let mut gs = Vec::with_capacity(groups.len());
     for (c, a, e, p) in &groups {
@@ -1329,6 +1355,7 @@ fn step_tick<'py>(
         need(pv.len() == 24 * p.n && vl.len() == 24 * p.n, "step_tick 眠っている物")?;
         slist.push(tick::Sleeper { proxy: p, pos: pv, vel: vl, rigid: *rigid, fixed: *fixed, can_wake: *can_wake });
     }
+    prof::add(12, &mut pt);
     let o = py.allow_threads(|| tick::run(&mut list, &mut slist, &gs, &pls, scale, h, substeps, iters, impact_speed, soft));
     Ok((o.done, o.woke, o.touch, o.want_soft, o.broken, o.hits))
 }
