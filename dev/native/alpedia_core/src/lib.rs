@@ -863,7 +863,7 @@ impl Body {
         need(
             p.len() == 3 * nv && v.len() == 3 * nv && pv.len() == 3 * nv && f.len() == 3 * nv && r.len() == 3 * nv
                 && s.len() == 3 * t.nvox && lr.len() == 9 * t.nvox && q.len() == 4 * t.nvox && angles.len() == t.rotors.len()
-                && cv.iter().flatten().all(|&j| j < t.nvox as i64),
+                && cv.iter().flatten().all(|&j| (j >> 7) < t.nvox as i64),
             "soft_begin",
         )?;
         let mut none: [f64; 0] = [];
@@ -910,7 +910,7 @@ impl Body {
         let nv = 8 * t.nvox;
         need(
             p.len() == 3 * nv && v.len() == 3 * nv && pv.len() == 3 * nv && f.len() == 3 * nv && rr.len() == 9 && ii.len() == 9
-                && cv.iter().flatten().all(|&j| j < t.nvox as i64),
+                && cv.iter().flatten().all(|&j| (j >> 7) < t.nvox as i64),
             "rigid_begin",
         )?;
         Ok(py.allow_threads(|| body::rigid_begin(p, v, pv, f, rr, ii, t, &pls, scale, h, &cv, full, impact_speed, soft, defer)))
@@ -1080,7 +1080,7 @@ impl ArtTopo {
             at.vg.len() == nv && p.len() == 3 * nv && v.len() == 3 * nv && pv.len() == 3 * nv && f.len() == 3 * nv
                 && vv.len() == 3 * nv && v0.len() == 3 * nv && xx.len() == 3 * at.g && rr.len() == 9 * at.g
                 && ea.len() == ne && ext_want.len() == ne && ext_speed.len() == ne
-                && cv.iter().flatten().all(|&j| j < t.nvox as i64),
+                && cv.iter().flatten().all(|&j| (j >> 7) < t.nvox as i64),
             "art predict",
         )?;
         let (rows, d) = py.allow_threads(|| {
@@ -1391,7 +1391,7 @@ fn step_tick<'py>(
         let prev = rw(&mut ja.prev, "prev")?;
         let force = ro(&ja.force, "force")?;
         need(pos.len() == 3 * nv && vel.len() == 3 * nv && prev.len() == 3 * nv && force.len() == 3 * nv
-             && cav.iter().flatten().all(|&j| j < t.nvox as i64) && ja.proxy.get().p.n == t.nvox, "step_tick 構築物")?;
+             && cav.iter().flatten().all(|&j| (j >> 7) < t.nvox as i64) && ja.proxy.get().p.n == t.nvox, "step_tick 構築物")?;
         let [a0, a1, a2, a3, a4, _] = &mut ja.a;
         let [b0, b1, _] = &ja.b;
         let part = match ja.kind {

@@ -226,7 +226,7 @@ pub(crate) fn cores(pos: &[f64], t: &Topo) -> Vec<f64> {
     k
 }
 
-/// 水の浮力と抵抗（construct._buoyancy）。cav は気密の空洞セルの6方向のボクセル番号（-1 は無し）
+/// 水の浮力と抵抗（construct._buoyancy）。cav は気密の空洞セルごとの、6方向で最初に当たるブロック（番号 × 128 ＋ 距離。-1 は無し）
 fn buoyancy(pos: &[f64], vel: &mut [f64], t: &Topo, pl: &PlanetCtx, planets: &[PlanetCtx], scale: f64, h: f64, cav: &[[i64; 6]]) {
     let n = t.nvox;
     let size = t.size;
@@ -256,30 +256,58 @@ fn buoyancy(pos: &[f64], vel: &mut [f64], t: &Topo, pl: &PlanetCtx, planets: &[P
         })
         .collect();
     if !cav.is_empty() {
-        let mut ccs = Vec::with_capacity(cav.len());
+        // 行の値は ブロックの番号 × 128 ＋ そのブロックまでのセルの数（-1 は無し）。向きは +x −x +y −y +z −z の順。
+        // 向かい合う2つの壁の間を距離で割り振ると、ちょうど空洞のセルの位置になる（浮力の点もそこに来る）
+        let dec = |v: i64| if v >= 0 { Some(((v >> 7) as usize, (v & 127).max(1) as f64)) } else { None };
+        let mut cells: Vec<([f64; 3], Vec<(usize, f64)>)> = Vec::with_capacity(cav.len());
         for row in cav {
-            let (mut c, mut cnt) = ([0.0; 3], 0.0);
-            for &j in row {
-                if j >= 0 {
+            let mut c = [0.0; 3];
+            let mut nax = 0.0;
+            let mut share: Vec<(usize, f64)> = Vec::new();
+            for ax in 0..3 {
+                if let (Some((jp, kp)), Some((jm, km))) = (dec(row[2 * ax]), dec(row[2 * ax + 1])) {
+                    let (wp, wm) = (km / (kp + km), kp / (kp + km));
                     for a in 0..3 {
-                        c[a] += cen[j as usize][a];
+                        c[a] += cen[jp][a] * wp + cen[jm][a] * wm;
                     }
-                    cnt += 1.0;
+                    nax += 1.0;
+                    share.push((jp, wp));
+                    share.push((jm, wm));
                 }
             }
-            ccs.push(([c[0] / cnt, c[1] / cnt, c[2] / cnt], cnt));
+            if nax == 0.0 {
+                // 向かい合う壁が無い（ふつうは無い）：見つかった壁に等しく
+                let hits: Vec<usize> = row.iter().filter_map(|&v| dec(v).map(|x| x.0)).collect();
+                if hits.is_empty() {
+                    continue;
+                }
+                for &j in &hits {
+                    for a in 0..3 {
+                        c[a] += cen[j][a];
+                    }
+                    share.push((j, 1.0));
+                }
+                nax = hits.len() as f64;
+            }
+            for x in c.iter_mut() {
+                *x /= nax;
+            }
+            for sh in share.iter_mut() {
+                sh.1 /= nax;
+            }
+            cells.push((c, share));
         }
-        let f2: Vec<f64> = ccs.iter().map(|(c, _)| (pl.water_depth(*c) / size + 0.5).clamp(0.0, 1.0)).collect();
+        let f2: Vec<f64> = cells.iter().map(|(c, _)| (pl.water_depth(*c) / size + 0.5).clamp(0.0, 1.0)).collect();
         if f2.iter().any(|&f| f > 0.0) {
-            for (k, row) in cav.iter().enumerate() {
-                let (c, cnt) = ccs[k];
-                let g = gravity(planets, c, scale);
-                let s = 1000.0 * vol * f2[k] / cnt;
-                for &j in row {
-                    if j >= 0 {
-                        for a in 0..3 {
-                            force[j as usize][a] += -g[a] * s;
-                        }
+            for (k, (c, share)) in cells.iter().enumerate() {
+                if f2[k] <= 0.0 {
+                    continue;
+                }
+                let g = gravity(planets, *c, scale);
+                let s = 1000.0 * vol * f2[k];
+                for &(j, w) in share {
+                    for a in 0..3 {
+                        force[j][a] += -g[a] * s * w;
                     }
                 }
             }

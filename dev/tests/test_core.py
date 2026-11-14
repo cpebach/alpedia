@@ -1104,5 +1104,50 @@ class TestLimits(CoreCase):
         self.assertEqual(len(w.constructs), n1)
 
 
+class TestFerry(CoreCase):
+    """はじめのフェリー（設計図）：海に浮かび（気密の空洞の浮力）、座って W で前へ、D で右へ回る。"""
+
+    def test_ferry_floats_and_sails(self):
+        from main import objio
+        w = self.world(full_rigid=True, planets=[{"def": "gaia", "position": [0, 0, 0], "craters": []}])
+        pl = w.planets[0]
+        rng = np.random.default_rng(3)
+        dirs = rng.normal(size=(20000, 3))
+        dirs /= np.linalg.norm(dirs, axis=1)[:, None]
+        s = np.asarray(pl._sample(dirs))
+        k = int(np.where(s[:, 1] - s[:, 0] > 8.0)[0][0])     # 深い海
+        d, sea = dirs[k], float(s[k][1])
+        data = objio.import_construct(w.registry, paths.SAUCE / "blueprints" / "starter_ferry.alp.json")
+        w.player.pos = pl.center + d * (sea + 30)
+        c = w.place_import(data, pl.center + d * (sea + 1.0), None)
+
+        def draft_tilt():
+            P = np.asarray(c.pos).reshape(-1, 3) - pl.center
+            com = c.center_of_mass() - pl.center
+            up = com / np.linalg.norm(com)
+            return sea - float(np.linalg.norm(P, axis=1).min()), float(np.degrees(np.arccos(c.rigid_fit()[0][:, 1] @ up)))
+        self.run_for(w, 10.0)
+        draft, tilt = draft_tilt()
+        self.assertLess(draft, 2.6, f"沈みすぎ（喫水 {draft:.2f} m、船体は 3 m）")
+        self.assertLess(tilt, 8.0)
+        i = next(j for j, dv in enumerate(c.devs) if dv and dv["def"] == "seat")
+        w.player.seated = (c.id, tuple(c.cells[i]))
+        f0, p0 = c.rigid_fit()[0][:, 2], c.center_of_mass()
+        w.input_keys = {"w"}
+        for _ in range(int(8 / DT)):
+            w.player.pos = c.center_of_mass() + d * 3
+            w.step(DT)
+        self.assertGreater(float((c.center_of_mass() - p0) @ f0), 8.0, "前へ進まない")
+        w.input_keys = {"w", "d"}
+        for _ in range(int(6 / DT)):
+            w.player.pos = c.center_of_mass() + d * 3
+            w.step(DT)
+        f1 = c.rigid_fit()[0][:, 2]
+        self.assertGreater(float(np.degrees(np.arccos(np.clip(f0 @ f1, -1, 1)))), 10.0, "回らない")
+        draft, tilt = draft_tilt()
+        self.assertLess(draft, 2.6)
+        self.assertLess(tilt, 8.0)
+
+
 if __name__ == "__main__":
     unittest.main()

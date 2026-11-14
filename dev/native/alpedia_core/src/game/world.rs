@@ -1514,6 +1514,10 @@ impl World {
             if j.is_none() {
                 return Ok(none());
             }
+            // 気密の空洞の浮力（水のある惑星）。まとめて計算するときも、1つずつ計算するときと同じに
+            if let Ok(cc) = c.downcast::<super::construct::Construct>() {
+                j.set_item("cav", super::construct::Construct::cav_arg(cc, &pls)?)?;
+            }
             let st: f64 = match opt(c, "_settle")? { Some(v) => v.extract()?, None => 0.0 };
             let ok = st > 0.0 && c.getattr("vel")?.getattr("shape")?.eq(c.getattr("pos")?.getattr("shape")?)?;
             j.set_item("settle_cap", if ok { settle_acc * h } else { 0.0 })?;

@@ -1424,8 +1424,15 @@ impl Construct {
                 let c = cell_of(&cell?)?;
                 let mut row = [-1i64; 6];
                 for (d, du) in DIRS.iter().enumerate() {
-                    let v = index.call_method1("get", (tup3(py, [c[0] + du[0], c[1] + du[1], c[2] + du[2]]), -1))?;
-                    row[d] = v.extract()?;
+                    // その向きで最初に当たるブロック（空洞のまん中のセルも、まわりの壁に浮力を渡す。
+                    // となりだけを見ていたときは、壁に触れていないセルの浮力が無くなっていた）
+                    for k in 1..=64 {
+                        let v: i64 = index.call_method1("get", (tup3(py, [c[0] + du[0] * k, c[1] + du[1] * k, c[2] + du[2] * k]), -1))?.extract()?;
+                        if v >= 0 {
+                            row[d] = v * 128 + k;          // ブロックの番号 × 128 ＋ 距離（セルの数）
+                            break;
+                        }
+                    }
                 }
                 if row.iter().any(|x| *x >= 0) {
                     nb.extend(row);
@@ -3410,7 +3417,7 @@ impl Construct {
         }
         Ok(())
     }
-    fn cav_arg<'py>(slf: &Bound<'py, Self>, pls: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub fn cav_arg<'py>(slf: &Bound<'py, Self>, pls: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
         let mut water = false;
         for p in pls.iter()? {
