@@ -51,12 +51,22 @@ def main():
         s._place_rocket()
         import importlib
         space = importlib.import_module("alpedia_mods.story.space")
+        # トワのロボット（人型）：2026-11-09 からシナリオでは第12章で変形ロボット ツバメ（make_starter_blueprints.py）を
+        # 出すようになり、始めのワールドには置かれない。設計図としては残すので、前と同じ形・置き方でここで作る
+        if s.con("robot") is None and s.deck is not None:
+            rx, rz = space.ROBOT_START
+            rv = space.robot_voxels()
+            s._put_space("robot", "トワのロボット", rv, s.deck.point(rx, rz, 0.3), s.deck.frame(0.0), (1.5, 0.0, 2.5),
+                         links=space.robot_links(rv))
         out = paths.SAUCE / "blueprints"
         out.mkdir(parents=True, exist_ok=True)
         sd = w.dir / "scripts"
         for role, fname, name, desc in ITEMS:
             c = s.con(role)
-            vox = [[cl[0], cl[1], cl[2], m, _clean_dev(d, c.reg)] for cl, m, d in zip(c.cells, c.mats, c.devs)]
+            if c is None:
+                raise SystemExit(f"シナリオのワールドに「{name}」（役 {role}）がありません。mods/story の舞台の作り方が変わったら、"
+                                 "この ITEMS も合わせて直してください")
+            vox =[[cl[0], cl[1], cl[2], m, _clean_dev(d, c.reg)] for cl, m, d in zip(c.cells, c.mats, c.devs)]
             if role == "unit":
                 for cell in space.UNIT_SLOTS:
                     vox.append([cell[0], cell[1], cell[2], "steel", {"def": "rocket_module", "dir": 2,

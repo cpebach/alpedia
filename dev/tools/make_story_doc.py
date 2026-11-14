@@ -88,5 +88,5 @@ out += ["", "お世話になったもの（`mods/story/credits/<名前>.png` が
 out += [f"- {n}（`{k}.png`）：{t}" for k, n, t in S.CREDITS_THANKS]
 out += ["", "最後にタイトル（Alpedia・ストーリー vol.1）を出して、ワールドの選択（メニュー）へ戻る。", ""]
 out += ["## クリアのあと", "", "目標の欄：", ""] + [f"- {x}" for x in S.FREE_PLAY] + [""]
-(ROOT.parent / "docs" / "ストーリー台本.md").write_text("\n".join(out), encoding="utf-8")
+(ROOT.parent / "docs" / "ストーリー台本.md").write_text("\n".join(out), encoding="utf-8", newline="\n")   # Windows でも LF（CRLF だとファイル全体が差分になる）
 print("書き出し: docs/ストーリー台本.md")
