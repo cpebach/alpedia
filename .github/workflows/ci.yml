@@ -1,0 +1,89 @@
+# 自動のビルドとテスト（B-03）。dev/ が変わった push・プルリクエストで動く（文書だけの変更では動かない）。
+# Windows で、配る物と同じ作り方（Rust の GNU ツールチェーン・Python の安定 ABI（abi3）で python3.dll につなぐ）で
+# 物理コアを作り、Rust の単体テストと Python のテスト（dev/tests）を動かす。画面（alpedia_view）はテストに要らないので作らない。
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["dev/**", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["dev/**", ".github/workflows/ci.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: dev/requirements.txt
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable-x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: dev/native/alpedia_core -> target
+
+      - name: Python のライブラリ
+        run: python -m pip install -r dev/requirements.txt
+
+      - name: pyo3 の設定（build_windows.bat・test_windows.bat と同じ）
+        run: |
+          PYDIR=$(python -c "import sys, os; print(os.path.dirname(sys.executable))")
+          cat > "$RUNNER_TEMP/pyo3_abi3.txt" <<EOF
+          implementation=CPython
+          version=3.10
+          shared=true
+          abi3=true
+          lib_name=python3
+          lib_dir=$PYDIR
+          pointer_width=64
+          suppress_build_script_link_lines=false
+          EOF
+          cat > "$RUNNER_TEMP/pyo3_cp312.txt" <<EOF
+          implementation=CPython
+          version=3.12
+          shared=true
+          abi3=false
+          lib_name=python312
+          lib_dir=$PYDIR
+          pointer_width=64
+          suppress_build_script_link_lines=false
+          EOF
+          echo "PYDIR=$PYDIR" >> "$GITHUB_ENV"
+
+      - name: Rust の単体テスト
+        working-directory: dev/native/alpedia_core
+        run: PYO3_CONFIG_FILE="$RUNNER_TEMP/pyo3_cp312.txt" cargo test --no-default-features --lib
+
+      - name: 物理コアを作る（abi3）
+        working-directory: dev/native/alpedia_core
+        run: |
+          PYO3_CONFIG_FILE="$RUNNER_TEMP/pyo3_abi3.txt" cargo build --profile ci --features abi3
+          mkdir -p ../../lib
+          cp target/ci/alpedia_core.dll ../../lib/alpedia_core.pyd
+
+      - name: 物理コアを読み込めるか
+        working-directory: dev
+        run: python -X faulthandler -c "import sys; sys.path.insert(0, 'lib'); import alpedia_core as a; print('alpedia_core', a.version())"
+
+      - name: Python のテスト
+        working-directory: dev
+        run: python -X faulthandler -m unittest discover -s tests -v

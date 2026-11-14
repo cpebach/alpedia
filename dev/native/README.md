@@ -106,6 +106,10 @@ native	est_windows.bat
 `cargo +stable-x86_64-pc-windows-gnu test --lib` を、`PYO3_CONFIG_FILE` を 3.12 の設定にし、`python312.dll` のある場所を PATH に入れて動かす。
 Linux では `cargo test --no-default-features --lib`。）
 
+GitHub に push すると（`dev/` が変わったとき）、`.github/workflows/ci.yml` が Windows で同じことを自動でします：
+配る物と同じ作り方（GNU ツールチェーン・abi3）で物理コアを作り、読み込めるかを確かめ、Rust の単体テストと Python のテスト（`dev/tests`）を動かします。
+CI 用の作り方（`[profile.ci]`）はリンク時の最適化をしないので速く作れます（できる物の速さは少し落ちます。配る物には使いません）。
+
 ## 画面（alpedia_view）
 
 `native/alpedia_view/` は画面を描く Rust（wgpu・winit）のモジュールです。Python が「ノード（親子の行列）」「メッシュ（頂点 (n,12) float32）」

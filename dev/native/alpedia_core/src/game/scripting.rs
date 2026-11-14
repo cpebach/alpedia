@@ -35,6 +35,9 @@ pub const SCRIPT_BUDGET: f64 = 0.25;
 // ---- 時間の見張り：呼び出しの間だけ締め切りを置き、過ぎたら見張りのスレッドがそのスレッドに例外を投げる ----
 static DEADLINE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TARGET_TID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// 投げる例外の型（builtins.TimeoutError）。python3.dll のデータ（PyExc_TimeoutError）を直接使うと、
+/// abi3 のビルドで読み込むときに落ちることがあるので、Python から引いた物を持つ
+static TIMEOUT_TYPE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn clock_ms() -> u64 {
     static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
@@ -57,7 +60,10 @@ fn start_watchdog() {
                     DEADLINE_MS.store(0, std::sync::atomic::Ordering::SeqCst);
                     let tid = TARGET_TID.load(std::sync::atomic::Ordering::SeqCst);
                     unsafe {
-                        pyo3::ffi::PyThreadState_SetAsyncExc(tid as std::os::raw::c_long, pyo3::ffi::PyExc_TimeoutError);
+                        let t = TIMEOUT_TYPE.load(std::sync::atomic::Ordering::SeqCst) as *mut pyo3::ffi::PyObject;
+                        if !t.is_null() {
+                            pyo3::ffi::PyThreadState_SetAsyncExc(tid as std::os::raw::c_long, t);
+                        }
                     }
                 }
             });
@@ -67,6 +73,11 @@ fn start_watchdog() {
 
 /// f を時間の見張りつきで呼ぶ。時間切れなら TimeoutError
 fn guarded<'py, T>(py: Python<'py>, f: impl FnOnce() -> R<T>) -> R<T> {
+    if TIMEOUT_TYPE.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+        // 型は消えない（builtins が持つ）ので、指す先をそのまま覚えておく
+        let t = crate::game::imp(py, "builtins")?.getattr("TimeoutError")?;
+        TIMEOUT_TYPE.store(t.as_ptr() as usize, std::sync::atomic::Ordering::SeqCst);
+    }
     start_watchdog();
     let tid: i64 = crate::game::imp(py, "threading")?.call_method0("get_ident")?.extract()?;
     TARGET_TID.store(tid, std::sync::atomic::Ordering::SeqCst);
@@ -997,7 +1008,7 @@ impl ScriptRunner {
                 let ev = e.value_bound(py);
                 st.set_item("running", false)?;
                 let tn = ev.get_type().name()?.to_string();
-                let mut msg = if e.is_instance_of::<pyo3::exceptions::PyTimeoutError>(py) {
+                let mut msg = if tn == "TimeoutError" {
                     format!("時間がかかりすぎたので止めました（1回 {SCRIPT_BUDGET} 秒まで。止まらないループになっていませんか）")
                 } else {
                     format!("{tn}: {}", ev.str()?)

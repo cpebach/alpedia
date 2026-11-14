@@ -31,3 +31,9 @@ abi3 = ["pyo3/abi3-py310"]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# CI（.github/workflows/ci.yml）でテストのために作るとき：速く作る（リンク時の最適化をしない・並列に作る）
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
