@@ -290,6 +290,54 @@ class TestScripts(CoreCase):
         self.assertIn("ZeroDivisionError", st["error"])
         self.assertEqual(st["error_line"], 2)
 
+    def _run_script(self, code, secs=0.3):
+        w = self.world()
+        self.script(w, "s.py", code)
+        c = self.put(w, [((0, 0, 0), "steel", {"def": "battery", "dir": 2}),
+                         ((1, 0, 0), "steel", {"def": "computer", "dir": 2, "state": {"script": "s.py", "running": True}})])
+        self.run_for(w, secs)
+        return next(d for d in c.devs if d and d["def"] == "computer")["state"]
+
+    def test_sandbox_blocks_escapes(self):
+        """S-01：ゲーム内スクリプトから、組み込みの外（os・ファイル・ゲームの中身）へ出られない。"""
+        escapes = {
+            "dunder": "x = ().__class__.__base__.__subclasses__()",
+            "getattr": "x = getattr((), '__class__')",
+            "hasattr": "x = hasattr((), '__class__')",
+            "fstring": "x = f'{().__class__}'",
+            "statistics.sys": "import statistics\nx = statistics.sys",
+            "random._os": "import random\nx = random._os",
+            "port": "x = api._p",
+            "builtins": "x = __builtins__",
+        }
+        for name, body in escapes.items():
+            with self.subTest(name):
+                code = "def tick(api):\n" + "".join(f"    {ln}\n" for ln in body.splitlines()) + "    api.display('ESCAPED')\n"
+                st = self._run_script(code)
+                self.assertFalse(st["running"], name)
+                self.assertNotEqual((st.get("display") or {}).get("text"), "ESCAPED", name)
+                self.assertTrue(st.get("error"), name)
+
+    def test_sandbox_allows_normal_scripts(self):
+        """ふつうのスクリプト（math・random・statistics・アンダースコアで始まる自分の関数）は動く。"""
+        code = ("import math, random, statistics\n"
+                "def _half(x):\n    return x / 2\n"
+                "def tick(api):\n"
+                "    v = statistics.mean([1, 2, 3]) + math.sqrt(4) + random.random() * 0 + _half(2)\n"
+                "    api.display(f'ok {v:.0f}')\n")
+        st = self._run_script(code)
+        self.assertTrue(st["running"], st.get("error"))
+        self.assertEqual(st["display"]["text"], "ok 5")
+
+    def test_sandbox_stops_endless_loop(self):
+        """止まらないスクリプトは、時間切れで止まる（ゲームは止まらない）。"""
+        import time
+        t0 = time.perf_counter()
+        st = self._run_script("def tick(api):\n    while True:\n        pass\n", secs=0.1)
+        self.assertLess(time.perf_counter() - t0, 10.0)
+        self.assertFalse(st["running"])
+        self.assertIn("時間", st["error"])
+
     def test_port_only_writes_allowed_fields(self):
         w = self.world()
         c = self.put(w, [((0, 0, 0), "steel", {"def": "thruster", "dir": 3}), ((1, 0, 0), "steel", {"def": "tank", "dir": 2})])

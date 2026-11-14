@@ -2,7 +2,10 @@
 //!
 //! スクリプトは saves/<ワールド>/scripts/*.py に置き、`tick(api)` 関数を定義する。
 //! コンピューターが起動している間、一定間隔で tick(api) が呼ばれる。
-//! import できるのは math / random / statistics のみ（簡易サンドボックス）。
+//! import できるのは math / random / statistics のみ（公開の関数だけを写した物）。
+//! サンドボックス：読み込むときに文を調べ、`_` で始まる属性・`__` で始まる名前・フレームなどの内側の属性を使う
+//! スクリプトは動かさない（組み込みの外へ出る道を塞ぐ）。getattr / hasattr も `_` で始まる名前は断る。
+//! 1回の呼び出しが SCRIPT_BUDGET 秒を超えたら、見張りのスレッドが止める（止まらないループでゲームが止まらないように）。
 //! スクリプトそのものは Python のまま（Python で書いて Python で動く）。ここはそれに渡す api と、呼び出す仕組み。
 
 use numpy::PyReadonlyArray2;
@@ -21,6 +24,113 @@ const SAFE_BUILTINS: [&str; 34] = [
 ];
 const SAFE_BUILTINS2: [&str; 4] = ["hasattr", "TypeError", "AttributeError", "RuntimeError"];
 const ALLOWED: [&str; 3] = ["math", "random", "statistics"];
+/// 使えない属性（`_` で始まる物のほか）：フレーム・コード・トレースバックなど、ゲームの中身へたどれる物
+const BLOCKED_ATTRS: [&str; 20] = [
+    "gi_frame", "gi_code", "gi_yieldfrom", "gi_running", "cr_frame", "cr_code", "cr_await", "ag_frame", "ag_code", "ag_await",
+    "f_globals", "f_locals", "f_builtins", "f_back", "f_code", "tb_frame", "tb_next", "co_consts", "mro", "format_map",
+];
+/// 1回の呼び出し（tick・読み込み）の時間の上限（秒）
+pub const SCRIPT_BUDGET: f64 = 0.25;
+
+// ---- 時間の見張り：呼び出しの間だけ締め切りを置き、過ぎたら見張りのスレッドがそのスレッドに例外を投げる ----
+static DEADLINE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TARGET_TID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+fn clock_ms() -> u64 {
+    static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    T0.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+fn start_watchdog() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let dl = DEADLINE_MS.load(std::sync::atomic::Ordering::SeqCst);
+            if dl == 0 || clock_ms() < dl {
+                continue;
+            }
+            Python::with_gil(|_py| {
+                // GIL を持ってから見直す（呼び出しが終わって締め切りが消えていたら何もしない）
+                let dl = DEADLINE_MS.load(std::sync::atomic::Ordering::SeqCst);
+                if dl != 0 && clock_ms() >= dl {
+                    DEADLINE_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+                    let tid = TARGET_TID.load(std::sync::atomic::Ordering::SeqCst);
+                    unsafe {
+                        pyo3::ffi::PyThreadState_SetAsyncExc(tid as std::os::raw::c_long, pyo3::ffi::PyExc_TimeoutError);
+                    }
+                }
+            });
+        });
+    });
+}
+
+/// f を時間の見張りつきで呼ぶ。時間切れなら TimeoutError
+fn guarded<'py, T>(py: Python<'py>, f: impl FnOnce() -> R<T>) -> R<T> {
+    start_watchdog();
+    let tid: i64 = crate::game::imp(py, "threading")?.call_method0("get_ident")?.extract()?;
+    TARGET_TID.store(tid, std::sync::atomic::Ordering::SeqCst);
+    DEADLINE_MS.store(clock_ms() + (SCRIPT_BUDGET * 1000.0) as u64, std::sync::atomic::Ordering::SeqCst);
+    let r = f();
+    DEADLINE_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+    unsafe {
+        // 終わった直後に届いた例外が、ほかの所で出ないように消す
+        pyo3::ffi::PyThreadState_SetAsyncExc(tid as std::os::raw::c_long, std::ptr::null_mut());
+    }
+    r
+}
+
+/// 文を調べる：`_` で始まる属性・`__` で始まる名前・内側の属性・`_` で始まる名前の import は断る（SyntaxError）
+fn check_script(py: Python<'_>, src: &Bound<'_, PyAny>, path: &str) -> R<()> {
+    let ast = crate::game::imp(py, "ast")?;
+    let tree = ast.call_method1("parse", (src, path))?;
+    let (attr_t, name_t, alias_t) = (ast.getattr("Attribute")?, ast.getattr("Name")?, ast.getattr("alias")?);
+    for node in ast.call_method1("walk", (&tree,))?.iter()? {
+        let node = node?;
+        let bad: Option<String> = if node.is_instance(&attr_t)? {
+            let a: String = node.getattr("attr")?.extract()?;
+            if a.starts_with('_') || BLOCKED_ATTRS.contains(&a.as_str()) { Some(format!("属性 .{a}")) } else { None }
+        } else if node.is_instance(&name_t)? {
+            let n: String = node.getattr("id")?.extract()?;
+            if n.starts_with("__") { Some(format!("名前 {n}")) } else { None }
+        } else if node.is_instance(&alias_t)? {
+            let n: String = node.getattr("name")?.extract()?;
+            if n.split('.').any(|x| x.starts_with('_')) { Some(format!("import {n}")) } else { None }
+        } else {
+            None
+        };
+        if let Some(what) = bad {
+            let line: i64 = node.getattr("lineno").and_then(|l| l.extract()).unwrap_or(0);
+            let msg = format!("ゲーム内スクリプトでは {what} は使えません（_ で始まる物・内側の属性は安全のため使えません）");
+            let err = crate::game::imp(py, "builtins")?.getattr("SyntaxError")?.call1((msg, (path, line, 0, py.None())))?;
+            return Err(PyErr::from_value_bound(err));
+        }
+    }
+    Ok(())
+}
+
+/// getattr の代わり（`_` で始まる名前・内側の属性は断る）
+#[pyfunction]
+#[pyo3(signature = (obj, name, *default))]
+pub fn safe_getattr<'py>(obj: &Bound<'py, PyAny>, name: &str, default: &Bound<'py, PyTuple>) -> R<Bound<'py, PyAny>> {
+    if name.starts_with('_') || BLOCKED_ATTRS.contains(&name) {
+        return Err(PyAttributeError::new_err(format!("ゲーム内スクリプトでは属性 {name} は使えません")));
+    }
+    match obj.getattr(name) {
+        Ok(v) => Ok(v),
+        Err(e) if default.len() > 0 && e.is_instance_of::<PyAttributeError>(obj.py()) => default.get_item(0),
+        Err(e) => Err(e),
+    }
+}
+
+/// hasattr の代わり
+#[pyfunction]
+pub fn safe_hasattr(obj: &Bound<'_, PyAny>, name: &str) -> R<bool> {
+    if name.starts_with('_') || BLOCKED_ATTRS.contains(&name) {
+        return Err(PyAttributeError::new_err(format!("ゲーム内スクリプトでは属性 {name} は使えません")));
+    }
+    obj.hasattr(name)
+}
 const FACE_NAMES: [&str; 6] = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
 
 fn float_of(v: &Bound<'_, PyAny>) -> R<f64> {
@@ -47,7 +157,37 @@ pub fn script_path<'py>(world_dir: &Bound<'py, PyAny>, name: &Bound<'py, PyAny>)
 #[pyo3(signature = (name, *_a, **_k))]
 pub fn safe_import<'py>(py: Python<'py>, name: &str, _a: &Bound<'py, PyTuple>, _k: Option<&Bound<'py, PyDict>>) -> R<Bound<'py, PyAny>> {
     if ALLOWED.contains(&name) {
-        return Ok(crate::game::imp(py, name)?.into_any());
+        // 公開の関数・値だけを写したモジュール（statistics.sys・random._os のような、外へ出る道を渡さない）
+        let key = format!("_alpedia_safe_{name}");
+        let sysm = crate::game::imp(py, "sys")?;
+        let store = match sysm.getattr("_alpedia_safe_mods") {
+            Ok(d) => d,
+            Err(_) => {
+                let d = PyDict::new_bound(py).into_any();
+                sysm.setattr("_alpedia_safe_mods", &d)?;
+                d
+            }
+        };
+        if let Ok(Some(m)) = store.downcast::<PyDict>().map(|d| d.get_item(&key)).unwrap_or(Ok(None)) {
+            return Ok(m);
+        }
+        let src = crate::game::imp(py, name)?;
+        let types = crate::game::imp(py, "types")?;
+        let m = types.getattr("ModuleType")?.call1((name,))?;
+        let module_t = types.getattr("ModuleType")?;
+        for k in src.dir()?.iter() {
+            let k: String = k.extract()?;
+            if k.starts_with('_') {
+                continue;
+            }
+            let v = src.getattr(k.as_str())?;
+            if v.is_instance(&module_t)? {
+                continue;
+            }
+            m.setattr(k.as_str(), v)?;
+        }
+        store.set_item(&key, &m)?;
+        return Ok(m);
     }
     Err(PyImportError::new_err(format!("ゲーム内スクリプトでは '{name}' は使えません（math, random, statistics のみ）")))
 }
@@ -709,6 +849,8 @@ fn safe_builtins<'py>(py: Python<'py>) -> R<Bound<'py, PyDict>> {
         }
     }
     d.set_item("__import__", wrap_pyfunction_bound!(safe_import, py)?)?;
+    d.set_item("getattr", wrap_pyfunction_bound!(safe_getattr, py)?)?;
+    d.set_item("hasattr", wrap_pyfunction_bound!(safe_hasattr, py)?)?;
     d.set_item("print", py.None())?;
     Ok(d)
 }
@@ -751,6 +893,7 @@ impl ScriptRunner {
         let kw = PyDict::new_bound(py);
         kw.set_item("encoding", "utf-8")?;
         let src = path.call_method("read_text", (), Some(&kw))?;
+        check_script(py, &src, &path.str()?.to_string())?;
         let code = crate::game::imp(py, "builtins")?.getattr("compile")?.call1((src, path.str()?, "exec"))?;
         cache.set_item(name, (&mt, &code, now))?;
         crate::game::imp(py, "logging")?.getattr("getLogger")?.call1(("alpedia.script",))?.call_method1("info", ("スクリプト読み込み: %s", name))?;
@@ -821,7 +964,7 @@ impl ScriptRunner {
                     e.set_item("math", crate::game::imp(py, "math")?)?;
                     e.set_item("random", crate::game::imp(py, "random")?)?;
                     e.set_item("__code__", &code)?;
-                    crate::game::imp(py, "builtins")?.getattr("exec")?.call1((&code, &e))?;
+                    guarded(py, || crate::game::imp(py, "builtins")?.getattr("exec")?.call1((&code, &e)).map(|_| ()))?;
                     st.set_item("_env", &e)?;
                     env = e.into_any();
                 }
@@ -847,14 +990,18 @@ impl ScriptRunner {
                 if f.is_none() {
                     return Err(PyRuntimeError::new_err("tick(api) 関数がありません"));
                 }
-                f.call1((api,))?;
+                guarded(py, || f.call1((api,)).map(|_| ()))?;
                 Ok(())
             })();
             if let Err(e) = res {
                 let ev = e.value_bound(py);
                 st.set_item("running", false)?;
                 let tn = ev.get_type().name()?.to_string();
-                let mut msg = format!("{tn}: {}", ev.str()?);
+                let mut msg = if e.is_instance_of::<pyo3::exceptions::PyTimeoutError>(py) {
+                    format!("時間がかかりすぎたので止めました（1回 {SCRIPT_BUDGET} 秒まで。止まらないループになっていませんか）")
+                } else {
+                    format!("{tn}: {}", ev.str()?)
+                };
                 let mut line: Option<i64> = None;
                 if e.is_instance_of::<pyo3::exceptions::PySyntaxError>(py) {
                     line = ev.getattr("lineno").ok().and_then(|l| l.extract().ok());
