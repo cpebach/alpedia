@@ -95,7 +95,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ui::Field>()?;
     m.add_class::<ui::UI>()?;
     m.add_class::<screens::Pause>()?;
-    m.add_class::<screens::Inventory>()?;
+    m.add_class::<screens::InventoryScreen>()?;
     m.add_class::<screens_dev::DevicePanel>()?;
     m.add_class::<screens_dev::ActuatorPanel>()?;
     m.add_class::<screens_dev::RowStep>()?;

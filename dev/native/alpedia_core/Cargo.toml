@@ -9,7 +9,8 @@ name = "alpedia_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22" }
+# 1 つのクラスのメソッドを、いくつかのファイルに分けて書けるように（C-02）
+pyo3 = { version = "0.22", features = ["multiple-pymethods"] }
 numpy = "0.22"
 rayon = "1.10"
 nalgebra = "0.33"

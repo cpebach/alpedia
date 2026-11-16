@@ -1,0 +1,235 @@
+//! 画面：描く・終わり・動かす（run）
+
+use super::*;
+
+#[pymethods]
+impl Viewer {
+    pub(crate) fn _render(slf: &Bound<'_, Self>, origin: &B<'_>) -> R<()> {
+        let py = slf.py();
+        let mut pt = std::time::Instant::now();
+        let s = slf.as_any();
+        let w = ga(s, "w")?;
+        let views = ga(s, "views")?;
+        let cons = ga(&w, "constructs")?;
+        let vk: Vec<B<'_>> = views.iter()?.collect::<R<_>>()?;
+        for cid in vk {
+            if !cons.contains(&cid)? {
+                views.call_method1("pop", (&cid,))?.call_method0("remove")?;
+            }
+        }
+        let loaded = ga(s, "loaded")?;
+        loaded.call_method1("intersection_update", (py.import_bound("builtins")?.getattr("set")?.call1((&cons,))?,))?;
+        let g = ga(s, "cfg")?.get_item("graphics")?;
+        let far = f64of(&get(&g, "view_distance", 3000)?)?;
+        let decal_dist = f64of(&get(&g, "decal_distance", 30.0)?)?;
+        let ld = get(&g, "load_distance", 0)?;
+        let load = if ld.is_truthy()? { f64of(&ld)? } else { 0.0 };
+        let o = v3(origin)?;
+        let anchor = ga(s, "anchor")?;
+        if anchor.is_none() || norm(sub(o, v3(&anchor)?)) > 256.0 {
+            s.setattr("anchor", np3(py, o))?;
+            let av: i64 = ga(s, "anchor_ver")?.extract()?;
+            s.setattr("anchor_ver", av + 1)?;
+        }
+        let an = ga(s, "anchor")?;
+        let a3 = v3(&an)?;
+        let d0 = sub(a3, o);
+        ga(s, "static_root")?.call_method1("setPos", (d0[0], d0[1], d0[2]))?;
+        let ba = w.call_method0("_bounds_arrays")?;
+        let cs: Vec<B<'_>> = ba.get_item(0)?.iter()?.collect::<R<_>>()?;
+        let cc = ba.get_item(1)?;
+        let rr = ba.get_item(3)?;
+        let mut dists = vec![];
+        if !cs.is_empty() {
+            let np = imp(py, "numpy")?;
+            let cr: numpy::PyReadonlyArray2<f64> = np.call_method1("ascontiguousarray", (&cc, np.getattr("float64")?))?.extract()?;
+            let rrr: numpy::PyReadonlyArray1<f64> = np.call_method1("ascontiguousarray", (&rr, np.getattr("float64")?))?.extract()?;
+            let ca = cr.as_array();
+            let ra = rrr.as_array();
+            for i in 0..cs.len() {
+                let d = [ca[[i, 0]] - o[0], ca[[i, 1]] - o[1], ca[[i, 2]] - o[2]];
+                dists.push((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - ra[i]);
+            }
+        }
+        let player = ga(&w, "player")?;
+        let seatv = ga(&player, "seated")?;
+        let seat = if seatv.is_truthy()? { seatv.get_item(0)? } else { none(py) };
+        let lod_list = PyList::empty_bound(py);
+        let fno: i64 = gd(s, "frame_no", tb(py, 0)).extract::<i64>()? + 1;
+        s.setattr("frame_no", fno)?;
+        let time = imp(py, "time")?;
+        let budget = f64of(&time.call_method0("perf_counter")?)? + 0.008;
+        let shape = imp(py, "main.shape")?;
+        let rm = render_mod(py)?;
+        let root = ga(s, "root")?;
+        let static_root = ga(s, "static_root")?;
+        let anchor_ver = ga(s, "anchor_ver")?;
+        let hash = py.import_bound("builtins")?.getattr("hash")?;
+        scene_prof(0, &mut pt);
+        for (c, dist) in cs.iter().zip(dists.iter()) {
+            let cid = ga(c, "id")?;
+            if !cons.call_method1("get", (&cid,))?.is(c) {
+                continue;
+            }
+            let mut v = views.call_method1("get", (&cid,))?;
+            if *dist > far {
+                if !v.is_none() {
+                    v.call_method1("set_visible", (false,))?;
+                }
+                continue;
+            }
+            let seated = seat.eq(&cid)?;
+            let near = load <= 0.0 || seated || *dist < load || (loaded.contains(&cid)? && *dist < load * 1.1);
+            if !near {
+                if !v.is_none() {
+                    views.call_method1("pop", (&cid,))?.call_method0("remove")?;
+                    c.setattr("_mesh_cache", py.None())?;
+                }
+                loaded.call_method1("discard", (&cid,))?;
+                lod_list.append(c)?;
+                continue;
+            }
+            if v.is_none() {
+                if !seated && ga(c, "n_vox")?.extract::<i64>()? > 150 && !shape.call_method1("request_mesh", (c,))?.is_truthy()? {
+                    lod_list.append(c)?;
+                    continue;
+                }
+                if f64of(&time.call_method0("perf_counter")?)? > budget && !loaded.contains(&cid)? && !seated {
+                    lod_list.append(c)?;
+                    continue;
+                }
+                v = rm.getattr("ConstructView")?.call1((&root, py.None(), c))?;
+                views.set_item(&cid, &v)?;
+            }
+            loaded.call_method1("add", (&cid,))?;
+            v.call_method1("set_visible", (true,))?;
+            let tf = c.call_method0("render_transform")?;
+            let static_ = !tf.is_none() && !seated && (ga(c, "is_static")?.is_truthy()? || ga(c, "asleep")?.is_truthy()?)
+                && !c.call_method1("dev_ids", ("thruster",))?.is_truthy()?;
+            let key = if static_ { PyTuple::new_bound(py, [ga(c, "version")?, tf.get_item(2)?, anchor_ver.clone()]).into_any() } else { none(py) };
+            let vd = ga(&v, "__dict__")?;
+            if key.is_none() || !get(&vd, "_static_key", py.None())?.eq(&key)? {
+                v.setattr("_static_key", &key)?;
+                if static_ {
+                    let k = PyDict::new_bound(py);
+                    k.set_item("static_root", &static_root)?;
+                    k.set_item("anchor", &an)?;
+                    v.call_method("update", (origin,), Some(&k))?;
+                } else {
+                    v.call_method1("update", (origin,))?;
+                }
+                v.call_method1("update_decals", (origin, origin, decal_dist))?;
+            }
+            let hv: i64 = hash.call1((&cid,))?.extract()?;
+            if key.is_none() || (fno as i128 + hv as i128).rem_euclid(6) == 0 {
+                // 看板（止まっている物は6フレームに1回）
+                v.call_method1("update_displays", (origin, far))?;
+            }
+        }
+        scene_prof(1, &mut pt);
+        ga(s, "lod")?.call_method1("update", (lod_list, origin))?;
+        scene_prof(2, &mut pt);
+        let lc = PyList::empty_bound(py);
+        for k in loaded.iter()? {
+            let k = k?;
+            if cons.contains(&k)? {
+                lc.append(cons.get_item(&k)?)?;
+            }
+        }
+        ga(s, "lights")?.call_method1("update", (lc, origin, f64of(&ga(&w, "time")?)?))?;
+        scene_prof(3, &mut pt);
+        let ppos = ga(&player, "pos")?;
+        let npl = w.call_method1("nearest_planet", (&ppos,))?;
+        let carve = ga(s, "carve")?;
+        carve.call_method1("update", (&npl, &ppos, origin))?;
+        let patch = ga(s, "patch")?;
+        patch.call_method1("update", (&npl, &ppos, origin, &carve))?;
+        for pv in ga(s, "planet_views")?.iter()? {
+            let pv = pv?;
+            pv.call_method1("update", (origin, &ppos, patch.call_method1("frame_for", (ga(&pv, "p")?,))?))?;
+        }
+        scene_prof(4, &mut pt);
+        let now = time.call_method0("time")?;
+        for x in ga(s, "scenes")?.iter()? {
+            let x = x?;
+            let (a, sv) = (x.get_item(0)?, x.get_item(1)?);
+            let on = gd(&a, "alert", tb(py, false)).is_truthy()? || gd(&a, "lights", tb(py, false)).is_truthy()?;
+            sv.call_method1("update", (origin, on, &now))?;
+        }
+        // 空の色
+        let mut air = 0.0;
+        if !npl.is_none() {
+            let p = (f64of(&get(&ga(&npl, "defn")?, "atmosphere_pressure", 101.3)?)? / 101.3).clamp(0.0, 1.0);
+            let rad = f64of(&ga(&npl, "radius")?)?;
+            let alt = (norm(sub(o, v3(&ga(&npl, "center")?)?)) - rad).max(0.0);
+            air = p * (-alt / (rad * 0.25).max(30.0)).exp();
+        }
+        scene_prof(5, &mut pt);
+        let c: Vec<f64> = (0..3).map(|i| SKY_SPACE[i] + (SKY_DAY[i] - SKY_SPACE[i]) * air).collect();
+        ga(s, "view")?.call_method1("set_clear", (c[0], c[1], c[2]))?;
+        Ok(())
+    }
+    /// 画面から消す（メニューに戻るとき）
+    pub(crate) fn destroy(slf: &Bound<'_, Self>) -> R<()> {
+        let py = slf.py();
+        let s = slf.as_any();
+        let snd = ga(s, "snd")?;
+        if !snd.is_none() {
+            snd.call_method1("set_bgm", (py.None(),))?;
+            snd.call_method1("set_override", (py.None(),))?;
+            snd.call_method0("stop_loops")?;
+            snd.call_method1("update", (10.0,))?; // 曲を止める
+        }
+        let f = acall(py, "destroy", vec![])?;
+        Self::_each_addon(slf, &f, false)?;
+        s.setattr("addons", PyList::empty_bound(py))?;
+        let r = ga(&ga(s, "game")?, "touch_hud").and_then(|h| h.call_method0("destroy"));
+        swallow(py, r, |_| Ok(()))?;
+        for b in ga(s, "bodies")?.call_method0("values")?.iter()? {
+            let b = b?;
+            swallow(py, b.call_method0("destroy"), |_| Ok(()))?;
+        }
+        s.setattr("bodies", PyDict::new_bound(py))?;
+        for t in ga(s, "labels")?.call_method0("values")?.iter()? {
+            t?.call_method0("remove")?;
+        }
+        s.setattr("labels", PyDict::new_bound(py))?;
+        for v in ga(s, "views")?.call_method0("values")?.iter()? {
+            v?.call_method0("remove")?;
+        }
+        s.setattr("views", PyDict::new_bound(py))?;
+        for n in [ga(s, "root")?, ga(&ga(s, "hud")?, "node")?, ga(&ga(s, "msg")?, "node")?, ga(&ga(s, "aim_text")?, "node")?,
+                  ga(&ga(s, "item_text")?, "node")?, ga(&ga(s, "cross")?, "np")?] {
+            n.call_method0("removeNode")?;
+        }
+        let hb = ga(s, "hotbar")?;
+        if !hb.is_none() {
+            hb.get_item(1)?.call_method0("removeNode")?;
+        }
+        let st: Vec<B<'_>> = ga(&ga(s, "ui")?, "stack")?.iter()?.collect::<R<_>>()?;
+        for x in st {
+            x.call_method0("close")?;
+        }
+        let ed = ga(s, "editor")?;
+        if !ed.is_none() && ed.hasattr("close")? {
+            swallow(py, ed.call_method0("close"), |_| Ok(()))?;
+        }
+        ga(s, "shim")?.call_method1("destroy", (ga(&ga(s, "game")?, "ui_root")?,))?;
+        ga(s, "view")?.call_method1("grab", (false,))?;
+        Ok(())
+    }
+    pub(crate) fn run(slf: &Bound<'_, Self>) -> R<()> {
+        let py = slf.py();
+        let s = slf.as_any();
+        let t = imp(py, "time")?;
+        let mut last: f64 = t.call_method0("perf_counter")?.extract()?;
+        while !ga(s, "quit")?.is_truthy()? {
+            let now: f64 = t.call_method0("perf_counter")?.extract()?;
+            let dt = (now - last).min(0.1);
+            last = now;
+            s.call_method1("frame", (dt,))?;
+        }
+        ga(s, "w")?.call_method0("save")?;
+        Ok(())
+    }
+}

@@ -185,15 +185,11 @@ pub fn netsync_apply_construct<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, 
                     super::construct::a3(py, &l)?
                 }
             };
-            let rb = PyDict::new_bound(py);
-            rb.set_item("local", loc)?;
-            rb.set_item("R", mat(py, &super::construct::eye())?)?;
-            for k in ["x", "v", "w"] {
-                rb.set_item(k, a1(py, [0.0; 3]))?;
-            }
-            rb.set_item("Ib", mat(py, &super::construct::eye())?)?;
-            rb.set_item("ext", 1.0)?;
-            c.setattr("rb", rb)?;
+            let i3 = super::construct::eye();
+            let mut rb = super::construct::RigidState::new(py, &[], &i3, [0.0; 3], [0.0; 3], [0.0; 3], &i3)?;
+            rb.local = super::construct::to_fa(&loc)?;
+            rb.ext = 1.0;
+            c.setattr("rb", Py::new(py, rb)?)?;
             let ep: i64 = c.getattr("rb_epoch")?.extract()?;
             c.setattr("rb_epoch", ep + 1)?;
         }

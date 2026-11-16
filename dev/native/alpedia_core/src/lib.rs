@@ -714,7 +714,7 @@ fn voxelize<'py>(py: Python<'py>, verts: PyReadonlyArray2<'py, f64>, tris: PyRea
 // ---------------------------------------------------------------------------
 /// 構築物の「形が変わるまで変わらない値」。Python の rebuild ごとに作り直す。
 #[pyclass(frozen)]
-struct Body {
+pub struct Body {
     t: body::Topo,
 }
 
@@ -991,7 +991,7 @@ fn nnls<'py>(py: Python<'py>, a: PyReadonlyArray2<'py, f64>, b: RoF<'py>) -> PyR
 // ---------------------------------------------------------------------------
 /// 部分の分け方など（construct._art_build で作り直す）
 #[pyclass(frozen)]
-struct ArtTopo {
+pub struct ArtTopo {
     at: artstep::ArtTopo,
 }
 
@@ -1185,7 +1185,7 @@ impl ArtTopo {
 // ---------------------------------------------------------------------------
 /// 構築物1つの当たり判定の点の作り方など（形が変わったら作り直す）
 #[pyclass(frozen)]
-struct Proxy {
+pub struct Proxy {
     p: contacts::Proxy,
 }
 
@@ -1241,20 +1241,6 @@ fn push_apart<'py>(
 // ---------------------------------------------------------------------------
 // 1ティックの物理をまとめて（world.step のサブステップの繰り返し）
 // ---------------------------------------------------------------------------
-fn opt_rw<'py>(d: &Bound<'py, PyDict>, k: &str) -> PyResult<Option<RwF<'py>>> {
-    match d.get_item(k)? {
-        Some(v) if !v.is_none() => Ok(Some(v.extract()?)),
-        _ => Ok(None),
-    }
-}
-
-fn opt_ro<'py, T: numpy::Element>(d: &Bound<'py, PyDict>, k: &str) -> PyResult<Option<PyReadonlyArrayDyn<'py, T>>> {
-    match d.get_item(k)? {
-        Some(v) if !v.is_none() => Ok(Some(v.extract()?)),
-        _ => Ok(None),
-    }
-}
-
 fn req<'py, T: FromPyObject<'py>>(d: &Bound<'py, PyDict>, k: &str) -> PyResult<T> {
     match d.get_item(k)? {
         Some(v) => v.extract(),
@@ -1322,48 +1308,73 @@ pub mod prof {
     }
 }
 
-/// 1ティックの物理をまとめて進める。
+/// 1 つの構築物の1ティック分の入力（Rust の型）。配列は numpy の配列のまま（物理がその場で書き換える）
+pub struct TickJobIn {
+    /// 0 ブロックごと / 1 剛体 / 2 完全剛体 / 3 関節つき剛体
+    pub kind: i64,
+    pub body: Py<Body>,
+    pub proxy: Py<Proxy>,
+    pub art: Option<Py<ArtTopo>>,
+    pub pos: Py<numpy::PyArrayDyn<f64>>,
+    pub vel: Py<numpy::PyArrayDyn<f64>>,
+    pub prev: Py<numpy::PyArrayDyn<f64>>,
+    pub force: Py<numpy::PyArrayDyn<f64>>,
+    /// 気密の空洞の浮力の行（水のある惑星のときだけ）
+    pub cav: Option<Py<numpy::PyArrayDyn<i64>>>,
+    /// 書き換える配列。ブロックごと：rest, last_r, quat, crest / 剛体：rb_r, rb_x / 関節：x, r, vl, applied, ext_applied
+    pub a: [Option<Py<numpy::PyArrayDyn<f64>>>; 6],
+    /// 読むだけの配列。ブロックごと：act_scale / 剛体：rb_ib, local / 関節：vl0
+    pub b: [Option<Py<numpy::PyArrayDyn<f64>>>; 3],
+    /// ブロックごと：angles / 関節：want, rot_speed, ext_want, ext_speed
+    pub v: [Vec<f64>; 4],
+    pub parallel: bool,
+    /// MOD の箱のまとまりの番号
+    pub boxes: Vec<usize>,
+    pub settle_cap: f64,
+}
+/// 眠っている物：(Proxy, pos, vel, 剛体か, 固定か, 起きてよいか)
+pub type SleeperIn = (Py<Proxy>, Py<numpy::PyArrayDyn<f64>>, Py<numpy::PyArrayDyn<f64>>, bool, bool, bool);
+/// MOD の箱のまとまり：(C, A, E, 部分)
+pub type BoxGroupIn = (Py<numpy::PyArrayDyn<f64>>, Py<numpy::PyArrayDyn<f64>>, Py<numpy::PyArrayDyn<f64>>, Py<numpy::PyArrayDyn<i64>>);
+/// 1ティックの結果：(進めたサブステップの数, 起きた眠っていた物, 触れているか（jobs＋sleepers）, ブロックごとに戻したいか,
+///   [(job, ちぎれた結合, ちぎれた回転ジョイント)], [(job, 箱のまとまり, 部分, 速さ, サブステップ)])
+pub type TickOut = (usize, Vec<usize>, Vec<bool>, Vec<bool>, Vec<(usize, Vec<i64>, Vec<i64>)>, Vec<tick::Hit>);
+
+fn rw_of<'py>(py: Python<'py>, a: &Py<numpy::PyArrayDyn<f64>>, name: &str) -> PyResult<RwF<'py>> {
+    a.bind(py).try_readwrite().map_err(|e| PyValueError::new_err(format!("step_tick {name}: {e}")))
+}
+fn ro_of<'py, T: numpy::Element>(py: Python<'py>, a: &Py<numpy::PyArrayDyn<T>>, name: &str) -> PyResult<PyReadonlyArrayDyn<'py, T>> {
+    a.bind(py).try_readonly().map_err(|e| PyValueError::new_err(format!("step_tick {name}: {e}")))
+}
+
+/// 1ティックの物理をまとめて進める（Python の dict からの入り口。ゲームの中は step_tick_native を直接呼ぶ）。
 /// jobs：動いている構築物ごとの dict（kind 0 ブロックごと / 1 剛体 / 2 完全剛体 / 3 関節つき剛体）。
 /// sleepers：[(Proxy, pos, vel, 剛体か, 固定か, 起きてよいか)]。groups：MOD の箱 [(C, A, E, 部分)]。
-/// 戻り値 (進めたサブステップの数, 起きた眠っていた物, 触れているか（jobs＋sleepers）, ブロックごとに戻したいか,
-///         [(job, ちぎれた結合, ちぎれた回転ジョイント)], [(job, 箱のまとまり, 部分, 速さ, サブステップ)])
 #[pyfunction]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn step_tick<'py>(
-    py: Python<'py>, jobs: Vec<Bound<'py, PyDict>>, sleepers: Vec<(Bound<'py, Proxy>, RwF<'py>, RoF<'py>, bool, bool, bool)>,
-    groups: Vec<(RoF<'py>, RoF<'py>, RoF<'py>, RoI<'py>)>, planets: &Bound<'py, pyo3::types::PyList>, scale: f64, h: f64,
-    substeps: usize, iters: i64, impact_speed: f64, soft: f64,
-) -> PyResult<(usize, Vec<usize>, Vec<bool>, Vec<bool>, Vec<(usize, Vec<i64>, Vec<i64>)>, Vec<tick::Hit>)> {
-    let mut pt = std::time::Instant::now();
-    let pls = planet_ctx(planets)?;
-    let mut gs = Vec::with_capacity(groups.len());
-    for (c, a, e, p) in &groups {
-        let (c, a, e, p) = (ro(c, "C")?.to_vec(), ro(a, "A")?.to_vec(), ro(e, "E")?.to_vec(), ro(p, "part")?.to_vec());
-        let n = c.len() / 3;
-        need(n > 0 && a.len() == 9 * n && e.len() == 3 * n && p.len() == n, "step_tick 箱")?;
-        gs.push(tick::BoxGroup::new(c, a, e, p));
-    }
-    let mut args = Vec::with_capacity(jobs.len());
+    py: Python<'py>, jobs: Vec<Bound<'py, PyDict>>, sleepers: Vec<SleeperIn>, groups: Vec<BoxGroupIn>,
+    planets: &Bound<'py, pyo3::types::PyList>, scale: f64, h: f64, substeps: usize, iters: i64, impact_speed: f64, soft: f64,
+) -> PyResult<TickOut> {
+    let mut ins = Vec::with_capacity(jobs.len());
     for d in &jobs {
         let kind: i64 = req(d, "kind")?;
+        let o = |k: &str| -> PyResult<Option<Py<numpy::PyArrayDyn<f64>>>> {
+            match d.get_item(k)? {
+                Some(v) if !v.is_none() => Ok(Some(v.extract()?)),
+                _ => Ok(None),
+            }
+        };
         let (a, b, v) = match kind {
-            0 => (
-                [opt_rw(d, "rest")?, opt_rw(d, "last_r")?, opt_rw(d, "quat")?, opt_rw(d, "crest")?, None, None],
-                [opt_ro(d, "act_scale")?, None, None],
-                [req(d, "angles")?, Vec::new(), Vec::new(), Vec::new()],
-            ),
-            1 | 2 => ([opt_rw(d, "rb_r")?, opt_rw(d, "rb_x")?, None, None, None, None], [opt_ro(d, "rb_ib")?, opt_ro(d, "local")?, None],
+            0 => ([o("rest")?, o("last_r")?, o("quat")?, o("crest")?, None, None], [o("act_scale")?, None, None],
+                  [req(d, "angles")?, Vec::new(), Vec::new(), Vec::new()]),
+            1 | 2 => ([o("rb_r")?, o("rb_x")?, None, None, None, None], [o("rb_ib")?, o("local")?, None],
                       [Vec::new(), Vec::new(), Vec::new(), Vec::new()]),
-            3 => (
-                [opt_rw(d, "x")?, opt_rw(d, "r")?, opt_rw(d, "vl")?, opt_rw(d, "applied")?, opt_rw(d, "ext_applied")?, None],
-                [opt_ro(d, "vl0")?, None, None],
-                [req(d, "want")?, req(d, "rot_speed")?, req(d, "ext_want")?, req(d, "ext_speed")?],
-            ),
+            3 => ([o("x")?, o("r")?, o("vl")?, o("applied")?, o("ext_applied")?, None], [o("vl0")?, None, None],
+                  [req(d, "want")?, req(d, "rot_speed")?, req(d, "ext_want")?, req(d, "ext_speed")?]),
             _ => return Err(PyValueError::new_err("step_tick: kind")),
         };
-        let boxes: Vec<usize> = req(d, "boxes")?;
-        need(boxes.iter().all(|&g| g < gs.len()), "step_tick boxes")?;
-        args.push(JobArgs {
+        ins.push(TickJobIn {
             kind,
             body: req(d, "body")?,
             proxy: req(d, "proxy")?,
@@ -1372,15 +1383,67 @@ fn step_tick<'py>(
             vel: req(d, "vel")?,
             prev: req(d, "prev")?,
             force: req(d, "force")?,
-            cav: opt_ro(d, "cav")?,
+            cav: match d.get_item("cav")? {
+                Some(c) if !c.is_none() => Some(c.extract()?),
+                _ => None,
+            },
             a,
             b,
             v,
             parallel: req(d, "parallel")?,
-            full: kind == 2,
-            boxes,
-            contact_rigid: kind == 1 || kind == 2,
+            boxes: req(d, "boxes")?,
             settle_cap: req(d, "settle_cap")?,
+        });
+    }
+    step_tick_native(py, ins, sleepers, groups, planets, scale, h, substeps, iters, impact_speed, soft)
+}
+
+/// 1ティックの物理をまとめて進める（Rust の型で受け取る）
+#[allow(clippy::too_many_arguments)]
+pub fn step_tick_native(
+    py: Python<'_>, jobs: Vec<TickJobIn>, sleepers: Vec<SleeperIn>, groups: Vec<BoxGroupIn>,
+    planets: &Bound<'_, pyo3::types::PyList>, scale: f64, h: f64, substeps: usize, iters: i64, impact_speed: f64, soft: f64,
+) -> PyResult<TickOut> {
+    let mut pt = std::time::Instant::now();
+    let pls = planet_ctx(planets)?;
+    let mut gs = Vec::with_capacity(groups.len());
+    for (c, a, e, p) in &groups {
+        let (c, a, e, p) = (ro_of(py, c, "C")?, ro_of(py, a, "A")?, ro_of(py, e, "E")?, ro_of(py, p, "part")?);
+        let (c, a, e, p) = (ro(&c, "C")?.to_vec(), ro(&a, "A")?.to_vec(), ro(&e, "E")?.to_vec(), ro(&p, "part")?.to_vec());
+        let n = c.len() / 3;
+        need(n > 0 && a.len() == 9 * n && e.len() == 3 * n && p.len() == n, "step_tick 箱")?;
+        gs.push(tick::BoxGroup::new(c, a, e, p));
+    }
+    let mut args = Vec::with_capacity(jobs.len());
+    for j in jobs {
+        need(j.boxes.iter().all(|&g| g < gs.len()), "step_tick boxes")?;
+        let opt_rw = |a: &Option<Py<numpy::PyArrayDyn<f64>>>, k: &str| -> PyResult<Option<RwF<'_>>> {
+            a.as_ref().map(|a| rw_of(py, a, k)).transpose()
+        };
+        let opt_ro = |a: &Option<Py<numpy::PyArrayDyn<f64>>>, k: &str| -> PyResult<Option<RoF<'_>>> {
+            a.as_ref().map(|a| ro_of(py, a, k)).transpose()
+        };
+        let a = [opt_rw(&j.a[0], "a0")?, opt_rw(&j.a[1], "a1")?, opt_rw(&j.a[2], "a2")?, opt_rw(&j.a[3], "a3")?,
+                 opt_rw(&j.a[4], "a4")?, opt_rw(&j.a[5], "a5")?];
+        let b = [opt_ro(&j.b[0], "b0")?, opt_ro(&j.b[1], "b1")?, opt_ro(&j.b[2], "b2")?];
+        args.push(JobArgs {
+            kind: j.kind,
+            body: j.body.into_bound(py),
+            proxy: j.proxy.into_bound(py),
+            art: j.art.map(|a| a.into_bound(py)),
+            pos: rw_of(py, &j.pos, "pos")?,
+            vel: rw_of(py, &j.vel, "vel")?,
+            prev: rw_of(py, &j.prev, "prev")?,
+            force: ro_of(py, &j.force, "force")?,
+            cav: j.cav.as_ref().map(|c| ro_of(py, c, "cav")).transpose()?,
+            a,
+            b,
+            v: j.v,
+            parallel: j.parallel,
+            full: j.kind == 2,
+            boxes: j.boxes,
+            contact_rigid: j.kind == 1 || j.kind == 2,
+            settle_cap: j.settle_cap,
         });
     }
     let mut list = Vec::with_capacity(args.len());
@@ -1461,7 +1524,10 @@ fn step_tick<'py>(
             settle_cap: ja.settle_cap,
         });
     }
-    let mut sl = sleepers;
+    let mut sl: Vec<(Bound<'_, Proxy>, RwF<'_>, RoF<'_>, bool, bool, bool)> = Vec::with_capacity(sleepers.len());
+    for (px, pos, vel, rigid, fixed, can_wake) in sleepers {
+        sl.push((px.into_bound(py), rw_of(py, &pos, "pos")?, ro_of(py, &vel, "vel")?, rigid, fixed, can_wake));
+    }
     let mut slist = Vec::with_capacity(sl.len());
     for (px, pos, vel, rigid, fixed, can_wake) in sl.iter_mut() {
         let p = &px.get().p;

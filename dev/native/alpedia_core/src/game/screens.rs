@@ -248,8 +248,8 @@ impl Pause {
 }
 
 /// I：インベントリ（アイテムバーに入れる物を選ぶ）。今までの画面の InventoryPanel と同じ並べ方
-#[pyclass(module = "alpedia_core", extends = Screen, subclass)]
-pub struct Inventory {
+#[pyclass(module = "alpedia_core", name = "Inventory", extends = Screen, subclass)]
+pub struct InventoryScreen {
     #[pyo3(get, set)]
     v: PyObject,
     #[pyo3(get, set)]
@@ -287,7 +287,7 @@ fn inv_mod(py: Python<'_>) -> R<Bound<'_, PyAny>> {
 }
 
 #[pymethods]
-impl Inventory {
+impl InventoryScreen {
     #[classattr]
     const COLS: i64 = 9;
     #[classattr]
@@ -300,7 +300,7 @@ impl Inventory {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(py: Python<'_>, _a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> (Self, Screen) {
-        (Inventory { v: py.None(), w: py.None(), reg: py.None(), player: py.None(), tab: "all".into(), page: 0, held: py.None(),
+        (InventoryScreen { v: py.None(), w: py.None(), reg: py.None(), player: py.None(), tab: "all".into(), page: 0, held: py.None(),
             cells: PyList::empty_bound(py).into_any().unbind(), slots: PyList::empty_bound(py).into_any().unbind(), info: py.None(),
             held_img: py.None(), _info_key: py.None() }, Screen::blank(py))
     }
