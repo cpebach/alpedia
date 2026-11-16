@@ -5,6 +5,7 @@
 //! - 書き込みは決まった項目だけ（WRITABLE）。値は検査してから入れる
 //! - 機器は番号（構築物の中のブロックの番号）で指す。番号は毎ティック devices() で取り直す
 
+use crate::game::construct::{con, Construct};
 use numpy::{PyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -98,9 +99,9 @@ impl Port {
         if self.pose_cache.is_none(py) {
             let c = self.c.bind(py);
             let f = self.frame.bind(py);
-            let use_part = !f.is_none() && c.getattr("rotors")?.is_truthy()? && {
+            let use_part = !f.is_none() && Construct::g_rotors(con(&c)?)?.is_truthy()? && {
                 let k: i64 = f.extract()?;
-                let n: i64 = c.getattr("n_vox")?.extract()?;
+                let n: i64 = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
                 0 <= k && k < n
             };
             let fit = if use_part {
@@ -225,7 +226,7 @@ impl Port {
         for (i, d) in self.c.bind(py).getattr("devs")?.iter()?.enumerate() {
             let d = d?;
             if d.is_truthy()? {
-                let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+                let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
                 let dir: i64 = d.get_item("dir")?.extract()?;
                 out.append((i, d.get_item("def")?, ext.call1((dd,))?, d.get_item("name")?, DIR_NAMES[dir.rem_euclid(6) as usize]))?;
             }
@@ -355,7 +356,7 @@ impl Port {
     fn act_can(&self, py: Python<'_>, i: i64, action: &str) -> R<bool> {
         let d = self.dev(py, i)?;
         let reg = self.reg(py)?;
-        let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+        let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
         Ok(dd.is_truthy()? && dd.get_item("type")?.eq("actuator")? && act::actions_for(act::motion(&d, Some(&reg))?).contains(&action))
     }
 

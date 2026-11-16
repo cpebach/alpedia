@@ -2,6 +2,7 @@
 //! 形 = 芯（ボクセル中心の点・結合の線・2×2×2 で結合しているボクセル群の凸包の三角形）を半径 r でなぞった和集合。
 //! 描画（マーチングキューブでメッシュ化してボクセルの8頂点で変形）と当たり判定の両方で使う。
 
+use crate::game::construct::{con, Construct};
 use std::collections::HashMap;
 
 use numpy::{PyArray1, PyReadonlyArrayDyn, PyUntypedArrayMethods};
@@ -121,7 +122,7 @@ pub fn block_kinds_v(c: &Bound<'_, PyAny>) -> R<Vec<i64>> {
     let py = c.py();
     let names = PyDict::new_bound(py);
     let mut out = vec![];
-    for (m, d) in c.getattr("mats")?.iter()?.zip(c.getattr("devs")?.iter()?) {
+    for (m, d) in Construct::g_mats(con(&c)?)?.iter()?.zip(Construct::g_devs(con(&c)?)?.iter()?) {
         let (m, d) = (m?, d?);
         let key = if d.is_truthy()? { PyTuple::new_bound(py, ["dev".into_py(py), d.get_item("def")?.unbind()]) }
                   else { PyTuple::new_bound(py, ["mat".into_py(py), m.unbind()]) };
@@ -140,7 +141,7 @@ pub fn shape_block_kinds<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound
 /// 形を作る図形の一覧: dict(points, segs, tris)（ボクセル番号の配列）
 #[pyfunction]
 pub fn shape_topology<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
-    let idx = c.getattr("index")?;
+    let idx = Construct::g_index(con(&c)?)?;
     let pairs = |keys: Bound<'py, PyAny>| -> R<Vec<[usize; 2]>> {
         let mut out = vec![];
         for k in keys.iter()? {
@@ -153,8 +154,8 @@ pub fn shape_topology<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'p
         }
         Ok(out)
     };
-    let cells: Vec<[i64; 3]> = c.getattr("cells")?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
-    let l = pairs(c.getattr("links")?)?;
+    let cells: Vec<[i64; 3]> = Construct::g_cells(con(&c)?)?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
+    let l = pairs(Construct::g_links(con(&c)?)?)?;
     let e = match opt(c, "extras")? { Some(x) => pairs(x)?, None => vec![] };
     let k = block_kinds_v(c)?;
     let h = hull();
@@ -170,16 +171,16 @@ pub fn shape_topology<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'p
 /// ボクセルごとの「角ばった見た目にするか」（素材の facet）
 pub fn facet_v(c: &Bound<'_, PyAny>) -> R<Vec<bool>> {
     let py = c.py();
-    let reg = c.getattr("reg")?;
+    let reg = Construct::g_reg(con(&c)?)?;
     let mut cache: HashMap<String, bool> = HashMap::new();
     let mut out = vec![];
-    for m in c.getattr("mats")?.iter()? {
+    for m in Construct::g_mats(con(&c)?)?.iter()? {
         let m = m?;
         let key = m.repr()?.to_string();
         let v = match cache.get(&key) {
             Some(v) => *v,
             None => {
-                let d = reg.call_method1("material", (&m,))?;
+                let d = crate::game::registry::mat_dict(&reg, &m)?;
                 let d = if d.is_truthy()? { d } else { PyDict::new_bound(py).into_any() };
                 let v = d.call_method1("get", ("facet", false))?.is_truthy()?;
                 cache.insert(key, v);
@@ -192,10 +193,10 @@ pub fn facet_v(c: &Bound<'_, PyAny>) -> R<Vec<bool>> {
 }
 /// ボクセルごとの「透けるか」（素材の opacity が 1 未満。ガラスなど。機器は透けない）
 pub fn clear_v(c: &Bound<'_, PyAny>) -> R<Vec<bool>> {
-    let reg = c.getattr("reg")?;
+    let reg = Construct::g_reg(con(&c)?)?;
     let mut cache: HashMap<String, bool> = HashMap::new();
     let mut out = vec![];
-    for (m, d) in c.getattr("mats")?.iter()?.zip(c.getattr("devs")?.iter()?) {
+    for (m, d) in Construct::g_mats(con(&c)?)?.iter()?.zip(Construct::g_devs(con(&c)?)?.iter()?) {
         let (m, d) = (m?, d?);
         if d.is_truthy()? {
             out.push(false);
@@ -205,7 +206,7 @@ pub fn clear_v(c: &Bound<'_, PyAny>) -> R<Vec<bool>> {
         let v = match cache.get(&key) {
             Some(v) => *v,
             None => {
-                let md = reg.call_method1("material", (&m,))?;
+                let md = crate::game::registry::mat_dict(&reg, &m)?;
                 let v = if md.is_truthy()? {
                     let o = md.call_method1("get", ("opacity", 1.0))?;
                     !o.is_none() && o.extract::<f64>().unwrap_or(1.0) < 0.999
@@ -253,7 +254,7 @@ fn owner_of(cells: &[[i64; 3]], centers: &[V3], p: &[V3], allowed: Option<&[bool
 #[pyo3(signature = (c, p, centers, allowed=None))]
 pub fn shape_owner<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, p: &Bound<'py, PyAny>, centers: &Bound<'py, PyAny>,
                         allowed: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
-    let cells: Vec<[i64; 3]> = c.getattr("cells")?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
+    let cells: Vec<[i64; 3]> = Construct::g_cells(con(&c)?)?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
     let al = match allowed { Some(a) if !a.is_none() => Some(bv(a)?), _ => None };
     let o = owner_of(&cells, &v3s(centers)?, &v3s(p)?, al.as_deref());
     let n = o.len();
@@ -265,18 +266,18 @@ pub fn shape_owner<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, p: &Bound<'py, P
 #[pyo3(signature = (c, k=None))]
 pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i64>) -> R<Bound<'py, PyAny>> {
     let none = py.None().into_bound(py);
-    let n: usize = c.getattr("n_vox")?.extract()?;
+    let n: usize = Construct::n(con(&c)?)?;
     if n == 0 {
         return Ok(none);
     }
-    let topo = c.getattr("topo")?;
+    let topo = Construct::g_topo(con(&c)?)?;
     let points: Vec<usize> = iv(&topo.get_item("points")?)?.into_iter().map(|x| x as usize).collect();
     let segs: Vec<[usize; 2]> = iv(&topo.get_item("segs")?)?.chunks_exact(2).map(|x| [x[0] as usize, x[1] as usize]).collect();
     let tris: Vec<[usize; 3]> = iv(&topo.get_item("tris")?)?.chunks_exact(3).map(|x| [x[0] as usize, x[1] as usize, x[2] as usize]).collect();
     let nprim = points.len() + segs.len() + tris.len();
     let mut k: i64 = k.unwrap_or(if nprim < 60 { 8 } else if nprim < 400 { 6 } else if nprim < 1500 { 4 } else if nprim < 6000 { 3 } else { 2 });
     let r = 0.5;
-    let cells: Vec<[i64; 3]> = c.getattr("cells")?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
+    let cells: Vec<[i64; 3]> = Construct::g_cells(con(&c)?)?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
     let centers: Vec<V3> = cells.iter().map(|q| [q[0] as f64 + 0.5, q[1] as f64 + 0.5, q[2] as f64 + 0.5]).collect();
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
@@ -459,7 +460,7 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
     d.set_item("owner", iarr(py, oall.iter().map(|x| *x as i64).collect(), &[np_])?)?;
     d.set_item("w", arr(py, w, &[np_, 8])?)?;
     d.set_item("vidx", iarr(py, oall.iter().flat_map(|o| (0..8).map(move |k| (8 * o + k) as i64)).collect(), &[np_, 8])?)?;
-    d.set_item("version", c.getattr("version")?)?;
+    d.set_item("version", Construct::g_version(con(&c)?)?)?;
     Ok(d.into_any())
 }
 
@@ -469,7 +470,7 @@ static JOBS: GILOnceCell<Py<PyDict>> = GILOnceCell::new();
 static POOL: GILOnceCell<PyObject> = GILOnceCell::new();
 
 fn mesh_key<'py>(c: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
-    Ok(PyTuple::new_bound(c.py(), [c.getattr("version")?, c.getattr("n_vox")?]))
+    Ok(PyTuple::new_bound(c.py(), [Construct::g_version(con(&c)?)?, Construct::n(con(&c)?)?.into_py(c.py()).into_bound(c.py())]))
 }
 
 /// 作ってあるメッシュ（形が変わっていなければ）。無ければ None
@@ -497,7 +498,7 @@ pub fn shape_request_mesh(py: Python<'_>, c: &Bound<'_, PyAny>) -> R<bool> {
         return Ok(true);
     }
     let jobs = JOBS.get_or_init(py, || PyDict::new_bound(py).unbind()).bind(py);
-    let id = c.getattr("id")?;
+    let id = Construct::g_id(con(&c)?)?;
     if let Some(job) = jobs.get_item(&id)? {
         if job.get_item(0)?.eq(&key)? {
             let fut = job.get_item(1)?;
@@ -545,16 +546,16 @@ pub fn shape_mesh_for<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'p
 /// 点 p から形（表面）への最短：(距離, 最近点, 近いボクセル番号) または None。距離は「芯からの距離 − r」
 #[pyfunction]
 pub fn shape_closest_on_shape<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, p: &Bound<'py, PyAny>, max_dist: f64) -> R<Bound<'py, PyAny>> {
-    if c.getattr("n_vox")?.extract::<usize>()? == 0 {
+    if Construct::n(con(&c)?)? == 0 {
         return Ok(py.None().into_bound(py));
     }
     let cen = if c.hasattr("centers_cached")? { c.call_method0("centers_cached")? } else { c.call_method0("voxel_centers")? };
-    let topo = c.getattr("topo")?;
+    let topo = Construct::g_topo(con(&c)?)?;
     let np = super::construct::np(py)?;
     let segs = np.call_method1("asarray", (topo.get_item("segs")?, "int64"))?.call_method1("reshape", (-1, 2))?;
     let tris = np.call_method1("asarray", (topo.get_item("tris")?, "int64"))?.call_method1("reshape", (-1, 3))?;
     let res = imp(py, "alpedia_core")?.call_method1("closest_on_shape", (np.call_method1("ascontiguousarray", (cen, "float64"))?, segs, tris,
-        v3(p)?.to_vec(), max_dist, c.getattr("size")?.extract::<f64>()?))?;
+        v3(p)?.to_vec(), max_dist, Construct::g_size(con(&c)?)?.extract::<f64>()?))?;
     if res.is_none() {
         return Ok(res);
     }
@@ -564,8 +565,8 @@ pub fn shape_closest_on_shape<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, p: &B
 /// 地面などとの当たり判定に使う球（半径 r）: 各ボクセル中心・結合の中点・三角形の重心。(P,) 個の重み行列（P×ボクセル数）
 #[pyfunction]
 pub fn shape_collision_proxies(py: Python<'_>, c: &Bound<'_, PyAny>) -> R<Csr> {
-    let n: usize = c.getattr("n_vox")?.extract()?;
-    let topo = c.getattr("topo")?;
+    let n: usize = Construct::n(con(&c)?)?;
+    let topo = Construct::g_topo(con(&c)?)?;
     let s = iv(&topo.get_item("segs")?)?;
     let t = iv(&topo.get_item("tris")?)?;
     let (ns, nt) = (s.len() / 2, t.len() / 3);

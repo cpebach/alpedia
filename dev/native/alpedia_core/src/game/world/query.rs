@@ -1,6 +1,7 @@
 //! ワールド：近くの構築物・光線・ボクセルとの接触
 
 use super::*;
+use crate::game::construct::{con, Construct};
 
 #[pymethods]
 impl World {
@@ -39,7 +40,7 @@ impl World {
         let out = PyList::empty_bound(py);
         let mut ctr = v3(center)?;
         for c in Self::constructs_near(slf, &a1(py, ctr), radius + 1.0)? {
-            if c.getattr("n_vox")?.extract::<usize>()? == 0 {
+            if Construct::n(con(&c)?)? == 0 {
                 continue;
             }
             for _ in 0..2 {
@@ -84,13 +85,13 @@ impl World {
             match b { Some(b) => Ok(Some(b.get_item("t")?.unwrap().extract()?)), None => Ok(None) }
         };
         for c in Self::constructs_on_ray(slf, &oa, &da, max_dist)? {
-            if c.getattr("n_vox")?.extract::<usize>()? == 0 {
+            if Construct::n(con(&c)?)? == 0 {
                 continue;
             }
             let np = crate::game::construct::np(py)?;
             let hit = core.call_method1("voxel_raycast", (np.call_method1("ascontiguousarray", (c.call_method0("centers_cached")?, "float64"))?,
                 np.call_method1("ascontiguousarray", (c.call_method0("frames_cached")?, "float64"))?, o.to_vec(), d.to_vec(),
-                c.getattr("size")?.extract::<f64>()?, max_dist))?;
+                Construct::g_size(con(&c)?)?.extract::<f64>()?, max_dist))?;
             if !hit.is_none() {
                 let t: f64 = hit.get_item(0)?.extract()?;
                 if bt(&best)?.map(|b| t < b).unwrap_or(true) {
@@ -105,7 +106,7 @@ impl World {
                 }
             }
         }
-        for pl in Self::g(slf, "planets")?.iter()? {
+        for pl in Self::g_planets(slf)?.iter()? {
             let pl = pl?;
             if norm(sub(o, v3(&pl.getattr("center")?)?)) > pl.getattr("bound")?.extract::<f64>()? + max_dist {
                 continue;

@@ -1,5 +1,6 @@
 //! 構築物：ボクセルを足す・消す・分ける・合わせる・向きを直す
 
+use crate::game::construct::{con, Construct};
 use super::*;
 
 #[pymethods]
@@ -208,7 +209,7 @@ impl Construct {
     pub(crate) fn absorb(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, cell_map: &Bound<'_, PyAny>, xform: Option<&Bound<'_, PyAny>>) -> R<()> {
         let py = slf.py();
         let index = Self::g_index(slf)?;
-        for c in other.getattr("cells")?.iter()? {
+        for c in Construct::g_cells(con(&other)?)?.iter()? {
             if index.contains(cell_map.get_item(c?)?)? {
                 return Err(PyValueError::new_err("セルが重なっています"));
             }
@@ -218,10 +219,10 @@ impl Construct {
                 other.call_method1("_reorient", (x,))?;
             }
         }
-        let mapped: Vec<Bound<'_, PyAny>> = other.getattr("cells")?.iter()?.map(|c| cell_map.get_item(c?)).collect::<R<_>>()?;
+        let mapped: Vec<Bound<'_, PyAny>> = Construct::g_cells(con(&other)?)?.iter()?.map(|c| cell_map.get_item(c?)).collect::<R<_>>()?;
         Self::g_cells(slf)?.call_method1("extend", (PyList::new_bound(py, mapped),))?;
-        Self::g_mats(slf)?.call_method1("extend", (other.getattr("mats")?,))?;
-        Self::g_devs(slf)?.call_method1("extend", (other.getattr("devs")?,))?;
+        Self::g_mats(slf)?.call_method1("extend", (Construct::g_mats(con(&other)?)?,))?;
+        Self::g_devs(slf)?.call_method1("extend", (Construct::g_devs(con(&other)?)?,))?;
         let n = Self::n(slf)?;
         let cat = |k: &str, w: &[usize]| -> R<()> {
             let mut a = fv(&Self::g(slf, k)?)?;
@@ -235,23 +236,23 @@ impl Construct {
         cat("rest", &[8, 3])?;
         cat("act_scale", &[3])?;
         let links = Self::g_links(slf)?;
-        for k in other.getattr("links")?.iter()? {
+        for k in Construct::g_links(con(&other)?)?.iter()? {
             let k = k?;
             let (a, b) = (cell_of(&cell_map.get_item(k.get_item(0)?)?)?, cell_of(&cell_map.get_item(k.get_item(1)?)?)?);
             links.call_method1("add", (link_key_c(py, a, b),))?;
         }
         let extras = Self::g_extras(slf)?;
-        for (k, v) in other.getattr("extras")?.downcast::<PyDict>()?.iter() {
+        for (k, v) in Construct::g_extras(con(&other)?)?.downcast::<PyDict>()?.iter() {
             let (a, b) = (cell_of(&cell_map.get_item(k.get_item(0)?)?)?, cell_of(&cell_map.get_item(k.get_item(1)?)?)?);
             extras.set_item(link_key_c(py, a, b), PyList::new_bound(py, v.iter()?.collect::<R<Vec<_>>>()?))?;
         }
         let st = Self::g_storage(slf)?;
-        for (k, v) in other.getattr("storage")?.downcast::<PyDict>()?.iter() {
+        for (k, v) in Construct::g_storage(con(&other)?)?.downcast::<PyDict>()?.iter() {
             let cur = st.call_method1("get", (&k, 0.0))?;
             st.set_item(&k, cur.add(v)?)?;
         }
         let ca = Self::g_cavity_air(slf)?;
-        for (k, v) in other.getattr("cavity_air")?.downcast::<PyDict>()?.iter() {
+        for (k, v) in Construct::g_cavity_air(con(&other)?)?.downcast::<PyDict>()?.iter() {
             ca.set_item(cell_map.call_method1("get", (&k, &k))?, v)?;
         }
         Self::s_force(slf, zeros(py, &[8 * n, 3])?)?;

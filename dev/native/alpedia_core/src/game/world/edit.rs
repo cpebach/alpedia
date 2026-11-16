@@ -1,6 +1,8 @@
 //! ワールド：ブロックを置く・消す・掘る・崩れる
 
+use crate::game::player::{ply, Player};
 use super::*;
+use crate::game::construct::{con, Construct};
 
 #[pymethods]
 impl World {
@@ -26,12 +28,12 @@ impl World {
     pub(crate) fn _device_placed(slf: &Bound<'_, Self>, c: &Bound<'_, PyAny>, i: Option<usize>) -> R<()> {
         let py = slf.py();
         let i = match i { Some(i) => i, None => return Ok(()) };
-        let d = c.getattr("devs")?.get_item(i)?;
+        let d = Construct::g_devs(con(&c)?)?.get_item(i)?;
         if !d.is_truthy()? {
             return Ok(());
         }
         if Self::creative(slf)? {                // クリエイティブ：置いたタンクは燃料満タン（E で中身を切り替え）
-            let dd = Self::g(slf, "registry")?.call_method1("device", (d.get_item("def")?,))?;
+            let dd = crate::game::registry::dev_dict(&Self::g_registry(slf)?, &d.get_item("def")?)?;
             let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
             if getd(&dd, "type", py.None())?.eq("tank")? {
                 let cap: f64 = getd(&getd(&dd, "params", PyDict::new_bound(py))?, "capacity", 0)?.extract()?;
@@ -90,12 +92,12 @@ impl World {
     pub(crate) fn item_cost<'py>(slf: &Bound<'py, Self>, item: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
         let (kind, id) = (item.get_item(0)?, item.get_item(1)?);
-        let reg = Self::g(slf, "registry")?;
+        let reg = Self::g_registry(slf)?;
         let dict = py.get_type_bound::<PyDict>();
         if kind.eq("material")? {
-            return dict.call1((getd(&reg.call_method1("material", (id,))?, "cost", PyDict::new_bound(py))?,));
+            return dict.call1((getd(&crate::game::registry::mat_dict(&reg, &id)?, "cost", PyDict::new_bound(py))?,));
         }
-        let dd = reg.call_method1("device", (id,))?;
+        let dd = crate::game::registry::dev_dict(&reg, &id)?;
         if dd.is_truthy()? {
             dict.call1((getd(&dd, "cost", PyDict::new_bound(py))?,))
         } else {
@@ -113,7 +115,7 @@ impl World {
         let (mat, dev): (Bound<'_, PyAny>, Bound<'_, PyAny>) = if kind.eq("material")? {
             (id.clone(), py.None().into_bound(py))
         } else {
-            let dd = Self::g(slf, "registry")?.call_method1("device", (&id,))?;
+            let dd = crate::game::registry::dev_dict(&Self::g_registry(slf)?, &id)?;
             let d = PyDict::new_bound(py);
             d.set_item("def", &id)?;
             d.set_item("dir", dir_index)?;
@@ -124,11 +126,11 @@ impl World {
             let c = hit.get_item("construct")?;
             let i: usize = hit.get_item("index")?.extract()?;
             let face: usize = hit.get_item("face")?.extract()?;
-            let cell0 = crate::game::construct::cell_of(&c.getattr("cells")?.get_item(i)?)?;
+            let cell0 = crate::game::construct::cell_of(&Construct::g_cells(con(&c)?)?.get_item(i)?)?;
             let du = crate::game::construct::DIRS[face];
             let cell = [cell0[0] + du[0], cell0[1] + du[1], cell0[2] + du[2]];
             let ct = crate::game::construct::tup3(py, cell);
-            if c.getattr("index")?.contains(&ct)? {
+            if Construct::g_index(con(&c)?)?.contains(&ct)? {
                 Self::message(slf, "そこには既にボクセルがあります")?;
                 return Ok(false);
             }
@@ -136,8 +138,8 @@ impl World {
             Self::_hinge_side(slf, &dev, &f, look_dir)?;
             let fm = crate::game::construct::m3(&f)?;
             let (axis, sign) = (face / 2, if face % 2 == 0 { 1.0 } else { -1.0 });
-            let size: f64 = c.getattr("size")?.extract()?;
-            let pos = v3s(&c.getattr("pos")?)?;
+            let size: f64 = Construct::g_size(con(&c)?)?.extract()?;
+            let pos = v3s(&Construct::g_pos(con(&c)?)?)?;
             let m = crate::game::construct::mean8(&pos[8 * i..8 * i + 8]);
             let ctr = [m[0] + fm[axis][0] * sign * size, m[1] + fm[axis][1] * sign * size, m[2] + fm[axis][2] * sign * size];
             let mut verts = vec![];
@@ -153,7 +155,7 @@ impl World {
                 return Ok(false);
             }
             c.call_method1("add_voxel", (&ct, &mat, &dev, a3(py, &verts)?))?;
-            let ni = c.getattr("index")?.call_method1("get", (&ct,))?;
+            let ni = Construct::g_index(con(&c)?)?.call_method1("get", (&ct,))?;
             Self::_device_placed(slf, &c, if ni.is_none() { None } else { Some(ni.extract()?) })?;
             return Ok(true);
         }
@@ -165,8 +167,8 @@ impl World {
             let p = v3(&hit.get_item("point")?)?;
             (up, [p[0] + up[0] * size * 0.55, p[1] + up[1] * size * 0.55, p[2] + up[2] * size * 0.55])
         } else {
-            let player = Self::g(slf, "player")?;
-            let pp = player.getattr("pos")?;
+            let player = Self::g_player(slf)?;
+            let pp = Player::g_pos(ply(&player)?)?;
             let pl = Self::nearest_planet(slf, &pp)?;
             let up = if pl.is_truthy()? { v3(&pl.call_method1("up", (&pp,))?)? } else { [0.0, 1.0, 0.0] };
             let e = v3(&player.call_method0("eye")?)?;
@@ -188,7 +190,7 @@ impl World {
         kw.set_item("size", size)?;
         kw.set_item("name", "構築物")?;
         let c = imp(py, "main.construct")?.getattr("Construct")?.call_method("from_voxels",
-            (Self::g(slf, "registry")?, vox, a1(py, origin), crate::game::construct::mat(py, &rm)?), Some(&kw))?;
+            (Self::g_registry(slf)?, vox, a1(py, origin), crate::game::construct::mat(py, &rm)?), Some(&kw))?;
         Self::add_construct(slf, &c)?;
         Self::_device_placed(slf, &c, Some(0))?;
         if hit.is_truthy()? && getd(hit, "placeable", py.None())?.is_truthy()? {
@@ -204,7 +206,7 @@ impl World {
         if !dev.is_truthy()? {
             return Ok(());
         }
-        if !crate::game::actuator::act_is_hinge_dev(dev, Some(&Self::g(slf, "registry")?))? {
+        if !crate::game::actuator::act_is_hinge_dev(dev, Some(&Self::g_registry(slf)?))? {
             return Ok(());
         }
         let d: i64 = getd(dev, "dir", 2)?.call_method0("__int__")?.extract()?;
@@ -216,7 +218,7 @@ impl World {
     }
     pub(crate) fn _blocked(slf: &Bound<'_, Self>, ctr: &Bound<'_, PyAny>, size: f64) -> R<bool> {
         let c = v3(ctr)?;
-        let me = Self::g(slf, "player")?;
+        let me = Self::g_player(slf)?;
         for p in Self::all_players(slf)? {
             let pos = v3(&p.getattr("pos")?)?;
             let up = v3(&p.getattr("up")?)?;
@@ -239,22 +241,22 @@ impl World {
         }
         let c = hit.get_item("construct")?;
         let i: usize = hit.get_item("index")?.extract()?;
-        let mat = c.getattr("mats")?.get_item(i)?;
-        let dev = c.getattr("devs")?.get_item(i)?;
-        let cell = c.getattr("cells")?.get_item(i)?;
-        let cid = c.getattr("id")?;
+        let mat = Construct::g_mats(con(&c)?)?.get_item(i)?;
+        let dev = Construct::g_devs(con(&c)?)?.get_item(i)?;
+        let cell = Construct::g_cells(con(&c)?)?.get_item(i)?;
+        let cid = Construct::g_id(con(&c)?)?;
         for p in Self::all_players(slf)? {
-            let s = p.getattr("seated")?;
+            let s = Player::g_seated(ply(&p)?)?;
             if s.is_truthy()? && s.get_item(0)?.eq(&cid)? && s.get_item(1)?.eq(&cell)? {
-                p.setattr("seated", py.None())?;
+                Player::s_seated(ply(&p)?, py.None())?;
             }
         }
         c.call_method1("remove_voxels", (vec![i],))?;
         let item: (&str, Bound<'_, PyAny>) = if dev.is_truthy()? { ("device", dev.get_item("def")?) } else { ("material", mat) };
         let item: PyObject = item.into_py(py);
         Self::refund(slf, &Self::item_cost(slf, item.bind(py))?)?;
-        if c.getattr("n_vox")?.extract::<usize>()? == 0 {
-            Self::g(slf, "constructs")?.del_item(&cid)?;
+        if Construct::n(con(&c)?)? == 0 {
+            Self::g_constructs(slf)?.del_item(&cid)?;
         } else {
             for part in c.call_method0("split")?.iter()? {
                 Self::add_construct(slf, &part?)?;
@@ -365,7 +367,7 @@ impl World {
         let edge = if big { 1.0 } else { 0.5 };
         let n_chunk = ((solid.len() + per - 1) / per).clamp(1, 8);
         let rot = crate::game::misc::content_rot_for(py, &a1(py, up))?;
-        let soil = if Self::g(slf, "registry")?.call_method1("material", ("soil",)).map(|m| m.is_truthy().unwrap_or(false)).unwrap_or(false) {
+        let soil = if crate::game::registry::mat_dict(&Self::g_registry(slf)?, &pyo3::types::PyString::new_bound(py, "soil").into_any()).map(|m| m.is_truthy().unwrap_or(false)).unwrap_or(false) {
             "soil"
         } else {
             "clay"
@@ -393,7 +395,7 @@ impl World {
             kw.set_item("size", 0.5)?;
             kw.set_item("name", "崩れた土")?;
             let cn = imp(py, "main.construct")?.getattr("Construct")?.call_method("from_voxels",
-                (Self::g(slf, "registry")?, vox, a1(py, o), &rot), Some(&kw))?;
+                (Self::g_registry(slf)?, vox, a1(py, o), &rot), Some(&kw))?;
             Self::add_construct(slf, &cn)?;
         }
         Self::message(slf, "掘った穴の上が崩れた")?;

@@ -411,7 +411,7 @@ impl Construct {
         } else {
             Self::_ensure_lastR(slf)?;
             Self::_contig(slf, &["rest", "act_scale", "_last_R", "_quat"])?;
-            let pmin: usize = imp(py, "main.fastphys")?.getattr("PARALLEL_MIN_VOXELS")?.extract()?;
+            let pmin: usize = crate::game::construct::PARALLEL_MIN_VOXELS;
             let par = Self::n(slf)? >= pmin && !slf.borrow().in_pool;
             let args: Vec<PyObject> = vec![pos.unbind(), vel.unbind(), prev.unbind(), force.unbind(), Self::g_rest(slf)?.unbind(),
                 Self::g_act_scale(slf)?.unbind(), Self::g_last_r(slf)?.unbind(), Self::g_quat(slf)?.unbind(), pls.clone().unbind(),
@@ -463,7 +463,7 @@ impl Construct {
         }
         Self::ensure_prev(slf)?;
         Self::_contig(slf, &["pos", "vel", "_prev", "force"])?;
-        let pmin: usize = imp(py, "main.fastphys")?.getattr("PARALLEL_MIN_VOXELS")?.extract()?;
+        let pmin: usize = crate::game::construct::PARALLEL_MIN_VOXELS;
         let fa_of = |o: Bound<'_, PyAny>| -> R<FA> { o.extract() };
         let (kind, art, a, b, v);
         if Self::mode_is(slf, &["art"]) {

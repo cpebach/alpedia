@@ -7,6 +7,8 @@
 //!
 //! プログラム（ブロックの木）は Python の辞書・リストのまま扱う（選んでいる行・ヒントは、そのリストそのもので覚える）。
 
+use crate::game::world::{wld, World};
+use crate::game::construct::{con, Construct};
 use pyo3::exceptions::{PyException, PySyntaxError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
@@ -140,7 +142,7 @@ fn shape<'py>(py: Python<'py>, aspect: f64, radius: Radius) -> R<B<'py>> {
     }
 }
 #[derive(Clone, Copy)]
-enum Radius {
+pub(crate) enum Radius {
     Arrow,
     R(f64),
 }
@@ -343,7 +345,77 @@ fn row<'py>(py: Python<'py>, kind: &str, depth: i64, parent: Option<&B<'py>>, in
 
 // ---------------------------------------------------------------- BlockEditor
 #[pyclass(module = "main.client.block_editor", subclass, dict)]
-pub struct BlockEditor {}
+#[allow(non_snake_case)]
+pub struct BlockEditor {
+    /// U（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_U: Option<PyObject>,
+    /// _hint_poll（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hint_poll: Option<PyObject>,
+    /// _hint_sig（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hint_sig: Option<PyObject>,
+    /// _hint_sol（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hint_sol: Option<PyObject>,
+    /// _last_t（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_last_t: Option<PyObject>,
+    /// _names_before（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_names_before: Option<PyObject>,
+    /// _status_t（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_status_t: Option<PyObject>,
+    /// _tt（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_tt: Option<PyObject>,
+    /// base（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_base: Option<PyObject>,
+    /// c（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_c: Option<PyObject>,
+    /// cat（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cat: Option<PyObject>,
+    /// cell（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cell: Option<PyObject>,
+    /// dialog_root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_dialog_root: Option<PyObject>,
+    /// dialogs（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_dialogs: Option<PyObject>,
+    /// dirty（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_dirty: Option<PyObject>,
+    /// discard_armed（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_discard_armed: Option<PyObject>,
+    /// game（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_game: Option<PyObject>,
+    /// hint（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hint: Option<PyObject>,
+    /// hint_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hint_text: Option<PyObject>,
+    /// info（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_info: Option<PyObject>,
+    /// keys（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_keys: Option<PyObject>,
+    /// log_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_log_text: Option<PyObject>,
+    /// modal（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_modal: Option<PyObject>,
+    /// name_field（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_name_field: Option<PyObject>,
+    /// palette_root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_palette_root: Option<PyObject>,
+    /// prog（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_prog: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// rows（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_rows: Option<PyObject>,
+    /// rows_root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_rows_root: Option<PyObject>,
+    /// scroll（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_scroll: Option<PyObject>,
+    /// sel（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_sel: Option<PyObject>,
+    /// slot_sel（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_slot_sel: Option<PyObject>,
+    /// title（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_title: Option<PyObject>,
+    /// world（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_world: Option<PyObject>,
+}
 
 fn col<'py>(s: &B<'py>) -> R<B<'py>> {
     s.getattr("U")?.get_item("color")
@@ -399,17 +471,17 @@ impl BlockEditor {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        BlockEditor {}
+        BlockEditor { a_U: None, a_hint_poll: None, a_hint_sig: None, a_hint_sol: None, a_last_t: None, a_names_before: None, a_status_t: None, a_tt: None, a_base: None, a_c: None, a_cat: None, a_cell: None, a_dialog_root: None, a_dialogs: None, a_dirty: None, a_discard_armed: None, a_game: None, a_hint: None, a_hint_text: None, a_info: None, a_keys: None, a_log_text: None, a_modal: None, a_name_field: None, a_palette_root: None, a_prog: None, a_root: None, a_rows: None, a_rows_root: None, a_scroll: None, a_sel: None, a_slot_sel: None, a_title: None, a_world: None }
     }
     fn __init__(slf: &Bound<'_, Self>, game: &B<'_>, construct: &B<'_>, index: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let ur = imp(py, "ursina")?;
         let (entity, text, color) = (ur.getattr("Entity")?, ur.getattr("Text")?, ur.getattr("color")?);
-        s.setattr("game", game)?;
-        s.setattr("world", game.getattr("world")?)?;
-        s.setattr("c", construct)?;
-        s.setattr("cell", construct.getattr("cells")?.get_item(index)?)?;
+        Self::sa_game(slf, game)?;
+        Self::sa_world(slf, game.getattr("world")?)?;
+        Self::sa_c(slf, construct)?;
+        Self::sa_cell(slf, Construct::g_cells(con(&construct)?)?.get_item(index)?)?;
         let tk = text.clone().unbind();
         let safe_text = clokw(py, move |_a, k| {
             let py = _a.py();
@@ -427,38 +499,38 @@ impl BlockEditor {
         u.set_item("Button", ur.getattr("Button")?)?;
         u.set_item("InputField", ur.getattr("InputField")?)?;
         u.set_item("color", &color)?;
-        s.setattr("U", u)?;
+        Self::sa_U(slf, u)?;
         ur.getattr("mouse")?.setattr("locked", false)?;
-        s.setattr("cat", "event")?;
-        s.setattr("scroll", 0)?;
-        s.setattr("sel", py.None())?; // (parent list, index, kind)
-        s.setattr("slot_sel", py.None())?; // 選んだ入力欄 (持ち主のノード, キー, 種類)
-        s.setattr("dirty", false)?;
-        s.setattr("discard_armed", false)?;
-        s.setattr("dialogs", PyList::empty_bound(py))?;
-        s.setattr("hint", py.None())?; // ヒント（blocks.find_hint の結果）
-        s.setattr("_hint_sig", py.None())?;
-        s.setattr("_hint_sol", py.None())?;
-        s.setattr("_hint_poll", 0.0)?;
-        s.setattr("_last_t", now(py)?)?;
+        Self::sa_cat(slf, "event")?;
+        Self::sa_scroll(slf, 0)?;
+        Self::sa_sel(slf, py.None())?; // (parent list, index, kind)
+        Self::sa_slot_sel(slf, py.None())?; // 選んだ入力欄 (持ち主のノード, キー, 種類)
+        Self::sa_dirty(slf, false)?;
+        Self::sa_discard_armed(slf, false)?;
+        Self::sa_dialogs(slf, PyList::empty_bound(py))?;
+        Self::sa_hint(slf, py.None())?; // ヒント（blocks.find_hint の結果）
+        Self::sa_hint_sig(slf, py.None())?;
+        Self::sa_hint_sol(slf, py.None())?;
+        Self::sa_hint_poll(slf, 0.0)?;
+        Self::sa_last_t(slf, now(py)?)?;
         let root = entity.call((), Some(&kw(py, vec![("parent", ur.getattr("camera")?.getattr("ui")?.unbind())])?))?;
-        s.setattr("root", &root)?;
+        Self::sa_root(slf, &root)?;
         let r_ = || root.clone().unbind();
         entity.call((), Some(&kw(py, vec![("parent", r_()), ("model", po(py, "quad")), ("scale", po(py, (3, 2))),
             ("color", color.call_method1("rgba", (0.03, 0.035, 0.05, 0.95))?.unbind()), ("z", po(py, 0.5))])?))?;
         entity.call((), Some(&kw(py, vec![("parent", r_()), ("model", po(py, "quad")), ("position", po(py, ((AREA_X0 + AREA_X1) / 2.0, 0.02, 0.4))),
             ("scale", po(py, (AREA_X1 - AREA_X0 + 0.02, 0.86))), ("color", color.call_method1("rgb", (0.08, 0.09, 0.12))?.unbind())])?))?;
-        s.setattr("title", text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.87, 0.485))),
+        Self::sa_title(slf, text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.87, 0.485))),
             ("origin", po(py, (-0.5, 0.5))), ("scale", po(py, 1.0))])?))?)?;
-        s.setattr("palette_root", entity.call((), Some(&kw(py, vec![("parent", r_())])?))?)?;
-        s.setattr("rows_root", entity.call((), Some(&kw(py, vec![("parent", r_())])?))?)?;
-        s.setattr("dialog_root", entity.call((), Some(&kw(py, vec![("parent", r_()), ("z", po(py, -0.2))])?))?)?;
+        Self::sa_palette_root(slf, entity.call((), Some(&kw(py, vec![("parent", r_())])?))?)?;
+        Self::sa_rows_root(slf, entity.call((), Some(&kw(py, vec![("parent", r_())])?))?)?;
+        Self::sa_dialog_root(slf, entity.call((), Some(&kw(py, vec![("parent", r_()), ("z", po(py, -0.2))])?))?)?;
         Self::_build_right_panel(slf)?;
-        s.setattr("hint_text", text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (AREA_X0, -0.398))),
+        Self::sa_hint_text(slf, text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (AREA_X0, -0.398))),
             ("origin", po(py, (-0.5, 0.5))), ("scale", po(py, 0.62)), ("color", color.call_method1("rgb", HINT_RGB)?.unbind())])?))?)?;
         Self::_load(slf)?;
         Self::_poll_solution(slf)?;
-        s.setattr("keys", hook(py, &root, Some(s.getattr("input")?), Some(s.getattr("update")?))?)?;
+        Self::sa_keys(slf, hook(py, &root, Some(s.getattr("input")?), Some(s.getattr("update")?))?)?;
         Self::build_palette(slf)?;
         Self::render(slf)
     }
@@ -468,8 +540,7 @@ impl BlockEditor {
     // ------------------------------------------------------------------
     #[getter]
     fn index<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        let s = slf.as_any();
-        s.getattr("c")?.getattr("index")?.call_method1("get", (s.getattr("cell")?,))
+        Self::ga_c(slf)?.getattr("index")?.call_method1("get", (Self::ga_cell(slf)?,))
     }
     fn device<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
@@ -477,46 +548,45 @@ impl BlockEditor {
         if i.is_none() {
             return Ok(none(py));
         }
-        slf.as_any().getattr("c")?.getattr("devs")?.get_item(i)
+        Self::ga_c(slf)?.getattr("devs")?.get_item(i)
     }
     fn scripts_dir<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
-        let d = slf.as_any().getattr("world")?.getattr("dir")?.call_method1("__truediv__", ("scripts",))?;
+        let d = Self::ga_world(slf)?.getattr("dir")?.call_method1("__truediv__", ("scripts",))?;
         d.call_method("mkdir", (), Some(&kw(py, vec![("exist_ok", po(py, true))])?))?;
         Ok(d)
     }
     fn _load(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let b = bm(py)?;
         let d = Self::device(slf)?;
         let dd = if d.is_truthy()? { d.clone() } else { PyDict::new_bound(py).into_any() };
         let name = dd.call_method1("get", ("state", PyDict::new_bound(py)))?.call_method1("get", ("blocks", ""))?;
-        s.setattr("prog", py.None())?;
+        Self::sa_prog(slf, py.None())?;
         if name.is_truthy()? {
             let nm = ss(&name)?;
             match b.call_method1("load", (Self::scripts_dir(slf)?.call_method1("__truediv__", (&name,))?,)) {
                 Ok(p) => {
-                    s.setattr("prog", p)?;
+                    Self::sa_prog(slf, p)?;
                     let base: String = nm.chars().take(nm.chars().count().saturating_sub(".blocks.json".chars().count())).collect();
-                    s.setattr("base", base)?;
+                    Self::sa_base(slf, base)?;
                 }
                 Err(e) if is_exc(py, &e) => Self::_status(slf, &format!("{} を読めません: {}", nm, ss(e.value_bound(py))?))?,
                 Err(e) => return Err(e),
             }
         }
-        if s.getattr("prog")?.is_none() {
+        if Self::ga_prog(slf)?.is_none() {
             let prog = b.call_method0("new_program")?;
             let sc = prog.get_item("scripts")?;
             sc.call_method1("append", (b.call_method1("new_stmt", ("on_start",))?,))?;
             sc.call_method1("append", (b.call_method1("new_stmt", ("on_tick",))?,))?;
-            s.setattr("prog", prog)?;
+            Self::sa_prog(slf, prog)?;
             let mut k = 1;
             while Self::scripts_dir(slf)?.call_method1("__truediv__", (format!("blocks{}.blocks.json", k),))?.call_method0("exists")?.is_truthy()? {
                 k += 1;
             }
-            s.setattr("base", format!("blocks{}", k))?;
-            s.setattr("dirty", true)?;
+            Self::sa_base(slf, format!("blocks{}", k))?;
+            Self::sa_dirty(slf, true)?;
             if d.is_truthy()? {
                 let sc = d.get_item("state")?.call_method1("get", ("script",))?;
                 if sc.is_truthy()? {
@@ -524,15 +594,14 @@ impl BlockEditor {
                 }
             }
         }
-        let tf = s.getattr("name_field")?.getattr("text_field")?;
-        tf.setattr("text", s.getattr("base")?)?;
+        let tf = Self::ga_name_field(slf)?.getattr("text_field")?;
+        tf.setattr("text", Self::ga_base(slf)?)?;
         tf.call_method0("render")?;
         Ok(())
     }
     /// scripts/ にあるブロックプログラムを順に開く（保存するとこのコンピューターに設定される）。
     fn open_next_file(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let mut files: Vec<String> = vec![];
         for p in Self::scripts_dir(slf)?.call_method1("glob", ("*.blocks.json",))?.iter()? {
             files.push(p?.getattr("name")?.extract()?);
@@ -541,49 +610,48 @@ impl BlockEditor {
         if files.is_empty() {
             return Self::_status(slf, "scripts/ にブロックプログラムがありません");
         }
-        let cur = format!("{}.blocks.json", ss(&s.getattr("base")?)?);
+        let cur = format!("{}.blocks.json", ss(&Self::ga_base(slf)?)?);
         let nxt = match files.iter().position(|f| *f == cur) {
             Some(i) => files[(i + 1) % files.len()].clone(),
             None => files[0].clone(),
         };
         match bm(py)?.call_method1("load", (Self::scripts_dir(slf)?.call_method1("__truediv__", (&nxt,))?,)) {
-            Ok(p) => s.setattr("prog", p)?,
+            Ok(p) => Self::sa_prog(slf, p)?,
             Err(e) if is_exc(py, &e) => return Self::_status(slf, &format!("{} を読めません: {}", nxt, ss(e.value_bound(py))?)),
             Err(e) => return Err(e),
         }
         let base: String = nxt.chars().take(nxt.chars().count() - ".blocks.json".chars().count()).collect();
-        s.setattr("base", &base)?;
-        let tf = s.getattr("name_field")?.getattr("text_field")?;
+        Self::sa_base(slf, &base)?;
+        let tf = Self::ga_name_field(slf)?.getattr("text_field")?;
         tf.setattr("text", &base)?;
         tf.call_method0("render")?;
-        s.setattr("sel", py.None())?;
-        s.setattr("scroll", 0)?;
+        Self::sa_sel(slf, py.None())?;
+        Self::sa_scroll(slf, 0)?;
         let d = Self::device(slf)?;
         let dirty = !(d.is_truthy()? && d.get_item("state")?.call_method1("get", ("blocks",))?.eq(&nxt)?);
-        s.setattr("dirty", dirty)?;
+        Self::sa_dirty(slf, dirty)?;
         Self::_status(slf, &format!("{} を開きました{}", nxt, if dirty { "（保存するとこのコンピューターに設定されます）" } else { "" }))?;
         Self::render(slf)
     }
     fn file_base(slf: &Bound<'_, Self>) -> R<String> {
-        let t = slf.as_any().getattr("name_field")?.getattr("text_field")?.getattr("text")?.call_method0("strip")?;
+        let t = Self::ga_name_field(slf)?.getattr("text_field")?.getattr("text")?.call_method0("strip")?;
         let n: String = ss(&t)?.chars().filter(|c| NAME_CHARS.contains(*c)).collect();
         Ok(if n.is_empty() { "blocks".into() } else { n })
     }
     fn code<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
-        bm(py)?.call_method1("to_python", (slf.as_any().getattr("prog")?, format!("{}.blocks.json", Self::file_base(slf)?)))
+        bm(py)?.call_method1("to_python", (Self::ga_prog(slf)?, format!("{}.blocks.json", Self::file_base(slf)?)))
     }
     fn save(slf: &Bound<'_, Self>) -> R<bool> {
         let py = slf.py();
-        let s = slf.as_any();
         let d = Self::device(slf)?;
         if d.is_none() {
             Self::_status(slf, "コンピューターが見つかりません")?;
             return Ok(false);
         }
         let base = Self::file_base(slf)?;
-        let world = s.getattr("world")?;
-        let pyp = match imp(py, "main.scripting")?.call_method1("script_path", (world.getattr("dir")?, format!("{}.py", base))) {
+        let world = Self::ga_world(slf)?;
+        let pyp = match imp(py, "main.scripting")?.call_method1("script_path", (World::g_dir(wld(&world)?)?, format!("{}.py", base))) {
             Ok(p) => p,
             Err(e) if e.is_instance_of::<PyValueError>(py) => {
                 Self::_status(slf, &ss(e.value_bound(py))?)?;
@@ -600,7 +668,7 @@ impl BlockEditor {
             }
             return Err(e);
         }
-        bm(py)?.call_method1("save", (Self::scripts_dir(slf)?.call_method1("__truediv__", (format!("{}.blocks.json", base),))?, s.getattr("prog")?))?;
+        bm(py)?.call_method1("save", (Self::scripts_dir(slf)?.call_method1("__truediv__", (format!("{}.blocks.json", base),))?, Self::ga_prog(slf)?))?;
         pyp.call_method("write_text", (&code,), Some(&kw(py, vec![("encoding", po(py, "utf-8"))])?))?;
         world.getattr("runner")?.call_method1("invalidate", (pyp.getattr("name")?,))?;
         let st = d.get_item("state")?;
@@ -609,8 +677,8 @@ impl BlockEditor {
         for k in ["_env", "error", "error_line"] {
             st.call_method1("pop", (k, py.None()))?;
         }
-        s.setattr("base", &base)?;
-        s.setattr("dirty", false)?;
+        Self::sa_base(slf, &base)?;
+        Self::sa_dirty(slf, false)?;
         Self::_status(slf, &format!("{}.blocks.json と {} を保存しました", base, ss(&pyp.getattr("name")?)?))?;
         lg(py)?.call_method1("info", ("ブロックプログラム保存: %s", &base))?;
         Ok(true)
@@ -649,11 +717,10 @@ impl BlockEditor {
     }
     fn open_python(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        if s.getattr("dirty")?.is_truthy()? && !Self::save(slf)? {
+        if Self::ga_dirty(slf)?.is_truthy()? && !Self::save(slf)? {
             return Ok(());
         }
-        let (game, c, i) = (s.getattr("game")?, s.getattr("c")?, Self::index(slf)?);
+        let (game, c, i) = (Self::ga_game(slf)?, Self::ga_c(slf)?, Self::index(slf)?);
         Self::close(slf, true)?;
         game.getattr("U")?.get_item("mouse")?.setattr("locked", false)?;
         game.getattr("ui_root")?.setattr("enabled", false)?;
@@ -665,13 +732,12 @@ impl BlockEditor {
     #[pyo3(signature = (force=false))]
     fn close(slf: &Bound<'_, Self>, force: bool) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        if s.getattr("dirty")?.is_truthy()? && !force && !s.getattr("discard_armed")?.is_truthy()? {
-            s.setattr("discard_armed", true)?;
+        if Self::ga_dirty(slf)?.is_truthy()? && !force && !Self::ga_discard_armed(slf)?.is_truthy()? {
+            Self::sa_discard_armed(slf, true)?;
             return Self::_status(slf, "未保存の変更があります。保存するか、もう一度 Esc で破棄して閉じます");
         }
-        super::client_misc::ui_destroy(py, &s.getattr("root")?, &PyTuple::empty_bound(py), None)?;
-        s.getattr("game")?.call_method0("editor_closed")?;
+        super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)?;
+        Self::ga_game(slf)?.call_method0("editor_closed")?;
         Ok(())
     }
 
@@ -685,3 +751,41 @@ mod dialog;
 mod hint;
 mod inner;
 pub(crate) use self::inner::*;
+
+// ---------------------------------------------------------------- BlockEditor の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! blockeditor_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl BlockEditor { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl BlockEditor { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+blockeditor_attr_fields!(
+    ga_U sa_U pga_U psa_U a_U "U", ga_hint_poll sa_hint_poll pga_hint_poll psa_hint_poll a_hint_poll "_hint_poll", ga_hint_sig sa_hint_sig pga_hint_sig psa_hint_sig a_hint_sig "_hint_sig", ga_hint_sol sa_hint_sol pga_hint_sol psa_hint_sol a_hint_sol "_hint_sol", ga_last_t sa_last_t pga_last_t psa_last_t a_last_t "_last_t", ga_names_before sa_names_before pga_names_before psa_names_before a_names_before "_names_before", ga_status_t sa_status_t pga_status_t psa_status_t a_status_t "_status_t", ga_tt sa_tt pga_tt psa_tt a_tt "_tt", ga_base sa_base pga_base psa_base a_base "base", ga_c sa_c pga_c psa_c a_c "c", ga_cat sa_cat pga_cat psa_cat a_cat "cat", ga_cell sa_cell pga_cell psa_cell a_cell "cell", ga_dialog_root sa_dialog_root pga_dialog_root psa_dialog_root a_dialog_root "dialog_root", ga_dialogs sa_dialogs pga_dialogs psa_dialogs a_dialogs "dialogs", ga_dirty sa_dirty pga_dirty psa_dirty a_dirty "dirty", ga_discard_armed sa_discard_armed pga_discard_armed psa_discard_armed a_discard_armed "discard_armed", ga_game sa_game pga_game psa_game a_game "game", ga_hint sa_hint pga_hint psa_hint a_hint "hint", ga_hint_text sa_hint_text pga_hint_text psa_hint_text a_hint_text "hint_text", ga_info sa_info pga_info psa_info a_info "info", ga_keys sa_keys pga_keys psa_keys a_keys "keys", ga_log_text sa_log_text pga_log_text psa_log_text a_log_text "log_text", ga_modal sa_modal pga_modal psa_modal a_modal "modal", ga_name_field sa_name_field pga_name_field psa_name_field a_name_field "name_field", ga_palette_root sa_palette_root pga_palette_root psa_palette_root a_palette_root "palette_root", ga_prog sa_prog pga_prog psa_prog a_prog "prog", ga_root sa_root pga_root psa_root a_root "root", ga_rows sa_rows pga_rows psa_rows a_rows "rows", ga_rows_root sa_rows_root pga_rows_root psa_rows_root a_rows_root "rows_root", ga_scroll sa_scroll pga_scroll psa_scroll a_scroll "scroll", ga_sel sa_sel pga_sel psa_sel a_sel "sel", ga_slot_sel sa_slot_sel pga_slot_sel psa_slot_sel a_slot_sel "slot_sel", ga_title sa_title pga_title psa_title a_title "title", ga_world sa_world pga_world psa_world a_world "world"
+);

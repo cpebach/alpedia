@@ -1,12 +1,13 @@
 //! ワールド：Rust の中だけで使う道具
 
 use super::*;
+use crate::game::construct::{con, Construct};
 
 impl World {
     pub(crate) fn wake_in(slf: &Bound<'_, Self>, woke: &[Bound<'_, PyAny>], dt: f64) -> R<()> {
         for c in woke {
             c.call_method0("wake")?;
-            c.setattr("_prev", c.getattr("pos")?.call_method0("copy")?)?;
+            c.setattr("_prev", Construct::g_pos(con(&c)?)?.call_method0("copy")?)?;
             Self::_prep_ext(slf, c, dt)?;
         }
         Ok(())
@@ -14,7 +15,7 @@ impl World {
     pub(crate) fn still_sleeping<'py>(sleeping: Vec<Bound<'py, PyAny>>, anchored: &Bound<'py, PyAny>) -> R<Vec<Bound<'py, PyAny>>> {
         let mut out = vec![];
         for c in sleeping {
-            if c.getattr("asleep")?.is_truthy()? || anchored.contains(c.getattr("id")?)? {
+            if Construct::g_asleep(con(&c)?)?.is_truthy()? || anchored.contains(Construct::g_id(con(&c)?)?)? {
                 out.push(c);
             }
         }
@@ -23,7 +24,7 @@ impl World {
     /// 外側の球のリストでの番号 {id(c): k}（リストが変わったときだけ作り直す）
     pub(crate) fn bnd_at<'py>(slf: &Bound<'py, Self>, cs: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
-        if let Some(at) = Self::dict_get(slf, "_bnd_at")? {
+        if let Some(at) = Self::cache_get(slf, |c| &c.bnd_at)? {
             if !at.is_none() && at.get_item(0)?.is(cs) {
                 return at.get_item(1);
             }
@@ -32,7 +33,7 @@ impl World {
         for (k, c) in cs.iter()?.enumerate() {
             m.set_item(c?.as_ptr() as usize, k)?;
         }
-        Self::set(slf, "_bnd_at", (cs, &m))?;
+        Self::cache_put(slf, |c| &mut c.bnd_at, (cs, &m))?;
         Ok(m.into_any())
     }
     /// 置くときの向き：列が (右, 上, 前)

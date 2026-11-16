@@ -1,32 +1,31 @@
 //! ブロックエディター：値を入れる窓・名前を変える窓
 
+use crate::game::construct::{con, Construct};
 use super::*;
 
 #[pymethods]
 impl BlockEditor {
     pub(crate) fn open_dialog(slf: &Bound<'_, Self>, node: &B<'_>, key: &B<'_>, kind: &B<'_>) -> R<()> {
         let py = slf.py();
-        slf.as_any().getattr("dialogs")?.call_method1("append", (PyTuple::new_bound(py, [node, key, kind]),))?;
+        Self::ga_dialogs(slf)?.call_method1("append", (PyTuple::new_bound(py, [node, key, kind]),))?;
         Self::render_dialog(slf)
     }
     #[pyo3(signature = (all_=false))]
     pub(crate) fn close_dialog(slf: &Bound<'_, Self>, all_: bool) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         if all_ {
-            s.setattr("dialogs", PyList::empty_bound(py))?;
-        } else if s.getattr("dialogs")?.is_truthy()? {
-            s.getattr("dialogs")?.call_method0("pop")?;
+            Self::sa_dialogs(slf, PyList::empty_bound(py))?;
+        } else if Self::ga_dialogs(slf)?.is_truthy()? {
+            Self::ga_dialogs(slf)?.call_method0("pop")?;
         }
         Self::render_dialog(slf)?;
         Self::render(slf)
     }
     #[pyo3(signature = (node, key, value, stay=false))]
     pub(crate) fn set_value(slf: &Bound<'_, Self>, node: &B<'_>, key: &B<'_>, value: &B<'_>, stay: bool) -> R<()> {
-        let s = slf.as_any();
         node.set_item(key, value)?;
-        s.setattr("dirty", true)?;
-        s.setattr("discard_armed", false)?;
+        Self::sa_dirty(slf, true)?;
+        Self::sa_discard_armed(slf, false)?;
         if !stay {
             Self::close_dialog(slf, false)
         } else {
@@ -37,12 +36,12 @@ impl BlockEditor {
     pub(crate) fn render_dialog(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let r = s.getattr("dialog_root")?;
+        let r = Self::ga_dialog_root(slf)?;
         let kids: Vec<B<'_>> = r.getattr("children")?.iter()?.collect::<R<_>>()?;
         for e in kids {
             crate::game::client_misc::ui_destroy(py, &e, &PyTuple::empty_bound(py), None)?;
         }
-        let dialogs = s.getattr("dialogs")?;
+        let dialogs = Self::ga_dialogs(slf)?;
         if !dialogs.is_truthy()? {
             return Ok(());
         }
@@ -347,7 +346,7 @@ impl BlockEditor {
         let s = slf.as_any();
         if s.hasattr("status")? {
             s.getattr("status")?.setattr("text", safe(&wrap(msg, 24)))?;
-            s.setattr("_status_t", now(py)?)?;
+            Self::sa_status_t(slf, now(py)?)?;
         }
         Ok(())
     }
@@ -358,25 +357,25 @@ impl BlockEditor {
         if i.is_none() {
             return Ok(());
         }
-        let c = s.getattr("c")?;
+        let c = Self::ga_c(slf)?;
         let before = PyDict::new_bound(py);
-        for (k, d) in c.getattr("devs")?.iter()?.enumerate() {
+        for (k, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
             let d = d?;
             if d.is_truthy()? {
                 before.set_item(k, d.get_item("name")?)?;
             }
         }
-        s.setattr("_names_before", before)?;
-        imp(py, "main.client.device_ui")?.getattr("DevicePanel")?.call((s.getattr("game")?, c, i), Some(&kw(py, vec![("owner", s.clone().unbind())])?))?;
+        Self::sa_names_before(slf, before)?;
+        imp(py, "main.client.device_ui")?.getattr("DevicePanel")?.call((Self::ga_game(slf)?, c, i), Some(&kw(py, vec![("owner", s.clone().unbind())])?))?;
         Ok(())
     }
     /// 名前を変えたら、プログラム中の古い名前も新しい名前に置き換える（ほかに同名がなければ）。
     pub(crate) fn after_modal(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let before = s.getattr("_names_before").unwrap_or_else(|_| PyDict::new_bound(py).into_any());
+        let before = Self::ga_names_before(slf).unwrap_or_else(|_| PyDict::new_bound(py).into_any());
         let now_ = PyDict::new_bound(py);
-        for (k, d) in s.getattr("c")?.getattr("devs")?.iter()?.enumerate() {
+        for (k, d) in Self::ga_c(slf)?.getattr("devs")?.iter()?.enumerate() {
             let d = d?;
             if d.is_truthy()? {
                 now_.set_item(k, d.get_item("name")?)?;
@@ -415,7 +414,7 @@ impl BlockEditor {
                 }
                 Ok(())
             }
-            walk(&s.getattr("prog")?, &changes, &mut hit, s)?;
+            walk(&Self::ga_prog(slf)?, &changes, &mut hit, s)?;
             if hit {
                 Self::_status(slf, "名前の変更をプログラムにも反映しました（保存してください）")?;
             }

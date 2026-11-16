@@ -7,18 +7,17 @@ impl Viewer {
     /// 狙っている物：枠と説明（今までの画面と同じ play.aim）
     pub(crate) fn _aim(slf: &Bound<'_, Self>, origin: &B<'_>, look: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let play = imp(py, "main.client.play")?;
-        let w = ga(s, "w")?;
+        let w = Self::ga_w(slf)?;
         let p = ga(&w, "player")?;
         let hit = if ga(&p, "seated")?.is_truthy()? {
             none(py)
         } else {
             w.call_method1("raycast", (p.call_method0("eye")?, look, f64of(&get(&ga(&p, "defn")?, "reach", 8.0)?)?))?
         };
-        s.setattr("hit", &hit)?;
+        Self::sa_hit(slf, &hit)?;
         let gx = gfx(py)?;
-        let (hl, gh) = (ga(s, "highlight")?, ga(s, "ghost")?);
+        let (hl, gh) = (Self::ga_highlight(slf)?, Self::ga_ghost(slf)?);
         if hit.is_truthy()? {
             let k = hit.get_item("kind")?;
             if !(k.eq("voxel")? || k.eq("terrain")? || k.eq("water")?) {
@@ -40,7 +39,7 @@ impl Viewer {
                     } else {
                         gh.call_method0("hide")?;
                     }
-                    s.setattr("_aim_txt", txt)?;
+                    Self::sa_aim_txt(slf, txt)?;
                     if placeable {
                         hit.set_item("placeable", true)?;
                     }
@@ -58,14 +57,14 @@ impl Viewer {
                 node.call_method0("show")?;
             }
         }
-        s.setattr("_aim_txt", a.get_item("text")?)?;
+        Self::sa_aim_txt(slf, a.get_item("text")?)?;
         Ok(())
     }
     /// ほかの人（マルチプレイ）の体：MOD（VRM の見た目など）か、定義の色の箱
     pub(crate) fn _bodies(slf: &Bound<'_, Self>, origin: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let w = ga(s, "w")?;
+        let w = Self::ga_w(slf)?;
         let seen = PySet::empty_bound(py)?;
         let net = gd(&w, "net", none(py));
         let mut others: Vec<B<'_>> = vec![];
@@ -77,9 +76,9 @@ impl Viewer {
         for p in others {
             list.push((format!("p{}", ga(&p, "pid")?.str()?), p));
         }
-        let bodies = ga(s, "bodies")?;
-        let game = ga(s, "game")?;
-        let errs = ga(s, "_addon_err")?;
+        let bodies = Self::ga_bodies(slf)?;
+        let game = Self::ga_game(slf)?;
+        let errs = Self::ga_addon_err(slf)?;
         let ov = v3(origin)?;
         for (key, p) in list {
             seen.add(&key)?;
@@ -114,7 +113,7 @@ impl Viewer {
             }
             let shown = if key == "me" {
                 // 自分：三人称・カメラモードのときだけ
-                ga(s, "third_person")?.is_truthy()? || !ga(&game, "cam_mode")?.is_none()
+                Self::ga_third_person(slf)?.is_truthy()? || !ga(&game, "cam_mode")?.is_none()
             } else {
                 let q = sub(v3(&ga(&p, "pos")?)?, ov);
                 let sh = dot(q, q) < 500.0f64.powi(2);
@@ -138,7 +137,7 @@ impl Viewer {
                 bodies.call_method1("pop", (&k,))?.call_method0("destroy")?;
             }
         }
-        let labels = ga(s, "labels")?;
+        let labels = Self::ga_labels(slf)?;
         let keys: Vec<B<'_>> = labels.iter()?.collect::<R<_>>()?;
         for k in keys {
             if !seen.contains(&k)? || k.eq("me")? {
@@ -150,11 +149,10 @@ impl Viewer {
     /// ほかの人の頭の上の名前（いつもカメラの方を向く）
     pub(crate) fn _label(slf: &Bound<'_, Self>, key: &B<'_>, p: &B<'_>, origin: &B<'_>, shown: bool) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let labels = ga(s, "labels")?;
+        let labels = Self::ga_labels(slf)?;
         let mut t = labels.call_method1("get", (key,))?;
         if t.is_none() {
-            t = rs_text(py, ga(s, "root")?, false, Some(BG), None)?;
+            t = rs_text(py, Self::ga_root(slf)?, false, Some(BG), None)?;
             labels.set_item(key, &t)?;
         }
         let nm = ga(p, "name")?;
@@ -180,16 +178,16 @@ impl Viewer {
         let s = slf.as_any();
         let slots: i64 = imp(py, "main.client.inventory")?.getattr("SLOTS")?.extract()?;
         let u = imp(py, "main.client_rs.ui")?;
-        let w = ga(s, "w")?;
+        let w = Self::ga_w(slf)?;
         let hb = ga(&ga(&w, "player")?, "hotbar")?;
         let items: Vec<B<'_>> = hb.iter()?.collect::<R<_>>()?;
         let mut allowed = vec![];
         for it in &items {
             allowed.push(it.is_truthy()? && w.call_method1("item_allowed", (it,))?.is_truthy()?);
         }
-        let sel = ga(s, "sel")?;
+        let sel = Self::ga_sel(slf)?;
         let state = PyTuple::new_bound(py, [PyTuple::new_bound(py, &items).into_any(), sel.clone(), PyTuple::new_bound(py, &allowed).into_any()]);
-        let cur = ga(s, "hotbar")?;
+        let cur = Self::ga_hotbar(slf)?;
         if !cur.is_none() && cur.get_item(0)?.eq(&state)? {
             return Ok(());
         }
@@ -220,24 +218,24 @@ impl Viewer {
         if !gd(s, "_hud_shown", tb(py, true)).is_truthy()? {
             root.call_method0("hide")?;
         }
-        s.setattr("hotbar", PyTuple::new_bound(py, [state.into_any(), root]))?;
+        Self::sa_hotbar(slf, PyTuple::new_bound(py, [state.into_any(), root]))?;
         Ok(())
     }
     /// 画面の上の文字（左上：場所・高度・速度・重さ、左下：知らせ）。プログラムなどの画面を開いている間は隠す
     pub(crate) fn _overlay(slf: &Bound<'_, Self>, ww: f64, hh: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let w = ga(s, "w")?;
-        let cm = ga(&ga(s, "game")?, "cam_mode")?;
-        let shown = ga(s, "editor")?.is_none() && (cm.is_none() || ga(&cm, "ui_on")?.is_truthy()?);
-        let texts = [ga(s, "hud")?, ga(s, "msg")?, ga(s, "aim_text")?, ga(s, "item_text")?];
+        let w = Self::ga_w(slf)?;
+        let cm = ga(&Self::ga_game(slf)?, "cam_mode")?;
+        let shown = Self::ga_editor(slf)?.is_none() && (cm.is_none() || ga(&cm, "ui_on")?.is_truthy()?);
+        let texts = [Self::ga_hud(slf)?, Self::ga_msg(slf)?, Self::ga_aim_text(slf)?, Self::ga_item_text(slf)?];
         if shown != gd(s, "_hud_shown", tb(py, true)).is_truthy()? {
-            s.setattr("_hud_shown", shown)?;
+            Self::sa_hud_shown(slf, shown)?;
             for t in &texts {
                 t.call_method1("show", (shown,))?;
             }
-            ga(&ga(s, "cross")?, "np")?.call_method0(if shown { "show" } else { "hide" })?;
-            let hb = ga(s, "hotbar")?;
+            ga(&Self::ga_cross(slf)?, "np")?.call_method0(if shown { "show" } else { "hide" })?;
+            let hb = Self::ga_hotbar(slf)?;
             if !hb.is_none() {
                 hb.get_item(1)?.call_method0(if shown { "show" } else { "hide" })?;
             }
@@ -284,7 +282,7 @@ impl Viewer {
             // F1：操作の説明
             let help: String = imp(py, "main.client.game")?.getattr("HELP")?.extract()?;
             lines.push(help.trim_end().to_string());
-            for a in ga(s, "addons")?.iter()? {
+            for a in Self::ga_addons(slf)?.iter()? {
                 let ht = gd(&a?, "help_text", tb(py, ""));
                 if ht.is_truthy()? {
                     lines.push(ht.str()?.to_string());
@@ -293,7 +291,7 @@ impl Viewer {
         }
         if Self::_touch_mode(slf)? {
             // タッチ操作：画面のボタンとジョイスティック
-        } else if !ga(s, "grabbed")?.is_truthy()? && !ga(&ga(s, "ui")?, "stack")?.is_truthy()? {
+        } else if !Self::ga_grabbed(slf)?.is_truthy()? && !ga(&Self::ga_ui(slf)?, "stack")?.is_truthy()? {
             lines.push("クリックで操作（マウスで見回す）・Esc でメニュー・I でインベントリ".into());
         }
         let aspect = ww / hh.max(1.0);
@@ -319,12 +317,12 @@ impl Viewer {
         let tw = f64of(&aim_text.call_method("set", (&at, 0.022), Some(&k))?.get_item(0)?)?;
         aim_text.call_method1("show", (at.is_truthy()?,))?;
         aim_text.call_method1("place", (-tw / 2.0, -0.03))?;
-        let it = imp(py, "main.client.play")?.call_method1("item_text", (&w, ga(&p, "hotbar")?.get_item(ga(s, "sel")?)?, ga(s, "sel")?, ga(s, "dir_index")?))?;
+        let it = imp(py, "main.client.play")?.call_method1("item_text", (&w, ga(&p, "hotbar")?.get_item(Self::ga_sel(slf)?)?, Self::ga_sel(slf)?, Self::ga_dir_index(slf)?))?;
         let r = item_text.call_method1("set", (it, 0.022))?;
         let (tw, th) = (f64of(&r.get_item(0)?)?, f64of(&r.get_item(1)?)?);
         item_text.call_method1("place", (-tw / 2.0, -0.5 + 0.13 + th))?;
         Self::_hotbar(slf)?;
-        let st: Vec<B<'_>> = ga(&ga(s, "ui")?, "stack")?.iter()?.collect::<R<_>>()?;
+        let st: Vec<B<'_>> = ga(&Self::ga_ui(slf)?, "stack")?.iter()?.collect::<R<_>>()?;
         for x in st {
             x.call_method1("update", (0.0,))?;
         }

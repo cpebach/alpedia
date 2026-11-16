@@ -7,7 +7,7 @@
 """
 from . import native
 
-PARALLEL_MIN_VOXELS = 256     # これ以上のボクセル数ならボクセルごとに複数コアで計算
+PARALLEL_MIN_VOXELS = 256     # これ以上のボクセル数ならボクセルごとに複数コアで計算（Rust 側 game::construct::PARALLEL_MIN_VOXELS と同じ値）
 
 
 def _core():

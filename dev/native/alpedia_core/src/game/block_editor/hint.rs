@@ -1,17 +1,17 @@
 //! ブロックエディター：キー入力・ヒント・毎フレーム
 
+use crate::game::world::{wld, World};
 use super::*;
 
 #[pymethods]
 impl BlockEditor {
     pub(crate) fn input(slf: &Bound<'_, Self>, key: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        if s.getattr("modal").map(|m| m.is_truthy()).unwrap_or(Ok(false))? {
+        if Self::ga_modal(slf).map(|m| m.is_truthy()).unwrap_or(Ok(false))? {
             return Ok(());
         }
         let combo = imp(py, "ursina")?.getattr("input_handler")?.call_method1("get_combined_key", (key,))?;
-        let dialogs = s.getattr("dialogs")?.is_truthy()?;
+        let dialogs = Self::ga_dialogs(slf)?.is_truthy()?;
         if key.eq("escape")? {
             return if dialogs { Self::close_dialog(slf, true) } else { Self::close(slf, false) };
         }
@@ -23,12 +23,12 @@ impl BlockEditor {
         } else if combo.eq("control+r")? {
             Self::save_and_run(slf)?;
         } else if key.eq("scroll up")? {
-            let sc: i64 = s.getattr("scroll")?.extract()?;
-            s.setattr("scroll", 0.max(sc - 2))?;
+            let sc: i64 = Self::ga_scroll(slf)?.extract()?;
+            Self::sa_scroll(slf, 0.max(sc - 2))?;
             Self::render(slf)?;
         } else if key.eq("scroll down")? {
-            let sc: i64 = s.getattr("scroll")?.extract()?;
-            s.setattr("scroll", sc + 2)?;
+            let sc: i64 = Self::ga_scroll(slf)?.extract()?;
+            Self::sa_scroll(slf, sc + 2)?;
             Self::render(slf)?;
         } else if key.eq("delete")? {
             Self::delete(slf)?;
@@ -41,17 +41,15 @@ impl BlockEditor {
     // ------------------------------------------------------------------
     pub(crate) fn _hint_key<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyTuple>> {
         let py = slf.py();
-        let s = slf.as_any();
-        Ok(PyTuple::new_bound(py, [ss(&s.getattr("world")?.getattr("dir")?)?, format!("{}.blocks.json", ss(&s.getattr("base")?)?)]))
+        Ok(PyTuple::new_bound(py, [ss(&Self::ga_world(slf)?.getattr("dir")?)?, format!("{}.blocks.json", ss(&Self::ga_base(slf)?)?)]))
     }
     /// MOD に見本を聞く（シナリオの課題など。目標が済んだら MOD は None を返す）。
     pub(crate) fn _poll_solution(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let world = s.getattr("world")?;
-        let f = format!("{}.blocks.json", ss(&s.getattr("base")?)?);
+        let world = Self::ga_world(slf)?;
+        let f = format!("{}.blocks.json", ss(&Self::ga_base(slf)?)?);
         let mut sol = none(py);
-        for a in world.getattr("addons")?.iter()? {
+        for a in World::g_addons(wld(&world)?)?.iter()? {
             let a = a?;
             sol = match a.call_method1("block_hint", (&world, &f)) {
                 Ok(x) => x,
@@ -65,7 +63,7 @@ impl BlockEditor {
                 break;
             }
         }
-        s.setattr("_hint_sol", sol)?;
+        Self::sa_hint_sol(slf, sol)?;
         Ok(())
     }
     #[pyo3(signature = (force=false))]
@@ -74,9 +72,9 @@ impl BlockEditor {
         let s = slf.as_any();
         let b = bm(py)?;
         let mut h = none(py);
-        let sol = s.getattr("_hint_sol")?;
+        let sol = Self::ga_hint_sol(slf)?;
         if sol.is_truthy()? && f64of(&s.getattr("_hint_time")?.call_method1("get", (Self::_hint_key(slf)?, 0.0))?)? >= HINT_AFTER {
-            match b.call_method1("find_hint", (s.getattr("prog")?, &sol)) {
+            match b.call_method1("find_hint", (Self::ga_prog(slf)?, &sol)) {
                 Ok(x) => h = x,
                 Err(e) if is_exc(py, &e) => {
                     lg(py)?.call_method("exception", ("ヒントを探せません",), Some(&kw(py, vec![("exc_info", e.value_bound(py).clone().into_any().unbind())])?))?;
@@ -91,10 +89,10 @@ impl BlockEditor {
             PyTuple::new_bound(py, [h.get_item("kind")?, id.call1((getd(&h, "list")?,))?, getd(&h, "index")?, id.call1((getd(&h, "owner")?,))?, getd(&h, "key")?,
                 getd(&h, "type")?, getd(&h, "value")?.str()?.into_any()]).into_any()
         };
-        s.setattr("hint", &h)?;
-        s.getattr("hint_text")?.setattr("text", be_safe(&b.call_method1("hint_text", (&h,))?)?)?;
-        if !sig.eq(s.getattr("_hint_sig")?)? {
-            s.setattr("_hint_sig", sig)?;
+        Self::sa_hint(slf, &h)?;
+        Self::ga_hint_text(slf)?.setattr("text", be_safe(&b.call_method1("hint_text", (&h,))?)?)?;
+        if !sig.eq(Self::ga_hint_sig(slf)?)? {
+            Self::sa_hint_sig(slf, sig)?;
             Self::build_palette(slf)?;
             if !force {
                 Self::render(slf)?;
@@ -103,7 +101,7 @@ impl BlockEditor {
         Ok(())
     }
     pub(crate) fn _hinted(slf: &Bound<'_, Self>, owner: &B<'_>, key: &B<'_>) -> R<bool> {
-        let h = slf.as_any().getattr("hint")?;
+        let h = Self::ga_hint(slf)?;
         if h.is_none() {
             return Ok(false);
         }
@@ -113,7 +111,7 @@ impl BlockEditor {
     /// ヒントで光らせるパレット：(カテゴリ, 文のブロックの種類, 式ブロックのノード)
     pub(crate) fn _hint_palette<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyTuple>> {
         let py = slf.py();
-        let h = slf.as_any().getattr("hint")?;
+        let h = Self::ga_hint(slf)?;
         let n3 = || PyTuple::new_bound(py, [py.None(), py.None(), py.None()]);
         if h.is_none() {
             return Ok(n3());
@@ -157,19 +155,19 @@ impl BlockEditor {
         let py = slf.py();
         let s = slf.as_any();
         let t = now(py)?;
-        let last = f64of(&s.getattr("_last_t")?)?;
+        let last = f64of(&Self::ga_last_t(slf)?)?;
         let dt = (t - last).min(0.5);
-        s.setattr("_last_t", t)?;
-        if s.getattr("_hint_sol")?.is_truthy()? {
+        Self::sa_last_t(slf, t)?;
+        if Self::ga_hint_sol(slf)?.is_truthy()? {
             let k = Self::_hint_key(slf)?;
             let ht = s.getattr("_hint_time")?;
             let v = f64of(&ht.call_method1("get", (&k, 0.0))?)?;
             ht.set_item(&k, v + dt)?;
         }
-        let hp = f64of(&s.getattr("_hint_poll")?)? - dt;
-        s.setattr("_hint_poll", hp)?;
+        let hp = f64of(&Self::ga_hint_poll(slf)?)? - dt;
+        Self::sa_hint_poll(slf, hp)?;
         if hp <= 0.0 {
-            s.setattr("_hint_poll", 1.0)?;
+            Self::sa_hint_poll(slf, 1.0)?;
             Self::_poll_solution(slf)?;
             Self::_refresh_hint(slf, false)?;
         }
@@ -178,7 +176,7 @@ impl BlockEditor {
             return Ok(());
         }
         let st = d.get_item("state")?;
-        let cs = s.getattr("c")?.getattr("status")?;
+        let cs = Self::ga_c(slf)?.getattr("status")?;
         let cs = if cs.is_truthy()? { cs } else { PyDict::new_bound(py).into_any() };
         let stored = f64of(&cs.call_method1("get", ("stored", 0))?)?;
         let mut info = vec![format!("状態: {}", if getd(&st, "running")?.is_truthy()? { "実行中" } else { "停止中" }),
@@ -187,7 +185,7 @@ impl BlockEditor {
         if err.is_truthy()? {
             info.push(format!("エラー: {}", safe(&wrap(&ss(&st.get_item("error")?)?, 30))));
         }
-        s.getattr("info")?.setattr("text", info.join("\n"))?;
+        Self::ga_info(slf)?.setattr("text", info.join("\n"))?;
         let logs = st.call_method1("get", ("_log", PyList::empty_bound(py)))?;
         let n = logs.len()?;
         let mut lines = vec![];
@@ -196,16 +194,16 @@ impl BlockEditor {
                 lines.push(wrap(&ss(&l?)?, 38));
             }
         }
-        s.getattr("log_text")?.setattr("text", safe(&format!("出力:\n{}", lines.join("\n"))))?;
+        Self::ga_log_text(slf)?.setattr("text", safe(&format!("出力:\n{}", lines.join("\n"))))?;
         let stt = s.getattr("status")?;
-        let st_t = s.getattr("_status_t").map(|x| f64of(&x).unwrap_or(0.0)).unwrap_or(0.0);
+        let st_t = Self::ga_status_t(slf).map(|x| f64of(&x).unwrap_or(0.0)).unwrap_or(0.0);
         if stt.getattr("text")?.is_truthy()? && now(py)? - st_t > 8.0 {
             stt.setattr("text", "")?;
         }
         let tt = (now(py)? * 2.0).trunc() as i64;
-        let cur = s.getattr("_tt").map(|x| x.extract::<i64>().unwrap_or(0)).unwrap_or(0);
+        let cur = Self::ga_tt(slf).map(|x| x.extract::<i64>().unwrap_or(0)).unwrap_or(0);
         if tt != cur {
-            s.setattr("_tt", tt)?;
+            Self::sa_tt(slf, tt)?;
             Self::_update_title(slf)?;
         }
         Ok(())

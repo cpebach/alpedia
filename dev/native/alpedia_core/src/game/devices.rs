@@ -4,6 +4,7 @@
 //! 推進機：点火のときだけ電気を使い、燃えている間は燃料を使って推力と電気を出す。
 //! 精錬機・加工機：原料は配管でつながった所から受け取り、作った物は自分の中にためる。
 
+use crate::game::construct::{con, Construct};
 use std::collections::HashMap;
 
 use numpy::PyArray1;
@@ -60,7 +61,7 @@ fn dev_def<'py>(c: &Bound<'py, PyAny>, d: &Bound<'py, PyAny>) -> R<Option<Bound<
     if !d.is_truthy()? {
         return Ok(None);
     }
-    let dd = c.getattr("reg")?.call_method1("device", (d.get_item("def")?,))?;
+    let dd = Construct::g_reg(con(&c)?)?.call_method1("device", (d.get_item("def")?,))?;
     Ok(if dd.is_none() { None } else { Some(dd) })
 }
 
@@ -68,8 +69,8 @@ fn dev_def<'py>(c: &Bound<'py, PyAny>, d: &Bound<'py, PyAny>) -> R<Option<Bound<
 #[pyfunction]
 pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, Networks>> {
     let net = Bound::new(py, Networks::new(py))?;
-    let devs: Vec<Bound<'py, PyAny>> = c.getattr("devs")?.iter()?.collect::<R<_>>()?;
-    let n: usize = c.getattr("n_vox")?.extract()?;
+    let devs: Vec<Bound<'py, PyAny>> = Construct::g_devs(con(&c)?)?.iter()?.collect::<R<_>>()?;
+    let n: usize = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
     let mut kind: Vec<Option<char>> = Vec::with_capacity(n);
     for i in 0..n {
         let k = match devs.get(i) {
@@ -91,11 +92,11 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
         }
         x
     }
-    let index = c.getattr("index")?;
+    let index = Construct::g_index(con(&c)?)?;
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     // 結合（アクチュエーターで格子がずれてつないだ所 extras も含む）：配管の機器どうしなら流れる
-    let mut keys: Vec<Bound<'py, PyAny>> = c.getattr("links")?.iter()?.collect::<R<_>>()?;
-    if let Ok(ex) = c.getattr("extras") {
+    let mut keys: Vec<Bound<'py, PyAny>> = Construct::g_links(con(&c)?)?.iter()?.collect::<R<_>>()?;
+    if let Ok(ex) = Construct::g_extras(con(&c)?) {
         keys.extend(ex.iter()?.collect::<R<Vec<_>>>()?);
     }
     for k in keys {
@@ -178,9 +179,9 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
         seg_adj.set_item(k, l.clone())?;
     }
     // 空洞
-    let size: f64 = float_of(&c.getattr("size")?)?;
+    let size: f64 = float_of(&Construct::g_size(con(&c)?)?)?;
     let vol1 = size.powi(3);
-    let cavity_air = c.getattr("cavity_air")?;
+    let cavity_air = Construct::g_cavity_air(con(&c)?)?;
     let mut old_density: HashMap<(i64, i64, i64), f64> = HashMap::new();
     if let Ok(old) = c.getattr("_net") {
         if old.is_truthy()? {
@@ -194,7 +195,7 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
             }
         }
     }
-    let cells: Vec<(i64, i64, i64)> = c.getattr("cells")?.iter()?.map(|x| -> R<(i64, i64, i64)> {
+    let cells: Vec<(i64, i64, i64)> = Construct::g_cells(con(&c)?)?.iter()?.map(|x| -> R<(i64, i64, i64)> {
         let x = x?;
         Ok((x.get_item(0)?.extract()?, x.get_item(1)?.extract()?, x.get_item(2)?.extract()?))
     }).collect::<R<_>>()?;
@@ -224,9 +225,9 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
         }
     }
     drop(me);
-    c.setattr("cavity_air", new_air)?;
+    Construct::s_cavity_air(con(&c)?, new_air)?;
     c.setattr("_net", &net)?;
-    c.setattr("dirty", false)?;
+    Construct::s_dirty(con(&c)?, false)?;
     Ok(net)
 }
 
@@ -291,7 +292,7 @@ pub fn dev_tanks_in<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net_id: &Bound<
     if net_id.is_none() {
         return Ok(out);
     }
-    let devs = c.getattr("devs")?;
+    let devs = Construct::g_devs(con(&c)?)?;
     for i in c.getattr("_net")?.getattr("pipes")?.get_item(net_id)?.iter()? {
         let i = i?;
         let d = devs.get_item(&i)?;
@@ -318,8 +319,8 @@ pub fn dev_fluid_amount(py: Python<'_>, c: &Bound<'_, PyAny>, net_id: &Bound<'_,
 #[pyfunction]
 pub fn dev_storage_total<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
     let out = PyDict::new_bound(py);
-    out.update(c.getattr("storage")?.downcast::<pyo3::types::PyMapping>()?)?;
-    for d in c.getattr("devs")?.iter()? {
+    out.update(Construct::g_storage(con(&c)?)?.downcast::<pyo3::types::PyMapping>()?)?;
+    for d in Construct::g_devs(con(&c)?)?.iter()? {
         let d = d?;
         if !d.is_truthy()? {
             continue;
@@ -353,7 +354,7 @@ pub fn dev_world_axis<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, i: usize, d: 
 }
 
 fn adjacent_cavity(c: &Bound<'_, PyAny>, i: usize) -> R<Option<usize>> {
-    let cell = c.getattr("cells")?.get_item(i)?;
+    let cell = Construct::g_cells(con(&c)?)?.get_item(i)?;
     let (x, y, z): (i64, i64, i64) = (cell.get_item(0)?.extract()?, cell.get_item(1)?.extract()?, cell.get_item(2)?.extract()?);
     let cav_of = c.getattr("_net")?.getattr("cavity_of")?;
     for d in DIRS {
@@ -366,8 +367,7 @@ fn adjacent_cavity(c: &Bound<'_, PyAny>, i: usize) -> R<Option<usize>> {
 }
 
 fn note(c: &Bound<'_, PyAny>, text: &Bound<'_, PyAny>) -> R<()> {
-    let py = c.py();
-    let notes = c.getattr("__dict__")?.call_method1("setdefault", ("notes", PyList::empty_bound(py)))?;
+    let notes = Construct::g_notes(con(&c)?)?;
     if !notes.contains(text)? {
         notes.call_method1("append", (text,))?;
     }
@@ -376,7 +376,7 @@ fn note(c: &Bound<'_, PyAny>, text: &Bound<'_, PyAny>) -> R<()> {
 
 fn ensure_net<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let has = c.getattr("_net").map(|n| !n.is_none()).unwrap_or(false);
-    if c.getattr("dirty")?.is_truthy()? || !has {
+    if Construct::g_dirty(con(&c)?)?.is_truthy()? || !has {
         dev_rebuild_networks(py, c)?;
     }
     c.getattr("_net")
@@ -385,7 +385,7 @@ fn ensure_net<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny
 /// この構築物の機器のまとめ（形が変わったときだけ作り直す）
 fn native_plan<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net: &Bound<'py, PyAny>, by_type: &[(String, Vec<(usize, Bound<'py, PyAny>, Bound<'py, PyAny>)>)])
     -> R<(Bound<'py, PyAny>, Vec<usize>)> {
-    let key = PyTuple::new_bound(py, [c.getattr("version")?.unbind(), c.getattr("cells")?.len()?.into_py(py),
+    let key = PyTuple::new_bound(py, [Construct::g_version(con(&c)?)?.unbind(), Construct::g_cells(con(&c)?)?.len()?.into_py(py),
                                        (net.as_ptr() as usize).into_py(py)]);
     let cd = c.getattr("__dict__")?;
     let cache = cd.call_method1("get", ("_devplan",))?;
@@ -396,12 +396,12 @@ fn native_plan<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net: &Bound<'py, PyA
     order.sort();
     let devs_l = PyList::empty_bound(py);
     let mut outs_all: Vec<Bound<'py, PyAny>> = Vec::new();
-    let cdevs = c.getattr("devs")?;
-    let reg = c.getattr("reg")?;
+    let cdevs = Construct::g_devs(con(&c)?)?;
+    let reg = Construct::g_reg(con(&c)?)?;
     let fl = |o: Bound<'py, PyAny>| float_of(&o);
     for &i in &order {
         let d = cdevs.get_item(i)?;
-        let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+        let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
         let p = dd.call_method1("get", ("params", PyDict::new_bound(py)))?;
         let t = dd.get_item("type")?;
         let is_proc = t.eq("processor")?;
@@ -500,15 +500,15 @@ fn native_plan<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net: &Bound<'py, PyA
 pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Option<&Bound<'_, PyAny>>, seated: bool, ambient_kpa: f64) -> R<()> {
     let _ = ambient_kpa;
     let net = ensure_net(py, c)?;
-    let force = c.getattr("force")?;
+    let force = Construct::g_force(con(&c)?)?;
     force.call_method1("fill", (0.0,))?;
-    let n: usize = c.getattr("n_vox")?.extract()?;
+    let n: usize = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
     if n == 0 {
         return Ok(());
     }
-    let key = PyTuple::new_bound(py, [c.getattr("version")?.unbind(), c.getattr("cells")?.len()?.into_py(py)]);
+    let key = PyTuple::new_bound(py, [Construct::g_version(con(&c)?)?.unbind(), Construct::g_cells(con(&c)?)?.len()?.into_py(py)]);
     let cd = c.getattr("__dict__")?;
-    let devs = c.getattr("devs")?;
+    let devs = Construct::g_devs(con(&c)?)?;
     let cache = cd.call_method1("get", ("_bytype_cache",))?;
     let idx: Vec<(String, Vec<usize>)> = if !cache.is_none() && cache.get_item(0)?.eq(&key)? {
         cache.get_item(1)?.call_method0("items")?.iter()?.map(|it| it?.extract::<(String, Vec<usize>)>()).collect::<R<_>>()?
@@ -546,7 +546,7 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
             by_type.push((t, lst));
         }
     }
-    let storage = c.getattr("storage")?;
+    let storage = Construct::g_storage(con(&c)?)?;
     if storage.is_truthy()? {
         if let Some((_, procs)) = by_type.iter().find(|x| x.0 == "processor") {
             // 古いセーブ：構築物で共有していた資源は、最初の精錬機・加工機に入れる
@@ -556,7 +556,7 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
                 let cur = st0.call_method1("get", (&k, 0.0))?;
                 st0.set_item(&k, cur.add(v)?)?;
             }
-            c.setattr("storage", PyDict::new_bound(py))?;
+            Construct::s_storage(con(&c)?, PyDict::new_bound(py))?;
         }
     }
     let (plan, order) = native_plan(py, c, &net, &by_type)?;
@@ -565,7 +565,7 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
     for &i in &order {
         states.append(devs.get_item(i)?.get_item("state")?)?;
     }
-    let cav_air = c.getattr("cavity_air")?;
+    let cav_air = Construct::g_cavity_air(con(&c)?)?;
     let reps: Vec<Bound<'_, PyAny>> = net.getattr("cavities")?.iter()?.map(|cv| cv?.get_item("rep")).collect::<R<_>>()?;
     let mut cav = Vec::with_capacity(reps.len());
     for r in &reps {
@@ -574,14 +574,14 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
     let cav_arr = PyArray1::from_vec_bound(py, cav);
     c.call_method1("_contig", ("pos", "force"))?;
     let np = crate::game::imp(py, "numpy")?;
-    let mass = np.getattr("ascontiguousarray")?.call1((c.getattr("mass")?, "float64"))?;
+    let mass = np.getattr("ascontiguousarray")?.call1((Construct::g_mass(con(&c)?)?, "float64"))?;
     let keys = PyList::empty_bound(py);
     if let Some(k) = input_keys.filter(|k| !k.is_none()) {
         for x in k.iter()? {
             keys.append(x?.str()?)?;
         }
     }
-    let res = plan.call_method1("update", (states, dt, keys, seated, c.getattr("pos")?, mass, c.getattr("force")?, &cav_arr))?;
+    let res = plan.call_method1("update", (states, dt, keys, seated, Construct::g_pos(con(&c)?)?, mass, Construct::g_force(con(&c)?)?, &cav_arr))?;
     let production: f64 = res.get_item(0)?.extract()?;
     let stored: f64 = res.get_item(2)?.extract()?;
     let ratio: f64 = res.get_item(4)?.extract()?;
@@ -589,14 +589,14 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
     for (r, a) in reps.iter().zip(ca) {
         cav_air.set_item(r, a)?;
     }
-    c.setattr("powered", stored > 1.0 || production > 0.0)?;
+    Construct::s_powered(con(&c)?, stored > 1.0 || production > 0.0)?;
     let status = PyDict::new_bound(py);
     status.set_item("production", production)?;
     status.set_item("demand", res.get_item(1)?)?;
     status.set_item("stored", stored)?;
     status.set_item("capacity", res.get_item(3)?)?;
     status.set_item("ratio", ratio)?;
-    c.setattr("status", status)?;
+    Construct::s_status(con(&c)?, status)?;
     for n in res.get_item(6)?.iter()? {
         note(c, &n?)?;
     }
@@ -614,7 +614,7 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
 pub fn dev_cavity_report<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
     let net = ensure_net(py, c)?;
     let out = PyList::empty_bound(py);
-    let air = c.getattr("cavity_air")?;
+    let air = Construct::g_cavity_air(con(&c)?)?;
     for cav in net.getattr("cavities")?.iter()? {
         let cav = cav?;
         let rep = cav.get_item("rep")?;
@@ -634,11 +634,11 @@ fn pct0(v: f64) -> String {
 #[pyo3(signature = (c, i, player=None))]
 pub fn dev_interact(py: Python<'_>, c: &Bound<'_, PyAny>, i: usize, player: Option<PyObject>) -> R<Option<String>> {
     let _ = player;
-    let d = c.getattr("devs")?.get_item(i)?;
+    let d = Construct::g_devs(con(&c)?)?.get_item(i)?;
     if !d.is_truthy()? {
         return Ok(None);
     }
-    let dd = c.getattr("reg")?.call_method1("device", (d.get_item("def")?,))?;
+    let dd = Construct::g_reg(con(&c)?)?.call_method1("device", (d.get_item("def")?,))?;
     if !dd.is_truthy()? {
         return Ok(Some(format!("未定義の機器: {}", d.get_item("def")?.str()?)));
     }
@@ -660,7 +660,7 @@ pub fn dev_interact(py: Python<'_>, c: &Bound<'_, PyAny>, i: usize, player: Opti
             format!("{name}: {}", if op <= 0.0 { "閉".to_string() } else { format!("開（{}。開き具合は P で）", pct0(op)) })
         }
         "anchor" => format!("{name}: {} を惑星に固定しています（ブロック {} 個。アクチュエーターの先は動けます。アンカーとはなれた部分は動きます）",
-                            c.getattr("name")?.str()?, c.getattr("n_vox")?.str()?),
+                            Construct::g_name(con(&c)?)?.str()?, Construct::n(con(&c)?)?.into_py(py).into_bound(py).str()?),
         "crank" => {
             let e = float_of(&dd.get_item("params")?.call_method1("get", ("energy_per_use", 5000))?)?;
             let cur = float_of(&g("pending", 0.0.into_py(py))?)?;

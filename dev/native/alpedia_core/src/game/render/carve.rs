@@ -6,7 +6,40 @@ use super::*;
 /// 洞窟や掘削跡のまわりを、距離場から作った詳細なメッシュで描く（8 m の立方体チャンクごと）。
 /// 高さ場の地表（TerrainPatch）では表せない横穴・洞窟の中を見せる
 #[pyclass(module = "main.client.render", subclass, dict)]
-pub struct CarveView {}
+pub struct CarveView {
+    /// _last_asm（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_last_asm: Option<PyObject>,
+    /// active（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_active: Option<PyObject>,
+    /// anchor（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_anchor: Option<PyObject>,
+    /// cache（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cache: Option<PyObject>,
+    /// dirty（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_dirty: Option<PyObject>,
+    /// enabled（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_enabled: Option<PyObject>,
+    /// loader（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_loader: Option<PyObject>,
+    /// mesh（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_mesh: Option<PyObject>,
+    /// n_craters（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_n_craters: Option<PyObject>,
+    /// pending（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_pending: Option<PyObject>,
+    /// planet（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_planet: Option<PyObject>,
+    /// pver（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_pver: Option<PyObject>,
+    /// range（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_range: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// version（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_version: Option<PyObject>,
+    /// want（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_want: Option<PyObject>,
+}
 
 pub(crate) fn ckey(py: Python<'_>, k: [i64; 3]) -> B<'_> {
     PyTuple::new_bound(py, k).into_any()
@@ -27,34 +60,33 @@ impl CarveView {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     pub(crate) fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        CarveView {}
+        CarveView { a_last_asm: None, a_active: None, a_anchor: None, a_cache: None, a_dirty: None, a_enabled: None, a_loader: None, a_mesh: None, a_n_craters: None, a_pending: None, a_planet: None, a_pver: None, a_range: None, a_root: None, a_version: None, a_want: None }
     }
     #[pyo3(signature = (parent, loader, view_range=56.0))]
     pub(crate) fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>, loader: &B<'_>, view_range: f64) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("enabled", true)?;
+        Self::sa_enabled(slf, true)?;
         let root = parent.call_method1("attachNewNode", ("carve",))?;
-        s.setattr("root", &root)?;
-        s.setattr("mesh", dmesh(py, &root, "carve")?)?;
-        s.setattr("loader", loader)?;
-        s.setattr("range", view_range)?;
-        s.setattr("cache", PyDict::new_bound(py))?; // (チャンクの位置) → (verts, v, tris) or None
-        s.setattr("active", PySet::empty_bound(py)?)?; // 描画中のチャンク（惑星ローカルの整数座標）
-        s.setattr("version", 0)?;
-        s.setattr("planet", py.None())?;
-        s.setattr("anchor", py.None())?;
-        s.setattr("pver", -1)?;
-        s.setattr("n_craters", 0)?;
-        s.setattr("pending", PyList::empty_bound(py))?;
-        s.setattr("dirty", false)?;
+        Self::sa_root(slf, &root)?;
+        Self::sa_mesh(slf, dmesh(py, &root, "carve")?)?;
+        Self::sa_loader(slf, loader)?;
+        Self::sa_range(slf, view_range)?;
+        Self::sa_cache(slf, PyDict::new_bound(py))?; // (チャンクの位置) → (verts, v, tris) or None
+        Self::sa_active(slf, PySet::empty_bound(py)?)?; // 描画中のチャンク（惑星ローカルの整数座標）
+        Self::sa_version(slf, 0)?;
+        Self::sa_planet(slf, py.None())?;
+        Self::sa_anchor(slf, py.None())?;
+        Self::sa_pver(slf, -1)?;
+        Self::sa_n_craters(slf, 0)?;
+        Self::sa_pending(slf, PyList::empty_bound(py))?;
+        Self::sa_dirty(slf, false)?;
         Ok(())
     }
     /// 惑星ローカル座標の点が描画中のチャンクに入っているか
     pub(crate) fn contains<'py>(slf: &Bound<'py, Self>, local_pts: &B<'py>) -> R<B<'py>> {
         let py = slf.py();
         let s = slf.as_any();
-        let active = s.getattr("active")?;
+        let active = Self::ga_active(slf)?;
         let p = a2(local_pts, 3)?;
         let npm = np(py)?;
         if !active.is_truthy()? {
@@ -78,7 +110,7 @@ impl CarveView {
         let pp = v3(player_pos)?;
         let c0 = v3(&pl.getattr("center")?)?;
         let local = [pp[0] - c0[0], pp[1] - c0[1], pp[2] - c0[2]];
-        let rng = f64of(&s.getattr("range")?)?;
+        let rng = f64of(&Self::ga_range(slf)?)?;
         let ch = f64of(&s.getattr("CH")?)?;
         let mut boxes: Vec<([f64; 3], [f64; 3])> = vec![];
         if pl.getattr("has_caves")?.is_truthy()? {
@@ -237,35 +269,35 @@ impl CarveView {
     pub(crate) fn update(slf: &Bound<'_, Self>, pl: &B<'_>, player_pos: &B<'_>, origin: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let root = s.getattr("root")?;
+        let root = Self::ga_root(slf)?;
         let pp = v3(player_pos)?;
         let far = pl.is_none() || {
             let c = v3(&pl.getattr("center")?)?;
             npnorm(py, [pp[0] - c[0], pp[1] - c[1], pp[2] - c[2]])? - f64of(&pl.getattr("radius")?)? > 300.0
         };
-        if !s.getattr("enabled")?.is_truthy()? || far {
-            if s.getattr("active")?.is_truthy()? {
-                s.setattr("active", PySet::empty_bound(py)?)?;
-                let v: i64 = s.getattr("version")?.extract()?;
-                s.setattr("version", v + 1)?;
+        if !Self::ga_enabled(slf)?.is_truthy()? || far {
+            if Self::ga_active(slf)?.is_truthy()? {
+                Self::sa_active(slf, PySet::empty_bound(py)?)?;
+                let v: i64 = Self::ga_version(slf)?.extract()?;
+                Self::sa_version(slf, v + 1)?;
             }
             root.call_method0("hide")?;
             return Ok(());
         }
         root.call_method0("show")?;
-        if !pl.is(&s.getattr("planet")?) {
-            s.setattr("planet", pl)?;
-            s.setattr("anchor", py.None())?;
-            s.setattr("cache", PyDict::new_bound(py))?;
-            s.setattr("n_craters", 0)?;
-            s.setattr("active", PySet::empty_bound(py)?)?;
+        if !pl.is(&Self::ga_planet(slf)?) {
+            Self::sa_planet(slf, pl)?;
+            Self::sa_anchor(slf, py.None())?;
+            Self::sa_cache(slf, PyDict::new_bound(py))?;
+            Self::sa_n_craters(slf, 0)?;
+            Self::sa_active(slf, PySet::empty_bound(py)?)?;
         }
         let ch = f64of(&s.getattr("CH")?)?;
         // 新しい掘削跡が触れるチャンクは作り直す
         let craters: Vec<B<'_>> = pl.getattr("craters")?.iter()?.collect::<R<_>>()?;
-        let nc: usize = s.getattr("n_craters")?.extract()?;
+        let nc: usize = Self::ga_n_craters(slf)?.extract()?;
         if craters.len() != nc {
-            let cache = s.getattr("cache")?;
+            let cache = Self::ga_cache(slf)?;
             for c in &craters[nc.min(craters.len())..] {
                 let cc = [f64of(&c.get_item(0)?)?, f64of(&c.get_item(1)?)?, f64of(&c.get_item(2)?)?];
                 let cr = f64of(&c.get_item(3)?)?;
@@ -279,18 +311,18 @@ impl CarveView {
                     }
                 }
             }
-            s.setattr("n_craters", craters.len())?;
-            s.setattr("anchor", py.None())?;
+            Self::sa_n_craters(slf, craters.len())?;
+            Self::sa_anchor(slf, py.None())?;
         }
-        let anchor = s.getattr("anchor")?;
+        let anchor = Self::ga_anchor(slf)?;
         let moved = anchor.is_none() || {
             let a = v3(&anchor)?;
             npnorm(py, [pp[0] - a[0], pp[1] - a[1], pp[2] - a[2]])? > 6.0
         };
         if moved {
-            s.setattr("anchor", player_pos.call_method0("copy")?)?;
+            Self::sa_anchor(slf, player_pos.call_method0("copy")?)?;
             let want = Self::_wanted(slf, pl, player_pos)?;
-            let cache = s.getattr("cache")?;
+            let cache = Self::ga_cache(slf)?;
             let c0 = v3(&pl.getattr("center")?)?;
             let local = [pp[0] - c0[0], pp[1] - c0[1], pp[2] - c0[2]];
             let l = PyList::empty_bound(py);
@@ -301,25 +333,25 @@ impl CarveView {
             }
             let keyf = Py::new(py, ChunkDist { local, ch })?;
             let pend = py.import_bound("builtins")?.getattr("sorted")?.call((l,), Some(&[("key", keyf)].into_py_dict_bound(py)))?;
-            s.setattr("pending", pend)?;
-            s.setattr("want", want)?;
-            s.setattr("dirty", true)?;
+            Self::sa_pending(slf, pend)?;
+            Self::sa_want(slf, want)?;
+            Self::sa_dirty(slf, true)?;
         }
         // 1フレームに作るチャンクは時間で制限（カクつき防止）
         let time = imp(py, "time")?;
         let pc = || -> R<f64> { time.call_method0("perf_counter")?.extract() };
         let t0 = pc()?;
-        let pending = s.getattr("pending")?;
-        let cache = s.getattr("cache")?;
+        let pending = Self::ga_pending(slf)?;
+        let cache = Self::ga_cache(slf)?;
         while pending.is_truthy()? && pc()? - t0 < 0.012 {
             let k = pending.call_method1("pop", (0,))?;
             if !cache.contains(&k)? {
                 cache.set_item(&k, Self::_mesh_chunk(slf, pl, &k)?)?;
             }
-            s.setattr("dirty", true)?;
+            Self::sa_dirty(slf, true)?;
         }
-        if s.getattr("dirty")?.is_truthy()? && (!pending.is_truthy()? || pc()? - f64of(&gd(s, "_last_asm", tb(py, 0.0)))? > 0.4) {
-            s.setattr("_last_asm", pc()?)?;
+        if Self::ga_dirty(slf)?.is_truthy()? && (!pending.is_truthy()? || pc()? - f64of(&gd(s, "_last_asm", tb(py, 0.0)))? > 0.4) {
+            Self::sa_last_asm(slf, pc()?)?;
             s.call_method0("_assemble")?;
         }
         let c = v3(&pl.getattr("center")?)?;
@@ -329,14 +361,13 @@ impl CarveView {
     }
     pub(crate) fn _assemble(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("dirty", false)?;
+        Self::sa_dirty(slf, false)?;
         let mut vs: Vec<f32> = vec![];
         let mut ts: Vec<i64> = vec![];
         let mut n: i64 = 0;
         let active = PySet::empty_bound(py)?;
-        let cache = s.getattr("cache")?;
-        let want = s.getattr("want")?;
+        let cache = Self::ga_cache(slf)?;
+        let want = Self::ga_want(slf)?;
         let npm = np(py)?;
         for k in want.iter()? {
             let k = k?;
@@ -361,11 +392,11 @@ impl CarveView {
             ts.extend(f.iter().map(|x| x + n));
             n += verts.n as i64;
         }
-        let mesh = s.getattr("mesh")?;
+        let mesh = Self::ga_mesh(slf)?;
         if !vs.is_empty() {
             mesh.call_method1("set", (f32_2(py, vs, 12)?, i64_2(py, ts, 3)?))?;
             let rm = rmod(py)?;
-            let tex = rm.call_method1("load_texture", (s.getattr("loader")?, get(&s.getattr("planet")?.getattr("defn")?, "texture", py.None())?))?;
+            let tex = rm.call_method1("load_texture", (Self::ga_loader(slf)?, get(&Self::ga_planet(slf)?.getattr("defn")?, "texture", py.None())?))?;
             if tex.is_truthy()? {
                 mesh.getattr("np")?.call_method1("setTexture", (tex, 1))?;
             }
@@ -382,10 +413,10 @@ impl CarveView {
                 }
             }
         }
-        if !active.eq(s.getattr("active")?)? {
-            s.setattr("active", active)?;
-            let v: i64 = s.getattr("version")?.extract()?;
-            s.setattr("version", v + 1)?;
+        if !active.eq(Self::ga_active(slf)?)? {
+            Self::sa_active(slf, active)?;
+            let v: i64 = Self::ga_version(slf)?.extract()?;
+            Self::sa_version(slf, v + 1)?;
         }
         let _ = fmt_err;
         Ok(())
@@ -425,3 +456,41 @@ pub fn register(m: &Bound<'_, PyModule>) -> R<()> {
     m.add_class::<ChunkDist>()?;
     Ok(())
 }
+
+// ---------------------------------------------------------------- CarveView の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! carveview_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl CarveView { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl CarveView { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+carveview_attr_fields!(
+    ga_last_asm sa_last_asm pga_last_asm psa_last_asm a_last_asm "_last_asm", ga_active sa_active pga_active psa_active a_active "active", ga_anchor sa_anchor pga_anchor psa_anchor a_anchor "anchor", ga_cache sa_cache pga_cache psa_cache a_cache "cache", ga_dirty sa_dirty pga_dirty psa_dirty a_dirty "dirty", ga_enabled sa_enabled pga_enabled psa_enabled a_enabled "enabled", ga_loader sa_loader pga_loader psa_loader a_loader "loader", ga_mesh sa_mesh pga_mesh psa_mesh a_mesh "mesh", ga_n_craters sa_n_craters pga_n_craters psa_n_craters a_n_craters "n_craters", ga_pending sa_pending pga_pending psa_pending a_pending "pending", ga_planet sa_planet pga_planet psa_planet a_planet "planet", ga_pver sa_pver pga_pver psa_pver a_pver "pver", ga_range sa_range pga_range psa_range a_range "range", ga_root sa_root pga_root psa_root a_root "root", ga_version sa_version pga_version psa_version a_version "version", ga_want sa_want pga_want psa_want a_want "want"
+);

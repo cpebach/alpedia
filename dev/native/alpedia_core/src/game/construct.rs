@@ -18,6 +18,8 @@ pub const CORNER_BITS: [[f64; 3]; 8] = [
     [0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.], [0., 0., 1.], [1., 0., 1.], [0., 1., 1.], [1., 1., 1.]];
 pub const DIRS: [[i64; 3]; 6] = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 pub const CONTACT_SOFT: f64 = 1.0;
+/// これ以上のボクセル数なら、ボクセルごとに複数コアで計算する（main.fastphys.PARALLEL_MIN_VOXELS と同じ値）
+pub const PARALLEL_MIN_VOXELS: usize = 256;
 /// ぶつかったとみなす速さ（m/s。Construct.IMPACT_SPEED）
 pub const IMPACT_SPEED: f64 = 2.0;
 
@@ -109,9 +111,6 @@ pub fn arr<'py>(py: Python<'py>, v: Vec<f64>, shape: &[usize]) -> R<Bound<'py, P
 }
 pub fn iarr<'py>(py: Python<'py>, v: Vec<i64>, shape: &[usize]) -> R<Bound<'py, PyAny>> {
     Ok(PyArray1::from_vec_bound(py, v).reshape(IxDyn(shape))?.into_any())
-}
-pub fn barr<'py>(py: Python<'py>, v: Vec<bool>) -> Bound<'py, PyAny> {
-    PyArray1::from_vec_bound(py, v).into_any()
 }
 pub fn a3<'py>(py: Python<'py>, v: &[V3]) -> R<Bound<'py, PyAny>> {
     arr(py, v.iter().flatten().copied().collect(), &[v.len(), 3])
@@ -222,12 +221,6 @@ pub fn opt<'py>(o: &Bound<'py, PyAny>, k: &str) -> R<Option<Bound<'py, PyAny>>> 
         Err(e) => Err(e),
     }
 }
-pub fn truthy(o: &Bound<'_, PyAny>, k: &str) -> R<bool> {
-    Ok(match opt(o, k)? {
-        Some(v) => v.is_truthy()?,
-        None => false,
-    })
-}
 pub fn dget<'py>(d: &Bound<'py, PyAny>, k: &str, dflt: impl IntoPy<PyObject>) -> R<Bound<'py, PyAny>> {
     d.call_method1("get", (k, dflt))
 }
@@ -244,12 +237,7 @@ pub fn link_key_c<'py>(py: Python<'py>, a: [i64; 3], b: [i64; 3]) -> Bound<'py, 
 }
 /// 機器の種類（(reg.device(d["def"]) or {}).get("type")）
 pub fn dev_type(reg: &Bound<'_, PyAny>, d: &Bound<'_, PyAny>) -> R<Option<String>> {
-    let dd = reg.call_method1("device", (d.get_item("def")?,))?;
-    if !dd.is_truthy()? {
-        return Ok(None);
-    }
-    let t = dd.call_method1("get", ("type",))?;
-    Ok(if t.is_none() { None } else { Some(t.extract()?) })
+    Ok(super::registry::device_def(reg, &d.get_item("def")?)?.and_then(|x| if x.kind.is_empty() { None } else { Some(x.kind.clone()) }))
 }
 /// numpy 配列をその場で書き換える
 pub fn with_rw<F: FnOnce(&mut [f64])>(o: &Bound<'_, PyAny>, f: F) -> R<bool> {
@@ -491,9 +479,21 @@ pub struct Construct {
     pub settle: f64,
     #[pyo3(get, set, name = "_touch_moving")]
     pub touch_moving: bool,
+    /// ゆっくり動かす機器（明かりなど）の、たまった時間
+    #[pyo3(get, set, name = "_slow_dt")]
+    pub slow_dt: f64,
+    /// 機器が出したお知らせ（ワールドが表示して空にする）
+    #[pyo3(get, set)]
+    pub notes: Py<PyList>,
 
     // ---- 計算の途中の覚え（Python からは見えない） ----
     pub cache: Caches,
+}
+
+/// Python の値として持っている構築物を、型つきで見る（違う物ならエラー）
+#[inline]
+pub fn con<'a, 'py>(c: &'a Bound<'py, PyAny>) -> R<&'a Bound<'py, Construct>> {
+    Ok(c.downcast::<Construct>()?)
 }
 
 /// numpy の配列（型つき）。Python からは今までどおり numpy の配列に見える
@@ -690,6 +690,7 @@ impl Construct {
             last_r: fz(py, &[0, 3, 3]), quat: fz(py, &[0, 4]), ctype: iz(py, &[0]), cidx: iz(py, &[0]),
             rotors: PyList::empty_bound(py).unbind(), topo: py.None(), prox_w: py.None(), art: None,
             dirty: false, soft_ok: false, full_rigid: false, nb_used: false, settle: 0.0, touch_moving: false,
+            slow_dt: 0.0, notes: PyList::empty_bound(py).unbind(),
             cache: Caches::default(),
         })
     }
@@ -839,7 +840,7 @@ impl Construct {
         let dev = super::actuator::act_migrate_device(py, dev)?;   // 古い「アクチュエーター」で押し出していた物はピストンに
         let reg = Self::g_reg(slf)?;
         let def = dev.get_item("def")?;
-        let dd = reg.call_method1("device", (&def,))?;
+        let dd = crate::game::registry::dev_dict(&reg, &def)?;
         let out = PyDict::new_bound(py);
         out.set_item("def", &def)?;
         out.set_item("dir", dget(&dev, "dir", 2)?.call_method0("__int__")?)?;
@@ -874,37 +875,41 @@ impl Construct {
         }
         Self::s_index(slf, &index)?;
         let reg = Self::g_reg(slf)?;
-        let mats: Vec<Bound<'_, PyAny>> = Self::g_mats(slf)?.iter()?
-            .map(|m| reg.call_method1("material", (m?,))).collect::<R<_>>()?;
-        let g = |k: &str| -> R<Vec<f64>> { mats.iter().map(|m| m.get_item(k)?.extract::<f64>()).collect() };
-        let clip = |v: Vec<f64>| -> Vec<f64> { v.into_iter().map(|x| if x < 0.0 { 0.0 } else if x > 1.0 { 1.0 } else { x }).collect() };
+        let mats: Vec<std::sync::Arc<super::registry::MaterialDef>> = Self::g_mats(slf)?.iter()?
+            .map(|m| super::registry::material_def(&reg, &m?)).collect::<R<_>>()?;
+        let g = |f: fn(&super::registry::MaterialDef) -> f64| -> Vec<f64> { mats.iter().map(|m| f(m)).collect() };
+        let clip = |v: Vec<f64>| -> Vec<f64> { v.into_iter().map(|x| x.clamp(0.0, 1.0)).collect() };
         let (v_jstiff, v_break, mut v_plast);
         if n > 0 {
-            let v_stiff = clip(g("stiffness")?);
-            v_jstiff = clip(g("joint_stiffness")?);
-            v_break = g("break_distance")?.into_iter().map(|x| x * size).collect::<Vec<_>>();
-            v_plast = clip(g("plasticity")?);
-            let v_density = g("density")?;
+            let v_stiff = clip(g(|m| m.stiffness));
+            v_jstiff = clip(g(|m| m.joint_stiffness));
+            v_break = g(|m| m.break_distance).into_iter().map(|x| x * size).collect::<Vec<_>>();
+            v_plast = clip(g(|m| m.plasticity));
+            let v_density = g(|m| m.density);
             let s3 = size.powf(3.0);
             let vm: Vec<f64> = v_density.iter().map(|d| d * s3 / 8.0).collect();
             let rep = |v: &[f64]| -> Vec<f64> { v.iter().flat_map(|x| std::iter::repeat(*x).take(8)).collect() };
-            Self::s_v_stiff(slf, arr(py, v_stiff, &[n])?)?;
-            Self::s_v_jstiff(slf, arr(py, v_jstiff.clone(), &[n])?)?;
-            Self::s_v_break(slf, arr(py, v_break.clone(), &[n])?)?;
-            Self::s_v_yield(slf, arr(py, g("yield_strain")?, &[n])?)?;
-            Self::s_v_density(slf, arr(py, v_density, &[n])?)?;
-            let rb: Vec<bool> = mats.iter().map(|m| m.get_item("rebond")?.is_truthy()).collect::<R<_>>()?;
-            Self::s_v_rebond(slf, barr(py, rb))?;
-            Self::s_v_rebond_dist(slf, arr(py, g("rebond_distance")?.into_iter().map(|x| x * size).collect(), &[n])?)?;
-            Self::s_inv_mass(slf, arr(py, rep(&vm.iter().map(|m| 1.0 / m).collect::<Vec<_>>()), &[8 * n])?)?;
-            Self::s_mass(slf, arr(py, rep(&vm), &[8 * n])?)?;
-            Self::s_damp(slf, arr(py, rep(&g("damping")?), &[8 * n])?)?;
-            Self::s_fric(slf, arr(py, rep(&g("friction")?), &[8 * n])?)?;
+            let rb: Vec<bool> = mats.iter().map(|m| m.rebond).collect();
+            let mut b = slf.try_borrow_mut()?;
+            b.v_stiff = fa(py, v_stiff, &[n])?;
+            b.v_jstiff = fa(py, v_jstiff.clone(), &[n])?;
+            b.v_break = fa(py, v_break.clone(), &[n])?;
+            b.v_yield = fa(py, g(|m| m.yield_strain), &[n])?;
+            b.v_density = fa(py, v_density, &[n])?;
+            b.v_rebond = PyArray1::from_vec_bound(py, rb).reshape(IxDyn(&[n]))?.unbind();
+            b.v_rebond_dist = fa(py, g(|m| m.rebond_distance).into_iter().map(|x| x * size).collect(), &[n])?;
+            b.inv_mass = fa(py, rep(&vm.iter().map(|m| 1.0 / m).collect::<Vec<_>>()), &[8 * n])?;
+            b.mass = fa(py, rep(&vm), &[8 * n])?;
+            b.damp = fa(py, rep(&g(|m| m.damping)), &[8 * n])?;
+            b.fric = fa(py, rep(&g(|m| m.friction)), &[8 * n])?;
         } else {
-            for k in ["v_stiff", "v_jstiff", "v_break", "v_yield", "v_density", "v_rebond_dist", "inv_mass", "mass", "damp", "fric"] {
-                Self::set(slf, k, zeros(py, &[0])?)?;
+            let mut bm = slf.try_borrow_mut()?;
+            let b = &mut *bm;
+            for a in [&mut b.v_stiff, &mut b.v_jstiff, &mut b.v_break, &mut b.v_yield, &mut b.v_density, &mut b.v_rebond_dist,
+                      &mut b.inv_mass, &mut b.mass, &mut b.damp, &mut b.fric] {
+                *a = fz(py, &[0]);
             }
-            Self::s_v_rebond(slf, barr(py, vec![]))?;
+            b.v_rebond = bz(py, &[0]);
             v_jstiff = vec![];
             v_break = vec![];
             v_plast = vec![];
@@ -1221,6 +1226,7 @@ macro_rules! val_fields {
     };
 }
 py_fields!(
+    g_notes s_notes o_notes t_notes notes,
     g_act_scale s_act_scale o_act_scale t_act_scale act_scale,
     g_anchor s_anchor o_anchor t_anchor anchor,
     g_cavity_air s_cavity_air o_cavity_air t_cavity_air cavity_air,
@@ -1273,6 +1279,7 @@ py_fields!(
     g_vel s_vel o_vel t_vel vel
 );
 val_fields!(
+    g_slow_dt s_slow_dt o_slow_dt t_slow_dt slow_dt,
     g_asleep s_asleep o_asleep t_asleep asleep,
     g_calm_t s_calm_t o_calm_t t_calm_t calm_t,
     g_dirty s_dirty o_dirty t_dirty dirty,

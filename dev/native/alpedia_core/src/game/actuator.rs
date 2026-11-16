@@ -8,6 +8,8 @@
 //! - 分離   : 出力面の結合を切り離す（先の部分は別の構築物になる）
 //! - 結合   : 出力面の先にあるブロック（別の構築物でも可）とつなぐ
 
+use crate::game::world::{wld, World};
+use crate::game::construct::{con, Construct};
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyDict, PyList, PyTuple};
@@ -63,11 +65,11 @@ fn link_key<'py>(py: Python<'py>, a: &Bound<'py, PyAny>, b: &Bound<'py, PyAny>) 
 }
 
 fn dev_of<'py>(c: &Bound<'py, PyAny>, i: usize) -> R<Bound<'py, PyAny>> {
-    c.getattr("devs")?.get_item(i)
+    Construct::g_devs(con(&c)?)?.get_item(i)
 }
 
 fn dev_def<'py>(c: &Bound<'py, PyAny>, d: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    c.getattr("reg")?.call_method1("device", (d.get_item("def")?,))
+    Construct::g_reg(con(&c)?)?.call_method1("device", (d.get_item("def")?,))
 }
 
 fn int_of(v: &Bound<'_, PyAny>) -> R<i64> {
@@ -193,7 +195,7 @@ pub fn act_migrate_device<'py>(py: Python<'py>, dev: &Bound<'py, PyAny>) -> R<Bo
 #[pyfunction]
 pub fn act_check_action(c: &Bound<'_, PyAny>, i: usize, action: &str) -> R<()> {
     let d = dev_of(c, i)?;
-    let reg = c.getattr("reg")?;
+    let reg = Construct::g_reg(con(&c)?)?;
     let m = motion(&d, Some(&reg))?;
     if actions_for(m).contains(&action) {
         return Ok(());
@@ -241,7 +243,7 @@ pub fn is_hinge_dev(dev: &Bound<'_, PyAny>, reg: Option<&Bound<'_, PyAny>>) -> R
         return Ok(true);
     }
     let Some(reg) = reg.filter(|r| !r.is_none()) else { return Ok(false) };
-    let dd = reg.call_method1("device", (dev.get_item("def")?,))?;
+    let dd = crate::game::registry::dev_dict(&reg, &dev.get_item("def")?)?;
     if !dd.is_truthy()? {
         return Ok(false);
     }
@@ -369,7 +371,7 @@ pub fn output_cell<'py>(c: &Bound<'py, PyAny>, i: usize) -> R<Bound<'py, PyTuple
     } else {
         dt
     };
-    let cell = c.getattr("cells")?.get_item(i)?;
+    let cell = Construct::g_cells(con(&c)?)?.get_item(i)?;
     let x: i64 = cell.get_item(0)?.extract()?;
     let y: i64 = cell.get_item(1)?.extract()?;
     let z: i64 = cell.get_item(2)?.extract()?;
@@ -383,8 +385,8 @@ pub fn act_output_cell<'py>(c: &Bound<'py, PyAny>, i: usize) -> R<Bound<'py, PyT
 
 pub fn is_attached(c: &Bound<'_, PyAny>, i: usize) -> R<bool> {
     let py = c.py();
-    let k = link_key(py, &c.getattr("cells")?.get_item(i)?, output_cell(c, i)?.as_any())?;
-    c.getattr("links")?.contains(k)
+    let k = link_key(py, &Construct::g_cells(con(&c)?)?.get_item(i)?, output_cell(c, i)?.as_any())?;
+    Construct::g_links(con(&c)?)?.contains(k)
 }
 
 #[pyfunction]
@@ -414,7 +416,7 @@ pub fn act_cmd_rotate(c: &Bound<'_, PyAny>, i: usize, angle: &Bound<'_, PyAny>, 
     let d = dev_of(c, i)?;
     let st = d.get_item("state")?;
     let mut t = if absolute { float_of(angle)? } else { float_of(&sget(&st, "angle_target", 0.0)?)? + float_of(angle)? };
-    if is_hinge_dev(&d, Some(&c.getattr("reg")?))? {
+    if is_hinge_dev(&d, Some(&Construct::g_reg(con(&c)?)?))? {
         t = t.max(-HINGE_MAX).min(HINGE_MAX);
     }
     st.set_item("angle_target", t)?;
@@ -445,10 +447,10 @@ pub fn act_cmd_extend(c: &Bound<'_, PyAny>, i: usize, amount: Option<&Bound<'_, 
 #[pyfunction]
 pub fn act_cmd_detach(c: &Bound<'_, PyAny>, i: usize) -> R<bool> {
     let py = c.py();
-    let cell = c.getattr("cells")?.get_item(i)?;
+    let cell = Construct::g_cells(con(&c)?)?.get_item(i)?;
     let key = link_key(py, &cell, output_cell(c, i)?.as_any())?;
-    let links = c.getattr("links")?;
-    let extras = c.getattr("extras")?;
+    let links = Construct::g_links(con(&c)?)?;
+    let extras = Construct::g_extras(con(&c)?)?;
     let mut found = links.contains(&key)? || extras.contains(&key)?;
     links.call_method1("discard", (&key,))?;
     extras.call_method1("pop", (&key, py.None()))?;
@@ -491,7 +493,7 @@ pub fn act_cmd_detach(c: &Bound<'_, PyAny>, i: usize) -> R<bool> {
 
 /// 頂点 idx の位置（構築物の pos から、その行だけ読む）
 fn pos_at(c: &Bound<'_, PyAny>, idx: &[usize]) -> R<Vec<[f64; 3]>> {
-    let p: PyReadonlyArray2<f64> = c.getattr("pos")?.extract()?;
+    let p: PyReadonlyArray2<f64> = Construct::g_pos(con(&c)?)?.extract()?;
     let a = p.as_array();
     let n = a.nrows();
     idx.iter()
@@ -549,7 +551,7 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// 出力面とその先のブロックの、軸まわりのねじれ角（度）
 pub fn measure_twist(c: &Bound<'_, PyAny>, i: usize) -> R<Option<f64>> {
     let oc = output_cell(c, i)?;
-    let j = c.getattr("index")?.call_method1("get", (oc,))?;
+    let j = Construct::g_index(con(&c)?)?.call_method1("get", (oc,))?;
     if j.is_none() {
         return Ok(None);
     }
@@ -590,7 +592,7 @@ pub fn act_measure_twist(c: &Bound<'_, PyAny>, i: usize) -> R<Option<f64>> {
 pub fn act_sync_angle(c: &Bound<'_, PyAny>, i: usize) -> R<()> {
     let d = dev_of(c, i)?;
     let st = d.get_item("state")?;
-    if is_hinge_dev(&d, Some(&c.getattr("reg")?))? {
+    if is_hinge_dev(&d, Some(&Construct::g_reg(con(&c)?)?))? {
         st.set_item("angle", 0.0)?;
         st.set_item("angle_target", 0.0)?;
         return Ok(());
@@ -608,12 +610,12 @@ pub fn act_sync_angle(c: &Bound<'_, PyAny>, i: usize) -> R<()> {
 #[pyo3(signature = (c, i, world=None))]
 pub fn act_output_angle(c: &Bound<'_, PyAny>, i: usize, world: Option<&Bound<'_, PyAny>>) -> R<f64> {
     let py = c.py();
-    let j = c.getattr("index")?.call_method1("get", (output_cell(c, i)?,))?;
+    let j = Construct::g_index(con(&c)?)?.call_method1("get", (output_cell(c, i)?,))?;
     if j.is_none() || !is_attached(c, i)? {
         return Ok(0.0);
     }
     let d = dev_of(c, i)?;
-    if is_hinge_dev(&d, Some(&c.getattr("reg")?))? {
+    if is_hinge_dev(&d, Some(&Construct::g_reg(con(&c)?)?))? {
         return float_of(&sget(&d.get_item("state")?, "angle", 0.0)?);
     }
     let j: usize = j.extract()?;
@@ -664,7 +666,7 @@ fn pget<'py>(p: &Bound<'py, PyAny>, k: &str, default: f64) -> R<Bound<'py, PyAny
 pub fn act_execute_preset(world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, i: usize) -> R<String> {
     let py = c.py();
     let dev = dev_of(c, i)?;
-    let reg = c.getattr("reg")?;
+    let reg = Construct::g_reg(con(&c)?)?;
     let st = dev.get_item("state")?;
     let mut p = st.call_method1("get", ("preset",))?;
     if !p.is_truthy()? {
@@ -793,7 +795,7 @@ pub fn act_step(c: &Bound<'_, PyAny>, i: usize, dd: &Bound<'_, PyAny>, dt: f64, 
         wake(c)?;
     }
     let axis = dev.get_item("dir")?.extract::<i64>()?.rem_euclid(6) as usize / 2;
-    let s = c.getattr("act_scale")?;
+    let s = Construct::g_act_scale(con(&c)?)?;
     let mut arr: numpy::PyReadwriteArray2<f64> = s.extract()?;
     let mut a = arr.as_array_mut();
     for k in 0..3 {
@@ -814,12 +816,12 @@ pub fn act_merge_map<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, other: &Bound<
     let fit = c.call_method0("rigid_fit")?;
     let rm = m3(&fit.get_item(0)?)?;
     let t = v3(&fit.get_item(1)?)?;
-    let csize: f64 = c.getattr("size")?.extract()?;
+    let csize: f64 = Construct::g_size(con(&c)?)?.extract()?;
     let osize: f64 = other.getattr("size")?.extract()?;
     let cen = v3s(&other.call_method0("voxel_centers")?)?;
     let local: Vec<[f64; 3]> = cen.iter().map(|p| { let l = mul_r(sub(*p, t), &rm); [l[0] / csize - 0.5, l[1] / csize - 0.5, l[2] / csize - 0.5] }).collect();
     let rnd: Vec<[f64; 3]> = local.iter().map(|l| [l[0].round_ties_even(), l[1].round_ties_even(), l[2].round_ties_even()]).collect();
-    let ocells: Vec<Bound<'py, PyAny>> = other.getattr("cells")?.iter()?.collect::<R<_>>()?;
+    let ocells: Vec<Bound<'py, PyAny>> = Construct::g_cells(con(&other)?)?.iter()?.collect::<R<_>>()?;
     let dmax = local.iter().zip(&rnd).flat_map(|(a, b)| (0..3).map(move |k| (a[k] - b[k]).abs())).fold(0.0f64, f64::max);
     if (osize - csize).abs() < 1e-6 && dmax < 0.2 {
         let fr: Vec<f64> = super::construct::fv(&other.call_method0("voxel_frames")?)?;
@@ -840,7 +842,7 @@ pub fn act_merge_map<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, other: &Bound<
         if dm < 0.25 && mr.iter().all(|m| (det(m) - 1.0).abs() < 1e-6) {
             let mp = PyDict::new_bound(py);
             let mut vals = std::collections::HashSet::new();
-            let index = c.getattr("index")?;
+            let index = Construct::g_index(con(&c)?)?;
             let mut clash = false;
             for (cell, r) in ocells.iter().zip(&rnd) {
                 let v = [r[0] as i64, r[1] as i64, r[2] as i64];
@@ -853,7 +855,7 @@ pub fn act_merge_map<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, other: &Bound<
             }
             if vals.len() == mp.len() && !clash {
                 let mut ok = true;
-                for l in other.getattr("links")?.iter()? {
+                for l in Construct::g_links(con(&other)?)?.iter()? {
                     let l = l?;
                     let a = cell_of(&mp.get_item(l.get_item(0)?)?.unwrap())?;
                     let b = cell_of(&mp.get_item(l.get_item(1)?)?.unwrap())?;
@@ -891,7 +893,7 @@ pub fn act_merge_map<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, other: &Bound<
             }
         }
     }
-    let cc: Vec<[i64; 3]> = c.getattr("cells")?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
+    let cc: Vec<[i64; 3]> = Construct::g_cells(con(&c)?)?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
     let oc: Vec<[i64; 3]> = ocells.iter().map(cell_of).collect::<R<_>>()?;
     let off: Vec<i64> = (0..3).map(|a| cc.iter().map(|x| x[a]).max().unwrap_or(0) - oc.iter().map(|x| x[a]).min().unwrap_or(0) + 1000).collect();
     let mp = PyDict::new_bound(py);
@@ -910,12 +912,12 @@ pub fn act_cmd_attach(py: Python<'_>, world: &Bound<'_, PyAny>, c: &Bound<'_, Py
     }
     let fi = act_face_info(py, c, i)?;
     let (ctr, n) = (v3(fi.0.as_any())?, v3(fi.1.as_any())?);
-    let size: f64 = c.getattr("size")?.extract()?;
+    let size: f64 = Construct::g_size(con(&c)?)?.extract()?;
     let want = [ctr[0] + n[0] * size * 0.5, ctr[1] + n[1] * size * 0.5, ctr[2] + n[2] * size * 0.5];
     let mut best: Option<(f64, Bound<'_, PyAny>, usize)> = None;
-    for other in world.getattr("constructs")?.call_method0("values")?.iter()? {
+    for other in World::g_constructs(wld(&world)?)?.call_method0("values")?.iter()? {
         let other = other?;
-        if other.getattr("n_vox")?.extract::<usize>()? == 0 {
+        if Construct::n(con(&other)?)? == 0 {
             continue;
         }
         let cen = v3s(&other.call_method0("voxel_centers")?)?;
@@ -940,24 +942,24 @@ pub fn act_cmd_attach(py: Python<'_>, world: &Bound<'_, PyAny>, c: &Bound<'_, Py
     };
     let target = if !other.is(c) {
         let (cell_map, xform) = act_merge_map(py, c, &other)?;
-        let t = cell_map.get_item(other.getattr("cells")?.get_item(k)?)?.unwrap();
+        let t = cell_map.get_item(Construct::g_cells(con(&other)?)?.get_item(k)?)?.unwrap();
         world.call_method1("merge_constructs", (c, &other, &cell_map, &xform))?;
         t
     } else {
-        c.getattr("cells")?.get_item(k)?
+        Construct::g_cells(con(&c)?)?.get_item(k)?
     };
-    let j: usize = c.getattr("index")?.get_item(&target)?.extract()?;
+    let j: usize = Construct::g_index(con(&c)?)?.get_item(&target)?.extract()?;
     let out = act_output_cell(c, i)?;
-    let d: usize = c.getattr("devs")?.get_item(i)?.get_item("dir")?.extract()?;
+    let d: usize = Construct::g_devs(con(&c)?)?.get_item(i)?.get_item("dir")?.extract()?;
     let pairs = super::construct::joint_pairs(d);
-    let ci = c.getattr("cells")?.get_item(i)?;
+    let ci = Construct::g_cells(con(&c)?)?.get_item(i)?;
     let adj = target.eq(&out)?;
     if adj {
         // 格子の隣どうし → 通常の結合（回転・押し出しも使える）
-        c.getattr("links")?.call_method1("add", (link_key_c(py, super::construct::cell_of(&ci)?, super::construct::cell_of(out.as_any())?),))?;
+        Construct::g_links(con(&c)?)?.call_method1("add", (link_key_c(py, super::construct::cell_of(&ci)?, super::construct::cell_of(out.as_any())?),))?;
     } else {
         // 格子がずれている → 近い頂点どうしを結ぶ
-        let pos = v3s(&c.getattr("pos")?)?;
+        let pos = v3s(&Construct::g_pos(con(&c)?)?)?;
         let pb = &pos[8 * j..8 * j + 8];
         let mut lst: Vec<(usize, usize, f64)> = vec![];
         let mut used = std::collections::HashSet::new();
@@ -976,7 +978,7 @@ pub fn act_cmd_attach(py: Python<'_>, world: &Bound<'_, PyAny>, c: &Bound<'_, Py
         if !key.get_item(0)?.eq(&ci)? {
             lst = lst.into_iter().map(|(a, b, r)| (b, a, r)).collect();
         }
-        c.getattr("extras")?.set_item(key, lst)?;
+        Construct::g_extras(con(&c)?)?.set_item(key, lst)?;
     }
     c.call_method0("rebuild")?;
     if adj {

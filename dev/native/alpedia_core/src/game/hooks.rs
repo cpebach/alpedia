@@ -5,6 +5,7 @@
 //! MOD のプログラムは Addon を継承し、必要な口だけを上書きする（どれも何もしない既定の実装を持つ）。
 //! 当たり判定に使う「動くかもしれない物体」（owner）は owner.is_moving() と owner.point_velocity(P) を持つ。
 
+use crate::game::player::{ply, Player};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySet, PyTuple};
 
@@ -129,7 +130,7 @@ impl Addon {
     /// ジェットパックを使えるか：(使えるか, 噴射の向き)
     fn jetpack(&self, py: Python<'_>, world: PyObject, player: &Bound<'_, PyAny>, dt: PyObject, thrust_dir: PyObject) -> PyResult<(PyObject, PyObject)> {
         let _ = py;
-        Ok((player.getattr("jetpack")?.unbind(), thrust_dir))
+        Ok((Player::g_jetpack(ply(&player)?)?.unbind(), thrust_dir))
     }
 
     // --- マルチプレイ（LAN） -------------------------------------------------

@@ -1,6 +1,8 @@
 //! 小さなモジュールの中身（main/extensions.py・tutorial.py・app.py・content.py・tutorial_rod.py・tutorial_drone.py・
 //! geom.py・winperf.py）。文章（README・ゲーム内のプログラム・看板）は Python 側の表のまま。
 
+use crate::game::world::{wld, World};
+use crate::game::construct::{con, Construct};
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
 use pyo3::types::{IntoPyDict, PyDict, PyList, PyTuple};
@@ -319,22 +321,22 @@ pub fn app_run_headless(py: Python<'_>, world: &Bound<'_, PyAny>, cfg: &Bound<'_
     for k in 0..steps {
         world.call_method1("step", (dt,))?;
         if k % 120 == 0 {
-            let cs = world.getattr("constructs")?;
+            let cs = World::g_constructs(wld(&world)?)?;
             let mut nv = 0i64;
             for c in cs.call_method0("values")?.iter()? {
                 nv += c?.getattr("n_vert")?.extract::<i64>()?;
             }
-            lg.call_method1("info", ("t=%.1fs 構築物 %d 頂点 %d", world.getattr("time")?, cs.len()?, nv))?;
+            lg.call_method1("info", ("t=%.1fs 構築物 %d 頂点 %d", World::g_time(wld(&world)?)?, cs.len()?, nv))?;
         }
     }
     let el = t0.elapsed().as_secs_f64();
     lg.call_method1("info", ("%d ステップ %.2f 秒（1ステップ %.1f ms）", steps, el, el / steps.max(1) as f64 * 1000.0))?;
-    for c in world.getattr("constructs")?.call_method0("values")?.iter()? {
+    for c in World::g_constructs(wld(&world)?)?.call_method0("values")?.iter()? {
         let c = c?;
         let v = super::construct::v3(&c.call_method0("velocity")?)?;
         let com = super::construct::v3(&c.call_method0("center_of_mass")?)?;
         let r1 = |x: f64| (x * 10.0).round_ties_even() / 10.0;
-        lg.call_method1("info", ("  %s: ボクセル %d, 速度 %.2f m/s, 位置 %s", c.getattr("name")?, c.getattr("n_vox")?,
+        lg.call_method1("info", ("  %s: ボクセル %d, 速度 %.2f m/s, 位置 %s", Construct::g_name(con(&c)?)?, Construct::n(con(&c)?)?.into_py(py).into_bound(py),
             super::construct::norm(v), vec![r1(com[0]), r1(com[1]), r1(com[2])]))?;
     }
     Ok(())

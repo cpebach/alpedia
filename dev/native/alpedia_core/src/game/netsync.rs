@@ -2,6 +2,9 @@
 //! 構築物：形が変わったら丸ごと、剛体の間は (R, x, v, w)、ブロックごとに動く間は頂点、止まったら最後の位置を1回だけ。
 //! 機器・資源・電力などの中身（メタ）は変わったときだけ。プログラムのファイルは変わったファイルだけ。
 
+use crate::game::world::{wld, World};
+use crate::game::player::{ply, Player};
+use crate::game::construct::{con, Construct};
 use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyBytes, PyDict, PyList, PyTuple};
 
@@ -47,14 +50,14 @@ impl ConsTracker {
     fn diff<'py>(&self, py: Python<'py>, world: &Bound<'py, PyAny>) -> R<(Bound<'py, PyList>, Bound<'py, PyList>)> {
         let out = PyList::empty_bound(py);
         let sent = self.sent.bind(py).downcast::<PyDict>()?.clone();
-        let cons = world.getattr("constructs")?;
+        let cons = World::g_constructs(wld(&world)?)?;
         for c in PyList::new_bound(py, cons.call_method0("values")?.iter()?.collect::<R<Vec<_>>>()?).iter() {
-            if c.getattr("n_vox")?.extract::<usize>()? == 0 {
+            if Construct::n(con(&c)?)? == 0 {
                 continue;
             }
-            let id = c.getattr("id")?;
-            let ver = c.getattr("version")?;
-            let asleep = c.getattr("asleep")?.is_truthy()?;
+            let id = Construct::g_id(con(&c)?)?;
+            let ver = Construct::g_version(con(&c)?)?;
+            let asleep = Construct::g_asleep(con(&c)?)?.is_truthy()?;
             let mut s = sent.call_method1("get", (&id,))?;
             if s.is_none() || !s.get_item("ver")?.eq(&ver)? {
                 let e = PyDict::new_bound(py);
@@ -69,7 +72,7 @@ impl ConsTracker {
                 s = ns.into_any();
                 if asleep {
                     e.set_item("sleep", true)?;
-                    s.set_item("sleep", c.getattr("sleep_epoch")?)?;
+                    s.set_item("sleep", Construct::g_sleep_epoch(con(&c)?)?)?;
                 }
                 out.append(e)?;
                 if asleep {
@@ -77,11 +80,11 @@ impl ConsTracker {
                 }
             }
             if asleep {
-                let ep = c.getattr("sleep_epoch")?;
+                let ep = Construct::g_sleep_epoch(con(&c)?)?;
                 if !s.get_item("sleep")?.eq(&ep)? {
                     let e = PyDict::new_bound(py);
                     e.set_item("id", &id)?;
-                    e.set_item("sleep", f32a(&c.getattr("pos")?)?)?;
+                    e.set_item("sleep", f32a(&Construct::g_pos(con(&c)?)?)?)?;
                     out.append(e)?;
                     s.set_item("sleep", ep)?;
                     s.set_item("rb", py.None())?;
@@ -89,7 +92,7 @@ impl ConsTracker {
                 continue;
             }
             s.set_item("sleep", py.None())?;
-            let mode: String = c.getattr("mode")?.extract()?;
+            let mode: String = Construct::g_mode(con(&c)?)?.extract()?;
             let rb = c.getattr("rb")?;
             if (mode == "rigid" || mode == "rails") && !rb.is_none() {
                 let e = PyDict::new_bound(py);
@@ -97,7 +100,7 @@ impl ConsTracker {
                 for k in ["R", "x", "v", "w"] {
                     e.set_item(k, f64a(&rb.get_item(k)?)?)?;
                 }
-                let ep = c.getattr("rb_epoch")?;
+                let ep = Construct::g_rb_epoch(con(&c)?)?;
                 if !s.get_item("rb")?.eq(&ep)? {
                     e.set_item("local", np(py)?.call_method1("asarray", (rb.get_item("local")?, np(py)?.getattr("float32")?))?)?;
                     s.set_item("rb", ep)?;
@@ -107,14 +110,14 @@ impl ConsTracker {
                 s.set_item("rb", py.None())?;
                 let e = PyDict::new_bound(py);
                 e.set_item("id", &id)?;
-                e.set_item("pos", f32a(&c.getattr("pos")?)?)?;
+                e.set_item("pos", f32a(&Construct::g_pos(con(&c)?)?)?)?;
                 out.append(e)?;
             }
         }
         let gone = PyList::empty_bound(py);
         for cid in sent.keys() {
             let c = cons.call_method1("get", (&cid,))?;
-            if c.is_none() || c.getattr("n_vox")?.extract::<usize>()? == 0 {
+            if c.is_none() || Construct::n(con(&c)?)? == 0 {
                 gone.append(cid)?;
             }
         }
@@ -126,10 +129,10 @@ impl ConsTracker {
 }
 
 fn sleep_c(c: &Bound<'_, PyAny>) -> R<()> {
-    c.setattr("vel", np(c.py())?.call_method1("zeros_like", (c.getattr("pos")?,))?)?;
-    c.setattr("asleep", true)?;
-    let ep: i64 = c.getattr("sleep_epoch")?.extract()?;
-    c.setattr("sleep_epoch", ep + 1)
+    Construct::s_vel(con(&c)?, np(c.py())?.call_method1("zeros_like", (Construct::g_pos(con(&c)?)?,))?)?;
+    Construct::s_asleep(con(&c)?, true)?;
+    let ep: i64 = Construct::g_sleep_epoch(con(&c)?)?.extract()?;
+    Construct::s_sleep_epoch(con(&c)?, ep + 1)
 }
 #[pyfunction]
 #[pyo3(name = "netsync_sleep")]
@@ -142,7 +145,7 @@ pub fn netsync_sleep(c: &Bound<'_, PyAny>) -> R<()> {
 pub fn netsync_apply_construct<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, e: &Bound<'py, PyAny>, dt_since: f64) -> R<Bound<'py, PyAny>> {
     let none = py.None().into_bound(py);
     let cid = e.get_item("id")?;
-    let cons = world.getattr("constructs")?;
+    let cons = World::g_constructs(wld(&world)?)?;
     let c0 = cons.call_method1("get", (&cid,))?;
     if !c0.is_none() {
         c0.setattr("_net_age", 0.0)?;
@@ -150,9 +153,9 @@ pub fn netsync_apply_construct<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, 
     if e.contains("full")? {
         let sp = e.call_method1("get", ("spawn",))?;
         let sp = if sp.is_truthy()? { sp } else { PyDict::new_bound(py).into_any() };
-        let c = imp(py, "main.construct")?.getattr("Construct")?.call_method1("from_dict", (world.getattr("registry")?, e.get_item("full")?, sp))?;
-        if !c0.is_none() && c.getattr("anchor")?.is_none() {
-            c.setattr("anchor", c0.getattr("anchor")?)?;
+        let c = imp(py, "main.construct")?.getattr("Construct")?.call_method1("from_dict", (World::g_registry(wld(&world)?)?, e.get_item("full")?, sp))?;
+        if !c0.is_none() && Construct::g_anchor(con(&c)?)?.is_none() {
+            Construct::s_anchor(con(&c)?, Construct::g_anchor(con(&c0)?)?)?;
         }
         cons.set_item(&cid, &c)?;
         c.setattr("_net_age", 0.0)?;
@@ -167,21 +170,21 @@ pub fn netsync_apply_construct<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, 
     }
     if e.contains("sleep")? {
         let p = f64a(&e.get_item("sleep")?)?;
-        if p.getattr("shape")?.eq(c.getattr("pos")?.getattr("shape")?)? {
-            c.setattr("pos", p)?;
+        if p.getattr("shape")?.eq(Construct::g_pos(con(&c)?)?.getattr("shape")?)? {
+            Construct::s_pos(con(&c)?, p)?;
         }
-        c.setattr("mode", "soft")?;
+        Construct::s_mode(con(&c)?, "soft")?;
         c.setattr("rb", py.None())?;
         sleep_c(&c)?;
     } else if e.contains("R")? {
-        if e.contains("local")? || c.getattr("rb")?.is_none() || !c.getattr("mode")?.eq("rails")? {
+        if e.contains("local")? || c.getattr("rb")?.is_none() || !Construct::g_mode(con(&c)?)?.eq("rails")? {
             let loc = match e.call_method1("get", ("local",))? {
                 l if !l.is_none() => f64a(&l)?,
                 _ => {
                     // 届く前に作り直したとき（次の版で揃う）
                     let x = v3(&e.get_item("x")?)?;
                     let rm = super::construct::m3(&e.get_item("R")?)?;
-                    let l: Vec<[f64; 3]> = v3s(&c.getattr("pos")?)?.iter().map(|p| super::construct::mul_r(super::construct::sub(*p, x), &rm)).collect();
+                    let l: Vec<[f64; 3]> = v3s(&Construct::g_pos(con(&c)?)?)?.iter().map(|p| super::construct::mul_r(super::construct::sub(*p, x), &rm)).collect();
                     super::construct::a3(py, &l)?
                 }
             };
@@ -190,36 +193,36 @@ pub fn netsync_apply_construct<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, 
             rb.local = super::construct::to_fa(&loc)?;
             rb.ext = 1.0;
             c.setattr("rb", Py::new(py, rb)?)?;
-            let ep: i64 = c.getattr("rb_epoch")?.extract()?;
-            c.setattr("rb_epoch", ep + 1)?;
+            let ep: i64 = Construct::g_rb_epoch(con(&c)?)?.extract()?;
+            Construct::s_rb_epoch(con(&c)?, ep + 1)?;
         }
-        c.setattr("mode", "rails")?;
+        Construct::s_mode(con(&c)?, "rails")?;
         let rb = c.getattr("rb")?;
         for k in ["R", "x", "v", "w"] {
             rb.set_item(k, f64a(&e.get_item(k)?)?)?;
         }
         c.call_method0("_rails_sync")?;
-        c.setattr("asleep", false)?;
+        Construct::s_asleep(con(&c)?, false)?;
     } else if e.contains("pos")? {
         let p = f64a(&e.get_item("pos")?)?;
-        let pos = c.getattr("pos")?;
+        let pos = Construct::g_pos(con(&c)?)?;
         if !p.getattr("shape")?.eq(pos.getattr("shape")?)? {
             return Ok(none);
         }
-        if c.getattr("mode")?.eq("rails")? {
-            c.setattr("mode", "soft")?;
+        if Construct::g_mode(con(&c)?)?.eq("rails")? {
+            Construct::s_mode(con(&c)?, "soft")?;
             c.setattr("rb", py.None())?;
-            c.setattr("vel", np(py)?.call_method1("zeros_like", (&p,))?)?;
-        } else if dt_since > 1e-3 && !c.getattr("asleep")?.is_truthy()? {
+            Construct::s_vel(con(&c)?, np(py)?.call_method1("zeros_like", (&p,))?)?;
+        } else if dt_since > 1e-3 && !Construct::g_asleep(con(&c)?)?.is_truthy()? {
             let (a, b) = (fv(&p)?, fv(&pos)?);
             let v: Vec<f64> = a.iter().zip(&b).map(|(x, y)| (x - y) / dt_since).collect();
             let n = v.len() / 3;
-            c.setattr("vel", super::construct::arr(py, v, &[n, 3])?)?;
+            Construct::s_vel(con(&c)?, super::construct::arr(py, v, &[n, 3])?)?;
         } else {
-            c.setattr("vel", np(py)?.call_method1("zeros_like", (&p,))?)?;
+            Construct::s_vel(con(&c)?, np(py)?.call_method1("zeros_like", (&p,))?)?;
         }
-        c.setattr("pos", p)?;
-        c.setattr("asleep", false)?;
+        Construct::s_pos(con(&c)?, p)?;
+        Construct::s_asleep(con(&c)?, false)?;
     }
     Ok(none)
 }
@@ -244,9 +247,9 @@ pub fn netsync_rot<'py>(py: Python<'py>, axis: &Bound<'py, PyAny>, ang: f64) -> 
 /// 参加者：次の更新が届くまでの間、構築物を速度のまま進める（動きをなめらかにする）
 #[pyfunction]
 pub fn netsync_advance(py: Python<'_>, world: &Bound<'_, PyAny>, dt: f64) -> R<()> {
-    for c in world.getattr("constructs")?.call_method0("values")?.iter()? {
+    for c in World::g_constructs(wld(&world)?)?.call_method0("values")?.iter()? {
         let c = c?;
-        if c.getattr("asleep")?.is_truthy()? || c.getattr("n_vox")?.extract::<usize>()? == 0 {
+        if Construct::g_asleep(con(&c)?)?.is_truthy()? || Construct::n(con(&c)?)? == 0 {
             continue;
         }
         let age: f64 = match opt(&c, "_net_age")? { Some(a) => a.extract()?, None => 0.0 };
@@ -255,7 +258,7 @@ pub fn netsync_advance(py: Python<'_>, world: &Bound<'_, PyAny>, dt: f64) -> R<(
             continue;
         }
         let rb = c.getattr("rb")?;
-        if c.getattr("mode")?.eq("rails")? && !rb.is_none() {
+        if Construct::g_mode(con(&c)?)?.eq("rails")? && !rb.is_none() {
             let x = v3(&rb.get_item("x")?)?;
             let v = v3(&rb.get_item("v")?)?;
             rb.set_item("x", a1(py, add(x, [v[0] * dt, v[1] * dt, v[2] * dt])))?;
@@ -267,10 +270,10 @@ pub fn netsync_advance(py: Python<'_>, world: &Bound<'_, PyAny>, dt: f64) -> R<(
             }
             c.call_method0("_rails_sync")?;
         } else {
-            let (p, v) = (fv(&c.getattr("pos")?)?, fv(&c.getattr("vel")?)?);
+            let (p, v) = (fv(&Construct::g_pos(con(&c)?)?)?, fv(&Construct::g_vel(con(&c)?)?)?);
             let n = p.len() / 3;
             let q: Vec<f64> = p.iter().zip(&v).map(|(a, b)| a + b * dt).collect();
-            c.setattr("pos", super::construct::arr(py, q, &[n, 3])?)?;
+            Construct::s_pos(con(&c)?, super::construct::arr(py, q, &[n, 3])?)?;
         }
     }
     let _ = cross;
@@ -295,7 +298,7 @@ pub fn netsync_dev_public<'py>(py: Python<'py>, d: &Bound<'py, PyAny>) -> R<Boun
 #[pyfunction]
 pub fn netsync_meta_of<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
     let devs = PyList::empty_bound(py);
-    for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+    for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
         let d = d?;
         if d.is_truthy()? {
             let p = netsync_dev_public(py, &d)?;
@@ -303,14 +306,14 @@ pub fn netsync_meta_of<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'
         }
     }
     let m = PyDict::new_bound(py);
-    m.set_item("name", c.getattr("name")?)?;
+    m.set_item("name", Construct::g_name(con(&c)?)?)?;
     m.set_item("devs", devs)?;
-    m.set_item("status", c.getattr("status")?)?;
-    m.set_item("storage", c.getattr("storage")?)?;
-    m.set_item("powered", c.getattr("powered")?.is_truthy()?)?;
-    m.set_item("anchor", c.getattr("anchor")?)?;
+    m.set_item("status", Construct::g_status(con(&c)?)?)?;
+    m.set_item("storage", Construct::g_storage(con(&c)?)?)?;
+    m.set_item("powered", Construct::g_powered(con(&c)?)?.is_truthy()?)?;
+    m.set_item("anchor", Construct::g_anchor(con(&c)?)?)?;
     let cav = PyList::empty_bound(py);
-    for (k, v) in c.getattr("cavity_air")?.downcast::<PyDict>()?.iter() {
+    for (k, v) in Construct::g_cavity_air(con(&c)?)?.downcast::<PyDict>()?.iter() {
         cav.append(PyList::new_bound(py, [PyList::new_bound(py, k.iter()?.collect::<R<Vec<_>>>()?).into_any(), v]))?;
     }
     m.set_item("cav", cav)?;
@@ -365,11 +368,11 @@ impl MetaTracker {
     fn diff<'py>(&self, py: Python<'py>, world: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
         let out = PyList::empty_bound(py);
         let sent = self.sent.bind(py).downcast::<PyDict>()?.clone();
-        let cons = world.getattr("constructs")?;
+        let cons = World::g_constructs(wld(&world)?)?;
         for c in PyList::new_bound(py, cons.call_method0("values")?.iter()?.collect::<R<Vec<_>>>()?).iter() {
             let m = netsync_jsonable(py, netsync_meta_of(py, &c)?.as_any())?;
             let key = netsync_dumps(py, &m)?;
-            let id = c.getattr("id")?;
+            let id = Construct::g_id(con(&c)?)?;
             if !sent.call_method1("get", (&id,))?.eq(&key)? {
                 sent.set_item(&id, &key)?;
                 let e = PyDict::new_bound(py);
@@ -390,22 +393,22 @@ impl MetaTracker {
 #[pyo3(signature = (c, m, devices=true))]
 pub fn netsync_apply_meta(py: Python<'_>, c: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>, devices: bool) -> R<()> {
     let g = |k: &str| m.call_method1("get", (k,));
-    c.setattr("name", m.call_method1("get", ("name", c.getattr("name")?))?)?;
+    Construct::s_name(con(&c)?, m.call_method1("get", ("name", Construct::g_name(con(&c)?)?))?)?;
     let or_dict = |v: Bound<'_, PyAny>| -> R<PyObject> { Ok(if v.is_truthy()? { v.unbind() } else { PyDict::new_bound(py).into_any().unbind() }) };
-    c.setattr("status", or_dict(g("status")?)?)?;
-    c.setattr("storage", or_dict(g("storage")?)?)?;
-    c.setattr("powered", g("powered")?.is_truthy()?)?;
-    c.setattr("anchor", g("anchor")?)?;
+    Construct::s_status(con(&c)?, or_dict(g("status")?)?)?;
+    Construct::s_storage(con(&c)?, or_dict(g("storage")?)?)?;
+    Construct::s_powered(con(&c)?, g("powered")?.is_truthy()?)?;
+    Construct::s_anchor(con(&c)?, g("anchor")?)?;
     let cav = PyDict::new_bound(py);
     for kv in m.call_method1("get", ("cav", PyList::empty_bound(py)))?.iter()? {
         let kv = kv?;
         cav.set_item(PyTuple::new_bound(py, kv.get_item(0)?.iter()?.collect::<R<Vec<_>>>()?), kv.get_item(1)?)?;
     }
-    c.setattr("cavity_air", cav)?;
+    Construct::s_cavity_air(con(&c)?, cav)?;
     if !devices {
         return Ok(());
     }
-    let devs = c.getattr("devs")?;
+    let devs = Construct::g_devs(con(&c)?)?;
     let n = devs.len()?;
     for e in m.call_method1("get", ("devs", PyList::empty_bound(py)))?.iter()? {
         let e = e?;
@@ -434,8 +437,8 @@ pub fn netsync_apply_meta(py: Python<'_>, c: &Bound<'_, PyAny>, m: &Bound<'_, Py
 #[pyfunction]
 pub fn netsync_dev_patch<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, base: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
     let out = PyList::empty_bound(py);
-    let cells = c.getattr("cells")?;
-    for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+    let cells = Construct::g_cells(con(&c)?)?;
+    for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
         let d = d?;
         if !d.is_truthy()? || !base.contains(i)? {
             continue;
@@ -472,7 +475,7 @@ pub fn netsync_dev_patch<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, base: &Bou
 #[pyfunction]
 pub fn netsync_dev_base<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
     let out = PyDict::new_bound(py);
-    for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+    for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
         let d = d?;
         if d.is_truthy()? {
             let j = netsync_jsonable(py, netsync_dev_public(py, &d)?.as_any())?;
@@ -485,14 +488,14 @@ pub fn netsync_dev_base<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<
 /// ホスト：参加者が機器の画面で変えた分を当てる
 #[pyfunction]
 pub fn netsync_apply_dev_patch(py: Python<'_>, world: &Bound<'_, PyAny>, cid: &Bound<'_, PyAny>, patches: &Bound<'_, PyAny>) -> R<()> {
-    let c = world.getattr("constructs")?.call_method1("get", (cid,))?;
+    let c = World::g_constructs(wld(&world)?)?.call_method1("get", (cid,))?;
     if c.is_none() {
         return Ok(());
     }
-    let devs = c.getattr("devs")?;
+    let devs = Construct::g_devs(con(&c)?)?;
     for p in patches.iter()? {
         let p = p?;
-        let i = c.getattr("index")?.call_method1("get", (PyTuple::new_bound(py, p.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?),))?;
+        let i = Construct::g_index(con(&c)?)?.call_method1("get", (PyTuple::new_bound(py, p.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?),))?;
         if i.is_none() {
             continue;
         }
@@ -687,30 +690,30 @@ pub fn netsync_player_public<'py>(py: Python<'py>, p: &Bound<'py, PyAny>, pid: &
     let d = PyDict::new_bound(py);
     d.set_item("pid", pid)?;
     d.set_item("name", name)?;
-    d.set_item("def", p.getattr("defn")?.get_item("id")?)?;
+    d.set_item("def", Player::g_defn(ply(&p)?)?.get_item("id")?)?;
     d.set_item("pos", p.getattr("pos")?.call_method0("tolist")?)?;
     d.set_item("up", p.getattr("up")?.call_method0("tolist")?)?;
     d.set_item("vel", p.getattr("vel")?.call_method0("tolist")?)?;
-    d.set_item("gv", tolist(&p.getattr("ground_vel")?)?)?;
-    d.set_item("og", p.getattr("on_ground")?.is_truthy()?)?;
-    d.set_item("jp", p.getattr("jetpack")?.is_truthy()?)?;
+    d.set_item("gv", tolist(&Player::g_ground_vel(ply(&p)?)?)?)?;
+    d.set_item("og", Player::g_on_ground(ply(&p)?)?.is_truthy()?)?;
+    d.set_item("jp", Player::g_jetpack(ply(&p)?)?.is_truthy()?)?;
     d.set_item("fl", match opt(p, "flying")? { Some(f) => f.is_truthy()?, None => false })?;
-    d.set_item("wt", p.getattr("in_water")?.call_method0("__float__")?)?;
-    let s = p.getattr("seated")?;
+    d.set_item("wt", Player::g_in_water(ply(&p)?)?.call_method0("__float__")?)?;
+    let s = Player::g_seated(ply(&p)?)?;
     d.set_item("seat", if s.is_truthy()? {
         PyList::new_bound(py, [s.get_item(0)?, PyList::new_bound(py, s.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any()
     } else { py.None().into_bound(py) })?;
     d.set_item("fwd", match opt(p, "look_fwd")? { Some(f) => tolist(&f)?, None => PyList::new_bound(py, [0.0, 0.0, 1.0]).into_any() })?;
     d.set_item("pitch", match opt(p, "pitch")? { Some(f) => f.extract::<f64>()?, None => 0.0 })?;
-    d.set_item("emote", match p.getattr("emote") { Ok(e) => e, Err(_) => py.None().into_bound(py) })?;
+    d.set_item("emote", match Player::g_emote(ply(&p)?) { Ok(e) => e, Err(_) => py.None().into_bound(py) })?;
     d.set_item("face", match opt(p, "face_dir")? { Some(f) => tolist(&f)?, None => py.None().into_bound(py) })?;
     Ok(d)
 }
 
 #[pyfunction]
 pub fn netsync_apply_player_public(py: Python<'_>, world: &Bound<'_, PyAny>, p: &Bound<'_, PyAny>, d: &Bound<'_, PyAny>) -> R<()> {
-    if !p.getattr("defn")?.call_method1("get", ("id",))?.eq(d.get_item("def")?)? {
-        p.setattr("defn", world.call_method1("player_def", (d.get_item("def")?,))?)?;
+    if !Player::g_defn(ply(&p)?)?.call_method1("get", ("id",))?.eq(d.get_item("def")?)? {
+        Player::s_defn(ply(&p)?, world.call_method1("player_def", (d.get_item("def")?,))?)?;
     }
     for (k, key) in [("pos", "pos"), ("up", "up"), ("vel", "vel"), ("ground_vel", "gv"), ("look_fwd", "fwd")] {
         p.setattr(k, f64a(&d.get_item(key)?)?)?;
@@ -719,17 +722,17 @@ pub fn netsync_apply_player_public(py: Python<'_>, world: &Bound<'_, PyAny>, p: 
         p.setattr(k, d.get_item(key)?)?;
     }
     let s = d.call_method1("get", ("seat",))?;
-    p.setattr("seated", if s.is_truthy()? {
+    Player::s_seated(ply(&p)?, if s.is_truthy()? {
         PyTuple::new_bound(py, [s.get_item(0)?, PyTuple::new_bound(py, s.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any()
     } else { py.None().into_bound(py) })?;
     let em = d.call_method1("get", ("emote",))?;
-    let cur = match p.getattr("emote") { Ok(e) => e, Err(_) => py.None().into_bound(py) };
+    let cur = match Player::g_emote(ply(&p)?) { Ok(e) => e, Err(_) => py.None().into_bound(py) };
     if !em.eq(&cur)? {
-        p.setattr("emote", &em)?;
-        p.setattr("emote_t0", imp(py, "time")?.call_method0("monotonic")?)?;
+        Player::s_emote(ply(&p)?, &em)?;
+        Player::s_emote_t0(ply(&p)?, imp(py, "time")?.call_method0("monotonic")?)?;
     }
     let f = d.call_method1("get", ("face",))?;
-    p.setattr("face_dir", if f.is_none() { f } else { f64a(&f)? })?;
+    Player::s_face_dir(ply(&p)?, if f.is_none() { f } else { f64a(&f)? })?;
     let _ = PyBytes::new_bound(py, b"");
     Ok(())
 }

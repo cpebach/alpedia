@@ -8,8 +8,8 @@ impl Viewer {
         let py = slf.py();
         let mut pt = std::time::Instant::now();
         let s = slf.as_any();
-        let w = ga(s, "w")?;
-        let views = ga(s, "views")?;
+        let w = Self::ga_w(slf)?;
+        let views = Self::ga_views(slf)?;
         let cons = ga(&w, "constructs")?;
         let vk: Vec<B<'_>> = views.iter()?.collect::<R<_>>()?;
         for cid in vk {
@@ -17,24 +17,24 @@ impl Viewer {
                 views.call_method1("pop", (&cid,))?.call_method0("remove")?;
             }
         }
-        let loaded = ga(s, "loaded")?;
+        let loaded = Self::ga_loaded(slf)?;
         loaded.call_method1("intersection_update", (py.import_bound("builtins")?.getattr("set")?.call1((&cons,))?,))?;
-        let g = ga(s, "cfg")?.get_item("graphics")?;
+        let g = Self::ga_cfg(slf)?.get_item("graphics")?;
         let far = f64of(&get(&g, "view_distance", 3000)?)?;
         let decal_dist = f64of(&get(&g, "decal_distance", 30.0)?)?;
         let ld = get(&g, "load_distance", 0)?;
         let load = if ld.is_truthy()? { f64of(&ld)? } else { 0.0 };
         let o = v3(origin)?;
-        let anchor = ga(s, "anchor")?;
+        let anchor = Self::ga_anchor(slf)?;
         if anchor.is_none() || norm(sub(o, v3(&anchor)?)) > 256.0 {
-            s.setattr("anchor", np3(py, o))?;
-            let av: i64 = ga(s, "anchor_ver")?.extract()?;
-            s.setattr("anchor_ver", av + 1)?;
+            Self::sa_anchor(slf, np3(py, o))?;
+            let av: i64 = Self::ga_anchor_ver(slf)?.extract()?;
+            Self::sa_anchor_ver(slf, av + 1)?;
         }
-        let an = ga(s, "anchor")?;
+        let an = Self::ga_anchor(slf)?;
         let a3 = v3(&an)?;
         let d0 = sub(a3, o);
-        ga(s, "static_root")?.call_method1("setPos", (d0[0], d0[1], d0[2]))?;
+        Self::ga_static_root(slf)?.call_method1("setPos", (d0[0], d0[1], d0[2]))?;
         let ba = w.call_method0("_bounds_arrays")?;
         let cs: Vec<B<'_>> = ba.get_item(0)?.iter()?.collect::<R<_>>()?;
         let cc = ba.get_item(1)?;
@@ -56,14 +56,14 @@ impl Viewer {
         let seat = if seatv.is_truthy()? { seatv.get_item(0)? } else { none(py) };
         let lod_list = PyList::empty_bound(py);
         let fno: i64 = gd(s, "frame_no", tb(py, 0)).extract::<i64>()? + 1;
-        s.setattr("frame_no", fno)?;
+        Self::sa_frame_no(slf, fno)?;
         let time = imp(py, "time")?;
         let budget = f64of(&time.call_method0("perf_counter")?)? + 0.008;
         let shape = imp(py, "main.shape")?;
         let rm = render_mod(py)?;
-        let root = ga(s, "root")?;
-        let static_root = ga(s, "static_root")?;
-        let anchor_ver = ga(s, "anchor_ver")?;
+        let root = Self::ga_root(slf)?;
+        let static_root = Self::ga_static_root(slf)?;
+        let anchor_ver = Self::ga_anchor_ver(slf)?;
         let hash = py.import_bound("builtins")?.getattr("hash")?;
         scene_prof(0, &mut pt);
         for (c, dist) in cs.iter().zip(dists.iter()) {
@@ -127,7 +127,7 @@ impl Viewer {
             }
         }
         scene_prof(1, &mut pt);
-        ga(s, "lod")?.call_method1("update", (lod_list, origin))?;
+        Self::ga_lod(slf)?.call_method1("update", (lod_list, origin))?;
         scene_prof(2, &mut pt);
         let lc = PyList::empty_bound(py);
         for k in loaded.iter()? {
@@ -136,21 +136,21 @@ impl Viewer {
                 lc.append(cons.get_item(&k)?)?;
             }
         }
-        ga(s, "lights")?.call_method1("update", (lc, origin, f64of(&ga(&w, "time")?)?))?;
+        Self::ga_lights(slf)?.call_method1("update", (lc, origin, f64of(&ga(&w, "time")?)?))?;
         scene_prof(3, &mut pt);
         let ppos = ga(&player, "pos")?;
         let npl = w.call_method1("nearest_planet", (&ppos,))?;
-        let carve = ga(s, "carve")?;
+        let carve = Self::ga_carve(slf)?;
         carve.call_method1("update", (&npl, &ppos, origin))?;
-        let patch = ga(s, "patch")?;
+        let patch = Self::ga_patch(slf)?;
         patch.call_method1("update", (&npl, &ppos, origin, &carve))?;
-        for pv in ga(s, "planet_views")?.iter()? {
+        for pv in Self::ga_planet_views(slf)?.iter()? {
             let pv = pv?;
             pv.call_method1("update", (origin, &ppos, patch.call_method1("frame_for", (ga(&pv, "p")?,))?))?;
         }
         scene_prof(4, &mut pt);
         let now = time.call_method0("time")?;
-        for x in ga(s, "scenes")?.iter()? {
+        for x in Self::ga_scenes(slf)?.iter()? {
             let x = x?;
             let (a, sv) = (x.get_item(0)?, x.get_item(1)?);
             let on = gd(&a, "alert", tb(py, false)).is_truthy()? || gd(&a, "lights", tb(py, false)).is_truthy()?;
@@ -166,14 +166,13 @@ impl Viewer {
         }
         scene_prof(5, &mut pt);
         let c: Vec<f64> = (0..3).map(|i| SKY_SPACE[i] + (SKY_DAY[i] - SKY_SPACE[i]) * air).collect();
-        ga(s, "view")?.call_method1("set_clear", (c[0], c[1], c[2]))?;
+        Self::ga_view(slf)?.call_method1("set_clear", (c[0], c[1], c[2]))?;
         Ok(())
     }
     /// 画面から消す（メニューに戻るとき）
     pub(crate) fn destroy(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let snd = ga(s, "snd")?;
+        let snd = Self::ga_snd(slf)?;
         if !snd.is_none() {
             snd.call_method1("set_bgm", (py.None(),))?;
             snd.call_method1("set_override", (py.None(),))?;
@@ -182,40 +181,40 @@ impl Viewer {
         }
         let f = acall(py, "destroy", vec![])?;
         Self::_each_addon(slf, &f, false)?;
-        s.setattr("addons", PyList::empty_bound(py))?;
-        let r = ga(&ga(s, "game")?, "touch_hud").and_then(|h| h.call_method0("destroy"));
+        Self::sa_addons(slf, PyList::empty_bound(py))?;
+        let r = ga(&Self::ga_game(slf)?, "touch_hud").and_then(|h| h.call_method0("destroy"));
         swallow(py, r, |_| Ok(()))?;
-        for b in ga(s, "bodies")?.call_method0("values")?.iter()? {
+        for b in Self::ga_bodies(slf)?.call_method0("values")?.iter()? {
             let b = b?;
             swallow(py, b.call_method0("destroy"), |_| Ok(()))?;
         }
-        s.setattr("bodies", PyDict::new_bound(py))?;
-        for t in ga(s, "labels")?.call_method0("values")?.iter()? {
+        Self::sa_bodies(slf, PyDict::new_bound(py))?;
+        for t in Self::ga_labels(slf)?.call_method0("values")?.iter()? {
             t?.call_method0("remove")?;
         }
-        s.setattr("labels", PyDict::new_bound(py))?;
-        for v in ga(s, "views")?.call_method0("values")?.iter()? {
+        Self::sa_labels(slf, PyDict::new_bound(py))?;
+        for v in Self::ga_views(slf)?.call_method0("values")?.iter()? {
             v?.call_method0("remove")?;
         }
-        s.setattr("views", PyDict::new_bound(py))?;
-        for n in [ga(s, "root")?, ga(&ga(s, "hud")?, "node")?, ga(&ga(s, "msg")?, "node")?, ga(&ga(s, "aim_text")?, "node")?,
-                  ga(&ga(s, "item_text")?, "node")?, ga(&ga(s, "cross")?, "np")?] {
+        Self::sa_views(slf, PyDict::new_bound(py))?;
+        for n in [Self::ga_root(slf)?, ga(&Self::ga_hud(slf)?, "node")?, ga(&Self::ga_msg(slf)?, "node")?, ga(&Self::ga_aim_text(slf)?, "node")?,
+                  ga(&Self::ga_item_text(slf)?, "node")?, ga(&Self::ga_cross(slf)?, "np")?] {
             n.call_method0("removeNode")?;
         }
-        let hb = ga(s, "hotbar")?;
+        let hb = Self::ga_hotbar(slf)?;
         if !hb.is_none() {
             hb.get_item(1)?.call_method0("removeNode")?;
         }
-        let st: Vec<B<'_>> = ga(&ga(s, "ui")?, "stack")?.iter()?.collect::<R<_>>()?;
+        let st: Vec<B<'_>> = ga(&Self::ga_ui(slf)?, "stack")?.iter()?.collect::<R<_>>()?;
         for x in st {
             x.call_method0("close")?;
         }
-        let ed = ga(s, "editor")?;
+        let ed = Self::ga_editor(slf)?;
         if !ed.is_none() && ed.hasattr("close")? {
             swallow(py, ed.call_method0("close"), |_| Ok(()))?;
         }
-        ga(s, "shim")?.call_method1("destroy", (ga(&ga(s, "game")?, "ui_root")?,))?;
-        ga(s, "view")?.call_method1("grab", (false,))?;
+        Self::ga_shim(slf)?.call_method1("destroy", (ga(&Self::ga_game(slf)?, "ui_root")?,))?;
+        Self::ga_view(slf)?.call_method1("grab", (false,))?;
         Ok(())
     }
     pub(crate) fn run(slf: &Bound<'_, Self>) -> R<()> {
@@ -223,13 +222,13 @@ impl Viewer {
         let s = slf.as_any();
         let t = imp(py, "time")?;
         let mut last: f64 = t.call_method0("perf_counter")?.extract()?;
-        while !ga(s, "quit")?.is_truthy()? {
+        while !Self::ga_quit(slf)?.is_truthy()? {
             let now: f64 = t.call_method0("perf_counter")?.extract()?;
             let dt = (now - last).min(0.1);
             last = now;
             s.call_method1("frame", (dt,))?;
         }
-        ga(s, "w")?.call_method0("save")?;
+        Self::ga_w(slf)?.call_method0("save")?;
         Ok(())
     }
 }

@@ -5,6 +5,7 @@
 //!
 //! 部品（ConstructView など）の値は Python の属性（ほかの部品・MOD が読む）。計算は Rust。
 
+use crate::game::construct::{con, Construct};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySet, PyTuple};
@@ -240,7 +241,7 @@ pub fn render_block_ao<'py>(py: Python<'py>, c: &B<'py>, p: &B<'py>, n: &B<'py>,
     let use_ = !gid.is_none() && gid.len()? > 0 && gid.call_method0("max")?.gt(0)?;
     let i64t = npm.getattr("int64")?;
     let f64t = npm.getattr("float64")?;
-    let cells = npm.call_method("asarray", (c.getattr("cells")?,), Some(&[("dtype", &i64t)].into_py_dict_bound(py)))?.call_method1("reshape", (-1, 3))?;
+    let cells = npm.call_method("asarray", (Construct::g_cells(con(&c)?)?,), Some(&[("dtype", &i64t)].into_py_dict_bound(py)))?.call_method1("reshape", (-1, 3))?;
     let (g, o) = if use_ {
         (npm.call_method1("ascontiguousarray", (&gid, &i64t))?, npm.call_method1("ascontiguousarray", (owner.unwrap(), &i64t))?)
     } else {
@@ -336,9 +337,9 @@ pub fn render_display_faces<'py>(py: Python<'py>, c: &B<'py>, i: &B<'py>, disp: 
     let dt = cm.getattr("DIR_TUPLES")?;
     let f = get(disp, "face", 2)?;
     let faces: Vec<i64> = if f.eq("all")? { (0..6).collect() } else { vec![py.import_bound("builtins")?.getattr("int")?.call1((f,))?.extract()?] };
-    let cell = c.getattr("cells")?.get_item(i)?;
+    let cell = Construct::g_cells(con(&c)?)?.get_item(i)?;
     let cl: Vec<i64> = cell.extract()?;
-    let links = c.getattr("links")?;
+    let links = Construct::g_links(con(&c)?)?;
     let lk = cm.getattr("link_key")?;
     let mut out = vec![];
     for d in faces {
@@ -374,13 +375,13 @@ pub fn render_lod_vertices<'py>(py: Python<'py>, c: &B<'py>, base: &B<'py>) -> R
 #[pyfunction]
 pub fn render_light_ids<'py>(py: Python<'py>, c: &B<'py>) -> R<B<'py>> {
     let cache = gd(c, "_light_cache", none(py));
-    let key = PyTuple::new_bound(py, [c.getattr("version")?, c.getattr("n_vox")?]);
+    let key = PyTuple::new_bound(py, [c.getattr("version")?, Construct::n(con(&c)?)?.into_py(py).into_bound(py)]);
     if cache.is_none() || !cache.get_item(0)?.eq(&key)? {
         let reg = c.getattr("reg")?;
         let ids = PyList::empty_bound(py);
-        for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+        for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
             let d = d?;
-            if d.is_truthy()? && get(&or_dict(reg.call_method1("device", (d.get_item("def")?,))?)?, "type", py.None())?.eq("light")? {
+            if d.is_truthy()? && get(&or_dict(crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?)?, "type", py.None())?.eq("light")? {
                 ids.append(i)?;
             }
         }

@@ -110,6 +110,122 @@ pub struct Registry {
     loaded_mods: Py<PyList>,
     #[pyo3(get, set)]
     errors: Py<PyList>,
+    /// 型のある定義の覚え（元の dict が同じ物の間だけ使う。MOD が定義を入れ替えたら作り直す）
+    mat_cache: std::sync::Mutex<std::collections::HashMap<String, (usize, std::sync::Arc<MaterialDef>)>>,
+    dev_cache: std::sync::Mutex<std::collections::HashMap<String, (usize, std::sync::Arc<DeviceDef>)>>,
+}
+
+/// 素材の定義の数の値（Rust の計算で使う。元の dict は MOD・画面が読む）
+#[derive(Clone, Debug)]
+pub struct MaterialDef {
+    pub stiffness: f64,
+    pub joint_stiffness: f64,
+    pub break_distance: f64,
+    pub yield_strain: f64,
+    pub plasticity: f64,
+    pub density: f64,
+    pub damping: f64,
+    pub friction: f64,
+    pub rebond: bool,
+    pub rebond_distance: f64,
+}
+
+/// 機器の定義のうち、Rust がよく読む物
+#[derive(Clone, Debug)]
+pub struct DeviceDef {
+    /// 種類（thruster・actuator など）
+    pub kind: String,
+}
+
+impl MaterialDef {
+    fn of(d: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let f = |k: &str| -> PyResult<f64> { d.get_item(k)?.extract() };
+        Ok(MaterialDef {
+            stiffness: f("stiffness")?,
+            joint_stiffness: f("joint_stiffness")?,
+            break_distance: f("break_distance")?,
+            yield_strain: f("yield_strain")?,
+            plasticity: f("plasticity")?,
+            density: f("density")?,
+            damping: f("damping")?,
+            friction: f("friction")?,
+            rebond: d.get_item("rebond")?.is_truthy()?,
+            rebond_distance: f("rebond_distance")?,
+        })
+    }
+}
+
+/// 素材の定義の dict（Python のメソッドを通さずに Registry を直接呼ぶ。Registry でなければ material() を呼ぶ）
+pub fn mat_dict<'py>(reg: &Bound<'py, PyAny>, id_: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    match reg.downcast::<Registry>() {
+        Ok(r) => Ok(r.borrow().material(reg.py(), id_)?.into_bound(reg.py())),
+        Err(_) => reg.call_method1("material", (id_,)),
+    }
+}
+/// 機器の定義の dict（無ければ None）
+pub fn dev_dict<'py>(reg: &Bound<'py, PyAny>, id_: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    match reg.downcast::<Registry>() {
+        Ok(r) => Ok(r.borrow().device(reg.py(), id_)?.into_bound(reg.py())),
+        Err(_) => reg.call_method1("device", (id_,)),
+    }
+}
+
+/// 素材の定義（型つき）。reg が Registry でなければ（MOD が差し替えた物など）material() を呼んで作る
+pub fn material_def(reg: &Bound<'_, PyAny>, id_: &Bound<'_, PyAny>) -> PyResult<std::sync::Arc<MaterialDef>> {
+    let py = reg.py();
+    let Ok(r) = reg.downcast::<Registry>() else {
+        return Ok(std::sync::Arc::new(MaterialDef::of(&reg.call_method1("material", (id_,))?)?));
+    };
+    let r = r.borrow();
+    let d = r.material(py, id_)?.into_bound(py);
+    let key: String = id_.str()?.to_string();
+    let ptr = d.as_ptr() as usize;
+    if let Ok(c) = r.mat_cache.lock() {
+        if let Some((p, m)) = c.get(&key) {
+            if *p == ptr {
+                return Ok(m.clone());
+            }
+        }
+    }
+    let m = std::sync::Arc::new(MaterialDef::of(&d)?);
+    if let Ok(mut c) = r.mat_cache.lock() {
+        c.insert(key, (ptr, m.clone()));
+    }
+    Ok(m)
+}
+
+/// 機器の定義（型つき）。無ければ None
+pub fn device_def(reg: &Bound<'_, PyAny>, id_: &Bound<'_, PyAny>) -> PyResult<Option<std::sync::Arc<DeviceDef>>> {
+    let py = reg.py();
+    let d = match reg.downcast::<Registry>() {
+        Ok(r) => r.borrow().device(py, id_)?.into_bound(py),
+        Err(_) => reg.call_method1("device", (id_,))?,
+    };
+    if !d.is_truthy()? {
+        return Ok(None);
+    }
+    let key: String = id_.str()?.to_string();
+    let ptr = d.as_ptr() as usize;
+    let cache = reg.downcast::<Registry>().ok();
+    if let Some(r) = &cache {
+        if let Ok(c) = r.borrow().dev_cache.lock() {
+            if let Some((p, m)) = c.get(&key) {
+                if *p == ptr {
+                    return Ok(Some(m.clone()));
+                }
+            }
+        }
+    }
+    let t = d.call_method1("get", ("type",))?;
+    let m = std::sync::Arc::new(DeviceDef {
+        kind: if t.is_none() { String::new() } else { t.extract()? },
+    });
+    if let Some(r) = &cache {
+        if let Ok(mut c) = r.borrow().dev_cache.lock() {
+            c.insert(key, (ptr, m.clone()));
+        }
+    }
+    Ok(Some(m))
 }
 
 impl Registry {
@@ -261,14 +377,15 @@ impl Registry {
         for c in CATEGORIES {
             defs.set_item(c, PyDict::new_bound(py))?;
         }
-        Ok(Registry { defs: defs.unbind(), loaded_mods: PyList::empty_bound(py).unbind(), errors: PyList::empty_bound(py).unbind() })
+        Ok(Registry { defs: defs.unbind(), loaded_mods: PyList::empty_bound(py).unbind(), errors: PyList::empty_bound(py).unbind(),
+                      mat_cache: Default::default(), dev_cache: Default::default() })
     }
 
     fn get(&self, py: Python<'_>, cat: &str, id_: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         Ok(self.cat(py, cat)?.get_item(id_)?.map(|x| x.unbind()).unwrap_or_else(|| py.None()))
     }
 
-    fn material(&self, py: Python<'_>, id_: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    pub fn material(&self, py: Python<'_>, id_: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         let m = self.cat(py, "materials")?;
         if let Some(x) = m.get_item(id_)? {
             if x.is_truthy()? {
@@ -278,7 +395,7 @@ impl Registry {
         Ok(m.get_item("rock")?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("rock"))?.unbind())
     }
 
-    fn device(&self, py: Python<'_>, id_: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    pub fn device(&self, py: Python<'_>, id_: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         Ok(self.cat(py, "devices")?.get_item(id_)?.map(|x| x.unbind()).unwrap_or_else(|| py.None()))
     }
 

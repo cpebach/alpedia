@@ -7,6 +7,8 @@
 //! どの場面でどの曲を流すかは、画面側の拡張の bgm()（シナリオなら章ごと）とムービー（set_override）が決める。
 //! 曲のファイルが無ければ鳴らさない（BGM の MOD は入れなくても遊べる）。
 
+use crate::game::player::{ply, Player};
+use crate::game::construct::{con, Construct};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
@@ -336,7 +338,26 @@ impl RsBase {
 
 /// BGM・効果音（音そのものは base が Rust で鳴らす。update(dt) を毎フレーム呼ぶ）
 #[pyclass(module = "main.client.sound", subclass, dict)]
-pub struct SoundSystem {}
+pub struct SoundSystem {
+    /// base（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_base: Option<PyObject>,
+    /// bgm_vol（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_bgm_vol: Option<PyObject>,
+    /// cache（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cache: Option<PyObject>,
+    /// fading（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_fading: Option<PyObject>,
+    /// lib（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_lib: Option<PyObject>,
+    /// loops（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_loops: Option<PyObject>,
+    /// music（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_music: Option<PyObject>,
+    /// sfx_vol（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_sfx_vol: Option<PyObject>,
+    /// want（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_want: Option<PyObject>,
+}
 
 fn g<'py>(s: &B<'py>, k: &str) -> R<B<'py>> {
     s.getattr(k)
@@ -347,21 +368,20 @@ impl SoundSystem {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        SoundSystem {}
+        SoundSystem { a_base: None, a_bgm_vol: None, a_cache: None, a_fading: None, a_lib: None, a_loops: None, a_music: None, a_sfx_vol: None, a_want: None }
     }
     fn __init__(slf: &Bound<'_, Self>, base: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("base", base)?;
-        s.setattr("bgm_vol", 0.6)?;
-        s.setattr("sfx_vol", 0.8)?;
-        s.setattr("lib", py.None())?;
-        s.setattr("cache", PyDict::new_bound(py))?; // 効果音の名前 → [AudioSound]（重ねて鳴らせるように数個）
-        s.setattr("loops", PyDict::new_bound(py))?; // 繰り返す効果音の名前 → AudioSound
-        s.setattr("music", py.None())?; // 今の曲 {"key", "snd", "gain", "vol"}
-        s.setattr("fading", PyList::empty_bound(py))?; // 消えていく曲
-        s.setattr("want", py.None())?; // 場面が流したい曲 (曲の ID, 始める秒)
-        s.setattr("override", py.None())?; // ムービーの曲（場面の曲より優先）
+        Self::sa_base(slf, base)?;
+        Self::sa_bgm_vol(slf, 0.6)?;
+        Self::sa_sfx_vol(slf, 0.8)?;
+        Self::sa_lib(slf, py.None())?;
+        Self::sa_cache(slf, PyDict::new_bound(py))?; // 効果音の名前 → [AudioSound]（重ねて鳴らせるように数個）
+        Self::sa_loops(slf, PyDict::new_bound(py))?; // 繰り返す効果音の名前 → AudioSound
+        Self::sa_music(slf, py.None())?; // 今の曲 {"key", "snd", "gain", "vol"}
+        Self::sa_fading(slf, PyList::empty_bound(py))?; // 消えていく曲
+        Self::sa_want(slf, py.None())?; // 場面が流したい曲 (曲の ID, 始める秒)
+        slf.as_any().setattr("override", py.None())?; // ムービーの曲（場面の曲より優先）
         Ok(())
     }
     fn _fname(&self, p: &B<'_>) -> R<String> {
@@ -373,8 +393,8 @@ impl SoundSystem {
         let s = slf.as_any();
         let bv = sound_volume_of(py, cfg, &tb(py, "bgm"), 60.0)?;
         let sv = sound_volume_of(py, cfg, &tb(py, "sfx"), 80.0)?;
-        s.setattr("bgm_vol", bv)?;
-        s.setattr("sfx_vol", sv)?;
+        Self::sa_bgm_vol(slf, bv)?;
+        Self::sa_sfx_vol(slf, sv)?;
         let r = (|| -> R<()> {
             let b = g(s, "base")?;
             b.getattr("musicManager")?.call_method1("setVolume", (bv,))?;
@@ -484,7 +504,7 @@ impl SoundSystem {
     // --- BGM ---
     /// 場面の曲：(曲の ID, 始める秒) か None（止める）。毎フレーム呼んでよい（変わったときだけ替える）
     fn set_bgm(slf: &Bound<'_, Self>, want: &B<'_>) -> R<()> {
-        slf.as_any().setattr("want", want)
+        Self::sa_want(slf, want)
     }
     /// ムービーの曲（None で場面の曲に戻す）
     fn set_override(slf: &Bound<'_, Self>, want: &B<'_>) -> R<()> {
@@ -495,7 +515,7 @@ impl SoundSystem {
         let s = slf.as_any();
         let none = py.None().into_bound(py);
         if g(s, "lib")?.is_none() {
-            s.setattr("lib", smod(py)?.call_method0("library")?)?;
+            Self::sa_lib(slf, smod(py)?.call_method0("library")?)?;
         }
         let (tid, start) = (key.get_item(0)?, key.get_item(1)?);
         let t = g(s, "lib")?.call_method1("get", (&tid,))?;
@@ -543,7 +563,7 @@ impl SoundSystem {
                 g(s, "fading")?.call_method1("append", (&cur,))?;
             }
             let m = if key.is_truthy()? { Self::_start(slf, &key)? } else { py.None().into_bound(py) };
-            s.setattr("music", m)?;
+            Self::sa_music(slf, m)?;
         }
         let fade = f64of(&smod(py)?.getattr("FADE")?)?;
         let step = dt / fade;
@@ -580,11 +600,11 @@ pub fn sound_sources<'py>(py: Python<'py>, w: &B<'py>, prev_lit: &B<'py>, sfx: &
     let lit = PySet::empty_bound(py)?;
     for c in w.call_method1("constructs_near", (&eye, 150.0))?.iter()? {
         let c = c?;
-        if !c.getattr("n_vox")?.is_truthy()? || !c.getattr("has_devices")?.is_truthy()? {
+        if !Construct::n(con(&c)?)?.into_py(py).into_bound(py).is_truthy()? || !c.getattr("has_devices")?.is_truthy()? {
             continue;
         }
         let cid = c.getattr("id")?;
-        for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+        for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
             let d = d?;
             if !d.is_truthy()? {
                 continue;
@@ -610,8 +630,8 @@ pub fn sound_sources<'py>(py: Python<'py>, w: &B<'py>, prev_lit: &B<'py>, sfx: &
         }
     }
     let p = w.getattr("player")?;
-    if p.getattr("flying").map(|x| x.is_truthy().unwrap_or(false)).unwrap_or(false) {
-        let t = p.getattr("thrust").unwrap_or_else(|_| imp(py, "numpy").unwrap().call_method1("zeros", (3,)).unwrap());
+    if Player::g_flying(ply(&p)?).map(|x| x.is_truthy().unwrap_or(false)).unwrap_or(false) {
+        let t = Player::g_thrust(ply(&p)?).unwrap_or_else(|_| imp(py, "numpy").unwrap().call_method1("zeros", (3,)).unwrap());
         if f64of(&npl.call_method1("norm", (t,))?)? > 0.05 {
             jet = 0.6;
         }
@@ -636,3 +656,41 @@ pub fn register(m: &Bound<'_, PyModule>) -> R<()> {
     m.add_class::<SoundSystem>()?;
     Ok(())
 }
+
+// ---------------------------------------------------------------- SoundSystem の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! soundsystem_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl SoundSystem { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl SoundSystem { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+soundsystem_attr_fields!(
+    ga_base sa_base pga_base psa_base a_base "base", ga_bgm_vol sa_bgm_vol pga_bgm_vol psa_bgm_vol a_bgm_vol "bgm_vol", ga_cache sa_cache pga_cache psa_cache a_cache "cache", ga_fading sa_fading pga_fading psa_fading a_fading "fading", ga_lib sa_lib pga_lib psa_lib a_lib "lib", ga_loops sa_loops pga_loops psa_loops a_loops "loops", ga_music sa_music pga_music psa_music a_music "music", ga_sfx_vol sa_sfx_vol pga_sfx_vol psa_sfx_vol a_sfx_vol "sfx_vol", ga_want sa_want pga_want psa_want a_want "want"
+);

@@ -2,6 +2,9 @@
 //! ホストの PC がワールドを持ち、物理・プログラム・MOD の決まりを全部動かす。参加者は自分の体だけ動かして知らせ、
 //! 置く・壊す・掘る・E などの操作はホストへ送る。
 
+use crate::game::world::{wld, World};
+use crate::game::player::{ply, Player};
+use crate::game::construct::{con, Construct};
 use pyo3::prelude::*;
 use pyo3::types::{IntoPyDict, PyBytes, PyDict, PyList, PyTuple};
 
@@ -246,14 +249,14 @@ impl Host {
         let listener = net.call_method1("Listener", (port, &inbox))?;
         let lport = listener.getattr("port")?;
         let craters = PyDict::new_bound(py);
-        for (k, p) in world.getattr("planets")?.iter()?.enumerate() {
+        for (k, p) in World::g_planets(wld(&world)?)?.iter()?.enumerate() {
             craters.set_item(k, p?.getattr("craters")?.len()?)?;
         }
-        let files = ns(py)?.getattr("FileSync")?.call1((div(&world.getattr("dir")?, "scripts")?,))?;
+        let files = ns(py)?.getattr("FileSync")?.call1((div(&World::g_dir(wld(&world)?)?, "scripts")?,))?;
         files.call_method0("mark_all")?;
         files.call_method0("changes")?;
         let known = (|| -> R<Bound<'_, PyAny>> {
-            let t = div(&world.getattr("dir")?, "players.json")?.call_method("read_text", (), Some(&[("encoding", "utf-8")].into_py_dict_bound(py)))?;
+            let t = div(&World::g_dir(wld(&world)?)?, "players.json")?.call_method("read_text", (), Some(&[("encoding", "utf-8")].into_py_dict_bound(py)))?;
             imp(py, "json")?.call_method1("loads", (t,))
         })().unwrap_or_else(|_| PyDict::new_bound(py).into_any());
         let t = PyDict::new_bound(py);
@@ -265,7 +268,7 @@ impl Host {
             port: lport.clone().unbind(), announcer: py.None(), peers: PyDict::new_bound(py).into_any().unbind(), next_pid: 1,
             cons: ns(py)?.getattr("ConsTracker")?.call0()?.unbind(), meta: ns(py)?.getattr("MetaTracker")?.call0()?.unbind(),
             craters: craters.into_any().unbind(), addon_sent: PyDict::new_bound(py).into_any().unbind(), files: files.unbind(),
-            known: known.unbind(), manifest: py.None(), t: t.into_any().unbind(), last_state: world.getattr("time")?.extract()?,
+            known: known.unbind(), manifest: py.None(), t: t.into_any().unbind(), last_state: World::g_time(wld(&world)?)?.extract()?,
         };
         Ok(me)
     }
@@ -278,7 +281,7 @@ impl Host {
         slf.borrow_mut().announcer = ann.unbind();
         let w = Self::g(slf, "w")?;
         w.setattr("net", slf)?;
-        w.getattr("local_player")?.setattr("name", Self::g(slf, "name")?)?;
+        World::g_local_player(wld(&w)?)?.setattr("name", Self::g(slf, "name")?)?;
         let port = Self::g(slf, "port")?;
         let addrs: Vec<String> = net.call_method0("local_addresses")?.extract()?;
         slog(py, "netserver")?.call_method1("info", ("LAN に公開: %s ポート %d（%s）。参加できないときは、この PC のファイアウォールで TCP %d・UDP %d を許可してください（LANで公開できるようにする.bat）",
@@ -291,9 +294,9 @@ impl Host {
         let py = slf.py();
         let w = Self::g(slf, "w")?;
         dict(py, vec![("world", w.getattr("name")?.unbind()), ("host", Self::g(slf, "name")?.unbind()), ("port", Self::g(slf, "port")?.unbind()),
-            ("players", (1 + w.getattr("remote")?.len()?).into_py(py)),
+            ("players", (1 + World::g_remote(wld(&w)?)?.len()?).into_py(py)),
             ("locked", (!host_password(py, &Self::g(slf, "cfg").unwrap_or_else(|_| py.None().into_bound(py)))?.is_empty()).into_py(py)),
-            ("mods", PyList::new_bound(py, w.getattr("mods")?.iter()?.collect::<R<Vec<_>>>()?).into_any().unbind())])
+            ("mods", PyList::new_bound(py, World::g_mods(wld(&w)?)?.iter()?.collect::<R<Vec<_>>>()?).into_any().unbind())])
     }
     fn addresses(slf: &Bound<'_, Self>) -> R<Vec<String>> {
         let py = slf.py();
@@ -380,7 +383,7 @@ impl Host {
         let nsm = ns(py)?;
         let r = Self::g(slf, "cons")?.call_method1("diff", (&w,))?;
         let players = PyList::empty_bound(py);
-        players.append(nsm.call_method1("player_public", (w.getattr("local_player")?, 0, Self::g(slf, "name")?))?)?;
+        players.append(nsm.call_method1("player_public", (World::g_local_player(wld(&w)?)?, 0, Self::g(slf, "name")?))?)?;
         for p in Self::g(slf, "peers")?.call_method0("values")?.iter()? {
             let p = p?;
             if p.getattr("ready")?.is_truthy()? {
@@ -389,7 +392,7 @@ impl Host {
         }
         let craters = PyList::empty_bound(py);
         let cr = Self::g(slf, "craters")?;
-        for (k, pl) in w.getattr("planets")?.iter()?.enumerate() {
+        for (k, pl) in World::g_planets(wld(&w)?)?.iter()?.enumerate() {
             let pl = pl?;
             let pc = pl.getattr("craters")?;
             let n = pc.len()?;
@@ -429,7 +432,7 @@ impl Host {
         let out = PyDict::new_bound(py);
         let sent = Self::g(slf, "addon_sent")?;
         let nsm = ns(py)?;
-        for a in w.getattr("addons")?.iter()? {
+        for a in World::g_addons(wld(&w)?)?.iter()? {
             let a = a?;
             let st = match a.call_method1("net_state", (&w,)) {
                 Ok(s) => s,
@@ -459,13 +462,13 @@ impl Host {
         let py = slf.py();
         let nsm = ns(py)?;
         let p = peer.getattr("player")?;
-        let s = p.getattr("seated")?;
+        let s = Player::g_seated(ply(&p)?)?;
         let seated: PyObject = if s.is_truthy()? {
             PyList::new_bound(py, [s.get_item(0)?, PyList::new_bound(py, s.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any().unbind()
         } else { py.None() };
-        let you = nsm.call_method1("jsonable", (dict(py, vec![("inventory", p.getattr("inventory")?.unbind()), ("seated", seated),
-            ("starter_given", p.getattr("starter_given")?.unbind()), ("credits_given", p.getattr("credits_given")?.unbind()),
-            ("out_of_fuel", p.getattr("out_of_fuel")?.unbind())])?,))?;
+        let you = nsm.call_method1("jsonable", (dict(py, vec![("inventory", Player::g_inventory(ply(&p)?)?.unbind()), ("seated", seated),
+            ("starter_given", Player::g_starter_given(ply(&p)?)?.unbind()), ("credits_given", Player::g_credits_given(ply(&p)?)?.unbind()),
+            ("out_of_fuel", Player::g_out_of_fuel(ply(&p)?)?.unbind())])?,))?;
         let key = nsm.call_method1("dumps", (&you,))?;
         let pm = p.getattr("msgs")?;
         let msgs = PyList::new_bound(py, pm.iter()?.collect::<R<Vec<_>>>()?);
@@ -590,12 +593,12 @@ impl Host {
         slf.borrow_mut().next_pid += 1;
         let w = Self::g(slf, "w")?;
         if Self::g(slf, "_manifest")?.is_none() {
-            let mf = ns_mod_manifest(py, &w.getattr("registry")?.getattr("loaded_mods")?)?;
+            let mf = ns_mod_manifest(py, &World::g_registry(wld(&w)?)?.getattr("loaded_mods")?)?;
             slf.borrow_mut().manifest = mf.into_any().unbind();
         }
         let lst = |o: Bound<'_, PyAny>| -> R<PyObject> { Ok(PyList::new_bound(py, o.iter()?.collect::<R<Vec<_>>>()?).into_any().unbind()) };
         conn.call_method1("send", (dict(py, vec![("t", "welcome".into_py(py)), ("pid", pid.into_py(py)), ("name", name.into_py(py)),
-            ("world", w.getattr("name")?.unbind()), ("mods", lst(w.getattr("mods")?)?), ("loaded", lst(w.getattr("registry")?.getattr("loaded_mods")?)?),
+            ("world", w.getattr("name")?.unbind()), ("mods", lst(World::g_mods(wld(&w)?)?)?), ("loaded", lst(World::g_registry(wld(&w)?)?.getattr("loaded_mods")?)?),
             ("manifest", Self::g(slf, "_manifest")?.unbind()), ("host", Self::g(slf, "name")?.unbind())])?,))?;
         Ok(())
     }
@@ -681,7 +684,7 @@ impl Host {
         let w = Self::g(slf, "w")?;
         let pname = peer.getattr("name")?;
         let old = Self::g(slf, "known")?.call_method1("get", (&pname,))?;
-        let lp = w.getattr("local_player")?;
+        let lp = World::g_local_player(wld(&w)?)?;
         let p = if old.is_truthy()? {
             let d = old.call_method1("get", ("def",))?;
             let p = w.call_method1("make_player", (if d.is_truthy()? { d } else { m.call_method1("get", ("def",))? },))?;
@@ -689,21 +692,21 @@ impl Host {
             p
         } else {
             let fwd = match super::construct::opt(&lp, "look_fwd")? { Some(f) => super::construct::v3(&f)?, None => [0.0, 0.0, 1.0] };
-            let up = super::construct::v3(&lp.getattr("up")?)?;
+            let up = super::construct::v3(&Player::g_up(ply(&lp)?)?)?;
             let side = super::construct::cross(up, fwd);
-            let pos = super::construct::v3(&lp.getattr("pos")?)?;
+            let pos = super::construct::v3(&Player::g_pos(ply(&lp)?)?)?;
             let at = [pos[0] + side[0] * 1.5 + up[0] * 0.2, pos[1] + side[1] * 1.5 + up[1] * 0.2, pos[2] + side[2] * 1.5 + up[2] * 0.2];
             let p = w.call_method1("make_player", (m.call_method1("get", ("def",))?, super::construct::a1(py, at)))?;
-            p.setattr("up", lp.getattr("up")?.call_method0("copy")?)?;
+            p.setattr("up", Player::g_up(ply(&lp)?)?.call_method0("copy")?)?;
             p
         };
         p.setattr("name", &pname)?;
-        p.setattr("pid", peer.getattr("pid")?)?;
-        p.setattr("seated", py.None())?;
+        Player::s_pid(ply(&p)?, peer.getattr("pid")?)?;
+        Player::s_seated(ply(&p)?, py.None())?;
         peer.setattr("player", &p)?;
-        w.getattr("remote")?.set_item(peer.getattr("pid")?, &p)?;
+        World::g_remote(wld(&w)?)?.set_item(peer.getattr("pid")?, &p)?;
         as_player(py, &w, &p, || {
-            for a in w.getattr("addons")?.iter()? {
+            for a in World::g_addons(wld(&w)?)?.iter()? {
                 let a = a?;
                 if let Err(e) = a.call_method1("on_player_join", (&w, &p)) {
                     if !e.is_instance_of::<pyo3::exceptions::PyException>(py) {
@@ -718,7 +721,7 @@ impl Host {
         snap.set_item("player.json", p.call_method0("to_dict")?)?;
         let scripts = Self::g(slf, "files")?.call_method0("all")?;
         let cf = PyDict::new_bound(py);
-        for (k, pl) in w.getattr("planets")?.iter()?.enumerate() {
+        for (k, pl) in World::g_planets(wld(&w)?)?.iter()?.enumerate() {
             cf.set_item(k, pl?.getattr("craters")?.len()?)?;
         }
         peer.getattr("conn")?.call_method1("send", (dict(py, vec![("t", "world".into_py(py)), ("files", ns(py)?.call_method1("jsonable", (snap,))?.unbind()),
@@ -738,7 +741,7 @@ impl Host {
             let nm = peer.getattr("name")?;
             Self::g(slf, "known")?.set_item(&nm, p.call_method0("to_dict")?)?;
             let w = Self::g(slf, "w")?;
-            w.getattr("remote")?.call_method1("pop", (peer.getattr("pid")?, py.None()))?;
+            World::g_remote(wld(&w)?)?.call_method1("pop", (peer.getattr("pid")?, py.None()))?;
             w.call_method1("message", (format!("{} が退出しました", nm.str()?),))?;
             slog(py, "netserver")?.call_method1("info", ("退出: %s", &nm))?;
             let rest = PyList::new_bound(py, Self::ready_peers(slf, None, false)?);
@@ -761,34 +764,34 @@ impl Host {
                 p.setattr("pos", f64a(m.get_item("pos")?)?)?;
                 p.setattr("vel", f64a(m.get_item("vel")?)?)?;
                 p.setattr("up", f64a(m.get_item("up")?)?)?;
-                p.setattr("ground_vel", f64a(get("gv", vec![0, 0, 0].into_py(py))?)?)?;
-                p.setattr("on_ground", get("og", py.None())?.is_truthy()?)?;
-                p.setattr("jetpack", get("jp", py.None())?.is_truthy()?)?;
-                p.setattr("flying", get("fl", py.None())?.is_truthy()?)?;
-                p.setattr("thrust", f64a(get("thrust", vec![0, 0, 0].into_py(py))?)?)?;
-                p.setattr("in_water", get("wt", 0.0.into_py(py))?.call_method0("__float__")?)?;
+                Player::s_ground_vel(ply(&p)?, f64a(get("gv", vec![0, 0, 0].into_py(py))?)?)?;
+                Player::s_on_ground(ply(&p)?, get("og", py.None())?.is_truthy()?)?;
+                Player::s_jetpack(ply(&p)?, get("jp", py.None())?.is_truthy()?)?;
+                Player::s_flying(ply(&p)?, get("fl", py.None())?.is_truthy()?)?;
+                Player::s_thrust(ply(&p)?, f64a(get("thrust", vec![0, 0, 0].into_py(py))?)?)?;
+                Player::s_in_water(ply(&p)?, get("wt", 0.0.into_py(py))?.call_method0("__float__")?)?;
                 let keys = get("keys", py.None())?;
                 p.setattr("input_keys", pyo3::types::PySet::new_bound(py, &if keys.is_truthy()? { keys.iter()?.collect::<R<Vec<_>>>()? } else { vec![] })?)?;
-                p.setattr("look_fwd", f64a(get("fwd", vec![0, 0, 1].into_py(py))?)?)?;
-                p.setattr("pitch", get("pitch", 0.0.into_py(py))?.call_method0("__float__")?)?;
+                Player::s_look_fwd(ply(&p)?, f64a(get("fwd", vec![0, 0, 1].into_py(py))?)?)?;
+                Player::s_pitch(ply(&p)?, get("pitch", 0.0.into_py(py))?.call_method0("__float__")?)?;
                 let st = get("stand", py.None())?;
-                p.setattr("stand", if st.is_truthy()? {
+                Player::s_stand(ply(&p)?, if st.is_truthy()? {
                     PyTuple::new_bound(py, [st.get_item(0)?, PyTuple::new_bound(py, st.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any()
                 } else { py.None().into_bound(py) })?;
                 let em = get("emote", py.None())?;
-                if !em.eq(p.getattr("emote")?)? {
-                    p.setattr("emote", &em)?;
-                    p.setattr("emote_t0", mono(py)?)?;
+                if !em.eq(Player::g_emote(ply(&p)?)?)? {
+                    Player::s_emote(ply(&p)?, &em)?;
+                    Player::s_emote_t0(ply(&p)?, mono(py)?)?;
                 }
                 let fc = get("face", py.None())?;
-                p.setattr("face_dir", if fc.is_none() { fc } else { f64a(fc)? })?;
+                Player::s_face_dir(ply(&p)?, if fc.is_none() { fc } else { f64a(fc)? })?;
                 let d = get("def", py.None())?;
-                if d.is_truthy()? && !d.eq(p.getattr("defn")?.call_method1("get", ("id",))?)? {
-                    p.setattr("defn", w.call_method1("player_def", (d,))?)?;
+                if d.is_truthy()? && !d.eq(Player::g_defn(ply(&p)?)?.call_method1("get", ("id",))?)? {
+                    Player::s_defn(ply(&p)?, w.call_method1("player_def", (d,))?)?;
                 }
                 if m.contains("hotbar")? {
                     let hb = m.get_item("hotbar")?;
-                    p.setattr("hotbar", if hb.is_truthy()? {
+                    Player::s_hotbar(ply(&p)?, if hb.is_truthy()? {
                         let l = PyList::empty_bound(py);
                         for x in hb.iter()? {
                             let x = x?;
@@ -797,9 +800,9 @@ impl Host {
                         l.into_any()
                     } else { py.None().into_bound(py) })?;
                 }
-                let s = p.getattr("seated")?;
-                if s.is_truthy()? && !w.getattr("constructs")?.call_method1("get", (s.get_item(0)?,))?.is_truthy()? {
-                    p.setattr("seated", py.None())?;
+                let s = Player::g_seated(ply(&p)?)?;
+                if s.is_truthy()? && !World::g_constructs(wld(&w)?)?.call_method1("get", (s.get_item(0)?,))?.is_truthy()? {
+                    Player::s_seated(ply(&p)?, py.None())?;
                 }
             }
             "act" => as_player(py, &w, &p, || Self::_act(slf, &p, m))?,
@@ -851,7 +854,7 @@ impl Host {
         let np = imp(py, "numpy")?;
         let eye = np.call_method1("asarray", (m.call_method1("get", ("eye", p.call_method0("eye")?))?, "float64"))?;
         let look = np.call_method1("asarray", (m.call_method1("get", ("look", vec![0, 0, 1]))?, "float64"))?;
-        let reach: f64 = p.getattr("defn")?.call_method1("get", ("reach", 8.0))?.extract()?;
+        let reach: f64 = Player::g_defn(ply(&p)?)?.call_method1("get", ("reach", 8.0))?.extract()?;
         let hit = || w.call_method1("raycast", (&eye, &look, reach));
         match a.as_str() {
             "remove" => {
@@ -874,9 +877,9 @@ impl Host {
             "interact" => {
                 let tg = m.call_method1("get", ("target",))?;
                 if tg.is_truthy()? {
-                    let c = w.getattr("constructs")?.call_method1("get", (tg.get_item("id")?,))?;
+                    let c = World::g_constructs(wld(&w)?)?.call_method1("get", (tg.get_item("id")?,))?;
                     if c.is_truthy()? {
-                        let i = c.getattr("index")?.call_method1("get", (PyTuple::new_bound(py, tg.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?),))?;
+                        let i = Construct::g_index(con(&c)?)?.call_method1("get", (PyTuple::new_bound(py, tg.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?),))?;
                         if !i.is_none() {
                             let iu: usize = i.extract()?;
                             let pos = super::construct::v3s(&c.getattr("pos")?)?;
@@ -898,9 +901,9 @@ impl Host {
                 w.call_method("place_import", (data,), Some(&[("look_dir", &look)].into_py_dict_bound(py)))?;
             }
             "actuator" => {
-                let c = w.getattr("constructs")?.call_method1("get", (m.get_item("id")?,))?;
+                let c = World::g_constructs(wld(&w)?)?.call_method1("get", (m.get_item("id")?,))?;
                 if c.is_truthy()? {
-                    let i = c.getattr("index")?.call_method1("get", (PyTuple::new_bound(py, m.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?),))?;
+                    let i = Construct::g_index(con(&c)?)?.call_method1("get", (PyTuple::new_bound(py, m.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?),))?;
                     if !i.is_none() {
                         let msg = super::actuator::act_execute_preset(&w, &c, i.extract()?)?;
                         w.call_method1("message", (msg,))?;
@@ -925,7 +928,7 @@ impl Host {
         }
         Self::g(slf, "peers")?.call_method0("clear")?;
         let w = Self::g(slf, "w")?;
-        w.getattr("remote")?.call_method0("clear")?;
+        World::g_remote(wld(&w)?)?.call_method0("clear")?;
         Self::g(slf, "listener")?.call_method0("close")?;
         let ann = Self::g(slf, "announcer")?;
         if !ann.is_none() {
@@ -1397,7 +1400,7 @@ fn redirect<'py>(py: Python<'py>, me: &Bound<'py, Client>, kind: &'static str) -
                 let hit = arg(0, "hit")?.unwrap_or_else(|| py.None().into_bound(py));
                 if hit.is_truthy()? && hit.call_method1("get", ("kind",))?.eq("voxel")? {
                     let c = hit.get_item("construct")?;
-                    let cell = c.getattr("cells")?.get_item(hit.get_item("index")?)?;
+                    let cell = Construct::g_cells(con(&c)?)?.get_item(hit.get_item("index")?)?;
                     kw.set_item("target", dict(py, vec![("id", c.getattr("id")?.unbind()),
                         ("cell", PyList::new_bound(py, cell.iter()?.collect::<R<Vec<_>>>()?).into_any().unbind())])?)?;
                 } else {
@@ -1434,7 +1437,7 @@ impl Client {
 
     #[new]
     fn new(py: Python<'_>, info: &Bound<'_, PyAny>, world: &Bound<'_, PyAny>, cfg: PyObject) -> R<Self> {
-        let files = ns(py)?.getattr("FileSync")?.call1((div(&world.getattr("dir")?, "scripts")?,))?;
+        let files = ns(py)?.getattr("FileSync")?.call1((div(&World::g_dir(wld(&world)?)?, "scripts")?,))?;
         files.call_method0("mark_all")?;
         files.call_method0("changes")?;
         let t = PyDict::new_bound(py);
@@ -1453,8 +1456,8 @@ impl Client {
         let py = slf.py();
         let w = Self::g(slf, "w")?;
         w.setattr("net", slf)?;
-        w.setattr("exports_dir", div(&nc(py)?.call_method0("net_dir")?, "exports")?)?;
-        w.getattr("local_player")?.setattr("name", Self::g(slf, "name")?)?;
+        World::s_exports_dir(wld(&w)?, div(&nc(py)?.call_method0("net_dir")?, "exports")?)?;
+        World::g_local_player(wld(&w)?)?.setattr("name", Self::g(slf, "name")?)?;
         Self::_patch_world(slf)?;
         slog(py, "netclient")?.call_method1("info", ("参加中: %s（ホスト %s）", w.getattr("name")?, Self::g(slf, "host_name")?))?;
         Ok(())
@@ -1486,7 +1489,7 @@ impl Client {
     fn actuator_run(slf: &Bound<'_, Self>, c: &Bound<'_, PyAny>, i: usize) -> R<()> {
         let py = slf.py();
         Self::_flush_edit(slf, true)?;
-        let cell = c.getattr("cells")?.get_item(i)?;
+        let cell = Construct::g_cells(con(&c)?)?.get_item(i)?;
         Self::send(slf, dict(py, vec![("t", "act".into_py(py)), ("a", "actuator".into_py(py)), ("id", c.getattr("id")?.unbind()),
             ("cell", PyList::new_bound(py, cell.iter()?.collect::<R<Vec<_>>>()?).into_any().unbind())])?.as_any())
     }
@@ -1515,7 +1518,7 @@ impl Client {
         ns(py)?.call_method1("advance", (&w, dt))?;
         let tm: f64 = w.getattr("time")?.extract()?;
         w.setattr("time", tm + dt)?;
-        for a in w.getattr("addons")?.iter()? {
+        for a in World::g_addons(wld(&w)?)?.iter()? {
             let a = a?;
             if let Err(e) = a.call_method1("net_client_tick", (&w, dt)) {
                 if !e.is_instance_of::<pyo3::exceptions::PyException>(py) {
@@ -1544,7 +1547,7 @@ impl Client {
     fn step(slf: &Bound<'_, Self>, dt: f64, r#move: &Bound<'_, PyAny>, jump: &Bound<'_, PyAny>, thrust: &Bound<'_, PyAny>) -> R<()> {
         let w = Self::g(slf, "w")?;
         w.getattr("player")?.call_method1("update", (&w, dt, r#move, jump, thrust))?;
-        for c in w.getattr("constructs")?.call_method0("values")?.iter()? {         // 体重は手元では使わない（ホストで伝える）
+        for c in World::g_constructs(wld(&w)?)?.call_method0("values")?.iter()? {         // 体重は手元では使わない（ホストで伝える）
             let f = c?.getattr("force")?;
             if super::construct::fv(&f)?.iter().any(|x| *x != 0.0) && !super::construct::with_rw(&f, |s| s.fill(0.0))? {
                 f.set_item(pyo3::types::PySlice::full_bound(slf.py()), 0)?;
@@ -1558,20 +1561,20 @@ impl Client {
         let p = w.getattr("player")?;
         let np = imp(py, "numpy")?;
         let tl = |o: Bound<'_, PyAny>| -> R<PyObject> { Ok(np.call_method1("asarray", (o, "float64"))?.call_method0("tolist")?.unbind()) };
-        let st = p.getattr("stand")?;
-        let fd = p.getattr("face_dir")?;
+        let st = Player::g_stand(ply(&p)?)?;
+        let fd = Player::g_face_dir(ply(&p)?)?;
         let keys = imp(py, "builtins")?.call_method1("sorted", (w.getattr("input_keys")?,))?;
         let msg = dict(py, vec![("t", "me".into_py(py)), ("pos", p.getattr("pos")?.call_method0("tolist")?.unbind()),
             ("vel", p.getattr("vel")?.call_method0("tolist")?.unbind()), ("up", p.getattr("up")?.call_method0("tolist")?.unbind()),
-            ("gv", tl(p.getattr("ground_vel")?)?), ("og", p.getattr("on_ground")?.is_truthy()?.into_py(py)), ("jp", p.getattr("jetpack")?.is_truthy()?.into_py(py)),
-            ("fl", p.getattr("flying")?.is_truthy()?.into_py(py)), ("thrust", tl(p.getattr("thrust")?)?),
-            ("wt", p.getattr("in_water")?.call_method0("__float__")?.unbind()), ("keys", keys.unbind()), ("fwd", tl(p.getattr("look_fwd")?)?),
-            ("pitch", p.getattr("pitch")?.call_method0("__float__")?.unbind()), ("def", p.getattr("defn")?.call_method1("get", ("id",))?.unbind()),
+            ("gv", tl(Player::g_ground_vel(ply(&p)?)?)?), ("og", Player::g_on_ground(ply(&p)?)?.is_truthy()?.into_py(py)), ("jp", Player::g_jetpack(ply(&p)?)?.is_truthy()?.into_py(py)),
+            ("fl", Player::g_flying(ply(&p)?)?.is_truthy()?.into_py(py)), ("thrust", tl(Player::g_thrust(ply(&p)?)?)?),
+            ("wt", Player::g_in_water(ply(&p)?)?.call_method0("__float__")?.unbind()), ("keys", keys.unbind()), ("fwd", tl(Player::g_look_fwd(ply(&p)?)?)?),
+            ("pitch", Player::g_pitch(ply(&p)?)?.call_method0("__float__")?.unbind()), ("def", Player::g_defn(ply(&p)?)?.call_method1("get", ("id",))?.unbind()),
             ("stand", if st.is_truthy()? {
                 PyList::new_bound(py, [st.get_item(0)?, PyList::new_bound(py, st.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any().unbind()
             } else { py.None() }),
-            ("emote", p.getattr("emote")?.unbind()), ("face", if fd.is_none() { py.None() } else { tl(fd)? })])?;
-        let hbo = p.getattr("hotbar")?;
+            ("emote", Player::g_emote(ply(&p)?)?.unbind()), ("face", if fd.is_none() { py.None() } else { tl(fd)? })])?;
+        let hbo = Player::g_hotbar(ply(&p)?)?;
         let hb: PyObject = if hbo.is_truthy()? {
             let l = PyList::empty_bound(py);
             for x in hbo.iter()? {
@@ -1658,7 +1661,7 @@ impl Client {
                         let fu = Self::g(slf, "frozen_until")?;
                         for e in m.get_item("c")?.iter()? {
                             let e = e?;
-                            let c = w.getattr("constructs")?.call_method1("get", (e.get_item("id")?,))?;
+                            let c = World::g_constructs(wld(&w)?)?.call_method1("get", (e.get_item("id")?,))?;
                             if !c.is_none() {
                                 let f: f64 = fu.call_method1("get", (c.getattr("id")?, 0))?.extract()?;
                                 nsm.call_method("apply_meta", (&c, &e), Some(&[("devices", f < now)].into_py_dict_bound(py)))?;
@@ -1713,11 +1716,11 @@ impl Client {
         for e in m.get_item("c")?.iter()? {
             nsm.call_method1("apply_construct", (&w, e?, dt))?;
         }
-        let cons = w.getattr("constructs")?;
+        let cons = World::g_constructs(wld(&w)?)?;
         for cid in m.call_method1("get", ("gone", PyList::empty_bound(py)))?.iter()? {
             cons.call_method1("pop", (cid?, py.None()))?;
         }
-        let pls = w.getattr("planets")?;
+        let pls = World::g_planets(wld(&w)?)?;
         for cr in m.call_method1("get", ("craters", PyList::empty_bound(py)))?.iter()? {
             let cr = cr?;
             let k: usize = cr.get_item("p")?.extract()?;
@@ -1767,9 +1770,9 @@ impl Client {
         let w = Self::g(slf, "w")?;
         let p = w.getattr("player")?;
         let inv = m.call_method1("get", ("inventory",))?;
-        p.setattr("inventory", py.get_type_bound::<PyDict>().call1((if inv.is_truthy()? { inv } else { PyDict::new_bound(py).into_any() },))?)?;
+        Player::s_inventory(ply(&p)?, py.get_type_bound::<PyDict>().call1((if inv.is_truthy()? { inv } else { PyDict::new_bound(py).into_any() },))?)?;
         let s = m.call_method1("get", ("seated",))?;
-        p.setattr("seated", if s.is_truthy()? {
+        Player::s_seated(ply(&p)?, if s.is_truthy()? {
             PyTuple::new_bound(py, [s.get_item(0)?, PyTuple::new_bound(py, s.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any()
         } else { py.None().into_bound(py) })?;
         for k in ["starter_given", "credits_given", "out_of_fuel"] {

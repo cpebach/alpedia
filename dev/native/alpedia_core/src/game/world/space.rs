@@ -1,17 +1,19 @@
 //! ワールド：重力・軌道・構築物の出し入れ
 
+use crate::game::player::{ply, Player};
 use super::*;
+use crate::game::construct::{con, Construct};
 
 #[pymethods]
 impl World {
     pub(crate) fn gravity<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
         let np = crate::game::construct::np(py)?;
-        let pls: Vec<Bound<'py, PyAny>> = Self::g(slf, "planets")?.iter()?.collect::<R<_>>()?;
+        let pls: Vec<Bound<'py, PyAny>> = Self::g_planets(slf)?.iter()?.collect::<R<_>>()?;
         if pls.is_empty() {
             return np.call_method1("zeros_like", (np.call_method1("asarray", (p, "float64"))?,));
         }
-        let ok = match opt(slf.as_any(), "_grav_key")? { Some(k) => k.eq(pls.len())?, None => false };
+        let ok = match Self::cache_get(slf, |c| &c.grav_key)? { Some(k) => k.eq(pls.len())?, None => false };
         if !ok {
             let mut c = vec![];
             let mut gm = vec![];
@@ -22,10 +24,10 @@ impl World {
                 r.push(x.getattr("radius")?.extract::<f64>()?);
             }
             let n = pls.len();
-            Self::set(slf, "_grav", (arr(py, c, &[n, 3])?, arr(py, gm, &[n])?, arr(py, r, &[n])?))?;
-            Self::set(slf, "_grav_key", n)?;
+            Self::cache_put(slf, |c| &mut c.grav, (arr(py, c, &[n, 3])?, arr(py, gm, &[n])?, arr(py, r, &[n])?))?;
+            Self::cache_put(slf, |c| &mut c.grav_key, n)?;
         }
-        let gr = Self::g(slf, "_grav")?;
+        let gr = Self::cache_get(slf, |c| &c.grav)?.ok_or_else(|| PyAttributeError::new_err("_grav"))?;
         let pa = np.call_method1("ascontiguousarray", (p, "float64"))?.call_method1("reshape", (-1, 3))?;
         let g = imp(py, "alpedia_core")?.call_method1("gravity", (pa, gr.get_item(0)?, gr.get_item(1)?, gr.get_item(2)?))?;
         g.call_method1("reshape", (np.call_method1("shape", (p,))?,))?.call_method1("__mul__", (Self::gscale(slf)?,))
@@ -35,7 +37,7 @@ impl World {
         let p = v3(p)?;
         let mut best: Bound<'py, PyAny> = py.None().into_bound(py);
         let mut bd = 1e300;
-        for pl in Self::g(slf, "planets")?.iter()? {
+        for pl in Self::g_planets(slf)?.iter()? {
             let pl = pl?;
             let d = (norm(sub(p, v3(&pl.getattr("center")?)?)) - pl.getattr("radius")?.extract::<f64>()?)
                 / pl.getattr("gm")?.extract::<f64>()?.max(1e-9).powf(0.5);
@@ -122,35 +124,35 @@ impl World {
     pub(crate) fn merge_constructs(slf: &Bound<'_, Self>, c: &Bound<'_, PyAny>, other: &Bound<'_, PyAny>, cell_map: &Bound<'_, PyAny>,
                         xform: Option<&Bound<'_, PyAny>>) -> R<()> {
         let py = slf.py();
-        let n0: i64 = c.getattr("n_vox")?.extract()?;
+        let n0: i64 = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
         let ca = c.getattr("anchored")?.is_truthy()?;
         let oa = other.getattr("anchored")?.is_truthy()?;
         c.call_method1("absorb", (other, cell_map, xform.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None())))?;
         if ca != oa {
-            let n1: i64 = c.getattr("n_vox")?.extract()?;
+            let n1: i64 = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
             let k: Vec<i64> = if ca { (0..n0).collect() } else { (n0..n1).collect() };
             let nk = k.len();
             c.call_method1("snap_to_lattice", (crate::game::construct::iarr(py, k, &[nk])?,))?;
         }
         // 結合した直後は、めり込みの押し出しで吹き飛ばないように、しばらく速さの変化をおさえる
-        let cur: f64 = match opt(c, "_settle")? { Some(v) => v.extract()?, None => 0.0 };
-        let t = fget(&phys(&Self::g(slf, "cfg")?)?, "merge_settle_time", 1.0)?;
-        c.setattr("_settle", cur.max(t))?;
+        let cur: f64 = con(c)?.borrow().settle;
+        let t = fget(&phys(&Self::g_cfg(slf)?)?, "merge_settle_time", 1.0)?;
+        Construct::s_settle(con(&c)?, cur.max(t))?;
         let oid = other.getattr("id")?;
         for p in Self::all_players(slf)? {
             if Self::is_seated_on(&p, &oid)? {
-                let s = p.getattr("seated")?;
-                p.setattr("seated", (c.getattr("id")?, cell_map.get_item(s.get_item(1)?)?))?;
+                let s = Player::g_seated(ply(&p)?)?;
+                Player::s_seated(ply(&p)?, (Construct::g_id(con(&c)?)?, cell_map.get_item(s.get_item(1)?)?))?;
             }
         }
-        Self::g(slf, "constructs")?.call_method1("pop", (&oid, py.None()))?;
-        log(py)?.call_method1("info", ("構築物を結合: %s ← %s", c.getattr("name")?, other.getattr("name")?))?;
+        Self::g_constructs(slf)?.call_method1("pop", (&oid, py.None()))?;
+        log(py)?.call_method1("info", ("構築物を結合: %s ← %s", Construct::g_name(con(&c)?)?, other.getattr("name")?))?;
         Ok(())
     }
     pub(crate) fn seated_in(slf: &Bound<'_, Self>, c: &Bound<'_, PyAny>) -> R<bool> {
-        let cid = c.getattr("id")?;
+        let cid = Construct::g_id(con(&c)?)?;
         for p in Self::all_players(slf)? {
-            let s = p.getattr("seated")?;
+            let s = Player::g_seated(ply(&p)?)?;
             if !s.is_none() && s.get_item(0)?.eq(&cid)? {
                 return Ok(true);
             }
@@ -158,7 +160,7 @@ impl World {
         Ok(false)
     }
     pub(crate) fn add_construct<'py>(slf: &Bound<'py, Self>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-        Self::g(slf, "constructs")?.set_item(c.getattr("id")?, c)?;
+        Self::g_constructs(slf)?.set_item(Construct::g_id(con(&c)?)?, c)?;
         Ok(c.clone())
     }
 }

@@ -8,6 +8,8 @@
 //! 1回の呼び出しが SCRIPT_BUDGET 秒を超えたら、見張りのスレッドが止める（止まらないループでゲームが止まらないように）。
 //! スクリプトそのものは Python のまま（Python で書いて Python で動く）。ここはそれに渡す api と、呼び出す仕組み。
 
+use crate::game::world::{wld, World};
+use crate::game::construct::{con, Construct};
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyAttributeError, PyImportError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -914,20 +916,20 @@ impl ScriptRunner {
     fn tick(slf: &Bound<'_, Self>, c: &Bound<'_, PyAny>, dt: f64) -> R<()> {
         let py = slf.py();
         let world = slf.borrow().world.clone_ref(py).into_bound(py);
-        let key = PyTuple::new_bound(py, [c.getattr("version")?.unbind(), c.getattr("cells")?.len()?.into_py(py)]).into_any();
+        let key = PyTuple::new_bound(py, [Construct::g_version(con(&c)?)?.unbind(), Construct::g_cells(con(&c)?)?.len()?.into_py(py)]).into_any();
         let cd = c.getattr("__dict__")?;
         let cache = cd.call_method1("get", ("_comp_cache",))?;
         let ids: Vec<usize> = if !cache.is_none() && cache.get_item(0)?.eq(&key)? {
             cache.get_item(1)?.extract()?
         } else {
-            let reg = c.getattr("reg")?;
+            let reg = Construct::g_reg(con(&c)?)?;
             let mut v = Vec::new();
-            for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+            for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
                 let d = d?;
                 if !d.is_truthy()? {
                     continue;
                 }
-                let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+                let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
                 if dd.is_truthy()? && dd.call_method1("get", ("type",))?.eq("computer")? {
                     v.push(i);
                 }
@@ -935,15 +937,15 @@ impl ScriptRunner {
             c.setattr("_comp_cache", (&key, v.clone()))?;
             v
         };
-        let reg = c.getattr("reg")?;
-        let status = c.getattr("status")?;
+        let reg = Construct::g_reg(con(&c)?)?;
+        let status = Construct::g_status(con(&c)?)?;
         for i0 in ids {
-            let devs = c.getattr("devs")?;
+            let devs = Construct::g_devs(con(&c)?)?;
             if i0 >= devs.len()? || !devs.get_item(i0)?.is_truthy()? {
                 continue;
             }
             let d = devs.get_item(i0)?;
-            let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+            let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
             if !dd.is_truthy()? || !dd.get_item("type")?.eq("computer")? {
                 continue;
             }
@@ -979,7 +981,7 @@ impl ScriptRunner {
                     st.set_item("_env", &e)?;
                     env = e.into_any();
                 }
-                let devs = c.getattr("devs")?;
+                let devs = Construct::g_devs(con(&c)?)?;
                 let mut i = i0;
                 if i >= devs.len()? || !devs.get_item(i)?.is(&d) {
                     // 分離・結合で番号が変わった
@@ -1019,7 +1021,7 @@ impl ScriptRunner {
                 }
                 if line.is_none() {
                     // ファイルの場所はエラーの時だけ作る（毎回作ると遅い）
-                    if let Ok(p) = script_path(&world.getattr("dir")?, &sname) {
+                    if let Ok(p) = script_path(&World::g_dir(wld(&world)?)?, &sname) {
                         let ps = p.str()?.to_string();
                         let tb = e.traceback_bound(py);
                         if let Some(tb) = tb {
@@ -1043,11 +1045,11 @@ impl ScriptRunner {
                 }
                 st.set_item("error", &msg)?;
                 let buf = st.call_method1("setdefault", ("_log", PyList::empty_bound(py)))?;
-                let t = float_of(&world.getattr("time")?)?;
+                let t = float_of(&World::g_time(wld(&world)?)?)?;
                 buf.call_method1("append", (format!("[{:.1}] エラー: {msg}", t),))?;
                 st.call_method1("pop", ("_env", py.None()))?;
                 crate::game::imp(py, "logging")?.getattr("getLogger")?.call1(("alpedia.script",))?
-                    .call_method1("error", ("スクリプトエラー [%s/%s]: %s", c.getattr("name")?, d.get_item("name")?, &msg))?;
+                    .call_method1("error", ("スクリプトエラー [%s/%s]: %s", Construct::g_name(con(&c)?)?, d.get_item("name")?, &msg))?;
                 world.call_method1("message", (format!("スクリプトエラー: {msg}"),))?;
             }
         }

@@ -6,6 +6,7 @@
 //! - 送れる情報は数値・文字・True/False/None と、それらのリスト・辞書（JSON にできるもの）。大きさの上限あり
 //! - 同じ構築物から送った情報は、その構築物では受け取らない（自分の声は聞こえない）
 
+use crate::game::construct::{con, Construct};
 use std::collections::{HashMap, VecDeque};
 
 use numpy::{PyArray1, PyReadonlyArrayDyn};
@@ -27,7 +28,7 @@ pub use err::RadioError;
 
 /// 構築物の、使えるアンテナの (届く距離, 位置) か None
 pub fn antenna(c: &Bound<'_, PyAny>) -> PyResult<Option<(f64, [f64; 3])>> {
-    let devs = c.getattr("devs")?;
+    let devs = Construct::g_devs(con(&c)?)?;
     let reg = c.getattr("reg")?;
     let mut best: Option<(f64, usize)> = None;
     for (i, d) in devs.iter()?.enumerate() {
@@ -35,7 +36,7 @@ pub fn antenna(c: &Bound<'_, PyAny>) -> PyResult<Option<(f64, [f64; 3])>> {
         if !d.is_truthy()? {
             continue;
         }
-        let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+        let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
         if !dd.is_truthy()? {
             continue;
         }

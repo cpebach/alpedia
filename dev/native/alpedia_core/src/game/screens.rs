@@ -1,5 +1,7 @@
 //! Rust の画面の画面（一時停止メニュー・インベントリ）（main/client_rs/screens.py）。並べ方・動きは今までの画面（ursina）と同じ。
 
+use crate::game::world::{wld, World};
+use crate::game::player::{ply, Player};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 
@@ -141,10 +143,10 @@ impl Pause {
             btn(s, label, xr, top - 0.04 - k as f64 * 0.08, 0.5, 0.06, f.clone_ref(py), blue, 0.022, None, None)?;
         }
         let y = top - 0.04 - right.len() as f64 * 0.08;
-        let cur = w.getattr("local_player")?.getattr("defn")?;
+        let cur = World::g_local_player(wld(&w)?)?.getattr("defn")?;
         let nm = cur.call_method1("get", ("name", cur.call_method1("get", ("id",))?))?;
         txt(s, format!("見た目: {}", nm.str()?), xr, y, 0.022, (1.0, 1.0, 1.0, 1.0), (0.5, 0.5))?;
-        if w.getattr("registry")?.getattr("defs")?.get_item("players")?.len()? > 1 {
+        if World::g_registry(wld(&w)?)?.getattr("defs")?.get_item("players")?.len()? > 1 {
             for (dx, d, t) in [(-0.22, -1i64, "◀"), (0.22, 1, "▶")] {
                 btn(s, t, xr + dx, y, 0.045, 0.045, me(s, "skin", vec![d.into_py(py)])?, blue, 0.02, None, None)?;
             }
@@ -195,13 +197,13 @@ impl Pause {
     fn skin(slf: &Bound<'_, Self>, step: i64) -> R<()> {
         let py = slf.py();
         let w = slf.borrow().v.bind(py).getattr("w")?;
-        let ids = PyList::new_bound(py, w.getattr("registry")?.getattr("defs")?.get_item("players")?.iter()?.collect::<R<Vec<_>>>()?);
-        let lp = w.getattr("local_player")?;
-        let cur = lp.getattr("defn")?.call_method1("get", ("id",))?;
+        let ids = PyList::new_bound(py, World::g_registry(wld(&w)?)?.getattr("defs")?.get_item("players")?.iter()?.collect::<R<Vec<_>>>()?);
+        let lp = World::g_local_player(wld(&w)?)?;
+        let cur = Player::g_defn(ply(&lp)?)?.call_method1("get", ("id",))?;
         let i = if ids.contains(&cur)? { ids.index(&cur)? as i64 } else { 0 };
         let n = ids.len() as i64;
-        lp.setattr("defn", w.call_method1("player_def", (ids.get_item((i + step).rem_euclid(n) as usize)?,))?)?;
-        w.call_method1("message", (format!("見た目: {}", lp.getattr("defn")?.call_method1("get", ("name",))?.str()?),))?;
+        Player::s_defn(ply(&lp)?, w.call_method1("player_def", (ids.get_item((i + step).rem_euclid(n) as usize)?,))?)?;
+        w.call_method1("message", (format!("見た目: {}", Player::g_defn(ply(&lp)?)?.call_method1("get", ("name",))?.str()?),))?;
         slf.call_method0("build")?;
         Ok(())
     }
@@ -310,7 +312,7 @@ impl InventoryScreen {
         let w = viewer.getattr("w")?;
         let mut b = slf.borrow_mut();
         b.v = viewer.clone().unbind();
-        b.reg = w.getattr("registry")?.unbind();
+        b.reg = World::g_registry(wld(&w)?)?.unbind();
         b.player = w.getattr("player")?.unbind();
         b.w = w.unbind();
         b.tab = "all".into();
@@ -373,7 +375,7 @@ impl InventoryScreen {
         let y0 = 0.26;
         let cells = PyList::empty_bound(py);
         let surv = !w.getattr("creative")?.is_truthy()?;
-        let inv = player.getattr("inventory")?;
+        let inv = Player::g_inventory(ply(&player)?)?;
         let icons = imp(py, "main.client.icons")?;
         let item_tex = imp(py, "alpedia_core")?.getattr("ui_item_tex")?;
         for (k, it) in items.iter().skip(lo).take(hi.saturating_sub(lo)).enumerate() {
@@ -416,7 +418,7 @@ impl InventoryScreen {
         }
         txt(s, "アイテムバー（クリックで持ち上げ・入れ替え / 右クリックで外す）", -0.63, -0.278, 0.0155, GREY, (0.0, 0.0))?;
         let sw = 0.085;
-        let hb = player.getattr("hotbar")?;
+        let hb = Player::g_hotbar(ply(&player)?)?;
         let slots_n: i64 = inv_mod(py)?.getattr("SLOTS")?.extract()?;
         let sel = v.getattr("sel")?;
         let slots = PyList::empty_bound(py);
@@ -540,7 +542,7 @@ impl InventoryScreen {
         let py = slf.py();
         slf.borrow_mut().held = py.None();
         let p = g!(slf, player);
-        p.setattr("hotbar", py.None())?;
+        Player::s_hotbar(ply(&p)?, py.None())?;
         inv_mod(py)?.call_method1("ensure_hotbar", (p, g!(slf, reg)))?;
         slf.call_method0("build")?;
         Ok(())
@@ -619,7 +621,7 @@ impl InventoryScreen {
         let w = g!(slf, w);
         let creative = w.getattr("creative")?.is_truthy()?;
         let player = g!(slf, player);
-        let inv = player.getattr("inventory")?;
+        let inv = Player::g_inventory(ply(&player)?)?;
         let invk: PyObject = if !creative {
             let l = py.import_bound("builtins")?.getattr("sorted")?.call1((inv.call_method0("items")?,))?;
             PyTuple::new_bound(py, l.iter()?.collect::<R<Vec<_>>>()?).into_any().unbind()

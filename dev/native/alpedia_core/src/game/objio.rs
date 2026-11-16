@@ -2,6 +2,7 @@
 //! 出力：<名前>.obj（形）・<名前>.mtl（色）・<名前>.alp.json（素材の対応・ボクセルと機器の完全なデータ）。
 //! 読み込み：.alp.json に "voxels" があればそのまま、無ければ OBJ をボクセル化して素材を割り当てる。
 
+use crate::game::construct::{con, Construct};
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
 use pyo3::types::{IntoPyDict, PyDict, PyList, PySet, PyString, PyTuple};
@@ -75,13 +76,13 @@ pub fn objio_export_construct<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, out_d
     let rm = super::construct::m3(&fit.get_item(0)?)?;
     let t = super::construct::v3(&fit.get_item(1)?)?;
     let mesh = super::shape::shape_build_mesh(py, c, None)?;
-    let cname = c.getattr("name")?.str()?.to_string();
+    let cname = Construct::g_name(con(&c)?)?.str()?.to_string();
     let mut lines = vec![format!("# Alpedia construct: {cname}"), format!("mtllib {name}.mtl"), format!("o {name}")];
-    let mats = c.getattr("mats")?;
+    let mats = Construct::g_mats(con(&c)?)?;
     let used = PyList::empty_bound(py);
     if !mesh.is_none() {
         // 見た目どおりの丸い形（球＋結合部を埋めた形）で出力
-        let sk = imp(py, "alpedia_core")?.call_method1("skin", (c.getattr("pos")?, mesh.get_item("vidx")?, mesh.get_item("w")?))?;
+        let sk = imp(py, "alpedia_core")?.call_method1("skin", (Construct::g_pos(con(&c)?)?, mesh.get_item("vidx")?, mesh.get_item("w")?))?;
         let mv: Vec<[f64; 3]> = v3s(&sk)?.into_iter().map(|p| super::construct::mul_r(super::construct::sub(p, t), &rm)).collect();
         let owner = iv(&mesh.get_item("owner")?)?;
         let faces: Vec<[i64; 3]> = iv(&mesh.get_item("faces")?)?.chunks_exact(3).map(|f| [f[0], f[1], f[2]]).collect();
@@ -105,10 +106,10 @@ pub fn objio_export_construct<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, out_d
     }
     let obj_path = div(out_dir, format!("{name}.obj"))?;
     write_text(&obj_path, &(lines.join("\n") + "\n"))?;
-    let reg = c.getattr("reg")?;
+    let reg = Construct::g_reg(con(&c)?)?;
     let mut mtl: Vec<String> = vec![];
     for m in used.iter() {
-        let col = super::construct::v3(&reg.call_method1("material", (&m,))?.get_item("color")?)?;
+        let col = super::construct::v3(&crate::game::registry::mat_dict(&reg, &m)?.get_item("color")?)?;
         mtl.push(format!("newmtl {}", m.str()?));
         mtl.push(format!("Kd {} {} {}", py_fmt(col[0], 3), py_fmt(col[1], 3), py_fmt(col[2], 3)));
         mtl.push(String::new());
@@ -117,9 +118,9 @@ pub fn objio_export_construct<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, out_d
     let meta = PyDict::new_bound(py);
     meta.set_item("format", "alpedia-construct")?;
     meta.set_item("version", 1)?;
-    meta.set_item("name", c.getattr("name")?)?;
+    meta.set_item("name", Construct::g_name(con(&c)?)?)?;
     meta.set_item("obj", format!("{name}.obj"))?;
-    meta.set_item("voxel_size", c.getattr("size")?)?;
+    meta.set_item("voxel_size", Construct::g_size(con(&c)?)?)?;
     meta.set_item("scale", 1.0)?;
     let md = PyDict::new_bound(py);
     for m in used.iter() {
@@ -128,13 +129,13 @@ pub fn objio_export_construct<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, out_d
     meta.set_item("materials", md)?;
     meta.set_item("default_material", if used.is_empty() { PyString::new_bound(py, "steel").into_any() } else { used.get_item(0)? })?;
     let vox = PyList::empty_bound(py);
-    for ((cl, m), d) in c.getattr("cells")?.iter()?.zip(mats.iter()?).zip(c.getattr("devs")?.iter()?) {
+    for ((cl, m), d) in Construct::g_cells(con(&c)?)?.iter()?.zip(mats.iter()?).zip(Construct::g_devs(con(&c)?)?.iter()?) {
         let cl = cl?;
         vox.append(PyList::new_bound(py, [cl.get_item(0)?.unbind(), cl.get_item(1)?.unbind(), cl.get_item(2)?.unbind(), m?.unbind(),
             super::construct::construct_clean_dev(py, &d?, Some(&reg))?]))?;
     }
     meta.set_item("voxels", vox)?;
-    let ls = PyList::new_bound(py, c.getattr("links")?.iter()?.collect::<R<Vec<_>>>()?);
+    let ls = PyList::new_bound(py, Construct::g_links(con(&c)?)?.iter()?.collect::<R<Vec<_>>>()?);
     ls.sort()?;
     let ll = PyList::empty_bound(py);
     for k in ls.iter() {
@@ -142,12 +143,12 @@ pub fn objio_export_construct<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, out_d
                    PyList::new_bound(py, k.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?)])?;
     }
     meta.set_item("links", ll)?;
-    meta.set_item("storage", c.getattr("storage")?)?;
+    meta.set_item("storage", Construct::g_storage(con(&c)?)?)?;
     // 使っているプログラムも一緒に入れておく（別のワールドや他の人に渡しても動くように）
     if let Some(sd) = scripts_dir {
         if !sd.is_none() {
             let scripts = PyDict::new_bound(py);
-            for f in objio_script_files(&c.getattr("devs")?)? {
+            for f in objio_script_files(&Construct::g_devs(con(&c)?)?)? {
                 let fp = div(sd, &f)?;
                 if exists(&fp)? {
                     scripts.set_item(&f, read_text(&fp)?)?;
@@ -167,7 +168,7 @@ pub fn objio_export_construct<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, out_d
     let kw = [("ensure_ascii", false.into_py(py)), ("indent", 1.into_py(py))].into_py_dict_bound(py);
     let text: String = imp(py, "json")?.call_method("dumps", (&meta,), Some(&kw))?.extract()?;
     write_text(&div(out_dir, format!("{name}.alp.json"))?, &text)?;
-    log(py)?.call_method1("info", ("OBJ 出力: %s（ボクセル %d、面 %d）", &obj_path, c.getattr("n_vox")?, c.getattr("face_idx")?.len()?))?;
+    log(py)?.call_method1("info", ("OBJ 出力: %s（ボクセル %d、面 %d）", &obj_path, Construct::n(con(&c)?)?.into_py(py).into_bound(py), c.getattr("face_idx")?.len()?))?;
     Ok(obj_path)
 }
 
@@ -345,7 +346,7 @@ pub fn objio_import_construct<'py>(py: Python<'py>, registry: &Bound<'py, PyAny>
             let m3 = v.get_item(3)?;
             let mat = if registry.call_method1("get", ("materials", &m3))?.is_truthy()? { m3 } else { getd(&meta, "default_material", "steel")? };
             let mut dev = if v.len()? > 4 { v.get_item(4)? } else { py.None().into_bound(py) };
-            if dev.is_truthy()? && !registry.call_method1("device", (dev.call_method1("get", ("def",))?,))?.is_truthy()? {
+            if dev.is_truthy()? && !crate::game::registry::dev_dict(&registry, &dev.call_method1("get", ("def",))?)?.is_truthy()? {
                 lg.call_method1("warning", ("未知の機器 %s を素材ボクセルに置き換えます", dev.call_method1("get", ("def",))?))?;
                 dev = py.None().into_bound(py);
             }

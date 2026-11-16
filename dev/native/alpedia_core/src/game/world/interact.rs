@@ -1,12 +1,14 @@
 //! ワールド：ジェットパック・触る・キー・書き出しと読み込み
 
+use crate::game::player::{ply, Player};
 use super::*;
+use crate::game::construct::{con, Construct};
 
 #[pymethods]
 impl World {
     /// ジェットパックを使えるか（燃料などは MOD が決める）：(使えるか, 噴射の向き)
     pub(crate) fn jetpack<'py>(slf: &Bound<'py, Self>, player: &Bound<'py, PyAny>, dt: f64, thrust_dir: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
-        let mut flying = player.getattr("jetpack")?;
+        let mut flying = Player::g_jetpack(ply(&player)?)?;
         let mut td = thrust_dir.clone();
         for a in Self::addons_v(slf)? {
             if flying.is_truthy()? {
@@ -19,9 +21,9 @@ impl World {
     }
     pub(crate) fn interact(slf: &Bound<'_, Self>, hit: &Bound<'_, PyAny>) -> R<()> {
         let py = slf.py();
-        let p = Self::g(slf, "player")?;
-        if p.getattr("seated")?.is_truthy()? {
-            p.setattr("seated", py.None())?;
+        let p = Self::g_player(slf)?;
+        if Player::g_seated(ply(&p)?)?.is_truthy()? {
+            Player::s_seated(ply(&p)?, py.None())?;
             return Self::message(slf, "操縦席から降りました");
         }
         if !hit.is_truthy()? || !hit.get_item("kind")?.eq("voxel")? {
@@ -29,14 +31,14 @@ impl World {
         }
         let c = hit.get_item("construct")?;
         let i: usize = hit.get_item("index")?.extract()?;
-        let d = c.getattr("devs")?.get_item(i)?;
-        let reg = Self::g(slf, "registry")?;
-        let cname = c.getattr("name")?.str()?.to_string();
+        let d = Construct::g_devs(con(&c)?)?.get_item(i)?;
+        let reg = Self::g_registry(slf)?;
+        let cname = Construct::g_name(con(&c)?)?.str()?.to_string();
         if d.is_truthy()? {
-            let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+            let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
             let dtype: Option<String> = if dd.is_truthy()? { Some(dd.get_item("type")?.extract()?) } else { None };
             if dtype.as_deref() == Some("seat") {
-                p.setattr("seated", (c.getattr("id")?, c.getattr("cells")?.get_item(i)?))?;
+                Player::s_seated(ply(&p)?, (Construct::g_id(con(&c)?)?, Construct::g_cells(con(&c)?)?.get_item(i)?))?;
                 return Self::message(slf, &format!("{cname} の操縦席に座りました（E で降りる）"));
             }
             for a in Self::addons_v(slf)? {
@@ -81,27 +83,27 @@ impl World {
                 return Self::message(slf, &msg.str()?.to_string());
             }
         }
-        let m = reg.call_method1("material", (c.getattr("mats")?.get_item(i)?,))?;
+        let m = crate::game::registry::mat_dict(&reg, &Construct::g_mats(con(&c)?)?.get_item(i)?)?;
         let tm: f64 = c.call_method0("total_mass")?.extract()?;
-        Self::message(slf, &format!("{cname}: {} / ボクセル {} / 質量 {:.1} t", m.get_item("name")?.str()?, c.getattr("n_vox")?, tm / 1000.0))
+        Self::message(slf, &format!("{cname}: {} / ボクセル {} / 質量 {:.1} t", m.get_item("name")?.str()?, Construct::n(con(&c)?)?.into_py(py).into_bound(py), tm / 1000.0))
     }
     /// 操縦席で押されたキー：キー割り当てのあるアクチュエータを切り替える
     pub(crate) fn key_pressed(slf: &Bound<'_, Self>, key: &Bound<'_, PyAny>) -> R<()> {
-        let s = Self::g(slf, "player")?.getattr("seated")?;
+        let s = Self::g_player(slf)?.getattr("seated")?;
         if !s.is_truthy()? {
             return Ok(());
         }
-        let c = Self::g(slf, "constructs")?.call_method1("get", (s.get_item(0)?,))?;
+        let c = Self::g_constructs(slf)?.call_method1("get", (s.get_item(0)?,))?;
         if !c.is_truthy()? {
             return Ok(());
         }
-        let reg = Self::g(slf, "registry")?;
-        for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+        let reg = Self::g_registry(slf)?;
+        for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
             let d = d?;
             if !d.is_truthy()? {
                 continue;
             }
-            let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+            let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
             if dd.is_truthy()? && dd.get_item("type")?.eq("actuator")? && getd(&dd.get_item("params")?, "key", slf.py().None())?.eq(key)? {
                 let pr = getd(&d.get_item("state")?, "preset", slf.py().None())?;
                 if pr.is_truthy()? && getd(&pr, "action", slf.py().None())?.eq("none")? {
@@ -117,13 +119,13 @@ impl World {
     // ------------------------------------------------------------------ OBJ
     pub(crate) fn export_obj<'py>(slf: &Bound<'py, Self>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
-        let cname: String = c.getattr("name")?.str()?.to_string();
-        let id: String = c.getattr("id")?.str()?.to_string();
+        let cname: String = Construct::g_name(con(&c)?)?.str()?.to_string();
+        let id: String = Construct::g_id(con(&c)?)?.str()?.to_string();
         let safe: String = cname.chars().map(|ch| if ch.is_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' }).collect();
         let name = format!("{safe}_{}", id.chars().take(4).collect::<String>());
-        let ed = Self::g(slf, "exports_dir")?;
+        let ed = Self::g_exports_dir(slf)?;
         let kw = PyDict::new_bound(py);
-        kw.set_item("scripts_dir", Self::g(slf, "dir")?.call_method1("__truediv__", ("scripts",))?)?;
+        kw.set_item("scripts_dir", Self::g_dir(slf)?.call_method1("__truediv__", ("scripts",))?)?;
         let path = imp(py, "main.objio")?.call_method("export_construct", (c, &ed, name), Some(&kw))?;
         Self::message(slf, &format!("OBJ 出力: {}/{}", ed.getattr("name")?.str()?, path.getattr("name")?.str()?))?;
         Ok(path)
@@ -148,7 +150,7 @@ impl World {
     #[pyo3(signature = (path, position=None, look_dir=None, **opts))]
     pub(crate) fn import_obj<'py>(slf: &Bound<'py, Self>, path: &Bound<'py, PyAny>, position: Option<&Bound<'py, PyAny>>, look_dir: Option<&Bound<'py, PyAny>>,
                        opts: Option<&Bound<'py, PyDict>>) -> R<Bound<'py, PyAny>> {
-        let data = imp(slf.py(), "main.objio")?.call_method("import_construct", (Self::g(slf, "registry")?, path), opts)?;
+        let data = imp(slf.py(), "main.objio")?.call_method("import_construct", (Self::g_registry(slf)?, path), opts)?;
         Self::place_import(slf, &data, position, look_dir)
     }
     /// 読み込んだ構築物（objio.import_construct の結果）をプレイヤーの前に置く。サバイバルでは資源を払う
@@ -175,8 +177,8 @@ impl World {
                 hi[k] = hi[k].max(c[k]);
             }
         }
-        let player = Self::g(slf, "player")?;
-        let pp = player.getattr("pos")?;
+        let player = Self::g_player(slf)?;
+        let pp = Player::g_pos(ply(&player)?)?;
         let pl = Self::nearest_planet(slf, &pp)?;
         let up = if pl.is_truthy()? { v3(&pl.call_method1("up", (&pp,))?)? } else { [0.0, 1.0, 0.0] };
         let look = match look_dir { Some(l) if !l.is_none() => v3(l)?, _ => [0.0, 0.0, 1.0] };
@@ -207,11 +209,11 @@ impl World {
         kw.set_item("links", data.get_item("links")?)?;
         kw.set_item("name", data.get_item("name")?)?;
         let c = imp(py, "main.construct")?.getattr("Construct")?.call_method("from_voxels",
-            (Self::g(slf, "registry")?, &vox, a1(py, origin), crate::game::construct::mat(py, &rm)?), Some(&kw))?;
-        c.setattr("storage", py.get_type_bound::<PyDict>().call1((getd(data, "storage", PyDict::new_bound(py))?,))?)?;
+            (Self::g_registry(slf)?, &vox, a1(py, origin), crate::game::construct::mat(py, &rm)?), Some(&kw))?;
+        Construct::s_storage(con(&c)?, py.get_type_bound::<PyDict>().call1((getd(data, "storage", PyDict::new_bound(py))?,))?)?;
         Self::add_construct(slf, &c)?;
         // 一緒に入っていたプログラムを scripts へ（同じ名前で中身が違うものがあれば上書きしない）
-        let sdir = Self::g(slf, "dir")?.call_method1("__truediv__", ("scripts",))?;
+        let sdir = Self::g_dir(slf)?.call_method1("__truediv__", ("scripts",))?;
         sdir.call_method("mkdir", (), Some(&[("exist_ok", true)].into_py_dict_bound(py)))?;
         let enc = [("encoding", "utf-8")].into_py_dict_bound(py);
         let mut kept = vec![];
@@ -233,7 +235,7 @@ impl World {
         if !kept.is_empty() {
             Self::message(slf, &format!("同じ名前のプログラムが既にあるので、そちらを使います: {}", kept.join(", ")))?;
         }
-        Self::message(slf, &format!("読み込み: {}（{} ボクセル）", data.get_item("name")?.str()?, c.getattr("n_vox")?))?;
+        Self::message(slf, &format!("読み込み: {}（{} ボクセル）", data.get_item("name")?.str()?, Construct::n(con(&c)?)?.into_py(py).into_bound(py)))?;
         Ok(c)
     }
 }

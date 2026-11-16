@@ -8,6 +8,7 @@
 //!
 //! Viewer・GameAdapter の値は Python の属性（MOD やほかの部品が読み書きする）。処理は Rust。
 
+use crate::game::world::{wld, World};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySet, PyString, PyTuple};
@@ -157,7 +158,128 @@ fn acall<'py>(py: Python<'py>, name: &str, args: Vec<PyObject>) -> R<B<'py>> {
 
 // ---------------------------------------------------------------- Viewer
 #[pyclass(module = "alpedia_core", subclass, dict)]
-pub struct Viewer {}
+pub struct Viewer {
+    /// _addon_err（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_addon_err: Option<PyObject>,
+    /// _aim_txt（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_aim_txt: Option<PyObject>,
+    /// _alt_free（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_alt_free: Option<PyObject>,
+    /// _cam（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cam: Option<PyObject>,
+    /// _hud_shown（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hud_shown: Option<PyObject>,
+    /// _perf_log（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_perf_log: Option<PyObject>,
+    /// _snd_lit（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_snd_lit: Option<PyObject>,
+    /// _snd_loops（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_snd_loops: Option<PyObject>,
+    /// _snd_t（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_snd_t: Option<PyObject>,
+    /// _third_before_seat（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_third_before_seat: Option<PyObject>,
+    /// _was_seated（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_was_seated: Option<PyObject>,
+    /// acc（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_acc: Option<PyObject>,
+    /// addons（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_addons: Option<PyObject>,
+    /// aim_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_aim_text: Option<PyObject>,
+    /// anchor（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_anchor: Option<PyObject>,
+    /// anchor_ver（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_anchor_ver: Option<PyObject>,
+    /// bodies（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_bodies: Option<PyObject>,
+    /// carve（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_carve: Option<PyObject>,
+    /// cfg（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cfg: Option<PyObject>,
+    /// close_app（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_close_app: Option<PyObject>,
+    /// cross（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cross: Option<PyObject>,
+    /// debug_hud（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_debug_hud: Option<PyObject>,
+    /// dir_index（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_dir_index: Option<PyObject>,
+    /// editor（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_editor: Option<PyObject>,
+    /// fps_detail（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_fps_detail: Option<PyObject>,
+    /// fps_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_fps_text: Option<PyObject>,
+    /// frame_no（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_frame_no: Option<PyObject>,
+    /// game（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_game: Option<PyObject>,
+    /// ghost（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_ghost: Option<PyObject>,
+    /// grabbed（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_grabbed: Option<PyObject>,
+    /// held（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_held: Option<PyObject>,
+    /// highlight（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_highlight: Option<PyObject>,
+    /// hit（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hit: Option<PyObject>,
+    /// hotbar（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hotbar: Option<PyObject>,
+    /// hud（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hud: Option<PyObject>,
+    /// item_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_item_text: Option<PyObject>,
+    /// labels（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_labels: Option<PyObject>,
+    /// lights（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_lights: Option<PyObject>,
+    /// load_errors（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_load_errors: Option<PyObject>,
+    /// loaded（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_loaded: Option<PyObject>,
+    /// lod（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_lod: Option<PyObject>,
+    /// msg（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_msg: Option<PyObject>,
+    /// patch（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_patch: Option<PyObject>,
+    /// perf（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_perf: Option<PyObject>,
+    /// pitch（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_pitch: Option<PyObject>,
+    /// planet_views（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_planet_views: Option<PyObject>,
+    /// quit（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_quit: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// scenes（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_scenes: Option<PyObject>,
+    /// sel（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_sel: Option<PyObject>,
+    /// shim（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_shim: Option<PyObject>,
+    /// show_help（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_show_help: Option<PyObject>,
+    /// snd（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_snd: Option<PyObject>,
+    /// static_root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_static_root: Option<PyObject>,
+    /// third_person（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_third_person: Option<PyObject>,
+    /// ui（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_ui: Option<PyObject>,
+    /// view（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_view: Option<PyObject>,
+    /// views（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_views: Option<PyObject>,
+    /// w（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_w: Option<PyObject>,
+    /// yaw_fwd（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_yaw_fwd: Option<PyObject>,
+}
 
 #[pymethods]
 impl Viewer {
@@ -174,13 +296,13 @@ impl Viewer {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        Viewer {}
+        Viewer { a_addon_err: None, a_aim_txt: None, a_alt_free: None, a_cam: None, a_hud_shown: None, a_perf_log: None, a_snd_lit: None, a_snd_loops: None, a_snd_t: None, a_third_before_seat: None, a_was_seated: None, a_acc: None, a_addons: None, a_aim_text: None, a_anchor: None, a_anchor_ver: None, a_bodies: None, a_carve: None, a_cfg: None, a_close_app: None, a_cross: None, a_debug_hud: None, a_dir_index: None, a_editor: None, a_fps_detail: None, a_fps_text: None, a_frame_no: None, a_game: None, a_ghost: None, a_grabbed: None, a_held: None, a_highlight: None, a_hit: None, a_hotbar: None, a_hud: None, a_item_text: None, a_labels: None, a_lights: None, a_load_errors: None, a_loaded: None, a_lod: None, a_msg: None, a_patch: None, a_perf: None, a_pitch: None, a_planet_views: None, a_quit: None, a_root: None, a_scenes: None, a_sel: None, a_shim: None, a_show_help: None, a_snd: None, a_static_root: None, a_third_person: None, a_ui: None, a_view: None, a_views: None, a_w: None, a_yaw_fwd: None }
     }
     fn __init__(slf: &Bound<'_, Self>, world: &B<'_>, cfg: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        s.setattr("w", world)?;
-        s.setattr("cfg", cfg)?;
+        Self::sa_w(slf, world)?;
+        Self::sa_cfg(slf, cfg)?;
         let g = cfg.get_item("graphics")?;
         let win = get(cfg, "window", PyDict::new_bound(py))?;
         shim(py)?.call_method0("install")?; // 今までの画面の部品（ursina）を、この画面で動かす
@@ -190,7 +312,7 @@ impl Viewer {
         } else {
             gx.call_method1("start", (get(&win, "width", 1280)?, get(&win, "height", 720)?, "Alpedia", get(&win, "vsync", true)?))?
         };
-        s.setattr("view", &view)?;
+        Self::sa_view(slf, &view)?;
         let paths = imp(py, "main.paths")?;
         let rm = render_mod(py)?;
         let style = PyDict::new_bound(py);
@@ -202,56 +324,56 @@ impl Viewer {
         rm.setattr("DEVICE_TEXTURE", tex_dir.call_method1("__truediv__", ("px_device.png",))?.str()?)?;
         let node = gx.getattr("RsNode")?;
         let root = node.call1((py.None(), "scene"))?;
-        s.setattr("root", &root)?;
-        s.setattr("views", PyDict::new_bound(py))?;
+        Self::sa_root(slf, &root)?;
+        Self::sa_views(slf, PyDict::new_bound(py))?;
         let pvs = PyList::empty_bound(py);
-        for p in world.getattr("planets")?.iter()? {
+        for p in World::g_planets(wld(&world)?)?.iter()? {
             pvs.append(rm.getattr("PlanetView")?.call1((&root, py.None(), p?))?)?;
         }
-        s.setattr("planet_views", pvs)?;
+        Self::sa_planet_views(slf, pvs)?;
         let int = py.import_bound("builtins")?.getattr("int")?;
-        s.setattr("patch", rm.getattr("TerrainPatch")?.call1((&root, py.None(), int.call1((get(&g, "terrain_patch_cells", 48)?,))?,
+        Self::sa_patch(slf, rm.getattr("TerrainPatch")?.call1((&root, py.None(), int.call1((get(&g, "terrain_patch_cells", 48)?,))?,
             f64of(&get(&g, "terrain_patch_step", 1.0)?)?))?)?;
-        s.setattr("carve", rm.getattr("CarveView")?.call1((&root, py.None()))?)?;
-        s.setattr("lod", rm.getattr("LodLayer")?.call1((&root,))?)?;
-        s.setattr("lights", rm.getattr("LightLayer")?.call1((&root,))?)?;
-        s.setattr("static_root", node.call1((&root, "static"))?)?;
-        s.setattr("anchor", py.None())?;
-        s.setattr("anchor_ver", 0)?;
-        s.setattr("loaded", PySet::empty_bound(py)?)?;
+        Self::sa_carve(slf, rm.getattr("CarveView")?.call1((&root, py.None()))?)?;
+        Self::sa_lod(slf, rm.getattr("LodLayer")?.call1((&root,))?)?;
+        Self::sa_lights(slf, rm.getattr("LightLayer")?.call1((&root,))?)?;
+        Self::sa_static_root(slf, node.call1((&root, "static"))?)?;
+        Self::sa_anchor(slf, py.None())?;
+        Self::sa_anchor_ver(slf, 0)?;
+        Self::sa_loaded(slf, PySet::empty_bound(py)?)?;
         // 画面の上：左上の状態・左下の知らせ・照準
         gx.call_method1("font", (get(&g, "font", py.None())?,))?;
-        s.setattr("hud", rs_text(py, none(py), true, Some(BG), Some(10))?)?;
-        s.setattr("msg", rs_text(py, none(py), true, Some(BG), Some(10))?)?;
+        Self::sa_hud(slf, rs_text(py, none(py), true, Some(BG), Some(10))?)?;
+        Self::sa_msg(slf, rs_text(py, none(py), true, Some(BG), Some(10))?)?;
         let cross = gx.getattr("RsDynamicMesh")?.call1((node.call1((py.None(), "cross"))?, "cross"))?;
         view.call_method1("mesh_overlay", (cross.getattr("mid")?, true))?;
         gx.call_method1("quad", (&cross, -0.003, 0.003, 0.003, -0.003, (1, 1, 1, 0.9)))?;
-        s.setattr("cross", cross)?;
+        Self::sa_cross(slf, cross)?;
         // 手の操作：狙っている物の枠・置く場所の枠・説明・アイテムバー
-        s.setattr("highlight", gx.call_method1("wire_box", (&root, (1.0, 0.92, 0.2, 1.0), 0.025))?)?;
-        s.setattr("ghost", gx.call_method1("wire_box", (&root, (0.4, 1.0, 0.4, 1.0), 0.02))?)?;
-        s.setattr("aim_text", rs_text(py, none(py), true, Some(BG), Some(10))?)?;
-        s.setattr("item_text", rs_text(py, none(py), true, Some(BG), Some(10))?)?;
-        s.setattr("hit", py.None())?;
-        s.setattr("sel", 0)?;
-        s.setattr("dir_index", 0)?;
-        s.setattr("bodies", PyDict::new_bound(py))?;
-        s.setattr("labels", PyDict::new_bound(py))?;
-        s.setattr("third_person", false)?;
-        s.setattr("_was_seated", false)?;
-        s.setattr("debug_hud", get(&g, "debug_hud", false)?.is_truthy()?)?;
-        s.setattr("ui", imp(py, "main.client_rs.ui")?.getattr("UI")?.call1((&view,))?)?;
-        s.setattr("shim", shim(py)?)?;
-        s.setattr("editor", py.None())?; // 今までの画面の部品（ursina のまね）で開いている画面（プログラムなど）
+        Self::sa_highlight(slf, gx.call_method1("wire_box", (&root, (1.0, 0.92, 0.2, 1.0), 0.025))?)?;
+        Self::sa_ghost(slf, gx.call_method1("wire_box", (&root, (0.4, 1.0, 0.4, 1.0), 0.02))?)?;
+        Self::sa_aim_text(slf, rs_text(py, none(py), true, Some(BG), Some(10))?)?;
+        Self::sa_item_text(slf, rs_text(py, none(py), true, Some(BG), Some(10))?)?;
+        Self::sa_hit(slf, py.None())?;
+        Self::sa_sel(slf, 0)?;
+        Self::sa_dir_index(slf, 0)?;
+        Self::sa_bodies(slf, PyDict::new_bound(py))?;
+        Self::sa_labels(slf, PyDict::new_bound(py))?;
+        Self::sa_third_person(slf, false)?;
+        Self::sa_was_seated(slf, false)?;
+        Self::sa_debug_hud(slf, get(&g, "debug_hud", false)?.is_truthy()?)?;
+        Self::sa_ui(slf, imp(py, "main.client_rs.ui")?.getattr("UI")?.call1((&view,))?)?;
+        Self::sa_shim(slf, shim(py)?)?;
+        Self::sa_editor(slf, py.None())?; // 今までの画面の部品（ursina のまね）で開いている画面（プログラムなど）
         let game = py.get_type_bound::<GameAdapter>().call1((s,))?;
-        s.setattr("game", &game)?;
-        s.setattr("snd", imp(py, "main.client.sound")?.call_method1("get", (cfg,))?)?;
-        s.setattr("_snd_t", 0.0)?;
-        s.setattr("_snd_lit", PySet::empty_bound(py)?)?;
-        s.setattr("_snd_loops", PyDict::new_bound(py))?;
-        imp(py, "main.client.inventory")?.call_method1("ensure_hotbar", (world.getattr("player")?, world.getattr("registry")?))?;
+        Self::sa_game(slf, &game)?;
+        Self::sa_snd(slf, imp(py, "main.client.sound")?.call_method1("get", (cfg,))?)?;
+        Self::sa_snd_t(slf, 0.0)?;
+        Self::sa_snd_lit(slf, PySet::empty_bound(py)?)?;
+        Self::sa_snd_loops(slf, PyDict::new_bound(py))?;
+        imp(py, "main.client.inventory")?.call_method1("ensure_hotbar", (World::g_player(wld(&world)?)?, World::g_registry(wld(&world)?)?))?;
         let addons = s.call_method0("_load_addons")?;
-        s.setattr("addons", &addons)?;
+        Self::sa_addons(slf, &addons)?;
         let r = (|| -> R<()> {
             let th = imp(py, "main.client.touch_ui")?.getattr("TouchHUD")?.call1((&game,))?;
             game.setattr("touch_hud", th) // 画面のボタン・仮想ジョイスティック（今までの画面と同じ部品）
@@ -261,7 +383,7 @@ impl Viewer {
         let own: Vec<B<'_>> = addons.iter()?.map(|a| a.map(|a| gd(&a, "pack", none(py)))).collect::<R<_>>()?;
         let scenes = PyList::empty_bound(py);
         let sv = imp(py, "main.client.scenery_view")?.getattr("SceneView")?;
-        for a in world.getattr("addons")?.iter()? {
+        for a in World::g_addons(wld(&world)?)?.iter()? {
             let a = a?;
             if own.iter().any(|o| o.is(&a)) {
                 continue;
@@ -278,22 +400,22 @@ impl Viewer {
                 }
             }
         }
-        s.setattr("scenes", scenes)?;
-        s.setattr("_addon_err", PySet::empty_bound(py)?)?;
-        s.setattr("hotbar", py.None())?;
-        s.setattr("held", PySet::empty_bound(py)?)?;
-        s.setattr("yaw_fwd", py.None())?;
-        s.setattr("pitch", 0.0)?;
-        s.setattr("grabbed", false)?;
-        s.setattr("acc", 0.0)?;
-        s.setattr("quit", false)?;
+        Self::sa_scenes(slf, scenes)?;
+        Self::sa_addon_err(slf, PySet::empty_bound(py)?)?;
+        Self::sa_hotbar(slf, py.None())?;
+        Self::sa_held(slf, PySet::empty_bound(py)?)?;
+        Self::sa_yaw_fwd(slf, py.None())?;
+        Self::sa_pitch(slf, 0.0)?;
+        Self::sa_grabbed(slf, false)?;
+        Self::sa_acc(slf, 0.0)?;
+        Self::sa_quit(slf, false)?;
         let perf = PyDict::new_bound(py);
         perf.set_item("frames", 0)?;
         perf.set_item("t", imp(py, "time")?.call_method0("perf_counter")?)?;
         perf.set_item("phys", 0.0)?;
         perf.set_item("rend", 0.0)?;
         perf.set_item("ticks", 0)?;
-        s.setattr("perf", perf)?;
+        Self::sa_perf(slf, perf)?;
         Ok(())
     }
 
@@ -301,13 +423,12 @@ impl Viewer {
     /// MOD の画面側（ClientAddon）を作る（今までの画面と同じ modcode.client_addons）
     fn _load_addons<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
-        let s = slf.as_any();
         let mc = imp(py, "main.modcode")?;
         let errors = PyList::empty_bound(py);
         mc.call_method1("load_client", (&errors,))?;
-        let game = ga(s, "game")?;
+        let game = Self::ga_game(slf)?;
         let out = mc.call_method1("client_addons", (&game, &errors))?;
-        let w = ga(s, "w")?;
+        let w = Self::ga_w(slf)?;
         let sv = w.call_method1("addon", ("survival",))?;
         if !sv.is_none() && gd(&sv, "mod_id", none(py)).is_none() {
             let r = (|| -> R<()> {
@@ -334,26 +455,25 @@ impl Viewer {
             let first: String = e.call_method0("splitlines")?.get_item(0)?.extract()?;
             w.call_method1("message", (format!("⚠ {}", first),))?;
         }
-        s.setattr("load_errors", errors)?;
+        Self::sa_load_errors(slf, errors)?;
         Ok(out)
     }
     /// MOD の口を順に呼ぶ（エラーは1回だけ記録して続ける）。first：最初に真を返した物の値
     #[pyo3(signature = (f, first=false))]
     fn _each_addon<'py>(slf: &Bound<'py, Self>, f: &B<'py>, first: bool) -> R<B<'py>> {
         let py = slf.py();
-        let s = slf.as_any();
-        let addons: Vec<B<'_>> = ga(s, "addons")?.iter()?.collect::<R<_>>()?;
+        let addons: Vec<B<'_>> = Self::ga_addons(slf)?.iter()?.collect::<R<_>>()?;
         for a in addons {
             let r = match f.call1((&a,)) {
                 Ok(v) => v,
                 Err(e) if is_exc(py, &e) => {
                     let key = (gd(&a, "name", tb(py, "?")), gd(f, "__name__", tb(py, "")));
                     let key = PyTuple::new_bound(py, [key.0, key.1]);
-                    let errs = ga(s, "_addon_err")?;
+                    let errs = Self::ga_addon_err(slf)?;
                     if !errs.contains(&key)? {
                         errs.call_method1("add", (&key,))?;
                         log_exc(py, &e, "MOD '%s' の画面側でエラー", vec![key.get_item(0)?.unbind()])?;
-                        ga(s, "w")?.call_method1("message", (format!("⚠ MOD '{}' の画面でエラー（logs/latest.log）", key.get_item(0)?.str()?),))?;
+                        Self::ga_w(slf)?.call_method1("message", (format!("⚠ MOD '{}' の画面でエラー（logs/latest.log）", key.get_item(0)?.str()?),))?;
                     }
                     none(py)
                 }
@@ -383,8 +503,7 @@ impl Viewer {
     #[pyo3(signature = (radius=2.6))]
     fn nearby_targets<'py>(slf: &Bound<'py, Self>, radius: f64) -> R<B<'py>> {
         let py = slf.py();
-        let s = slf.as_any();
-        imp(py, "main.client.play")?.call_method1("nearby_targets", (ga(s, "w")?, ga(s, "addons")?, radius))
+        imp(py, "main.client.play")?.call_method1("nearby_targets", (Self::ga_w(slf)?, Self::ga_addons(slf)?, radius))
     }
     /// E：MOD が使わなければワールドの interact（機器・席）
     fn do_interact(slf: &Bound<'_, Self>, hit: &B<'_>) -> R<()> {
@@ -392,12 +511,12 @@ impl Viewer {
         let s = slf.as_any();
         let f = acall(py, "interact", vec![hit.clone().unbind()])?;
         if !Self::_each_addon(slf, &f, true)?.is_truthy()? {
-            let w = ga(s, "w")?;
+            let w = Self::ga_w(slf)?;
             let mut kind = none(py);
             if hit.is_truthy()? && get(hit, "kind", py.None())?.eq("voxel")? {
                 let d = hit.get_item("construct")?.getattr("devs")?.get_item(hit.get_item("index")?)?;
                 if d.is_truthy()? {
-                    let dd = w.getattr("registry")?.call_method1("device", (d.get_item("def")?,))?;
+                    let dd = World::g_registry(wld(&w)?)?.call_method1("device", (d.get_item("def")?,))?;
                     let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
                     kind = get(&dd, "type", py.None())?;
                 }
@@ -422,26 +541,26 @@ impl Viewer {
     fn _update_sound(slf: &Bound<'_, Self>, dt: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let snd = ga(s, "snd")?;
+        let snd = Self::ga_snd(slf)?;
         if snd.is_none() {
             return Ok(());
         }
         let f = acall(py, "bgm", vec![])?;
         snd.call_method1("set_bgm", (Self::_each_addon(slf, &f, true)?,))?;
-        let w = ga(s, "w")?;
-        if ga(&ga(s, "ui")?, "stack")?.is_truthy()? && gd(&w, "net", none(py)).is_none() {
+        let w = Self::ga_w(slf)?;
+        if ga(&Self::ga_ui(slf)?, "stack")?.is_truthy()? && gd(&w, "net", none(py)).is_none() {
             snd.call_method0("stop_loops")?;
         } else {
-            let t = f64of(&ga(s, "_snd_t")?)? - dt;
-            s.setattr("_snd_t", t)?;
+            let t = f64of(&Self::ga_snd_t(slf)?)? - dt;
+            Self::sa_snd_t(slf, t)?;
             if t <= 0.0 {
                 // 機器の様子を数えるのは 0.1 秒ごと
-                s.setattr("_snd_t", 0.1)?;
-                let r = imp(py, "main.client.sound")?.call_method1("sources", (&w, ga(s, "_snd_lit")?, ga(s, "sfx")?))?;
-                s.setattr("_snd_loops", r.get_item(0)?)?;
-                s.setattr("_snd_lit", r.get_item(1)?)?;
+                Self::sa_snd_t(slf, 0.1)?;
+                let r = imp(py, "main.client.sound")?.call_method1("sources", (&w, Self::ga_snd_lit(slf)?, ga(s, "sfx")?))?;
+                Self::sa_snd_loops(slf, r.get_item(0)?)?;
+                Self::sa_snd_lit(slf, r.get_item(1)?)?;
             }
-            let loops = ga(s, "_snd_loops")?;
+            let loops = Self::ga_snd_loops(slf)?;
             for name in ["thruster_loop", "motor_loop", "jetpack_loop"] {
                 snd.call_method1("loop", (name, get(&loops, name, 0.0)?))?;
             }
@@ -491,3 +610,41 @@ mod hud;
 mod render;
 mod adapter;
 pub(crate) use self::adapter::*;
+
+// ---------------------------------------------------------------- Viewer の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! viewer_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl Viewer { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl Viewer { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+viewer_attr_fields!(
+    ga_addon_err sa_addon_err pga_addon_err psa_addon_err a_addon_err "_addon_err", ga_aim_txt sa_aim_txt pga_aim_txt psa_aim_txt a_aim_txt "_aim_txt", ga_alt_free sa_alt_free pga_alt_free psa_alt_free a_alt_free "_alt_free", ga_cam sa_cam pga_cam psa_cam a_cam "_cam", ga_hud_shown sa_hud_shown pga_hud_shown psa_hud_shown a_hud_shown "_hud_shown", ga_perf_log sa_perf_log pga_perf_log psa_perf_log a_perf_log "_perf_log", ga_snd_lit sa_snd_lit pga_snd_lit psa_snd_lit a_snd_lit "_snd_lit", ga_snd_loops sa_snd_loops pga_snd_loops psa_snd_loops a_snd_loops "_snd_loops", ga_snd_t sa_snd_t pga_snd_t psa_snd_t a_snd_t "_snd_t", ga_third_before_seat sa_third_before_seat pga_third_before_seat psa_third_before_seat a_third_before_seat "_third_before_seat", ga_was_seated sa_was_seated pga_was_seated psa_was_seated a_was_seated "_was_seated", ga_acc sa_acc pga_acc psa_acc a_acc "acc", ga_addons sa_addons pga_addons psa_addons a_addons "addons", ga_aim_text sa_aim_text pga_aim_text psa_aim_text a_aim_text "aim_text", ga_anchor sa_anchor pga_anchor psa_anchor a_anchor "anchor", ga_anchor_ver sa_anchor_ver pga_anchor_ver psa_anchor_ver a_anchor_ver "anchor_ver", ga_bodies sa_bodies pga_bodies psa_bodies a_bodies "bodies", ga_carve sa_carve pga_carve psa_carve a_carve "carve", ga_cfg sa_cfg pga_cfg psa_cfg a_cfg "cfg", ga_close_app sa_close_app pga_close_app psa_close_app a_close_app "close_app", ga_cross sa_cross pga_cross psa_cross a_cross "cross", ga_debug_hud sa_debug_hud pga_debug_hud psa_debug_hud a_debug_hud "debug_hud", ga_dir_index sa_dir_index pga_dir_index psa_dir_index a_dir_index "dir_index", ga_editor sa_editor pga_editor psa_editor a_editor "editor", ga_fps_detail sa_fps_detail pga_fps_detail psa_fps_detail a_fps_detail "fps_detail", ga_fps_text sa_fps_text pga_fps_text psa_fps_text a_fps_text "fps_text", ga_frame_no sa_frame_no pga_frame_no psa_frame_no a_frame_no "frame_no", ga_game sa_game pga_game psa_game a_game "game", ga_ghost sa_ghost pga_ghost psa_ghost a_ghost "ghost", ga_grabbed sa_grabbed pga_grabbed psa_grabbed a_grabbed "grabbed", ga_held sa_held pga_held psa_held a_held "held", ga_highlight sa_highlight pga_highlight psa_highlight a_highlight "highlight", ga_hit sa_hit pga_hit psa_hit a_hit "hit", ga_hotbar sa_hotbar pga_hotbar psa_hotbar a_hotbar "hotbar", ga_hud sa_hud pga_hud psa_hud a_hud "hud", ga_item_text sa_item_text pga_item_text psa_item_text a_item_text "item_text", ga_labels sa_labels pga_labels psa_labels a_labels "labels", ga_lights sa_lights pga_lights psa_lights a_lights "lights", ga_load_errors sa_load_errors pga_load_errors psa_load_errors a_load_errors "load_errors", ga_loaded sa_loaded pga_loaded psa_loaded a_loaded "loaded", ga_lod sa_lod pga_lod psa_lod a_lod "lod", ga_msg sa_msg pga_msg psa_msg a_msg "msg", ga_patch sa_patch pga_patch psa_patch a_patch "patch", ga_perf sa_perf pga_perf psa_perf a_perf "perf", ga_pitch sa_pitch pga_pitch psa_pitch a_pitch "pitch", ga_planet_views sa_planet_views pga_planet_views psa_planet_views a_planet_views "planet_views", ga_quit sa_quit pga_quit psa_quit a_quit "quit", ga_root sa_root pga_root psa_root a_root "root", ga_scenes sa_scenes pga_scenes psa_scenes a_scenes "scenes", ga_sel sa_sel pga_sel psa_sel a_sel "sel", ga_shim sa_shim pga_shim psa_shim a_shim "shim", ga_show_help sa_show_help pga_show_help psa_show_help a_show_help "show_help", ga_snd sa_snd pga_snd psa_snd a_snd "snd", ga_static_root sa_static_root pga_static_root psa_static_root a_static_root "static_root", ga_third_person sa_third_person pga_third_person psa_third_person a_third_person "third_person", ga_ui sa_ui pga_ui psa_ui a_ui "ui", ga_view sa_view pga_view psa_view a_view "view", ga_views sa_views pga_views psa_views a_views "views", ga_w sa_w pga_w psa_w a_w "w", ga_yaw_fwd sa_yaw_fwd pga_yaw_fwd psa_yaw_fwd a_yaw_fwd "yaw_fwd"
+);

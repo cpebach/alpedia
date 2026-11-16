@@ -15,7 +15,7 @@ impl BlockEditor {
     pub(crate) fn _build_right_panel(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let r = s.getattr("root")?;
+        let r = Self::ga_root(slf)?;
         let x = 0.665;
         let m = |n: &str| s.getattr(n);
         let c3 = |c: (f64, f64, f64)| rgb(s, c).map(Some);
@@ -27,7 +27,7 @@ impl BlockEditor {
             ("scale", po(py, (0.4, 0.04))), ("character_limit", po(py, 30))])?;
         nf.setattr("limit_content_to", NAME_CHARS)?;
         nf.setattr("active", false)?;
-        s.setattr("name_field", nf)?;
+        Self::sa_name_field(slf, nf)?;
         btn(s, &r, "保存", (x - 0.1, 0.32), &m("save")?, 0.19, 0.04, c3((0.2, 0.45, 0.3))?, 0.7)?;
         btn(s, &r, "保存して実行", (x + 0.1, 0.32), &m("save_and_run")?, 0.19, 0.04, c3((0.2, 0.5, 0.3))?, 0.7)?;
         btn(s, &r, "停止", (x - 0.1, 0.275), &m("stop")?, 0.19, 0.04, c3((0.5, 0.25, 0.2))?, 0.7)?;
@@ -43,9 +43,9 @@ impl BlockEditor {
         btn(s, &r, "削除", (x + 0.1, 0.09), &m("delete")?, 0.19, 0.04, c3((0.5, 0.2, 0.2))?, 0.7)?;
         s.setattr("status", mk(s, "Text", vec![("parent", r.clone().unbind()), ("text", po(py, "")), ("position", po(py, (x - 0.2, 0.045))),
             ("origin", po(py, (-0.5, 0.5))), ("scale", po(py, 0.62)), ("color", cn(s, "orange")?.unbind())])?)?;
-        s.setattr("info", mk(s, "Text", vec![("parent", r.clone().unbind()), ("text", po(py, "")), ("position", po(py, (x - 0.2, -0.04))),
+        Self::sa_info(slf, mk(s, "Text", vec![("parent", r.clone().unbind()), ("text", po(py, "")), ("position", po(py, (x - 0.2, -0.04))),
             ("origin", po(py, (-0.5, 0.5))), ("scale", po(py, 0.62))])?)?;
-        s.setattr("log_text", mk(s, "Text", vec![("parent", r.clone().unbind()), ("text", po(py, "")), ("position", po(py, (x - 0.2, -0.17))),
+        Self::sa_log_text(slf, mk(s, "Text", vec![("parent", r.clone().unbind()), ("text", po(py, "")), ("position", po(py, (x - 0.2, -0.17))),
             ("origin", po(py, (-0.5, 0.5))), ("scale", po(py, 0.58)), ("color", cn(s, "light_gray")?.unbind())])?)?;
         mk(s, "Text", vec![("parent", r.clone().unbind()), ("position", po(py, (-0.87, -0.455))), ("origin", po(py, (-0.5, 0.5))), ("scale", po(py, 0.6)),
             ("color", cn(s, "light_gray")?.unbind()),
@@ -60,13 +60,13 @@ impl BlockEditor {
     pub(crate) fn build_palette(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let pr = s.getattr("palette_root")?;
+        let pr = Self::ga_palette_root(slf)?;
         let kids: Vec<B<'_>> = pr.getattr("children")?.iter()?.collect::<R<_>>()?;
         for e in kids {
             crate::game::client_misc::ui_destroy(py, &e, &PyTuple::empty_bound(py), None)?;
         }
         let b = bm(py)?;
-        let world = s.getattr("world")?;
+        let world = Self::ga_world(slf)?;
         let allowed = world.call_method0("block_categories")?; // シナリオでは章ごとに出す種類を絞る
         let mut cats: Vec<B<'_>> = vec![];
         for c in b.getattr("CATEGORIES")?.iter()? {
@@ -75,11 +75,11 @@ impl BlockEditor {
                 cats.push(c);
             }
         }
-        let cat0 = s.getattr("cat")?;
+        let cat0 = Self::ga_cat(slf)?;
         if !cats.is_empty() && !cats.iter().any(|c| c.get_item(0).and_then(|x| x.eq(&cat0)).unwrap_or(false)) {
-            s.setattr("cat", cats[0].get_item(0)?)?;
+            Self::sa_cat(slf, cats[0].get_item(0)?)?;
         }
-        let cat = s.getattr("cat")?;
+        let cat = Self::ga_cat(slf)?;
         let wp = Self::_hint_palette(slf)?;
         let (want_cat, want_kind, want_node) = (wp.get_item(0)?, wp.get_item(1)?, wp.get_item(2)?);
         let set_cat = s.getattr("_set_cat")?;
@@ -197,7 +197,7 @@ impl BlockEditor {
         let b = bm(py)?;
         let kind = b.call_method1("value_kind", (node,))?;
         let erg = be_expr_rgb(py, node)?;
-        let ssel = s.getattr("slot_sel")?;
+        let ssel = Self::ga_slot_sel(slf)?;
         let ok = ssel.is_none() || {
             let base = ss(&ssel.get_item(2)?)?.split(':').next().unwrap_or("").to_string();
             b.call_method1("fits", (node, base))?.is_truthy()?
@@ -211,7 +211,7 @@ impl BlockEditor {
         Ok(bt)
     }
     pub(crate) fn _set_cat(slf: &Bound<'_, Self>, cid: &B<'_>) -> R<()> {
-        slf.as_any().setattr("cat", cid)?;
+        Self::sa_cat(slf, cid)?;
         Self::build_palette(slf)
     }
 
@@ -239,7 +239,7 @@ impl BlockEditor {
             rows.append(row(py, "end", depth, Some(lst), Some(lst.len()? as i64), Some(owner), None)?)?;
             Ok(())
         }
-        let scripts = slf.as_any().getattr("prog")?.get_item("scripts")?;
+        let scripts = Self::ga_prog(slf)?.get_item("scripts")?;
         for i in 0..scripts.len()? {
             let sc = scripts.get_item(i)?;
             rows.append(row(py, "block", 0, Some(&scripts), Some(i as i64), Some(&sc), None)?)?;

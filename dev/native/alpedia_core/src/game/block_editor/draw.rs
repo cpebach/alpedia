@@ -7,22 +7,22 @@ impl BlockEditor {
     pub(crate) fn render(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let rr = s.getattr("rows_root")?;
+        let rr = Self::ga_rows_root(slf)?;
         let kids: Vec<B<'_>> = rr.getattr("children")?.iter()?.collect::<R<_>>()?;
         for e in kids {
             crate::game::client_misc::ui_destroy(py, &e, &PyTuple::empty_bound(py), None)?;
         }
         let b = bm(py)?;
         let rows = Self::flatten(slf)?;
-        s.setattr("rows", &rows)?;
+        Self::sa_rows(slf, &rows)?;
         let n = rows.len() as i64;
-        let sc0: i64 = s.getattr("scroll")?.extract()?;
+        let sc0: i64 = Self::ga_scroll(slf)?.extract()?;
         let scroll = 0.max(sc0.min(0.max(n - VISIBLE)));
-        s.setattr("scroll", scroll)?;
+        Self::sa_scroll(slf, scroll)?;
         let mut y = AREA_TOP;
-        let hint = s.getattr("hint")?;
+        let hint = Self::ga_hint(slf)?;
         let h_ = if hint.is_truthy()? && hint.get_item("kind")?.eq("insert")? { Some(hint) } else { None };
-        let sel = s.getattr("sel")?;
+        let sel = Self::ga_sel(slf)?;
         let select = s.getattr("select")?;
         let cat_color = b.getattr("CAT_COLOR")?;
         let stm = b.getattr("STATEMENTS")?;
@@ -118,7 +118,7 @@ impl BlockEditor {
         Self::_draw_slot(slf, node, key, kind, x, y, 0)
     }
     pub(crate) fn _is_sel(slf: &Bound<'_, Self>, owner: &B<'_>, key: &B<'_>) -> R<bool> {
-        let s2 = slf.as_any().getattr("slot_sel")?;
+        let s2 = Self::ga_slot_sel(slf)?;
         Ok(!s2.is_none() && s2.get_item(0)?.is(owner) && s2.get_item(1)?.eq(key)?)
     }
     pub(crate) fn _metrics(&self, depth: i64) -> (f64, f64, f64) {

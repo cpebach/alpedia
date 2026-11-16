@@ -1,6 +1,7 @@
 //! 画面側の小さな部品：MOD の画面側の口（addon_hooks.ClientAddon）、部品を中身ごと消す（ui_destroy）、
 //! サバイバルの目標（survival_ui）、アイテムバーとインベントリの中身（inventory）。
 
+use crate::game::player::{ply, Player};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
@@ -30,7 +31,12 @@ fn pff(py: Python<'_>, v: f64, spec: &str) -> R<String> {
 /// ゲーム画面は拡張の中身を知らず、次の口だけを呼ぶ。
 /// 拡張はワールドの中身を直接触らず、自分のワールド側（world.addon(名前)）の問い合わせ関数を使う。
 #[pyclass(module = "main.client.addon_hooks", subclass, dict)]
-pub struct ClientAddon {}
+pub struct ClientAddon {
+    /// game（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_game: Option<PyObject>,
+    /// world（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_world: Option<PyObject>,
+}
 
 #[pymethods]
 impl ClientAddon {
@@ -46,11 +52,11 @@ impl ClientAddon {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        ClientAddon {}
+        ClientAddon { a_game: None, a_world: None }
     }
     fn __init__(slf: &Bound<'_, Self>, game: &B<'_>) -> R<()> {
-        slf.as_any().setattr("game", game)?;
-        slf.as_any().setattr("world", game.getattr("world")?)?;
+        Self::sa_game(slf, game)?;
+        Self::sa_world(slf, game.getattr("world")?)?;
         Ok(())
     }
     /// キーが押された。使ったら True
@@ -159,7 +165,7 @@ impl SurvivalClient {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> (Self, ClientAddon) {
-        (SurvivalClient {}, ClientAddon {})
+        (SurvivalClient {}, ClientAddon { a_game: None, a_world: None })
     }
     fn __init__(slf: &Bound<'_, Self>, game: &B<'_>) -> R<()> {
         let py = slf.py();
@@ -240,7 +246,7 @@ pub fn inv_valid_item(reg: &B<'_>, item: &B<'_>) -> R<bool> {
     if item.len()? != 2 {
         return Err(pyo3::exceptions::PyValueError::new_err("too many values to unpack (expected 2)"));
     }
-    Ok(if kind.eq("material")? { reg.call_method1("material", (id_,))? } else { reg.call_method1("device", (id_,))? }.is_truthy()?)
+    Ok(if kind.eq("material")? { crate::game::registry::mat_dict(&reg, &id_)? } else { crate::game::registry::dev_dict(&reg, &id_)? }.is_truthy()?)
 }
 
 /// アイテムバーを9枠にそろえ、無くなったアイテム（MOD を外した等）を空にする
@@ -249,7 +255,7 @@ pub fn inv_ensure_hotbar<'py>(py: Python<'py>, player: &B<'py>, reg: &B<'py>) ->
     let m = inv(py)?;
     let slots: usize = m.getattr("SLOTS")?.extract()?;
     let tup = py.import_bound("builtins")?.getattr("tuple")?;
-    let cur = player.getattr("hotbar")?;
+    let cur = Player::g_hotbar(ply(&player)?)?;
     let hb = if cur.is_truthy()? {
         PyList::new_bound(py, cur.iter()?.collect::<R<Vec<_>>>()?)
     } else {
@@ -287,7 +293,7 @@ pub fn inv_ensure_hotbar<'py>(py: Python<'py>, player: &B<'py>, reg: &B<'py>) ->
     while out.len() < slots {
         out.append(py.None())?;
     }
-    player.setattr("hotbar", &out)?;
+    Player::s_hotbar(ply(&player)?, &out)?;
     Ok(out)
 }
 
@@ -296,7 +302,7 @@ pub fn inv_item_details<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>) -> R<
     let (kind, id_) = (item.get_item(0)?, item.get_item(1)?);
     let lines = PyList::empty_bound(py);
     if kind.eq("material")? {
-        let m = reg.call_method1("material", (&id_,))?;
+        let m = crate::game::registry::mat_dict(&reg, &id_)?;
         lines.append(format!("素材: {}", m.get_item("name")?.str()?))?;
         lines.append(format!("密度 {} kg/m³　硬さ {}　ちぎれにくさ {}", pf(&m.get_item("density")?, ".0f")?, pf(&m.get_item("stiffness")?, ".2f")?,
             pf(&m.get_item("break_distance")?, ".2f")?))?;
@@ -314,7 +320,7 @@ pub fn inv_item_details<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>) -> R<
             lines.append(format!("・{}", extra.join("・")))?;
         }
     } else {
-        let d = reg.call_method1("device", (&id_,))?;
+        let d = crate::game::registry::dev_dict(&reg, &id_)?;
         let mark = get(&d, "mark", py.None())?;
         let tkey = if mark.is_truthy()? { mark } else { d.get_item("type")? };
         let tn = inv(py)?.getattr("TYPE_NAMES")?.call_method1("get", (tkey, d.get_item("type")?))?;
@@ -330,7 +336,7 @@ pub fn inv_item_details<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>) -> R<
             String::new()
         };
         let mat_id = get(&d, "material", py.None())?;
-        let mm = reg.call_method1("material", (&mat_id,))?;
+        let mm = crate::game::registry::mat_dict(&reg, &mat_id)?;
         let mm = if mm.is_truthy()? { mm } else { PyDict::new_bound(py).into_any() };
         let mat = get(&mm, "name", mat_id)?;
         let mut info = vec![pw, format!("素材 {}", mat.str()?)];
@@ -378,3 +384,41 @@ pub fn register(m: &Bound<'_, PyModule>) -> R<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------- ClientAddon の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! clientaddon_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl ClientAddon { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl ClientAddon { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+clientaddon_attr_fields!(
+    ga_game sa_game pga_game psa_game a_game "game", ga_world sa_world pga_world psa_world a_world "world"
+);

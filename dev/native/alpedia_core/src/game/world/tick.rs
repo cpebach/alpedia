@@ -1,6 +1,8 @@
 //! ワールド：物理の中身（並べて動かす・ぶつかり・眠り・遠くの物）
 
+use crate::game::player::{ply, Player};
 use super::*;
+use crate::game::construct::{con, Construct};
 use numpy::PyUntypedArrayMethods;
 
 #[pymethods]
@@ -8,16 +10,16 @@ impl World {
     /// このティックで当たりそうな、拡張の当たり判定の箱を集めておく
     pub(crate) fn _prep_ext(slf: &Bound<'_, Self>, c: &Bound<'_, PyAny>, dt: f64) -> R<()> {
         let py = slf.py();
-        c.setattr("ext_events", PyList::empty_bound(py))?;
-        c.setattr("ext_colliders", PyList::empty_bound(py))?;
+        Construct::s_ext_events(con(&c)?, PyList::empty_bound(py))?;
+        Construct::s_ext_colliders(con(&c)?, PyList::empty_bound(py))?;
         let addons = Self::addons_v(slf)?;
         if addons.is_empty() {
             return Ok(());
         }
-        let vel = fv(&c.getattr("vel")?)?;
+        let vel = fv(&Construct::g_vel(con(&c)?)?)?;
         let vmax = vel.iter().map(|x| x.abs()).fold(f64::NEG_INFINITY, |a, b| if b.is_nan() || a.is_nan() { f64::NAN } else { a.max(b) });
-        let sp = vmax * dt + c.getattr("size")?.extract::<f64>()? * 2.0;
-        let pos = v3s(&c.getattr("pos")?)?;
+        let sp = vmax * dt + Construct::g_size(con(&c)?)?.extract::<f64>()? * 2.0;
+        let pos = v3s(&Construct::g_pos(con(&c)?)?)?;
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
         for p in &pos {
@@ -27,7 +29,7 @@ impl World {
             }
         }
         let (lo, hi) = (a1(py, lo), a1(py, hi));
-        let ec = c.getattr("ext_colliders")?;
+        let ec = Construct::g_ext_colliders(con(&c)?)?;
         for a in addons {
             ec.call_method1("extend", (a.call_method1("colliders", (slf, &lo, &hi, sp))?,))?;
         }
@@ -50,12 +52,12 @@ impl World {
         if workers <= 1 || cons.len() < 2 {
             return cons.iter().map(|c| f.call1((c,)).map(|x| x.unbind())).collect();
         }
-        let pmin: usize = imp(py, "main.fastphys")?.getattr("PARALLEL_MIN_VOXELS")?.extract()?;
+        let pmin: usize = crate::game::construct::PARALLEL_MIN_VOXELS;
         let mut out: Vec<Option<PyObject>> = (0..cons.len()).map(|_| None).collect();
         let mut small = vec![];
         for (k, c) in cons.iter().enumerate() {
             // 剛体・関節つき剛体は Python 側の部分が多く、スレッドに分けても速くならない
-            if c.getattr("n_vox")?.extract::<usize>()? >= pmin || !c.getattr("mode")?.eq("soft")? {
+            if Construct::n(con(&c)?)? >= pmin || !Construct::g_mode(con(&c)?)?.eq("soft")? {
                 out[k] = Some(f.call1((c,))?.unbind());
             } else {
                 small.push(k);
@@ -84,7 +86,7 @@ impl World {
     }
     pub(crate) fn _workers(slf: &Bound<'_, Self>) -> R<i64> {
         let py = slf.py();
-        let t = getd(&phys(&Self::g(slf, "cfg")?)?, "threads", 0)?;
+        let t = getd(&phys(&Self::g_cfg(slf)?)?, "threads", 0)?;
         let n: i64 = if t.is_truthy()? { t.call_method0("__int__")?.extract()? } else { 0 };
         if n > 0 {
             return Ok(n);
@@ -95,14 +97,14 @@ impl World {
     }
     pub(crate) fn _pool<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
-        if let Some(p) = opt(slf.as_any(), "_pool_obj")? {
+        if let Some(p) = Self::cache_get(slf, |c| &c.pool_obj)? {
             return Ok(p);
         }
         let kw = PyDict::new_bound(py);
         kw.set_item("max_workers", Self::_workers(slf)?)?;
         kw.set_item("thread_name_prefix", "phys")?;
         let p = imp(py, "concurrent.futures")?.getattr("ThreadPoolExecutor")?.call((), Some(&kw))?;
-        Self::set(slf, "_pool_obj", &p)?;
+        Self::cache_put(slf, |c| &mut c.pool_obj, &p)?;
         Ok(p)
     }
     /// 構築物どうし（と、同じ構築物の結合していないボクセルどうし）の押し出し。押し出された眠っている構築物のリストを返す
@@ -124,7 +126,7 @@ impl World {
             return Ok(none());
         }
         let mut pt = std::time::Instant::now();
-        let pls = crate::game::construct::construct_native_planets(py, &Self::g(slf, "planets")?)?.into_bound(py);
+        let pls = crate::game::construct::construct_native_planets(py, &Self::g_planets(slf)?)?.into_bound(py);
         let gidx = PyDict::new_bound(py);
         let glst = PyList::empty_bound(py);
         let groups = PyTuple::new_bound(py, [gidx.as_any(), glst.as_any()]);
@@ -166,10 +168,10 @@ impl World {
         let allc: Vec<&Bound<'_, PyAny>> = cons.iter().chain(sleeping.iter()).collect();
         for ((c, t), w) in allc.iter().zip(touch.iter()?).zip(want.iter()?) {
             if t?.is_truthy()? {
-                c.setattr("_touch_moving", true)?;
+                Construct::s_touch_moving(con(&c)?, true)?;
             }
             if w?.is_truthy()? {
-                c.setattr("_want_soft", true)?;
+                Construct::s_want_soft(con(&c)?, true)?;
             }
         }
         let broke = PySet::empty_bound(py)?;
@@ -182,7 +184,7 @@ impl World {
         if hits.is_truthy()? {
             let owners = PyDict::new_bound(py);
             for c in &cons {
-                for e in c.getattr("ext_colliders")?.iter()? {
+                for e in Construct::g_ext_colliders(con(&c)?)?.iter()? {
                     let e = e?;
                     owners.set_item(e.get_item(1)?.as_ptr() as usize, e.get_item(0)?)?;
                 }
@@ -238,15 +240,15 @@ impl World {
         let items = PyList::empty_bound(py);
         for c in &cons {
             c.call_method1("_contig", ("pos", "vel"))?;
-            items.append((c.call_method0("native_proxy")?, c.getattr("pos")?, c.getattr("vel")?, c.getattr("mode")?.eq("rigid")?))?;
+            items.append((c.call_method0("native_proxy")?, Construct::g_pos(con(&c)?)?, Construct::g_vel(con(&c)?)?, Construct::g_mode(con(&c)?)?.eq("rigid")?))?;
         }
         let r = core.call_method1("contacts", (items, na))?;
         for ((c, t), w) in cons.iter().zip(r.get_item(1)?.iter()?).zip(r.get_item(2)?.iter()?) {
             if t?.is_truthy()? {
-                c.setattr("_touch_moving", true)?;
+                Construct::s_touch_moving(con(&c)?, true)?;
             }
             if w?.is_truthy()? {
-                c.setattr("_want_soft", true)?;
+                Construct::s_want_soft(con(&c)?, true)?;
             }
         }
         r.get_item(0)?.iter()?.map(|k| Ok(cons[k?.extract::<usize>()?].clone())).collect()
@@ -257,27 +259,27 @@ impl World {
         if !getd(&cl, "enabled", true)?.is_truthy()? {
             return Ok(());
         }
-        let constructs = Self::g(slf, "constructs")?;
+        let constructs = Self::g_constructs(slf)?;
         let items: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>)> = constructs.downcast::<PyDict>()?.iter().collect();
         let dist: f64 = cl.get_item("distance")?.extract()?;
         let maxv: i64 = cl.get_item("max_vertices")?.call_method0("__int__")?.extract()?;
         let secs: f64 = cl.get_item("seconds")?.extract()?;
         for (cid, c) in items {
             if Self::seated_in(slf, &c)? {
-                c.setattr("far_time", 0.0)?;
+                Construct::s_far_time(con(&c)?, 0.0)?;
                 continue;
             }
             let far = Self::player_distance(slf, &c.call_method0("center_of_mass")?)? > dist;
-            if far && !c.getattr("powered")?.is_truthy()? && c.getattr("n_vert")?.extract::<i64>()? <= maxv {
-                let ft: f64 = c.getattr("far_time")?.extract::<f64>()? + elapsed;
-                c.setattr("far_time", ft)?;
+            if far && !Construct::g_powered(con(&c)?)?.is_truthy()? && c.getattr("n_vert")?.extract::<i64>()? <= maxv {
+                let ft: f64 = Construct::g_far_time(con(&c)?)?.extract::<f64>()? + elapsed;
+                Construct::s_far_time(con(&c)?, ft)?;
                 if ft >= secs {
                     constructs.del_item(&cid)?;
-                    log(py)?.call_method1("info", ("自動削除: %s（頂点 %d, 距離 %.0f m）", c.getattr("name")?, c.getattr("n_vert")?,
+                    log(py)?.call_method1("info", ("自動削除: %s（頂点 %d, 距離 %.0f m）", Construct::g_name(con(&c)?)?, c.getattr("n_vert")?,
                         Self::player_distance(slf, &c.call_method0("center_of_mass")?)?))?;
                 }
             } else {
-                c.setattr("far_time", 0.0)?;
+                Construct::s_far_time(con(&c)?, 0.0)?;
             }
         }
         Ok(())
@@ -287,8 +289,8 @@ impl World {
     /// すべての構築物の外側の球（このティックの間は使い回す）：(構築物のリスト, 中心 (n,3), 半径 (n,))
     pub(crate) fn _bounds<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyTuple>> {
         let py = slf.py();
-        let n = Self::g(slf, "constructs")?.len()?;
-        let b = match opt(slf.as_any(), "_bnd")? {
+        let n = Self::g_constructs(slf)?.len()?;
+        let b = match Self::cache_get(slf, |c| &c.bnd)? {
             Some(b) if b.get_item(0)?.eq(n)? => b,
             _ => {
                 let cs = PyList::empty_bound(py);
@@ -307,7 +309,7 @@ impl World {
                 let k = cs.len();
                 let b = PyTuple::new_bound(py, [n.into_py(py), cs.into_any().unbind(), arr(py, c, &[k, 3])?.unbind(), arr(py, rr, &[k])?.unbind(),
                     arr(py, r0, &[k])?.unbind()]);
-                Self::set(slf, "_bnd", &b)?;
+                Self::cache_put(slf, |c| &mut c.bnd, &b)?;
                 b.into_any()
             }
         };
@@ -316,30 +318,30 @@ impl World {
     /// 物理のあと：動いた物の外側の球だけ直す（全部を作り直さない）。形が変わった・ちぎれた物があれば作り直す
     pub(crate) fn _patch_bounds(slf: &Bound<'_, Self>, moved: Vec<Bound<'_, PyAny>>, broken: &Bound<'_, PyAny>) -> R<()> {
         let py = slf.py();
-        let b = match Self::dict_get(slf, "_bnd")? {
+        let b = match Self::cache_get(slf, |c| &c.bnd)? {
             Some(b) if !b.is_none() => b,
             _ => {
-                Self::set(slf, "_bnd", py.None())?;
+                Self::cache_put(slf, |c| &mut c.bnd, py.None())?;
                 return Ok(());
             }
         };
-        if broken.is_truthy()? || !b.get_item(0)?.eq(Self::g(slf, "constructs")?.len()?)? {
-            Self::set(slf, "_bnd", py.None())?;
+        if broken.is_truthy()? || !b.get_item(0)?.eq(Self::g_constructs(slf)?.len()?)? {
+            Self::cache_put(slf, |c| &mut c.bnd, py.None())?;
             return Ok(());
         }
         let at = Self::bnd_at(slf, &b.get_item(1)?)?;
         let (c_o, rr_o, r0_o) = (b.get_item(2)?, b.get_item(3)?, b.get_item(4)?);
         for c in moved {
             let k = at.call_method1("get", (c.as_ptr() as usize,))?;
-            if k.is_none() || c.getattr("n_vox")?.extract::<usize>()? == 0 {
-                Self::set(slf, "_bnd", py.None())?;
+            if k.is_none() || Construct::n(con(&c)?)? == 0 {
+                Self::cache_put(slf, |c| &mut c.bnd, py.None())?;
                 return Ok(());
             }
             let k: usize = k.extract()?;
             let bb = c.call_method0("bounds")?;
             let ctr = v3(&bb.get_item(0)?)?;
             let r: f64 = bb.get_item(1)?.extract()?;
-            let sz: f64 = c.getattr("size")?.extract()?;
+            let sz: f64 = Construct::g_size(con(&c)?)?.extract()?;
             with_rw(&c_o, |s| s[3 * k..3 * k + 3].copy_from_slice(&ctr))?;
             with_rw(&r0_o, |s| s[k] = r)?;
             with_rw(&rr_o, |s| s[k] = r + sz)?;
@@ -349,12 +351,12 @@ impl World {
     /// (構築物のリスト, 中心 (n,3), 半径＋大きさ (n,), 半径 (n,))（描画の距離の計算用）
     pub(crate) fn _bounds_arrays<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyTuple>> {
         Self::_bounds(slf)?;
-        let b = Self::g(slf, "_bnd")?;
+        let b = Self::cache_get(slf, |c| &c.bnd)?.ok_or_else(|| PyAttributeError::new_err("_bnd"))?;
         Ok(PyTuple::new_bound(slf.py(), [b.get_item(1)?, b.get_item(2)?, b.get_item(3)?, b.get_item(4)?]))
     }
     /// 機能処理の距離（m）。0 なら全部（距離に関係なく処理する）
     pub(crate) fn process_distance(slf: &Bound<'_, Self>) -> R<f64> {
-        let v = getd(&phys(&Self::g(slf, "cfg")?)?, "process_distance", 0)?;
+        let v = getd(&phys(&Self::g_cfg(slf)?)?, "process_distance", 0)?;
         Ok(if v.is_truthy()? { v.extract()? } else { 0.0 })
     }
     /// どのプレイヤーからも機能処理の距離より遠い構築物の ID（座っている物・最近いた物は近い扱い）
@@ -362,7 +364,7 @@ impl World {
         let py = slf.py();
         let lim = Self::process_distance(slf)?;
         let out = PySet::empty_bound(py)?;
-        if lim <= 0.0 || Self::g(slf, "constructs")?.len()? == 0 {
+        if lim <= 0.0 || Self::g_constructs(slf)?.len()? == 0 {
             return Ok(out);
         }
         let b = Self::_bounds(slf)?;
@@ -376,12 +378,12 @@ impl World {
         let pp: Vec<V3> = players.iter().map(|p| v3(&p.getattr("pos")?)).collect::<R<_>>()?;
         let seated = PySet::empty_bound(py)?;
         for p in &players {
-            let s = p.getattr("seated")?;
+            let s = Player::g_seated(ply(&p)?)?;
             if s.is_truthy()? {
                 seated.add(s.get_item(0)?)?;
             }
         }
-        let prev = match opt(slf.as_any(), "_far_prev")? { Some(p) => p, None => PySet::empty_bound(py)?.into_any() };
+        let prev = match Self::cache_get(slf, |c| &c.far_prev)? { Some(p) => p, None => PySet::empty_bound(py)?.into_any() };
         for (k, x) in cs.iter().enumerate() {
             let id = x.getattr("id")?;
             if seated.contains(&id)? {
@@ -393,7 +395,7 @@ impl World {
                 out.add(id)?;
             }
         }
-        Self::set(slf, "_far_prev", &out)?;
+        Self::cache_put(slf, |c| &mut c.far_prev, &out)?;
         Ok(out)
     }
     /// 押し出しの相手にする止まっている構築物：動いている物のどれかの外側の球にかかる物だけ
@@ -407,8 +409,8 @@ impl World {
         for c in &cons {
             let b = c.call_method0("bounds")?;
             ac.push(v3(&b.get_item(0)?)?);
-            let vmax = fv(&c.getattr("vel")?)?.iter().map(|x| x.abs()).fold(f64::NEG_INFINITY, f64::max);
-            ar.push(b.get_item(1)?.extract::<f64>()? + vmax * dt * 2.0 + c.getattr("size")?.extract::<f64>()? * 2.0);
+            let vmax = fv(&Construct::g_vel(con(&c)?)?)?.iter().map(|x| x.abs()).fold(f64::NEG_INFINITY, f64::max);
+            ar.push(b.get_item(1)?.extract::<f64>()? + vmax * dt * 2.0 + Construct::g_size(con(&c)?)?.extract::<f64>()? * 2.0);
         }
         let b = Self::_bounds(slf)?;
         let at = Self::bnd_at(slf, &b.get_item(0)?)?;
@@ -433,7 +435,7 @@ impl World {
             (bc, br)
         } else {
             let c = v3s(&b.get_item(1)?)?;
-            let r0 = fv(&Self::g(slf, "_bnd")?.get_item(4)?)?;
+            let r0 = fv(&Self::cache_get(slf, |c| &c.bnd)?.ok_or_else(|| PyAttributeError::new_err("_bnd"))?.get_item(4)?)?;
             (ix.iter().map(|&k| c[k]).collect(), ix.iter().map(|&k| r0[k]).collect())
         };
         let mut out = vec![];

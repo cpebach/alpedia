@@ -1,6 +1,8 @@
 //! ワールド：1 ティック（step）とアドオンの呼び出し
 
+use crate::game::player::{ply, Player};
 use super::*;
+use crate::game::construct::{con, Construct};
 
 #[pymethods]
 impl World {
@@ -18,56 +20,56 @@ impl World {
         let time = slf.borrow().time;
         let ambient = 0.0;
         let seats = PyDict::new_bound(py);
-        let lp = Self::g(slf, "local_player")?;
+        let lp = Self::g_local_player(slf)?;
         for p in Self::all_players(slf)? {
-            let s = p.getattr("seated")?;
+            let s = Player::g_seated(ply(&p)?)?;
             if s.is_truthy()? {
-                let k = if p.is(&lp) { Self::g(slf, "input_keys")? } else { p.getattr("input_keys")? };
+                let k = if p.is(&lp) { Self::g_input_keys(slf)? } else { p.getattr("input_keys")? };
                 seats.call_method1("setdefault", (s.get_item(0)?, PySet::empty_bound(py)?))?.call_method1("update", (k,))?;
             }
         }
         // 構築物の外側の球（問い合わせで使い回す）。全部の作り直しは 0.25 秒ごと
-        let bt: f64 = match Self::dict_get(slf, "_bnd_t")? { Some(v) => v.extract()?, None => -1.0 };
+        let bt: f64 = match Self::cache_get(slf, |c| &c.bnd_t)? { Some(v) => v.extract()?, None => -1.0 };
         if time - bt >= 0.25 {
-            Self::set(slf, "_bnd_t", time)?;
-            Self::set(slf, "_bnd", py.None())?;
+            Self::cache_put(slf, |c| &mut c.bnd_t, time)?;
+            Self::cache_put(slf, |c| &mut c.bnd, py.None())?;
         }
         // 機能処理の距離より遠い物は、機器・プログラム・物理を止める（遠いかどうかは 0.25 秒ごとに見直す）
-        let constructs = Self::g(slf, "constructs")?;
-        let ft: f64 = match opt(slf.as_any(), "_far_t")? { Some(v) => v.extract()?, None => -1.0 };
-        let fnn: i64 = match opt(slf.as_any(), "_far_n")? { Some(v) => v.extract()?, None => -1 };
+        let constructs = Self::g_constructs(slf)?;
+        let ft: f64 = match Self::cache_get(slf, |c| &c.far_t)? { Some(v) => v.extract()?, None => -1.0 };
+        let fnn: i64 = match Self::cache_get(slf, |c| &c.far_n)? { Some(v) => v.extract()?, None => -1 };
         if time - ft >= 0.25 || fnn != constructs.len()? as i64 {
-            Self::set(slf, "_far_t", time)?;
-            Self::set(slf, "_far_n", constructs.len()?)?;
+            Self::cache_put(slf, |c| &mut c.far_t, time)?;
+            Self::cache_put(slf, |c| &mut c.far_n, constructs.len()?)?;
             let f = Self::far_ids(slf)?;
-            Self::set(slf, "_far", f)?;
+            Self::cache_put(slf, |c| &mut c.far, f)?;
         }
-        let far = Self::g(slf, "_far")?;
+        let far = Self::cache_get(slf, |c| &c.far)?.ok_or_else(|| PyAttributeError::new_err("_far"))?;
         let runner = Self::runner(slf)?.into_bound(py);
         prof_add(7, &mut pt);
         for c in Self::cons_v(slf)? {
-            let cid = c.getattr("id")?;
+            let cid = Construct::g_id(con(&c)?)?;
             if far.contains(&cid)? {
                 continue;
             }
-            let dirty = truthy(&c, "dirty")?;
+            let dirty = con(&c)?.borrow().dirty;
             if (!c.getattr("has_devices")?.is_truthy()? || c.call_method0("is_quiet")?.is_truthy()?) && !dirty {
                 // 機器の無い物・固定されていて毎ティック処理する機器の無い物は機器・プログラムの処理を飛ばす
-                zero_inplace(&c.getattr("force")?)?;
+                zero_inplace(&Construct::g_force(con(&c)?)?)?;
                 continue;
             }
             let mut cdt = dt;
             let in_seat = seats.contains(&cid)?;
             if !dirty && !in_seat && c.call_method("is_quiet", (), Some(&[("slow_ok", true)].into_py_dict_bound(py)))?.is_truthy()? {
                 // 明かりだけの固定された建物：0.25 秒ごとにまとめて（点いているか・電気の消費）
-                zero_inplace(&c.getattr("force")?)?;
-                let sd: f64 = match opt(&c, "_slow_dt")? { Some(v) => v.extract()?, None => 0.0 } + dt;
-                c.setattr("_slow_dt", sd)?;
+                zero_inplace(&Construct::g_force(con(&c)?)?)?;
+                let sd: f64 = con(&c)?.borrow().slow_dt + dt;
+                Construct::s_slow_dt(con(&c)?, sd)?;
                 if sd < 0.25 {
                     continue;
                 }
                 cdt = sd;
-                c.setattr("_slow_dt", 0.0)?;
+                Construct::s_slow_dt(con(&c)?, 0.0)?;
             }
             let keys = PyFrozenSet::new_bound(py, &match seats.get_item(&cid)? {
                 Some(s) => s.iter()?.collect::<R<Vec<_>>>()?,
@@ -76,35 +78,35 @@ impl World {
             prof_add(7, &mut pt);
             crate::game::devices::dev_update(py, &c, cdt, Some(keys.as_any()), in_seat, ambient)?;
             prof_add(0, &mut pt);
-            if let Some(n) = opt(&c, "notes")? {
+            if let Some(n) = Construct::o_notes(con(&c)?)? {
                 if n.is_truthy()? {
                     for m in n.iter()? {
                         Self::message(slf, &m?.str()?.to_string())?;
                     }
-                    c.setattr("notes", PyList::empty_bound(py))?;
+                    Construct::s_notes(con(&c)?, PyList::empty_bound(py))?;
                 }
             }
             runner.call_method1("tick", (&c, cdt))?;
             prof_add(1, &mut pt);
         }
         prof_add(7, &mut pt);
-        Self::g(slf, "player")?.call_method1("update", (slf, dt, &mv, &jp, &td))?;
-        for p in Self::g(slf, "remote")?.call_method0("values")?.iter()? {
+        Self::g_player(slf)?.call_method1("update", (slf, dt, &mv, &jp, &td))?;
+        for p in Self::g_remote(slf)?.call_method0("values")?.iter()? {
             // 参加者の体は参加者の PC が動かす。ジェットパックの燃料と体重だけここで
             let p = p?;
-            if p.getattr("flying")?.is_truthy()? && p.getattr("jetpack")?.is_truthy()? {
+            if Player::g_flying(ply(&p)?)?.is_truthy()? && Player::g_jetpack(ply(&p)?)?.is_truthy()? {
                 let mut ap = Self::as_player(slf, p.clone().unbind());
                 ap.__enter__(py)?;
-                let r = Self::jetpack(slf, &p, dt, &p.getattr("thrust")?);
+                let r = Self::jetpack(slf, &p, dt, &Player::g_thrust(ply(&p)?)?);
                 ap.__exit__(py, &PyTuple::empty_bound(py))?;
                 r?;
             }
-            let st = p.getattr("stand")?;
+            let st = Player::g_stand(ply(&p)?)?;
             if st.is_truthy()? {
                 let c = constructs.call_method1("get", (st.get_item(0)?,))?;
                 if c.is_truthy()? {
                     let key = PyTuple::new_bound(py, st.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?);
-                    let i = c.getattr("index")?.call_method1("get", (key,))?;
+                    let i = Construct::g_index(con(&c)?)?.call_method1("get", (key,))?;
                     if !i.is_none() {
                         let i: usize = i.extract()?;
                         let pp = v3(&p.getattr("pos")?)?;
@@ -112,7 +114,7 @@ impl World {
                         let up = v3(&p.getattr("up")?)?;
                         let m: f64 = p.getattr("mass")?.extract()?;
                         let add = [-up[0] * m * gn / 8.0, -up[1] * m * gn / 8.0, -up[2] * m * gn / 8.0];
-                        let f = c.getattr("force")?;
+                        let f = Construct::g_force(con(&c)?)?;
                         if !with_rw(&f, |s| {
                             for q in 8 * i..8 * i + 8 {
                                 for k in 0..3 {
@@ -127,7 +129,7 @@ impl World {
                                 }
                             }
                             let n = fv_.len() / 3;
-                            c.setattr("force", arr(py, fv_, &[n, 3])?)?;
+                            Construct::s_force(con(&c)?, arr(py, fv_, &[n, 3])?)?;
                         }
                     }
                 }
@@ -163,38 +165,38 @@ impl World {
         let mut sleeping: Vec<Bound<'_, PyAny>> = vec![];
         let gravity_fn = slf.getattr("gravity")?;
         for c in Self::cons_v(slf)? {
-            if c.getattr("n_vox")?.extract::<usize>()? == 0 {
+            if Construct::n(con(&c)?)? == 0 {
                 continue;
             }
-            let cid = c.getattr("id")?;
+            let cid = Construct::g_id(con(&c)?)?;
             if anchored_ids.contains(&cid)? {
                 sleeping.push(c);
                 continue;
             }
-            let mode: String = c.getattr("mode")?.extract()?;
+            let mode: String = Construct::g_mode(con(&c)?)?.extract()?;
             if mode == "rigid" && c.getattr("anchored")?.is_truthy()? && !c.call_method0("_actuator_busy")?.is_truthy()? {
                 // アンカーで固定されて止まっている物（建物など）：物理計算しない（ほかの物には当たる）
-                c.setattr("_touch_moving", false)?;
+                Construct::s_touch_moving(con(&c)?, false)?;
                 anchored_ids.add(&cid)?;
-                let v = c.getattr("vel")?;
+                let v = Construct::g_vel(con(&c)?)?;
                 if any_nonzero(&v)? {
                     zero_inplace(&v)?;
                 }
                 sleeping.push(c);
                 continue;
             }
-            if c.getattr("asleep")?.is_truthy()? && any_nonzero(&c.getattr("force")?)? {
+            if Construct::g_asleep(con(&c)?)?.is_truthy()? && any_nonzero(&Construct::g_force(con(&c)?)?)? {
                 c.call_method0("wake")?;
             }
-            c.setattr("_touch_moving", false)?;
+            Construct::s_touch_moving(con(&c)?, false)?;
             c.call_method1("update_mode", (dt, slf))?;            // 軽量化：剛体化・レール（遠方）の切り替え
             if c.getattr("is_static")?.is_truthy()? {             // アンカーで固定（アクチュエーターが止まっている間）
                 anchored_ids.add(&cid)?;
-                zero_inplace(&c.getattr("vel")?)?;
+                zero_inplace(&Construct::g_vel(con(&c)?)?)?;
                 sleeping.push(c);
-            } else if c.getattr("asleep")?.is_truthy()? {
+            } else if Construct::g_asleep(con(&c)?)?.is_truthy()? {
                 sleeping.push(c);
-            } else if c.getattr("mode")?.eq("rails")? {
+            } else if Construct::g_mode(con(&c)?)?.eq("rails")? {
                 c.call_method1("rails_step", (dt, &gravity_fn))?;    // レールに乗っている構築物は重心の軌道だけを進める
                 moved.push(c);
             } else {
@@ -212,10 +214,10 @@ impl World {
         let mut fixed_pos: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>)> = vec![];
         for c in &sleeping {
             if c.getattr("is_static")?.is_truthy()? {        // アンカーで固定：押されても戻す
-                fixed_pos.push((c.clone(), c.getattr("pos")?.call_method0("copy")?));
+                fixed_pos.push((c.clone(), Construct::g_pos(con(&c)?)?.call_method0("copy")?));
             }
         }
-        let settle_acc = fget(&phys(&Self::g(slf, "cfg")?)?, "merge_settle_acc", 30.0)?;
+        let settle_acc = fget(&phys(&Self::g_cfg(slf)?)?, "merge_settle_acc", 30.0)?;
         let mut done = 0i64;
         let fp = PyList::new_bound(py, fixed_pos.iter().map(|(a, b)| PyTuple::new_bound(py, [a, b])));
         prof_add(3, &mut pt);
@@ -235,16 +237,16 @@ impl World {
         for _ in 0..(substeps - done).max(0) {
             let mut settling = vec![];
             for c in &cons {
-                let st: f64 = match opt(c, "_settle")? { Some(v) => v.extract()?, None => 0.0 };
-                if st > 0.0 && c.getattr("vel")?.getattr("shape")?.eq(c.getattr("pos")?.getattr("shape")?)? {
+                let st: f64 = con(c)?.borrow().settle;
+                if st > 0.0 && Construct::g_vel(con(&c)?)?.getattr("shape")?.eq(Construct::g_pos(con(&c)?)?.getattr("shape")?)? {
                     let rb = c.getattr("rb")?;
                     let rb0: PyObject = if rb.is_truthy()? {
                         (rb.get_item("v")?.call_method0("copy")?, rb.get_item("w")?.call_method0("copy")?).into_py(py)
                     } else { rb.unbind() };
-                    settling.push((c.clone(), c.getattr("vel")?.call_method0("copy")?, rb0));
+                    settling.push((c.clone(), Construct::g_vel(con(&c)?)?.call_method0("copy")?, rb0));
                 }
             }
-            let pls = Self::g(slf, "planets")?;
+            let pls = Self::g_planets(slf)?;
             let begin = PyCFunction::new_closure_bound(py, None, None, {
                 let gf = gravity_fn.clone().unbind();
                 let pls = pls.clone().unbind();
@@ -258,12 +260,12 @@ impl World {
             let woke = Self::_voxel_collisions(slf, cons.clone(), sleeping.clone())?;
             let mut wk = vec![];
             for c in woke {
-                if !anchored_ids.contains(c.getattr("id")?)? {
+                if !anchored_ids.contains(Construct::g_id(con(&c)?)?)? {
                     wk.push(c);
                 }
             }
             for (c, p0) in &fixed_pos {
-                let p = c.getattr("pos")?;
+                let p = Construct::g_pos(con(&c)?)?;
                 let src = fv(p0)?;
                 if !with_rw(&p, |s| s.copy_from_slice(&src))? {
                     p.set_item(pyo3::types::PySlice::full_bound(py), p0)?;
@@ -278,7 +280,7 @@ impl World {
             }
             for (c, b) in cons.iter().zip(ends.iter()) {
                 if b.bind(py).is_truthy()? {
-                    broken.add(c.getattr("id")?)?;
+                    broken.add(Construct::g_id(con(&c)?)?)?;
                 }
             }
             if !wk.is_empty() {
@@ -290,9 +292,9 @@ impl World {
         prof_add(5, &mut pt);
         for c in &cons {
             c.call_method1("update_sleep", (dt,))?;
-            let st: f64 = match opt(c, "_settle")? { Some(v) => v.extract()?, None => 0.0 };
+            let st: f64 = con(c)?.borrow().settle;
             if st > 0.0 {
-                c.setattr("_settle", (st - dt).max(0.0))?;
+                Construct::s_settle(con(&c)?, (st - dt).max(0.0))?;
             }
         }
         let mut cm = cons.clone();
@@ -303,7 +305,7 @@ impl World {
             a.call_method1("after_physics", (slf, &cl))?;
         }
         for c in &cons {
-            c.setattr("ext_events", PyList::empty_bound(py))?;
+            Construct::s_ext_events(con(&c)?, PyList::empty_bound(py))?;
         }
         prof_add(6, &mut pt);
         for cid in broken.iter() {
@@ -316,19 +318,19 @@ impl World {
                 Self::add_construct(slf, &part?)?;
             }
             if parts.len()? > 0 {
-                log(py)?.call_method1("info", ("構築物 %s が %d 個に分離", c.getattr("name")?, parts.len()? + 1))?;
+                log(py)?.call_method1("info", ("構築物 %s が %d 個に分離", Construct::g_name(con(&c)?)?, parts.len()? + 1))?;
             }
         }
         let mut empty = vec![];
         for (k, c) in constructs.downcast::<PyDict>()?.iter() {
-            if c.getattr("n_vox")?.extract::<usize>()? == 0 {
+            if Construct::n(con(&c)?)? == 0 {
                 empty.push(k);
             }
         }
         for k in empty {
             constructs.del_item(k)?;
         }
-        let timers = Self::g(slf, "_timers")?;
+        let timers = Self::g_timers(slf)?;
         let rb_t: f64 = timers.get_item("rebond")?.extract::<f64>()? + dt;
         timers.set_item("rebond", rb_t)?;
         if rb_t > 0.25 {
@@ -337,7 +339,7 @@ impl World {
                 c.call_method0("try_rebond")?;
             }
         }
-        for pl in Self::g(slf, "planets")?.iter()? {
+        for pl in Self::g_planets(slf)?.iter()? {
             let pl = pl?;
             if pl.hasattr("update_water")? {
                 pl.call_method1("update_water", (dt,))?;    // 掘った穴に水が満ちる（水のある惑星）
@@ -387,7 +389,7 @@ impl World {
             f = f.getattr(part)?;
         }
         let res = f.call1(args.clone())?;
-        let net = Self::g(slf, "net")?;
+        let net = Self::g_net(slf)?;
         if !net.is_none() && match opt(&net, "role")? { Some(r) => r.eq("client")?, None => false } {
             let enc = PyList::empty_bound(py);
             for x in args.iter() {

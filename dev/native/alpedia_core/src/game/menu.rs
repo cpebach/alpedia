@@ -400,7 +400,35 @@ pub fn menu_apply_window_settings(py: Python<'_>, cfg: &B<'_>, prev: Option<&B<'
 // 画面
 // ---------------------------------------------------------------------------
 #[pyclass(module = "main.client.menu", subclass, dict)]
-pub struct MainMenu {}
+#[allow(non_snake_case)]
+pub struct MainMenu {
+    /// U（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_U: Option<PyObject>,
+    /// _new（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_new: Option<PyObject>,
+    /// _ws（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_ws: Option<PyObject>,
+    /// browser（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_browser: Option<PyObject>,
+    /// cfg（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cfg: Option<PyObject>,
+    /// on_join（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_on_join: Option<PyObject>,
+    /// on_play（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_on_play: Option<PyObject>,
+    /// on_quit（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_on_quit: Option<PyObject>,
+    /// page（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_page: Option<PyObject>,
+    /// page_index（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_page_index: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// selected（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_selected: Option<PyObject>,
+    /// status（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_status: Option<PyObject>,
+}
 
 /// U["color"]
 fn color<'py>(s: &B<'py>) -> R<B<'py>> {
@@ -496,39 +524,38 @@ impl MainMenu {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        MainMenu {}
+        MainMenu { a_U: None, a_new: None, a_ws: None, a_browser: None, a_cfg: None, a_on_join: None, a_on_play: None, a_on_quit: None, a_page: None, a_page_index: None, a_root: None, a_selected: None, a_status: None }
     }
     #[pyo3(signature = (cfg, on_play, on_quit, on_join=None))]
     fn __init__(slf: &Bound<'_, Self>, cfg: &B<'_>, on_play: &B<'_>, on_quit: &B<'_>, on_join: Option<&B<'_>>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let ur = imp(py, "ursina")?;
         let u = PyDict::new_bound(py);
         for n in ["Entity", "Text", "Button", "InputField", "camera", "color", "window"] {
             u.set_item(n, ur.getattr(n)?)?;
         }
-        s.setattr("U", &u)?;
-        s.setattr("cfg", cfg)?;
-        s.setattr("on_play", on_play)?;
-        s.setattr("on_quit", on_quit)?;
-        s.setattr("on_join", on_join.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None()))?;
-        s.setattr("browser", py.None())?;
-        s.setattr("selected", py.None())?;
-        s.setattr("page_index", 0)?;
-        s.setattr("status", "")?;
-        s.setattr("_new", py.None())?; // 新規作成の入力（MOD の画面へ行って戻っても残す）
-        s.setattr("_ws", py.None())?; // ワールド設定の入力（同上）
+        Self::sa_U(slf, &u)?;
+        Self::sa_cfg(slf, cfg)?;
+        Self::sa_on_play(slf, on_play)?;
+        Self::sa_on_quit(slf, on_quit)?;
+        Self::sa_on_join(slf, on_join.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None()))?;
+        Self::sa_browser(slf, py.None())?;
+        Self::sa_selected(slf, py.None())?;
+        Self::sa_page_index(slf, 0)?;
+        Self::sa_status(slf, "")?;
+        Self::sa_new(slf, py.None())?; // 新規作成の入力（MOD の画面へ行って戻っても残す）
+        Self::sa_ws(slf, py.None())?; // ワールド設定の入力（同上）
         ur.getattr("window")?.setattr("color", ur.getattr("color")?.call_method1("rgb", (0.07, 0.09, 0.13))?)?;
         ur.getattr("mouse")?.setattr("locked", false)?;
-        s.setattr("root", ur.getattr("Entity")?.call((), Some(&kw(py, vec![("parent", ur.getattr("camera")?.getattr("ui")?.unbind())])?))?)?;
-        s.setattr("page", py.None())?;
+        Self::sa_root(slf, ur.getattr("Entity")?.call((), Some(&kw(py, vec![("parent", ur.getattr("camera")?.getattr("ui")?.unbind())])?))?)?;
+        Self::sa_page(slf, py.None())?;
         Self::show_main(slf)
     }
 
     // --- 部品 ----------------------------------------------------------
     fn _clear(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let kids: Vec<B<'_>> = slf.as_any().getattr("root")?.getattr("children")?.iter()?.collect::<R<_>>()?;
+        let kids: Vec<B<'_>> = Self::ga_root(slf)?.getattr("children")?.iter()?.collect::<R<_>>()?;
         for c in kids {
             super::client_misc::ui_destroy(py, &c, &PyTuple::empty_bound(py), None)?;
         }
@@ -581,17 +608,17 @@ impl MainMenu {
     fn _slider(slf: &Bound<'_, Self>, label: &B<'_>, y: f64, values: &B<'_>, current: &B<'_>, fmt: &B<'_>, on_change: &B<'_>, x: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let u = s.getattr("U")?;
+        let u = Self::ga_U(slf)?;
         let values = PyList::new_bound(py, values.iter()?.collect::<R<Vec<_>>>()?);
         let idx = index_of(py, &values, current, true)?;
         let n = values.len() as i64;
         let (x0, x1) = (x + 0.04, x + 0.3);
         t(s, label.clone().unbind(), (x - 0.38, y), 0.85, L, None)?;
         let val = t(s, fmt.call1((values.get_item(idx)?,))?.unbind(), (x + 0.43, y), 0.85, C, None)?;
-        let bar = u.get_item("Button")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()), ("model", po(py, "quad")),
+        let bar = u.get_item("Button")?.call((), Some(&kw(py, vec![("parent", Self::ga_root(slf)?.unbind()), ("model", po(py, "quad")),
             ("position", po(py, ((x0 + x1) / 2.0, y))), ("scale", po(py, (x1 - x0, 0.012))), ("color", rgb(s, 0.35, 0.38, 0.42)?.unbind()),
             ("highlight_color", rgb(s, 0.45, 0.5, 0.55)?.unbind())])?))?;
-        let knob = u.get_item("Entity")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()), ("model", po(py, "quad")),
+        let knob = u.get_item("Entity")?.call((), Some(&kw(py, vec![("parent", Self::ga_root(slf)?.unbind()), ("model", po(py, "quad")),
             ("position", po(py, (x0, y, -0.01))), ("scale", po(py, (0.014, 0.04))), ("color", rgb(s, 0.9, 0.75, 0.3)?.unbind())])?))?;
         let ctx = std::rc::Rc::new(Slider { i: std::cell::Cell::new(idx as i64), n, x0, x1, val: val.unbind(), values: values.into_any().unbind(),
             fmt: fmt.clone().unbind(), on_change: on_change.clone().unbind(), knob: knob.unbind() });
@@ -622,7 +649,7 @@ impl MainMenu {
     }
     fn _status_line(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
-        let st = s.getattr("status")?;
+        let st = Self::ga_status(slf)?;
         if st.is_truthy()? {
             t(s, st.unbind(), (0.0, -0.44), 0.8, C, Some(cn(s, "orange")?))?;
         }
@@ -636,7 +663,7 @@ impl MainMenu {
         Self::_clear(slf)?;
         let worlds = menu_list_worlds(py)?;
         let names: Vec<B<'_>> = worlds.iter().map(|w| w.get_item("name")).collect::<R<_>>()?;
-        let sel = s.getattr("selected")?;
+        let sel = Self::ga_selected(slf)?;
         let mut found = false;
         for n in &names {
             if n.eq(&sel)? {
@@ -644,7 +671,7 @@ impl MainMenu {
             }
         }
         if !found {
-            s.setattr("selected", names.first().map(|n| n.clone().unbind()).unwrap_or_else(|| py.None()))?;
+            Self::sa_selected(slf, names.first().map(|n| n.clone().unbind()).unwrap_or_else(|| py.None()))?;
         }
         let lgray = || cn(s, "light_gray");
         t(s, "Alpedia", (0.0, 0.44), 2.6, C, None)?;
@@ -664,14 +691,14 @@ impl MainMenu {
         t(s, "続きから", (-0.64, 0.135), 0.95, L, None)?;
         let nw = worlds.len() as i64;
         let pages = 1.max((nw + PAGE_SIZE - 1) / PAGE_SIZE);
-        let pi: i64 = s.getattr("page_index")?.extract()?;
+        let pi: i64 = Self::ga_page_index(slf)?.extract()?;
         let pi = pi.min(pages - 1);
-        s.setattr("page_index", pi)?;
+        Self::sa_page_index(slf, pi)?;
         let start = pi * PAGE_SIZE;
         if nw == 0 {
             t(s, "まだワールドがありません。上のボタンで始めてください", (-0.17, -0.05), 0.85, C, Some(lgray()?))?;
         }
-        let selected = s.getattr("selected")?;
+        let selected = Self::ga_selected(slf)?;
         let time = imp(py, "time")?;
         let select = s.getattr("_select")?;
         for (k, i) in (start..(start + PAGE_SIZE).min(nw)).enumerate() {
@@ -703,19 +730,19 @@ impl MainMenu {
         let sk = keep_(s);
         b(s, "ワールド設定", (x, 0.02), &clo0(py, move |py| {
             let s = sk.bind(py);
-            s.call_method1("show_world_settings", (s.getattr("selected")?,))?;
+            s.call_method1("show_world_settings", (Self::ga_selected(s.downcast::<Self>()?)?,))?;
             Ok(())
         })?, BS, None, has)?;
         let sk = keep_(s);
         b(s, "削除", (x, -0.05), &clo0(py, move |py| {
             let s = sk.bind(py);
-            s.call_method1("show_delete", (s.getattr("selected")?,))?;
+            s.call_method1("show_delete", (Self::ga_selected(s.downcast::<Self>()?)?,))?;
             Ok(())
         })?, BS, Some(rgb(s, 0.5, 0.2, 0.2)?), has)?;
         b(s, "詳しく設定して作る…", (x, -0.12), &s.getattr("show_new")?, BS, None, true)?;
         b(s, "マルチプレイ（LAN）", (x, -0.19), &s.getattr("show_multiplayer")?, BS, Some(rgb(s, 0.25, 0.35, 0.55)?), true)?;
         b(s, "ゲーム設定", (x, -0.26), &s.getattr("show_game_settings")?, BS, None, true)?;
-        b(s, "終了", (x, -0.33), &s.getattr("on_quit")?, BS, Some(rgb(s, 0.3, 0.3, 0.33)?), true)?;
+        b(s, "終了", (x, -0.33), &Self::ga_on_quit(slf)?, BS, Some(rgb(s, 0.3, 0.3, 0.33)?), true)?;
         if has {
             t(s, format!("選択中: {}", selected.str()?), (-0.17, -0.31), 0.8, C, Some(lgray()?))?;
         }
@@ -737,7 +764,6 @@ impl MainMenu {
     /// サバイバル・クリエイティブを、おすすめの設定（惑星ガイア）ですぐ始める。
     fn _quick_new(slf: &Bound<'_, Self>, mode: &str) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let name = Self::_free_name(slf, mode)?;
         // MOD は入れない（街などは「詳しく設定して作る」の MOD の選択で）。完全剛体モード（軽い）
         let patch = PyDict::new_bound(py);
@@ -750,13 +776,13 @@ impl MainMenu {
         match menu_mod(py)?.getattr("create_world")?.call((&name, patch, PyList::empty_bound(py)), Some(&k)) {
             Ok(_) => {}
             Err(e) if is_exc(py, &e) => {
-                s.setattr("status", format!("作れません: {}", e.value_bound(py).str()?))?;
+                Self::sa_status(slf, format!("作れません: {}", e.value_bound(py).str()?))?;
                 return Self::show_main(slf);
             }
             Err(e) => return Err(e),
         }
-        s.setattr("selected", &name)?;
-        s.getattr("on_play")?.call1((&name,))?;
+        Self::sa_selected(slf, &name)?;
+        Self::ga_on_play(slf)?.call1((&name,))?;
         Ok(())
     }
 
@@ -816,20 +842,19 @@ impl MainMenu {
     /// シナリオを最初から（新しいワールド）。
     fn _start_scenario(slf: &Bound<'_, Self>, mod_id: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let base = if mod_id.eq("story")? { "story".to_string() } else { mod_id.str()?.to_string() };
         let name = Self::_free_name(slf, &base)?;
         let k = kw(py, vec![("planet", po(py, "gaia"))])?;
         match menu_mod(py)?.getattr("create_world")?.call((&name, PyDict::new_bound(py), PyList::new_bound(py, [mod_id])), Some(&k)) {
             Ok(_) => {}
             Err(e) if is_exc(py, &e) => {
-                s.setattr("status", format!("作れません: {}", e.value_bound(py).str()?))?;
+                Self::sa_status(slf, format!("作れません: {}", e.value_bound(py).str()?))?;
                 return Self::show_main(slf);
             }
             Err(e) => return Err(e),
         }
-        s.setattr("selected", &name)?;
-        s.getattr("on_play")?.call1((&name,))?;
+        Self::sa_selected(slf, &name)?;
+        Self::ga_on_play(slf)?.call1((&name,))?;
         Ok(())
     }
 
@@ -840,20 +865,20 @@ impl MainMenu {
         let s = slf.as_any();
         let net = imp(py, "main.net")?;
         Self::_clear(slf)?;
-        let u = s.getattr("U")?;
-        let mp = s.getattr("cfg")?.call_method1("setdefault", ("multiplayer", PyDict::new_bound(py)))?;
-        if s.getattr("browser")?.is_none() {
-            s.setattr("browser", net.call_method0("Browser")?)?;
+        let u = Self::ga_U(slf)?;
+        let mp = Self::ga_cfg(slf)?.call_method1("setdefault", ("multiplayer", PyDict::new_bound(py)))?;
+        if Self::ga_browser(slf)?.is_none() {
+            Self::sa_browser(slf, net.call_method0("Browser")?)?;
         }
         let lgray = || cn(s, "light_gray");
         t(s, "マルチプレイ（LAN）", (0.0, 0.42), 1.8, C, None)?;
         t(s, "名前", (-0.62, 0.32), 0.9, L, None)?;
         let nm = mp.call_method1("get", ("name",))?;
         let nm: PyObject = if nm.is_truthy()? { nm.unbind() } else { po(py, menu_default_name(py)?) };
-        let name = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()), ("default_value", nm),
+        let name = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", Self::ga_root(slf)?.unbind()), ("default_value", nm),
             ("position", po(py, (-0.2, 0.32))), ("scale", po(py, (0.5, 0.05))), ("character_limit", po(py, 24))])?))?;
         t(s, "合言葉", (0.12, 0.32), 0.9, L, None)?;
-        let pw = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()),
+        let pw = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", Self::ga_root(slf)?.unbind()),
             ("default_value", mp.call_method1("get", ("password", ""))?.unbind()),
             ("position", po(py, (0.42, 0.32))), ("scale", po(py, (0.3, 0.05))), ("character_limit", po(py, 40))])?))?;
         // 合言葉を設定に書く（参加するとき・戻るとき）。参加するときに使い、自分が LAN に公開するときは参加する人に求める
@@ -865,7 +890,7 @@ impl MainMenu {
         })?;
         panel(s, (-0.2, 0.03), (0.92, 0.46), None)?;
         t(s, "LAN で公開中のワールド", (-0.64, 0.23), 0.9, L, None)?;
-        let rows = u.get_item("Entity")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind())])?))?;
+        let rows = u.get_item("Entity")?.call((), Some(&kw(py, vec![("parent", Self::ga_root(slf)?.unbind())])?))?;
         let state = PyDict::new_bound(py);
         state.set_item("key", py.None())?;
         state.set_item("t", 0.0)?;
@@ -876,13 +901,13 @@ impl MainMenu {
             spk.bind(py).call0()?;
             let n = strip(&field_text(namek.bind(py))?)?;
             mp.set_item("name", if n.is_empty() { menu_default_name(py)? } else { n })?;
-            match menu_mod(py)?.call_method1("save_config", (s.getattr("cfg")?,)) {
+            match menu_mod(py)?.call_method1("save_config", (Self::ga_cfg(s.downcast::<Self>()?)?,)) {
                 Ok(_) => {}
                 Err(e) if is_exc(py, &e) => {}
                 Err(e) => return Err(e),
             }
             s.call_method0("_close_browser")?;
-            let oj = s.getattr("on_join")?;
+            let oj = Self::ga_on_join(s.downcast::<Self>()?)?;
             if oj.is_truthy()? {
                 oj.call1((a.get_item(0)?, a.get_item(1)?, mp.get_item("name")?))?;
             }
@@ -891,8 +916,8 @@ impl MainMenu {
         let (sk, stk, rk, jk) = (keep_(s), state.clone().into_any().unbind(), rows.clone().unbind(), join.clone().unbind());
         let redraw = clo0(py, move |py| {
             let (s, st, rows) = (sk.bind(py), stk.bind(py), rk.bind(py));
-            let u = s.getattr("U")?;
-            let br = s.getattr("browser")?;
+            let u = Self::ga_U(s.downcast::<Self>()?)?;
+            let br = Self::ga_browser(s.downcast::<Self>()?)?;
             let found: Vec<B<'_>> = if br.is_truthy()? { br.call_method0("worlds")?.iter()?.collect::<R<_>>()? } else { vec![] };
             let mut key = vec![];
             for f in &found {
@@ -934,7 +959,7 @@ impl MainMenu {
             Ok(())
         })?;
         let (stk, rdk) = (state.clone().into_any().unbind(), redraw.clone().unbind());
-        hook(py, &s.getattr("root")?, None, Some(clo0(py, move |py| {
+        hook(py, &Self::ga_root(slf)?, None, Some(clo0(py, move |py| {
             let st = stk.bind(py);
             let now: f64 = imp(py, "time")?.call_method0("time")?.extract()?;
             if now - f64of(&st.get_item("t")?)? > 0.5 {
@@ -945,7 +970,7 @@ impl MainMenu {
         })?))?;
         redraw.call0()?;
         t(s, "IP アドレスで参加", (-0.64, -0.26), 0.85, L, None)?;
-        let addr = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()),
+        let addr = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", Self::ga_root(slf)?.unbind()),
             ("default_value", mp.call_method1("get", ("last_host", ""))?.unbind()), ("position", po(py, (-0.12, -0.26))), ("scale", po(py, (0.36, 0.05))),
             ("character_limit", po(py, 40))])?))?;
         let (ak, mpk, jk) = (addr.unbind(), mp.clone().unbind(), join.clone().unbind());
@@ -975,7 +1000,7 @@ impl MainMenu {
         let back = clo0(py, move |py| {
             let s = sk.bind(py);
             spk.bind(py).call0()?;
-            match menu_mod(py)?.call_method1("save_config", (s.getattr("cfg")?,)) {
+            match menu_mod(py)?.call_method1("save_config", (Self::ga_cfg(s.downcast::<Self>()?)?,)) {
                 Ok(_) => {}
                 Err(e) if is_exc(py, &e) => {}
                 Err(e) => return Err(e),
@@ -989,11 +1014,10 @@ impl MainMenu {
     }
     fn _close_browser(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let br = s.getattr("browser")?;
+        let br = Self::ga_browser(slf)?;
         if !br.is_none() {
             br.call_method0("close")?;
-            s.setattr("browser", py.None())?;
+            Self::sa_browser(slf, py.None())?;
         }
         Ok(())
     }
@@ -1005,7 +1029,7 @@ impl MainMenu {
         t(s, "マルチプレイに参加", (0.0, 0.2), 1.6, C, None)?;
         let msg = t(s, joiner.getattr("status")?.unbind(), (0.0, 0.05), 0.95, C, None)?;
         let (mk, jk) = (msg.unbind(), joiner.clone().unbind());
-        hook(py, &s.getattr("root")?, None, Some(clo0(py, move |py| {
+        hook(py, &Self::ga_root(slf)?, None, Some(clo0(py, move |py| {
             let (m, j) = (mk.bind(py), jk.bind(py));
             let st = j.getattr("status")?;
             if !m.getattr("text")?.eq(&st)? {
@@ -1018,7 +1042,7 @@ impl MainMenu {
         let ask = t(s, "", (0.0, -0.3), 0.75, C, Some(rgb(s, 1.0, 0.85, 0.5)?))?;
         let (ak, jk, sk) = (ask.unbind(), joiner.clone().unbind(), keep_(s));
         let shown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        hook(py, &s.getattr("root")?, None, Some(clo0(py, move |py| {
+        hook(py, &Self::ga_root(slf)?, None, Some(clo0(py, move |py| {
             let j = jk.bind(py);
             let c = match j.getattr("consent") { Ok(c) => c, Err(_) => return Ok(()) };
             if c.is_none() || !c.is_truthy()? || shown.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -1041,31 +1065,28 @@ impl MainMenu {
         Ok(())
     }
     fn _select(slf: &Bound<'_, Self>, name: &B<'_>) -> R<()> {
-        let s = slf.as_any();
-        if name.eq(s.getattr("selected")?)? {
+        if name.eq(Self::ga_selected(slf)?)? {
             // 同じワールドをもう一度押したら開始
             return Self::_play(slf);
         }
-        s.setattr("selected", name)?;
-        s.setattr("status", "")?;
+        Self::sa_selected(slf, name)?;
+        Self::sa_status(slf, "")?;
         Self::show_main(slf)
     }
     fn _page(slf: &Bound<'_, Self>, d: i64) -> R<()> {
-        let s = slf.as_any();
-        let pi: i64 = s.getattr("page_index")?.extract()?;
-        s.setattr("page_index", 0.max(pi + d))?;
+        let pi: i64 = Self::ga_page_index(slf)?.extract()?;
+        Self::sa_page_index(slf, 0.max(pi + d))?;
         Self::show_main(slf)
     }
     fn _play(slf: &Bound<'_, Self>) -> R<()> {
-        let s = slf.as_any();
-        let sel = s.getattr("selected")?;
+        let sel = Self::ga_selected(slf)?;
         if sel.is_truthy()? {
-            s.getattr("on_play")?.call1((sel,))?;
+            Self::ga_on_play(slf)?.call1((sel,))?;
         }
         Ok(())
     }
     fn error(slf: &Bound<'_, Self>, msg: &B<'_>) -> R<()> {
-        slf.as_any().setattr("status", msg)?;
+        Self::sa_status(slf, msg)?;
         Self::show_main(slf)
     }
     /// MOD のエラーでワールドを始められなかったとき：エラーの一覧と、どうすればよいか。
@@ -1088,7 +1109,7 @@ impl MainMenu {
             ・MOD を外した／入れ替えた：ワールド設定で元の MOD を入れ直すか、変える前のバックアップに戻してください。\n\
             新しい MOD を作るとき・ワールドの MOD を変えるときは、先にワールド（saves/ のフォルダ）をコピーしておくことをすすめます。",
             (-0.8, -0.16), 0.7, (-0.5, 0.5), Some(cn(s, "light_gray")?))?;
-        s.setattr("status", "")?;
+        Self::sa_status(slf, "")?;
         b(s, "戻る", (0.0, -0.42), &s.getattr("show_main")?, (0.25, 0.055), Some(rgb(s, 0.3, 0.3, 0.33)?), true)?;
         Ok(())
     }
@@ -1099,8 +1120,8 @@ impl MainMenu {
         let py = slf.py();
         let s = slf.as_any();
         Self::_clear(slf)?;
-        let u = s.getattr("U")?;
-        if !keep || s.getattr("_new").map(|x| x.is_none()).unwrap_or(true) {
+        let u = Self::ga_U(slf)?;
+        if !keep || Self::ga_new(slf).map(|x| x.is_none()).unwrap_or(true) {
             let names: Vec<String> = menu_list_worlds(py)?.iter().map(|w| w.get_item("name")?.extract()).collect::<R<_>>()?;
             let mut k = 1;
             while names.contains(&format!("world{}", k)) {
@@ -1115,13 +1136,13 @@ impl MainMenu {
             d.set_item("full_rigid", true)?;
             d.set_item("mode", "creative")?;
             d.set_item("mods", PySet::empty_bound(py)?)?;
-            s.setattr("_new", d)?;
+            Self::sa_new(slf, d)?;
         }
-        let opts = s.getattr("_new")?;
+        let opts = Self::ga_new(slf)?;
         let lgray = || cn(s, "light_gray");
         t(s, "新しいワールド", (0.0, 0.42), 1.8, C, None)?;
         t(s, "名前（半角英数字・- _）", (-0.38, 0.3), 0.85, L, None)?;
-        let field = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()), ("default_value", opts.get_item("name")?.unbind()),
+        let field = u.get_item("InputField")?.call((), Some(&kw(py, vec![("parent", Self::ga_root(slf)?.unbind()), ("default_value", opts.get_item("name")?.unbind()),
             ("position", po(py, (0.2, 0.3))), ("scale", po(py, (0.34, 0.05))), ("character_limit", po(py, 32)), ("active", po(py, true))])?))?;
         field.setattr("limit_content_to", NAME_CHARS)?;
         let fk = field.unbind();
@@ -1193,7 +1214,7 @@ impl MainMenu {
             let (s, opts) = (sk.bind(py), ok_.bind(py));
             let name = nk.bind(py).call0()?;
             if !name.is_truthy()? {
-                s.setattr("status", "名前を入力してください")?;
+                Self::sa_status(s.downcast::<Self>()?, "名前を入力してください")?;
                 opts.set_item("name", "")?;
                 s.call_method1("show_new", (true,))?;
                 return Ok(());
@@ -1212,16 +1233,16 @@ impl MainMenu {
                     return Err(e);
                 }
                 lg(py)?.call_method("exception", ("ワールド作成失敗",), Some(&kw(py, vec![("exc_info", e.value_bound(py).clone().into_any().unbind())])?))?;
-                s.setattr("status", format!("作成できません: {}", e.value_bound(py).str()?))?;
+                Self::sa_status(s.downcast::<Self>()?, format!("作成できません: {}", e.value_bound(py).str()?))?;
                 opts.set_item("name", &name)?;
                 s.call_method1("show_new", (true,))?;
                 return Ok(());
             }
-            s.setattr("_new", py.None())?;
-            s.setattr("selected", &name)?;
-            s.setattr("status", format!("「{}」を作成しました", name.str()?))?;
+            Self::sa_new(s.downcast::<Self>()?, py.None())?;
+            Self::sa_selected(s.downcast::<Self>()?, &name)?;
+            Self::sa_status(s.downcast::<Self>()?, format!("「{}」を作成しました", name.str()?))?;
             if play.is_truthy()? {
-                s.getattr("on_play")?.call1((&name,))?;
+                Self::ga_on_play(s.downcast::<Self>()?)?.call1((&name,))?;
             } else {
                 s.call_method0("show_main")?;
             }
@@ -1408,16 +1429,15 @@ impl MainMenu {
     }
     fn _back(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("status", "")?;
+        Self::sa_status(slf, "")?;
         // 保存せずに戻った：音量を元に
-        match imp(py, "main.client.sound").and_then(|m| m.call_method1("get", (s.getattr("cfg")?,))) {
+        match imp(py, "main.client.sound").and_then(|m| m.call_method1("get", (Self::ga_cfg(slf)?,))) {
             Ok(_) => {}
             Err(e) if is_exc(py, &e) => {}
             Err(e) => return Err(e),
         }
-        s.setattr("_new", py.None())?;
-        s.setattr("_ws", py.None())?;
+        Self::sa_new(slf, py.None())?;
+        Self::sa_ws(slf, py.None())?;
         Self::show_main(slf)
     }
 
@@ -1436,13 +1456,13 @@ impl MainMenu {
             let (s, name) = (sk.bind(py), nk.bind(py));
             match menu_mod(py)?.call_method1("delete_world", (name,)) {
                 Ok(done) => {
-                    s.setattr("status", format!("「{}」を削除しました{}", name.str()?,
+                    Self::sa_status(s.downcast::<Self>()?, format!("「{}」を削除しました{}", name.str()?,
                         if done.is_truthy()? { "" } else { "（使用中で消せなかったファイルは次回起動時に片付けます）" }))?;
-                    s.setattr("selected", py.None())?;
+                    Self::sa_selected(s.downcast::<Self>()?, py.None())?;
                 }
                 Err(e) if is_exc(py, &e) => {
                     lg(py)?.call_method("exception", ("削除失敗",), Some(&kw(py, vec![("exc_info", e.value_bound(py).clone().into_any().unbind())])?))?;
-                    s.setattr("status", format!("削除できません: {}", e.value_bound(py).str()?))?;
+                    Self::sa_status(s.downcast::<Self>()?, format!("削除できません: {}", e.value_bound(py).str()?))?;
                 }
                 Err(e) => return Err(e),
             }
@@ -1463,7 +1483,7 @@ impl MainMenu {
             return Ok(());
         }
         Self::_clear(slf)?;
-        let ws = s.getattr("_ws").unwrap_or_else(|_| py.None().into_bound(py));
+        let ws = Self::ga_ws(slf).unwrap_or_else(|_| py.None().into_bound(py));
         let (st, sel) = if keep && ws.is_truthy()? && ws.get_item(0)?.eq(name)? {
             (ws.get_item(1)?, ws.get_item(2)?)
         } else {
@@ -1477,7 +1497,7 @@ impl MainMenu {
         let (sk, nk, stk, selk) = (keep_(s), name.clone().unbind(), st.clone().unbind(), sel.clone().unbind());
         let redraw = clo0(py, move |py| {
             let s = sk.bind(py);
-            s.setattr("_ws", PyTuple::new_bound(py, [nk.clone_ref(py), stk.clone_ref(py), selk.clone_ref(py)]))?;
+            Self::sa_ws(s.downcast::<Self>()?, PyTuple::new_bound(py, [nk.clone_ref(py), stk.clone_ref(py), selk.clone_ref(py)]))?;
             s.call_method1("show_world_settings", (nk.bind(py), true))?;
             Ok(())
         })?;
@@ -1514,7 +1534,7 @@ impl MainMenu {
         let (sk, nk, stk, selk) = (keep_(s), name.clone().unbind(), st.clone().unbind(), sel.clone().unbind());
         let open_mods = clo0(py, move |py| {
             let s = sk.bind(py);
-            s.setattr("_ws", PyTuple::new_bound(py, [nk.clone_ref(py), stk.clone_ref(py), selk.clone_ref(py)]))?;
+            Self::sa_ws(s.downcast::<Self>()?, PyTuple::new_bound(py, [nk.clone_ref(py), stk.clone_ref(py), selk.clone_ref(py)]))?;
             let k = kw(py, vec![("keep", po(py, true))])?;
             let back = imp(py, "functools")?.getattr("partial")?.call((s.getattr("show_world_settings")?, nk.clone_ref(py)), Some(&k))?;
             s.call_method1("show_mods", (selk.bind(py), back, format!("ワールド「{}」の MOD", nk.bind(py).str()?)))?;
@@ -1534,13 +1554,13 @@ impl MainMenu {
             let r = (|| -> R<()> {
                 let order = modmeta(py)?.call_method1("resolve", (sorted(py, selk.bind(py))?,))?.get_item(0)?;
                 menu_mod(py)?.call_method1("write_world_settings", (nk.bind(py), stk.bind(py), order))?;
-                s.setattr("_ws", py.None())?;
-                s.setattr("status", "ワールド設定を保存しました")?;
+                Self::sa_ws(s.downcast::<Self>()?, py.None())?;
+                Self::sa_status(s.downcast::<Self>()?, "ワールド設定を保存しました")?;
                 Ok(())
             })();
             match r {
                 Ok(()) => {}
-                Err(e) if is_exc(py, &e) => s.setattr("status", format!("保存できません: {}", e.value_bound(py).str()?))?,
+                Err(e) if is_exc(py, &e) => Self::sa_status(s.downcast::<Self>()?, format!("保存できません: {}", e.value_bound(py).str()?))?,
                 Err(e) => return Err(e),
             }
             s.call_method0("show_main")?;
@@ -1557,7 +1577,7 @@ impl MainMenu {
         let s = slf.as_any();
         Self::_clear(slf)?;
         let json = imp(py, "json")?;
-        let cfg = json.call_method1("loads", (json.call_method1("dumps", (s.getattr("cfg")?,))?,))?;
+        let cfg = json.call_method1("loads", (json.call_method1("dumps", (Self::ga_cfg(slf)?,))?,))?;
         let (w, g, c, ph) = (cfg.get_item("window")?, cfg.get_item("graphics")?, cfg.get_item("controls")?, cfg.get_item("physics")?);
         t(s, "ゲーム設定", (0.0, 0.42), 1.8, C, None)?;
         let y = 0.31;
@@ -1628,14 +1648,14 @@ impl MainMenu {
             let (sk2, ck2) = (s.clone().unbind(), ck.clone_ref(py));
             let changed = clo0(py, move |py| {
                 let (s, c) = (sk2.bind(py), ck2.bind(py));
-                let cc = s.getattr("cfg")?.get_item("controls")?;
+                let cc = Self::ga_cfg(s.downcast::<Self>()?)?.get_item("controls")?;
                 for a in imp(py, "main.client.keys_panel")?.getattr("ACTIONS")?.iter()? {
                     let aid = a?.get_item(0)?;
                     c.set_item(&aid, cc.call_method1("get", (&aid, c.call_method1("get", (&aid,))?))?)?;
                 }
                 Ok(())
             })?;
-            kp.getattr("KeysPanel")?.call((s.getattr("U")?, s.getattr("cfg")?, s.getattr("root")?, py.None()), Some(&kw(py, vec![("on_change", changed.unbind())])?))?;
+            kp.getattr("KeysPanel")?.call((Self::ga_U(s.downcast::<Self>()?)?, Self::ga_cfg(s.downcast::<Self>()?)?, Self::ga_root(s.downcast::<Self>()?)?, py.None()), Some(&kw(py, vec![("on_change", changed.unbind())])?))?;
             Ok(())
         })?;
         b(s, "操作とキー設定", (0.62, -0.09), &keys, (0.2, 0.055), Some(rgb(s, 0.25, 0.35, 0.45)?), true)?;
@@ -1644,7 +1664,7 @@ impl MainMenu {
         let (sk, cfk) = (keep_(s), cfg.clone().unbind());
         let save = clo0(py, move |py| {
             let s = sk.bind(py);
-            let me = s.getattr("cfg")?;
+            let me = Self::ga_cfg(s.downcast::<Self>()?)?;
             let prev = PyDict::new_bound(py);
             prev.call_method1("update", (me.call_method1("get", ("window", PyDict::new_bound(py)))?,))?;
             me.call_method0("clear")?;
@@ -1653,12 +1673,12 @@ impl MainMenu {
                 let m = menu_mod(py)?;
                 m.call_method1("save_config", (&me,))?;
                 m.call_method1("apply_window_settings", (&me, &prev))?;
-                s.setattr("status", "ゲーム設定を保存しました")?;
+                Self::sa_status(s.downcast::<Self>()?, "ゲーム設定を保存しました")?;
                 Ok(())
             })();
             match r {
                 Ok(()) => {}
-                Err(e) if is_exc(py, &e) => s.setattr("status", format!("保存できません: {}", e.value_bound(py).str()?))?,
+                Err(e) if is_exc(py, &e) => Self::sa_status(s.downcast::<Self>()?, format!("保存できません: {}", e.value_bound(py).str()?))?,
                 Err(e) => return Err(e),
             }
             s.call_method0("show_main")?;
@@ -1667,7 +1687,7 @@ impl MainMenu {
         let sk = keep_(s);
         let reset = clo0(py, move |py| {
             let s = sk.bind(py);
-            let me = s.getattr("cfg")?;
+            let me = Self::ga_cfg(s.downcast::<Self>()?)?;
             me.call_method0("clear")?;
             let json = imp(py, "json")?;
             me.call_method1("update", (json.call_method1("loads", (json.call_method1("dumps", (imp(py, "main.config")?.getattr("DEFAULTS")?,))?,))?,))?;
@@ -1702,7 +1722,7 @@ impl MainMenu {
     fn destroy(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         Self::_close_browser(slf)?;
-        super::client_misc::ui_destroy(py, &slf.as_any().getattr("root")?, &PyTuple::empty_bound(py), None)
+        super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)
     }
 }
 
@@ -1747,3 +1767,41 @@ pub fn register(m: &Bound<'_, PyModule>) -> R<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------- MainMenu の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! mainmenu_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl MainMenu { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl MainMenu { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+mainmenu_attr_fields!(
+    ga_U sa_U pga_U psa_U a_U "U", ga_new sa_new pga_new psa_new a_new "_new", ga_ws sa_ws pga_ws psa_ws a_ws "_ws", ga_browser sa_browser pga_browser psa_browser a_browser "browser", ga_cfg sa_cfg pga_cfg psa_cfg a_cfg "cfg", ga_on_join sa_on_join pga_on_join psa_on_join a_on_join "on_join", ga_on_play sa_on_play pga_on_play psa_on_play a_on_play "on_play", ga_on_quit sa_on_quit pga_on_quit psa_on_quit a_on_quit "on_quit", ga_page sa_page pga_page psa_page a_page "page", ga_page_index sa_page_index pga_page_index psa_page_index a_page_index "page_index", ga_root sa_root pga_root psa_root a_root "root", ga_selected sa_selected pga_selected psa_selected a_selected "selected", ga_status sa_status pga_status psa_status a_status "status"
+);

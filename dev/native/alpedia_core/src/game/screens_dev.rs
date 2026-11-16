@@ -1,5 +1,6 @@
 //! Rust の画面：機器の設定（P）（main/client_rs/screens_dev.py）。今までの画面の device_ui.DevicePanel・actuator_ui.ActuatorPanel と同じ中身。
 
+use crate::game::construct::{con, Construct};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 
@@ -60,9 +61,9 @@ impl DevicePanel {
         s.setattr("v", viewer)?;
         s.setattr("w", viewer.getattr("w")?)?;
         s.setattr("c", c)?;
-        s.setattr("cell", c.getattr("cells")?.get_item(index)?)?;
+        s.setattr("cell", Construct::g_cells(con(&c)?)?.get_item(index)?)?;
         s.setattr("on_close", on_close.unwrap_or_else(|| py.None()))?;
-        let d = c.getattr("devs")?.get_item(index)?;
+        let d = Construct::g_devs(con(&c)?)?.get_item(index)?;
         let mut dd = c.getattr("reg")?.call_method1("device", (d.get_item("def")?,))?;
         if !dd.is_truthy()? {
             dd = PyDict::new_bound(py).into_any();
@@ -298,11 +299,11 @@ impl ActuatorPanel {
         s.setattr("v", viewer)?;
         s.setattr("w", viewer.getattr("w")?)?;
         s.setattr("c", c)?;
-        s.setattr("cell", c.getattr("cells")?.get_item(index)?)?;
-        let d = c.getattr("devs")?.get_item(index)?;
+        s.setattr("cell", Construct::g_cells(con(&c)?)?.get_item(index)?)?;
+        let d = Construct::g_devs(con(&c)?)?.get_item(index)?;
         let st = d.get_item("state")?;
         let reg = c.getattr("reg")?;
-        let mut dd = reg.call_method1("device", (d.get_item("def")?,))?;
+        let mut dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
         if !dd.is_truthy()? {
             let x = PyDict::new_bound(py);
             x.set_item("params", PyDict::new_bound(py))?;

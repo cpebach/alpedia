@@ -6,6 +6,7 @@
 //!     サバイバルでは必要な資源と手持ちを並べて表示する。
 //! OK で目の前に置き、閉じるボタン（または Esc）で何もせず閉じる。
 
+use crate::game::world::{wld, World};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -40,14 +41,72 @@ fn esc(s: &str) -> String {
 }
 
 #[pyclass(module = "main.client.import_ui", subclass, dict)]
-pub struct ImportPanel {}
+#[allow(non_snake_case)]
+pub struct ImportPanel {
+    /// U（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_U: Option<PyObject>,
+    /// _bp_names（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_bp_names: Option<PyObject>,
+    /// _data_err（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_data_err: Option<PyObject>,
+    /// _data_key（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_data_key: Option<PyObject>,
+    /// can_place（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_can_place: Option<PyObject>,
+    /// cost_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cost_text: Option<PyObject>,
+    /// ctrl_root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_ctrl_root: Option<PyObject>,
+    /// data（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_data: Option<PyObject>,
+    /// detail（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_detail: Option<PyObject>,
+    /// error（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_error: Option<PyObject>,
+    /// game（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_game: Option<PyObject>,
+    /// info（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_info: Option<PyObject>,
+    /// keys（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_keys: Option<PyObject>,
+    /// len_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_len_text: Option<PyObject>,
+    /// list_root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_list_root: Option<PyObject>,
+    /// longest（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_longest: Option<PyObject>,
+    /// mat_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_mat_text: Option<PyObject>,
+    /// material（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_material: Option<PyObject>,
+    /// ok_btn（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_ok_btn: Option<PyObject>,
+    /// page（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_page: Option<PyObject>,
+    /// reg（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_reg: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// sel（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_sel: Option<PyObject>,
+    /// sources（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_sources: Option<PyObject>,
+    /// status（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_status: Option<PyObject>,
+    /// status_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_status_text: Option<PyObject>,
+    /// voxel_size（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_voxel_size: Option<PyObject>,
+    /// world（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_world: Option<PyObject>,
+}
 
 #[pymethods]
 impl ImportPanel {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        ImportPanel {}
+        ImportPanel { a_U: None, a_bp_names: None, a_data_err: None, a_data_key: None, a_can_place: None, a_cost_text: None, a_ctrl_root: None, a_data: None, a_detail: None, a_error: None, a_game: None, a_info: None, a_keys: None, a_len_text: None, a_list_root: None, a_longest: None, a_mat_text: None, a_material: None, a_ok_btn: None, a_page: None, a_reg: None, a_root: None, a_sel: None, a_sources: None, a_status: None, a_status_text: None, a_voxel_size: None, a_world: None }
     }
     fn __init__(slf: &Bound<'_, Self>, game: &B<'_>) -> R<()> {
         let py = slf.py();
@@ -56,28 +115,28 @@ impl ImportPanel {
         let (entity, text, button, camera, color, mouse) = (ur.getattr("Entity")?, ur.getattr("Text")?, ur.getattr("Button")?, ur.getattr("camera")?,
             ur.getattr("color")?, ur.getattr("mouse")?);
         let world = game.getattr("world")?;
-        s.setattr("game", game)?;
-        s.setattr("world", &world)?;
-        s.setattr("reg", world.getattr("registry")?)?;
+        Self::sa_game(slf, game)?;
+        Self::sa_world(slf, &world)?;
+        Self::sa_reg(slf, World::g_registry(wld(&world)?)?)?;
         let u = PyDict::new_bound(py);
         u.set_item("Entity", &entity)?;
         u.set_item("Text", &text)?;
         u.set_item("Button", &button)?;
         u.set_item("color", &color)?;
-        s.setattr("U", u)?;
+        Self::sa_U(slf, u)?;
         mouse.setattr("locked", false)?;
-        s.setattr("page", 0)?;
+        Self::sa_page(slf, 0)?;
         for k in ["sel", "info", "data", "longest", "_data_key"] {
             s.setattr(k, py.None())?;
         }
-        s.setattr("error", "")?;
-        s.setattr("status", "")?;
-        let vs = world.getattr("settings")?.call_method1("get", ("voxel_size", 0.5))?;
-        s.setattr("voxel_size", f64of(&py.import_bound("builtins")?.getattr("float")?.call1((vs,))?)?)?;
-        s.setattr("material", "steel")?;
+        Self::sa_error(slf, "")?;
+        Self::sa_status(slf, "")?;
+        let vs = World::g_settings(wld(&world)?)?.call_method1("get", ("voxel_size", 0.5))?;
+        Self::sa_voxel_size(slf, f64of(&py.import_bound("builtins")?.getattr("float")?.call1((vs,))?)?)?;
+        Self::sa_material(slf, "steel")?;
 
         let root = entity.call((), Some(&kw(py, vec![("parent", camera.getattr("ui")?.unbind()), ("z", po(py, -0.3))])?))?;
-        s.setattr("root", &root)?;
+        Self::sa_root(slf, &root)?;
         let r_ = || root.clone().unbind();
         let rgba = |r: f64, g: f64, b: f64, a: f64| -> R<PyObject> { Ok(color.call_method1("rgba", (r, g, b, a))?.unbind()) };
         let rgb = |r: f64, g: f64, b: f64| -> R<PyObject> { Ok(color.call_method1("rgb", (r, g, b))?.unbind()) };
@@ -88,24 +147,24 @@ impl ImportPanel {
             ("color", rgb(0.07, 0.08, 0.11)?)])?))?;
         text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "読み込み（設計図・OBJ・構築物）")), ("position", po(py, (-0.75, 0.425))),
             ("origin", po(py, (-0.5, 0.5))), ("scale", po(py, 1.3))])?))?;
-        s.setattr("list_root", entity.call((), Some(&kw(py, vec![("parent", r_())])?))?)?;
-        s.setattr("ctrl_root", entity.call((), Some(&kw(py, vec![("parent", r_())])?))?)?;
-        s.setattr("detail", text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.17, 0.36))), ("origin", po(py, (-0.5, 0.5))),
+        Self::sa_list_root(slf, entity.call((), Some(&kw(py, vec![("parent", r_())])?))?)?;
+        Self::sa_ctrl_root(slf, entity.call((), Some(&kw(py, vec![("parent", r_())])?))?)?;
+        Self::sa_detail(slf, text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.17, 0.36))), ("origin", po(py, (-0.5, 0.5))),
             ("scale", po(py, 0.72)), ("color", color.getattr("light_gray")?.unbind())])?))?)?;
-        s.setattr("cost_text", text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.17, -0.2))), ("origin", po(py, (-0.5, 0.5))),
+        Self::sa_cost_text(slf, text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.17, -0.2))), ("origin", po(py, (-0.5, 0.5))),
             ("scale", po(py, 0.72))])?))?)?;
-        s.setattr("status_text", text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.75, -0.395))),
+        Self::sa_status_text(slf, text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.75, -0.395))),
             ("origin", po(py, (-0.5, 0.5))), ("scale", po(py, 0.7)), ("color", color.getattr("yellow")?.unbind())])?))?)?;
         let m = |n: &str| s.getattr(n);
-        s.setattr("ok_btn", Self::_btn(slf, "OK（目の前に置く）", (0.42, -0.4), &m("ok")?, 0.26, 0.042, Some(&rgb(0.2, 0.5, 0.3)?.into_bound(py)), None, 0.7)?)?;
+        Self::sa_ok_btn(slf, Self::_btn(slf, "OK（目の前に置く）", (0.42, -0.4), &m("ok")?, 0.26, 0.042, Some(&rgb(0.2, 0.5, 0.3)?.into_bound(py)), None, 0.7)?)?;
         Self::_btn(slf, "閉じる", (0.66, -0.4), &m("close")?, 0.16, 0.042, Some(&rgb(0.3, 0.3, 0.33)?.into_bound(py)), None, 0.7)?;
         Self::_btn(slf, "imports を開く", (-0.62, -0.335), &m("open_folder")?, 0.2, 0.042, Some(&rgb(0.25, 0.28, 0.35)?.into_bound(py)), None, 0.7)?;
         Self::_btn(slf, "一覧を更新", (-0.4, -0.335), &m("rescan")?, 0.17, 0.042, Some(&rgb(0.25, 0.28, 0.35)?.into_bound(py)), None, 0.7)?;
-        s.setattr("keys", hook(py, &root, Some(m("_on_key")?), None)?)?;
+        Self::sa_keys(slf, hook(py, &root, Some(m("_on_key")?), None)?)?;
         Self::rescan(slf)
     }
     fn _on_key(slf: &Bound<'_, Self>, key: &B<'_>) -> R<()> {
-        let page: i64 = slf.as_any().getattr("page")?.extract()?;
+        let page: i64 = Self::ga_page(slf)?.extract()?;
         if key.eq("escape")? {
             Self::close(slf)?;
         } else if key.eq("scroll up")? {
@@ -120,15 +179,14 @@ impl ImportPanel {
     #[pyo3(signature = (text, pos, r#fn, w=0.1, h=0.042, col=None, parent=None, ts=0.7))]
     fn _btn<'py>(slf: &Bound<'py, Self>, text: &str, pos: (f64, f64), r#fn: &B<'py>, w: f64, h: f64, col: Option<&B<'py>>, parent: Option<&B<'py>>, ts: f64) -> R<B<'py>> {
         let py = slf.py();
-        let s = slf.as_any();
-        let u = s.getattr("U")?;
+        let u = Self::ga_U(slf)?;
         let col = match col {
             Some(c) if !c.is_none() => c.clone(),
             _ => u.get_item("color")?.call_method1("rgb", (0.22, 0.32, 0.45))?,
         };
         let parent = match parent {
             Some(p) if p.is_truthy()? => p.clone(),
-            _ => s.getattr("root")?,
+            _ => Self::ga_root(slf)?,
         };
         let b = u.get_item("Button")?.call((), Some(&kw(py, vec![("parent", parent.unbind()), ("text", po(py, text)), ("position", po(py, pos)), ("scale", po(py, (w, h))),
             ("color", col.unbind()), ("text_size", po(py, ts))])?))?;
@@ -138,7 +196,7 @@ impl ImportPanel {
     #[pyo3(signature = (text, pos, parent, scale=0.7, col=None, origin=(-0.5, 0.0)))]
     fn _text<'py>(slf: &Bound<'py, Self>, text: &str, pos: (f64, f64), parent: &B<'py>, scale: f64, col: Option<&B<'py>>, origin: (f64, f64)) -> R<B<'py>> {
         let py = slf.py();
-        let u = slf.as_any().getattr("U")?;
+        let u = Self::ga_U(slf)?;
         let col = match col {
             Some(c) if !c.is_none() => c.clone(),
             _ => u.get_item("color")?.getattr("light_gray")?,
@@ -163,7 +221,7 @@ impl ImportPanel {
         if !group.starts_with("設計図") {
             return Ok(true);
         }
-        let world = slf.as_any().getattr("world")?;
+        let world = Self::ga_world(slf)?;
         if !world.call_method0("blueprints_allowed")?.is_truthy()? {
             return Ok(false);
         }
@@ -172,7 +230,7 @@ impl ImportPanel {
             Err(e) if e.is_instance_of::<PyException>(py) => return Ok(true),
             Err(e) => return Err(e),
         };
-        let mods = world.getattr("mods")?;
+        let mods = World::g_mods(wld(&world)?)?;
         for r in meta.call_method1("get", ("requires", PyList::empty_bound(py)))?.iter()? {
             let r = r?;
             if r.is_instance_of::<pyo3::types::PyString>() && !mods.contains(&r)? {
@@ -183,9 +241,8 @@ impl ImportPanel {
     }
     fn rescan(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let world = s.getattr("world")?;
-        let all = objio(py)?.call_method1("list_sources", (world.getattr("dir")?, imp(py, "main.paths")?.getattr("SAVES")?, world.getattr("mods")?))?;
+        let world = Self::ga_world(slf)?;
+        let all = objio(py)?.call_method1("list_sources", (World::g_dir(wld(&world)?)?, imp(py, "main.paths")?.getattr("SAVES")?, World::g_mods(wld(&world)?)?))?;
         let srcs = PyList::empty_bound(py);
         for x in all.iter()? {
             let x = x?;
@@ -193,8 +250,8 @@ impl ImportPanel {
                 srcs.append(x)?;
             }
         }
-        let old = s.getattr("sources").ok();
-        let sel = s.getattr("sel")?;
+        let old = Self::ga_sources(slf).ok();
+        let sel = Self::ga_sel(slf)?;
         let mut cur: Option<B<'_>> = None;
         if let (false, Some(o)) = (sel.is_none(), old.as_ref()) {
             let k: i64 = sel.extract()?;
@@ -202,16 +259,16 @@ impl ImportPanel {
                 cur = Some(o.get_item(k)?.get_item(1)?);
             }
         }
-        s.setattr("sources", &srcs)?;
-        s.setattr("sel", py.None())?;
+        Self::sa_sources(slf, &srcs)?;
+        Self::sa_sel(slf, py.None())?;
         if let Some(c) = cur {
             for (k, x) in srcs.iter().enumerate() {
                 if x.get_item(1)?.eq(&c)? {
-                    s.setattr("sel", k)?;
+                    Self::sa_sel(slf, k)?;
                 }
             }
         }
-        if s.getattr("sel")?.is_none() && !srcs.is_empty() {
+        if Self::ga_sel(slf)?.is_none() && !srcs.is_empty() {
             Self::select(slf, 0)
         } else {
             Self::build_list(slf)?;
@@ -219,13 +276,12 @@ impl ImportPanel {
         }
     }
     fn set_page(slf: &Bound<'_, Self>, page: i64) -> R<()> {
-        let s = slf.as_any();
-        let n = s.getattr("sources")?.len()? as i64;
+        let n = Self::ga_sources(slf)?.len()? as i64;
         let n_pages = 1.max((n + ROWS - 1) / ROWS);
         let page = 0.max((n_pages - 1).min(page));
-        let cur: i64 = s.getattr("page")?.extract()?;
+        let cur: i64 = Self::ga_page(slf)?.extract()?;
         if page != cur {
-            s.setattr("page", page)?;
+            Self::sa_page(slf, page)?;
             Self::build_list(slf)?;
         }
         Ok(())
@@ -233,11 +289,11 @@ impl ImportPanel {
     fn build_list(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let color = s.getattr("U")?.get_item("color")?;
-        let lr = s.getattr("list_root")?;
+        let color = Self::ga_U(slf)?.get_item("color")?;
+        let lr = Self::ga_list_root(slf)?;
         Self::_clear(slf, &lr)?;
         let (x0, y0) = (-0.5, 0.35);
-        let srcs = s.getattr("sources")?;
+        let srcs = Self::ga_sources(slf)?;
         let n = srcs.len()? as i64;
         if n == 0 {
             Self::_text(slf, "読み込めるファイルがありません。\n\n\
@@ -245,8 +301,8 @@ impl ImportPanel {
                 F9 で出力した構築物は exports に入り、\nここに自動で出てきます。", (-0.74, 0.3), &lr, 0.68, None, (-0.5, 0.5))?;
             return Ok(());
         }
-        let page: i64 = s.getattr("page")?.extract()?;
-        let sel = s.getattr("sel")?;
+        let page: i64 = Self::ga_page(slf)?.extract()?;
+        let sel = Self::ga_sel(slf)?;
         let sel: Option<i64> = if sel.is_none() { None } else { Some(sel.extract()?) };
         let start = page * ROWS;
         let mut last_group: Option<String> = None;
@@ -285,12 +341,11 @@ impl ImportPanel {
     /// 設計図の表示名（.alp.json の name）。
     fn _bp_name(slf: &Bound<'_, Self>, p: &B<'_>) -> R<String> {
         let py = slf.py();
-        let s = slf.as_any();
-        let cache = match s.getattr("_bp_names") {
+        let cache = match Self::ga_bp_names(slf) {
             Ok(c) => c,
             Err(_) => {
                 let d = PyDict::new_bound(py).into_any();
-                s.setattr("_bp_names", &d)?;
+                Self::sa_bp_names(slf, &d)?;
                 d
             }
         };
@@ -314,44 +369,44 @@ impl ImportPanel {
     fn select(slf: &Bound<'_, Self>, k: i64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        s.setattr("sel", k)?;
-        s.setattr("page", k.div_euclid(ROWS))?;
+        Self::sa_sel(slf, k)?;
+        Self::sa_page(slf, k.div_euclid(ROWS))?;
         for a in ["info", "data", "_data_key"] {
             s.setattr(a, py.None())?;
         }
-        s.setattr("error", "")?;
-        s.setattr("status", "")?;
-        let p = s.getattr("sources")?.get_item(k)?.get_item(1)?;
-        let reg = s.getattr("reg")?;
+        Self::sa_error(slf, "")?;
+        Self::sa_status(slf, "")?;
+        let p = Self::ga_sources(slf)?.get_item(k)?.get_item(1)?;
+        let reg = Self::ga_reg(slf)?;
         match objio(py)?.call_method1("inspect", (&reg, &p)) {
-            Ok(i) => s.setattr("info", i)?,
+            Ok(i) => Self::sa_info(slf, i)?,
             Err(e) if e.is_instance_of::<PyException>(py) => {
                 let kk = PyDict::new_bound(py);
                 kk.set_item("exc_info", e.value_bound(py))?;
                 lg(py)?.call_method("exception", ("読み込みの下調べに失敗: %s", &p), Some(&kk))?;
-                s.setattr("error", format!("このファイルは読み込めません: {}", e.value_bound(py).str()?))?;
+                Self::sa_error(slf, format!("このファイルは読み込めません: {}", e.value_bound(py).str()?))?;
             }
             Err(e) => return Err(e),
         }
-        let inf = s.getattr("info")?;
+        let inf = Self::ga_info(slf)?;
         if inf.is_truthy()? && inf.get_item("kind")?.eq("obj")? {
             let fl = py.import_bound("builtins")?.getattr("float")?;
             let mx = f64of(&fl.call1((inf.get_item("extent")?.call_method0("max")?,))?)?;
             let orig = if mx != 0.0 { mx } else { 1.0 };
             let ivs = inf.get_item("voxel_size")?;
-            let vs = if ivs.is_truthy()? { ivs } else { s.getattr("world")?.getattr("settings")?.call_method1("get", ("voxel_size", 0.5))? };
-            s.setattr("voxel_size", f64of(&fl.call1((vs,))?)?)?;
+            let vs = if ivs.is_truthy()? { ivs } else { Self::ga_world(slf)?.getattr("settings")?.call_method1("get", ("voxel_size", 0.5))? };
+            Self::sa_voxel_size(slf, f64of(&fl.call1((vs,))?)?)?;
             if !inf.get_item("meta")?.call_method1("get", ("scale",))?.is_none() {
-                s.setattr("longest", orig * f64of(&inf.get_item("scale")?)?)?;
+                Self::sa_longest(slf, orig * f64of(&inf.get_item("scale")?)?)?;
             } else if (0.5..=40.0).contains(&orig) {
-                s.setattr("longest", orig)?;
+                Self::sa_longest(slf, orig)?;
             } else {
-                s.setattr("longest", 8.0)?; // mm 単位で作られた OBJ などはとりあえず 8 m に
+                Self::sa_longest(slf, 8.0)?; // mm 単位で作られた OBJ などはとりあえず 8 m に
             }
             let dm = inf.get_item("default_material")?;
             let key = if dm.is_truthy()? { dm.clone() } else { po(py, "").into_bound(py) };
             let ok = reg.call_method1("get", ("materials", key))?.is_truthy()?;
-            s.setattr("material", if ok { dm } else { po(py, "steel").into_bound(py) })?;
+            Self::sa_material(slf, if ok { dm } else { po(py, "steel").into_bound(py) })?;
         }
         Self::build_list(slf)?;
         Self::build_controls(slf)?;
@@ -362,17 +417,17 @@ impl ImportPanel {
     fn build_controls(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let color = s.getattr("U")?.get_item("color")?;
-        let r = s.getattr("ctrl_root")?;
+        let color = Self::ga_U(slf)?.get_item("color")?;
+        let r = Self::ga_ctrl_root(slf)?;
         Self::_clear(slf, &r)?;
-        let inf = s.getattr("info")?;
+        let inf = Self::ga_info(slf)?;
         if !inf.is_truthy()? || !inf.get_item("kind")?.eq("obj")? {
             return Ok(());
         }
         let white = color.getattr("white")?;
         let mut y = -0.03;
         Self::_text(slf, "大きさ（いちばん長い辺）", (-0.17, y + 0.045), &r, 0.7, Some(&white), (-0.5, 0.0))?;
-        s.setattr("len_text", Self::_text(slf, "", (-0.17, y), &r, 0.8, Some(&white), (-0.5, 0.0))?)?;
+        Self::sa_len_text(slf, Self::_text(slf, "", (-0.17, y), &r, 0.8, Some(&white), (-0.5, 0.0))?)?;
         let rs = s.getattr("resize")?;
         let items: [(&str, B<'_>); 5] = [("×½", partial(&rs, vec![po(py, 0.5)])?), ("−10%", partial(&rs, vec![po(py, 1.0 / 1.1)])?),
             ("+10%", partial(&rs, vec![po(py, 1.1)])?), ("×2", partial(&rs, vec![po(py, 2.0)])?), ("元の大きさ", s.getattr("reset_size")?)];
@@ -382,7 +437,7 @@ impl ImportPanel {
         }
         y -= 0.065;
         Self::_text(slf, "細かさ（ボクセル）", (-0.17, y), &r, 0.7, Some(&white), (-0.5, 0.0))?;
-        let cur: f64 = s.getattr("voxel_size")?.extract()?;
+        let cur: f64 = Self::ga_voxel_size(slf)?.extract()?;
         let sv = s.getattr("set_voxel")?;
         for (k, v) in VOXEL_SIZES.iter().enumerate() {
             let on = (v - cur).abs() < 1e-9;
@@ -393,32 +448,29 @@ impl ImportPanel {
         Self::_text(slf, "素材", (-0.17, y), &r, 0.7, Some(&white), (-0.5, 0.0))?;
         let cm = s.getattr("cycle_material")?;
         Self::_btn(slf, "◀", (0.0, y), &partial(&cm, vec![po(py, -1)])?, 0.05, 0.042, None, Some(&r), 0.7)?;
-        s.setattr("mat_text", Self::_text(slf, "", (0.035, y), &r, 0.7, Some(&white), (-0.5, 0.0))?)?;
+        Self::sa_mat_text(slf, Self::_text(slf, "", (0.035, y), &r, 0.7, Some(&white), (-0.5, 0.0))?)?;
         Self::_btn(slf, "▶", (0.27, y), &partial(&cm, vec![po(py, 1)])?, 0.05, 0.042, None, Some(&r), 0.7)?;
         Ok(())
     }
     fn resize(slf: &Bound<'_, Self>, f: f64) -> R<()> {
-        let s = slf.as_any();
-        let l: f64 = f64of(&s.getattr("longest")?)?;
-        s.setattr("longest", (l * f).clamp(0.2, 500.0))?;
+        let l: f64 = f64of(&Self::ga_longest(slf)?)?;
+        Self::sa_longest(slf, (l * f).clamp(0.2, 500.0))?;
         Self::_changed(slf)
     }
     fn reset_size(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let mx = py.import_bound("builtins")?.getattr("float")?.call1((s.getattr("info")?.get_item("extent")?.call_method0("max")?,))?;
-        s.setattr("longest", mx)?;
+        let mx = py.import_bound("builtins")?.getattr("float")?.call1((Self::ga_info(slf)?.get_item("extent")?.call_method0("max")?,))?;
+        Self::sa_longest(slf, mx)?;
         Self::_changed(slf)
     }
     fn set_voxel(slf: &Bound<'_, Self>, v: &B<'_>) -> R<()> {
-        slf.as_any().setattr("voxel_size", v)?;
+        Self::sa_voxel_size(slf, v)?;
         Self::build_controls(slf)?;
         Self::_changed(slf)
     }
     fn cycle_material(slf: &Bound<'_, Self>, d: i64) -> R<()> {
-        let s = slf.as_any();
-        let ids: Vec<B<'_>> = s.getattr("reg")?.getattr("defs")?.get_item("materials")?.iter()?.collect::<R<_>>()?;
-        let cur = s.getattr("material")?;
+        let ids: Vec<B<'_>> = Self::ga_reg(slf)?.getattr("defs")?.get_item("materials")?.iter()?.collect::<R<_>>()?;
+        let cur = Self::ga_material(slf)?;
         let mut k = 0i64;
         for (i, m) in ids.iter().enumerate() {
             if m.eq(&cur)? {
@@ -426,15 +478,14 @@ impl ImportPanel {
                 break;
             }
         }
-        s.setattr("material", &ids[(k + d).rem_euclid(ids.len() as i64) as usize])?;
+        Self::sa_material(slf, &ids[(k + d).rem_euclid(ids.len() as i64) as usize])?;
         Self::_changed(slf)
     }
     fn _changed(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("data", py.None())?;
-        s.setattr("_data_key", py.None())?;
-        s.setattr("status", "")?;
+        Self::sa_data(slf, py.None())?;
+        Self::sa_data_key(slf, py.None())?;
+        Self::sa_status(slf, "")?;
         Self::refresh(slf)
     }
 
@@ -442,12 +493,11 @@ impl ImportPanel {
     /// 選んだもの・指定した大きさでボクセルを作る（結果は覚えておく）。
     fn _prepare<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
-        let s = slf.as_any();
-        let inf = s.getattr("info")?;
-        if !inf.is_truthy()? || s.getattr("error")?.is_truthy()? {
+        let inf = Self::ga_info(slf)?;
+        if !inf.is_truthy()? || Self::ga_error(slf)?.is_truthy()? {
             return Ok(py.None().into_bound(py));
         }
-        let p = s.getattr("sources")?.get_item(s.getattr("sel")?)?.get_item(1)?;
+        let p = Self::ga_sources(slf)?.get_item(Self::ga_sel(slf)?)?.get_item(1)?;
         let ps = p.str()?;
         let opts = PyDict::new_bound(py);
         let key: B<'_> = if inf.get_item("kind")?.eq("voxels")? {
@@ -455,53 +505,52 @@ impl ImportPanel {
         } else {
             let fl = py.import_bound("builtins")?.getattr("float")?;
             let mx = f64of(&fl.call1((inf.get_item("extent")?.call_method0("max")?,))?)?;
-            let scale = f64of(&s.getattr("longest")?)? / mx.max(1e-9);
-            let vs = s.getattr("voxel_size")?;
-            let mat = s.getattr("material")?;
+            let scale = f64of(&Self::ga_longest(slf)?)? / mx.max(1e-9);
+            let vs = Self::ga_voxel_size(slf)?;
+            let mat = Self::ga_material(slf)?;
             opts.set_item("voxel_size", &vs)?;
             opts.set_item("scale", scale)?;
             opts.set_item("default_material", &mat)?;
             let rd = py.import_bound("builtins")?.getattr("round")?.call1((scale, 6))?;
             PyTuple::new_bound(py, [po(py, "o"), ps.into_any().unbind(), rd.unbind(), vs.unbind(), mat.unbind()]).into_any()
         };
-        if !key.eq(s.getattr("_data_key")?)? {
-            s.setattr("_data_key", &key)?;
-            s.setattr("data", py.None())?;
-            match objio(py)?.getattr("import_construct")?.call((s.getattr("reg")?, &p), Some(&opts)) {
+        if !key.eq(Self::ga_data_key(slf)?)? {
+            Self::sa_data_key(slf, &key)?;
+            Self::sa_data(slf, py.None())?;
+            match objio(py)?.getattr("import_construct")?.call((Self::ga_reg(slf)?, &p), Some(&opts)) {
                 Ok(d) => {
-                    s.setattr("data", d)?;
-                    s.setattr("_data_err", "")?;
+                    Self::sa_data(slf, d)?;
+                    Self::sa_data_err(slf, "")?;
                 }
                 Err(e) if e.is_instance_of::<PyException>(py) => {
                     lg(py)?.call_method1("warning", ("ボクセル化できません: %s", e.value_bound(py)))?;
-                    s.setattr("_data_err", e.value_bound(py).str()?)?;
+                    Self::sa_data_err(slf, e.value_bound(py).str()?)?;
                 }
                 Err(e) => return Err(e),
             }
         }
-        s.getattr("data")
+        Self::ga_data(slf)
     }
     fn refresh(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let color = s.getattr("U")?.get_item("color")?;
+        let color = Self::ga_U(slf)?.get_item("color")?;
         let mut lines: Vec<String> = vec![];
         let mut cost_lines: Vec<String> = vec![];
-        s.setattr("can_place", false)?;
-        let detail = s.getattr("detail")?;
-        let srcs = s.getattr("sources")?;
-        let reg = s.getattr("reg")?;
-        let world = s.getattr("world")?;
+        Self::sa_can_place(slf, false)?;
+        let detail = Self::ga_detail(slf)?;
+        let srcs = Self::ga_sources(slf)?;
+        let reg = Self::ga_reg(slf)?;
+        let world = Self::ga_world(slf)?;
         let fmt_len = |x: f64| iu_fmt_len(py, x);
-        let matname = |m: &B<'_>| -> R<String> { Ok(reg.call_method1("material", (m,))?.get_item("name")?.str()?.to_string()) };
-        if s.getattr("sel")?.is_none() || srcs.len()? == 0 {
+        let matname = |m: &B<'_>| -> R<String> { Ok(crate::game::registry::mat_dict(&reg, &m)?.get_item("name")?.str()?.to_string()) };
+        if Self::ga_sel(slf)?.is_none() || srcs.len()? == 0 {
             detail.setattr("text", "左の一覧から置くものを選んでください")?;
-        } else if s.getattr("error")?.is_truthy()? {
-            detail.setattr("text", s.getattr("error")?)?;
+        } else if Self::ga_error(slf)?.is_truthy()? {
+            detail.setattr("text", Self::ga_error(slf)?)?;
         } else {
-            let src = srcs.get_item(s.getattr("sel")?)?;
+            let src = srcs.get_item(Self::ga_sel(slf)?)?;
             let (group, p) = (src.get_item(0)?, src.get_item(1)?);
-            let inf = s.getattr("info")?;
+            let inf = Self::ga_info(slf)?;
             let data = Self::_prepare(slf)?;
             lines.push(format!("名前: {}", inf.get_item("name")?.str()?));
             lines.push(format!("場所: {}/{}", group.str()?, p.getattr("name")?.str()?));
@@ -509,7 +558,7 @@ impl ImportPanel {
             if desc.is_truthy()? {
                 lines.push(desc.str()?.to_string());
             }
-            let mods = world.getattr("mods")?;
+            let mods = World::g_mods(wld(&world)?)?;
             let reqs = inf.call_method1("get", ("requires", PyList::empty_bound(py)))?;
             let mut need = 0;
             for r in reqs.iter()? {
@@ -554,11 +603,11 @@ impl ImportPanel {
                     }
                     lines.push(format!("素材の対応: {}", parts.join("、")));
                 }
-                s.getattr("len_text")?.setattr("text", format!("{} m", fmt_len(f64of(&s.getattr("longest")?)?)?))?;
-                s.getattr("mat_text")?.setattr("text", matname(&s.getattr("material")?)? + if mapping.is_truthy()? { "（対応表に無い面）" } else { "" })?;
+                Self::ga_len_text(slf)?.setattr("text", format!("{} m", fmt_len(f64of(&Self::ga_longest(slf)?)?)?))?;
+                Self::ga_mat_text(slf)?.setattr("text", matname(&Self::ga_material(slf)?)? + if mapping.is_truthy()? { "（対応表に無い面）" } else { "" })?;
             }
             if data.is_none() {
-                lines.push(format!("※ ボクセルにできません: {}", s.getattr("_data_err")?.str()?));
+                lines.push(format!("※ ボクセルにできません: {}", Self::ga_data_err(slf)?.str()?));
             } else {
                 let vox = data.get_item("voxels")?;
                 let nv = vox.len()?;
@@ -608,7 +657,7 @@ impl ImportPanel {
                     let mut can = need == 0;
                     if !world.getattr("creative")?.is_truthy()? {
                         let cost = world.call_method1("voxels_cost", (&vox,))?;
-                        let inv = world.getattr("player")?.getattr("inventory")?;
+                        let inv = World::g_player(wld(&world)?)?.getattr("inventory")?;
                         cost_lines.push("必要な資源（サバイバル）".into());
                         if !cost.is_truthy()? {
                             cost_lines.push("　なし".into());
@@ -627,39 +676,38 @@ impl ImportPanel {
                     } else {
                         cost_lines.push("クリエイティブ：資源は要りません".into());
                     }
-                    s.setattr("can_place", can)?;
+                    Self::sa_can_place(slf, can)?;
                 }
             }
             detail.setattr("text", esc(&lines.join("\n")))?;
         }
-        let ct = s.getattr("cost_text")?;
+        let ct = Self::ga_cost_text(slf)?;
         ct.setattr("text", cost_lines.join("\n"))?;
         ct.setattr("color", color.getattr("white")?)?;
-        let can = s.getattr("can_place")?.is_truthy()?;
-        s.getattr("ok_btn")?.setattr("color", if can { color.call_method1("rgb", (0.2, 0.5, 0.3))? } else { color.call_method1("rgb", (0.25, 0.3, 0.27))? })?;
-        s.getattr("status_text")?.setattr("text", s.getattr("status")?)?;
+        let can = Self::ga_can_place(slf)?.is_truthy()?;
+        Self::ga_ok_btn(slf)?.setattr("color", if can { color.call_method1("rgb", (0.2, 0.5, 0.3))? } else { color.call_method1("rgb", (0.25, 0.3, 0.27))? })?;
+        Self::ga_status_text(slf)?.setattr("text", Self::ga_status(slf)?)?;
         Ok(())
     }
 
     // --- ボタン -----------------------------------------------------------
     fn ok(slf: &Bound<'_, Self>) -> R<()> {
-        let s = slf.as_any();
-        if !s.getattr("can_place")?.is_truthy()? || s.getattr("data")?.is_none() {
-            s.setattr("status", "置けません（上の ※ や「足りません」を確認してください）")?;
+        if !Self::ga_can_place(slf)?.is_truthy()? || Self::ga_data(slf)?.is_none() {
+            Self::sa_status(slf, "置けません（上の ※ や「足りません」を確認してください）")?;
             return Self::refresh(slf);
         }
-        let g = s.getattr("game")?;
+        let g = Self::ga_game(slf)?;
         let look = g.call_method0("look_vectors")?.get_item(3)?;
-        let world = s.getattr("world")?;
+        let world = Self::ga_world(slf)?;
         let k = PyDict::new_bound(slf.py());
         k.set_item("look_dir", look)?;
-        let c = world.call_method("place_import", (s.getattr("data")?,), Some(&k))?;
+        let c = world.call_method("place_import", (Self::ga_data(slf)?,), Some(&k))?;
         if c.is_none() {
-            let msgs = world.getattr("msgs")?;
+            let msgs = World::g_msgs(wld(&world)?)?;
             if msgs.is_truthy()? {
-                s.setattr("status", msgs.get_item(-1)?.get_item(1)?)?;
+                Self::sa_status(slf, msgs.get_item(-1)?.get_item(1)?)?;
             } else {
-                s.setattr("status", "置けませんでした")?;
+                Self::sa_status(slf, "置けませんでした")?;
             }
             return Self::refresh(slf);
         }
@@ -667,8 +715,7 @@ impl ImportPanel {
     }
     fn open_folder(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let d = s.getattr("world")?.getattr("dir")?.call_method1("__truediv__", ("imports",))?;
+        let d = Self::ga_world(slf)?.getattr("dir")?.call_method1("__truediv__", ("imports",))?;
         let k = PyDict::new_bound(py);
         k.set_item("exist_ok", true)?;
         d.call_method("mkdir", (), Some(&k))?;
@@ -676,24 +723,23 @@ impl ImportPanel {
         let r = (|| -> R<()> {
             if os.hasattr("startfile")? {
                 os.call_method1("startfile", (d.str()?,))?; // Windows のエクスプローラーで開く
-                s.setattr("status", "imports フォルダを開きました。ファイルを置いたら「一覧を更新」を押してください")?;
+                Self::sa_status(slf, "imports フォルダを開きました。ファイルを置いたら「一覧を更新」を押してください")?;
             } else {
-                s.setattr("status", format!("フォルダ: {}", d.str()?))?;
+                Self::sa_status(slf, format!("フォルダ: {}", d.str()?))?;
             }
             Ok(())
         })();
         match r {
             Ok(()) => {}
-            Err(e) if e.is_instance_of::<PyException>(py) => s.setattr("status", format!("フォルダを開けません: {}", e.value_bound(py).str()?))?,
+            Err(e) if e.is_instance_of::<PyException>(py) => Self::sa_status(slf, format!("フォルダを開けません: {}", e.value_bound(py).str()?))?,
             Err(e) => return Err(e),
         }
         Self::refresh(slf)
     }
     fn close(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        super::client_misc::ui_destroy(py, &s.getattr("root")?, &PyTuple::empty_bound(py), None)?;
-        s.getattr("game")?.call_method0("editor_closed")?;
+        super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)?;
+        Self::ga_game(slf)?.call_method0("editor_closed")?;
         Ok(())
     }
 }
@@ -707,3 +753,41 @@ pub fn register(m: &Bound<'_, PyModule>) -> R<()> {
     m.add_function(wrap_pyfunction_bound!(iu_noop, m)?)?;
     Ok(())
 }
+
+// ---------------------------------------------------------------- ImportPanel の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! importpanel_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl ImportPanel { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl ImportPanel { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+importpanel_attr_fields!(
+    ga_U sa_U pga_U psa_U a_U "U", ga_bp_names sa_bp_names pga_bp_names psa_bp_names a_bp_names "_bp_names", ga_data_err sa_data_err pga_data_err psa_data_err a_data_err "_data_err", ga_data_key sa_data_key pga_data_key psa_data_key a_data_key "_data_key", ga_can_place sa_can_place pga_can_place psa_can_place a_can_place "can_place", ga_cost_text sa_cost_text pga_cost_text psa_cost_text a_cost_text "cost_text", ga_ctrl_root sa_ctrl_root pga_ctrl_root psa_ctrl_root a_ctrl_root "ctrl_root", ga_data sa_data pga_data psa_data a_data "data", ga_detail sa_detail pga_detail psa_detail a_detail "detail", ga_error sa_error pga_error psa_error a_error "error", ga_game sa_game pga_game psa_game a_game "game", ga_info sa_info pga_info psa_info a_info "info", ga_keys sa_keys pga_keys psa_keys a_keys "keys", ga_len_text sa_len_text pga_len_text psa_len_text a_len_text "len_text", ga_list_root sa_list_root pga_list_root psa_list_root a_list_root "list_root", ga_longest sa_longest pga_longest psa_longest a_longest "longest", ga_mat_text sa_mat_text pga_mat_text psa_mat_text a_mat_text "mat_text", ga_material sa_material pga_material psa_material a_material "material", ga_ok_btn sa_ok_btn pga_ok_btn psa_ok_btn a_ok_btn "ok_btn", ga_page sa_page pga_page psa_page a_page "page", ga_reg sa_reg pga_reg psa_reg a_reg "reg", ga_root sa_root pga_root psa_root a_root "root", ga_sel sa_sel pga_sel psa_sel a_sel "sel", ga_sources sa_sources pga_sources psa_sources a_sources "sources", ga_status sa_status pga_status psa_status a_status "status", ga_status_text sa_status_text pga_status_text psa_status_text a_status_text "status_text", ga_voxel_size sa_voxel_size pga_voxel_size psa_voxel_size a_voxel_size "voxel_size", ga_world sa_world pga_world psa_world a_world "world"
+);

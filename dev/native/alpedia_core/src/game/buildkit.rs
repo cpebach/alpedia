@@ -4,6 +4,8 @@
 //! リスト [(セル, 素材, 機器)] にする。あとから置いた物が前の物を上書きする。clear で消す。
 //! セルの辞書 v は MOD が直接読み書きするので Python の dict のまま持つ。
 
+use crate::game::world::{wld, World};
+use crate::game::construct::{con, Construct};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use numpy::{PyArray1, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
@@ -817,21 +819,21 @@ pub fn bk_grounded<'py>(py: Python<'py>, v: &Bound<'py, PyAny>, r: PyReadonlyArr
 #[pyfunction]
 #[pyo3(signature = (c, group=None))]
 pub fn bk_light_devices<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, group: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyList>> {
-    let key = (c.getattr("version")?, c.getattr("n_vox")?);
+    let key = (Construct::g_version(con(&c)?)?, Construct::n(con(&c)?)?.into_py(py).into_bound(py));
     let key = PyTuple::new_bound(py, [key.0, key.1]);
     let cache = c.getattr("_lgrp_cache").ok().filter(|x| !x.is_none());
     let ids: Bound<'py, PyAny> = match cache {
         Some(cc) if cc.get_item(0)?.eq(&key)? => cc.get_item(1)?,
         _ => {
-            let devs = c.getattr("devs")?;
-            let reg = c.getattr("reg")?;
+            let devs = Construct::g_devs(con(&c)?)?;
+            let reg = Construct::g_reg(con(&c)?)?;
             let ids = PyList::empty_bound(py);
             for (i, d) in devs.iter()?.enumerate() {
                 let d = d?;
                 if !d.is_truthy()? {
                     continue;
                 }
-                let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+                let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
                 if dd.is_truthy()? && dd.call_method1("get", ("type",))?.eq("light")? {
                     ids.append(i)?;
                 }
@@ -840,7 +842,7 @@ pub fn bk_light_devices<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, group: Opti
             ids.into_any()
         }
     };
-    let devs = c.getattr("devs")?;
+    let devs = Construct::g_devs(con(&c)?)?;
     let out = PyList::empty_bound(py);
     for i in ids.iter()? {
         let d = devs.get_item(i?)?;
@@ -860,13 +862,13 @@ pub fn bk_light_devices<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, group: Opti
 pub fn bk_set_light_group(py: Python<'_>, world: &Bound<'_, PyAny>, group: &Bound<'_, PyAny>, on: &Bound<'_, PyAny>) -> R<usize> {
     let on = on.is_truthy()?;
     let mut n = 0;
-    for c in world.getattr("constructs")?.call_method0("values")?.iter()? {
+    for c in World::g_constructs(wld(&world)?)?.call_method0("values")?.iter()? {
         let c = c?;
         for d in bk_light_devices(py, &c, Some(group))?.iter() {
             let st = d.get_item("state")?;
             if st.call_method1("get", ("enabled", true))?.is_truthy()? != on {
                 st.set_item("enabled", on)?;
-                c.setattr("_slow_dt", 1.0)?;
+                crate::game::construct::Construct::s_slow_dt(crate::game::construct::con(&c)?, 1.0)?;
                 n += 1;
             }
         }
@@ -910,7 +912,7 @@ fn non_anchor_rows(c: &Bound<'_, PyAny>) -> R<Vec<usize>> {
 
 /// pos をすべて up の向きに k だけずらす（その場で）
 fn shift_pos(c: &Bound<'_, PyAny>, up: [f64; 3], k: f64) -> R<()> {
-    let p = c.getattr("pos")?;
+    let p = Construct::g_pos(con(&c)?)?;
     if !super::construct::with_rw(&p, |s| for q in s.chunks_exact_mut(3) { for a in 0..3 { q[a] += up[a] * k; } })? {
         let mut v = super::construct::fv(&p)?;
         for q in v.chunks_exact_mut(3) {
@@ -919,13 +921,13 @@ fn shift_pos(c: &Bound<'_, PyAny>, up: [f64; 3], k: f64) -> R<()> {
             }
         }
         let n = v.len() / 3;
-        c.setattr("pos", super::construct::arr(c.py(), v, &[n, 3])?)?;
+        Construct::s_pos(con(&c)?, super::construct::arr(c.py(), v, &[n, 3])?)?;
     }
     Ok(())
 }
 
 fn rows_of<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, rows: &[usize]) -> R<Bound<'py, PyAny>> {
-    let pos = super::construct::v3s(&c.getattr("pos")?)?;
+    let pos = super::construct::v3s(&Construct::g_pos(con(&c)?)?)?;
     let sel: Vec<[f64; 3]> = rows.iter().map(|&r| pos[r]).collect();
     super::construct::a3(py, &sel)
 }
@@ -948,7 +950,7 @@ pub fn bk_spawn<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bound<'py
     kw.set_item("name", name)?;
     kw.set_item("id_", id_.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None()))?;
     let c = super::imp(py, "main.construct")?.getattr("Construct")?.call_method("from_voxels",
-        (world.getattr("registry")?, vox, super::construct::a1(py, pp), super::construct::mat(py, &rm)?), Some(&kw))?;
+        (World::g_registry(wld(&world)?)?, vox, super::construct::a1(py, pp), super::construct::mat(py, &rm)?), Some(&kw))?;
     if let Some(f) = lift_sdf.filter(|f| !f.is_none()) {
         let rows = non_anchor_rows(&c)?;
         let up = [rm[0][1], rm[1][1], rm[2][1]];
@@ -969,11 +971,11 @@ pub fn bk_spawn<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bound<'py
 #[pyfunction]
 pub fn bk_ensure<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, key: &Bound<'py, PyAny>, items: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
     let made = PyDict::new_bound(py);
-    let net = world.getattr("net")?;
+    let net = World::g_net(wld(&world)?)?;
     if !net.is_none() && match net.getattr("role") { Ok(r) => r.eq("client")?, Err(_) => false } {
         return Ok(made);
     }
-    let reg = world.getattr("settings")?.call_method1("setdefault", ("blocks", PyDict::new_bound(py)))?
+    let reg = World::g_settings(wld(&world)?)?.call_method1("setdefault", ("blocks", PyDict::new_bound(py)))?
         .call_method1("setdefault", (key, PyDict::new_bound(py)))?;
     for it in items.iter()? {
         let it = it?;
@@ -993,7 +995,7 @@ pub fn bk_ensure<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, key: &Bound<'p
             Err(e) => return Err(e),
         };
         if !c.is_none() {
-            reg.set_item(&role, c.getattr("id")?)?;
+            reg.set_item(&role, Construct::g_id(con(&c)?)?)?;
             made.set_item(&role, c)?;
         }
     }
@@ -1065,7 +1067,7 @@ pub fn bk_spawn_on_map<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bo
     let rm = super::construct::m3(&rmo)?;
     let size: f64 = match size {
         Some(s) if s.is_truthy()? => s.extract()?,
-        _ => world.getattr("settings")?.call_method1("get", ("voxel_size", 0.5))?.extract()?,
+        _ => World::g_settings(wld(&world)?)?.call_method1("get", ("voxel_size", 0.5))?.extract()?,
     };
     let mut p = p0;
     if center {
@@ -1077,7 +1079,7 @@ pub fn bk_spawn_on_map<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bo
         kw.set_item("size", size)?;
         kw.set_item("name", name)?;
         kw.set_item("id_", id_.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None()))?;
-        ccls.call_method("from_voxels", (world.getattr("registry")?, v, super::construct::a1(py, at), super::construct::mat(py, r)?), Some(&kw))
+        ccls.call_method("from_voxels", (World::g_registry(wld(&world)?)?, v, super::construct::a1(py, at), super::construct::mat(py, r)?), Some(&kw))
     };
     let mut c = mk(vox, p, &rm)?;
     let gh = Bound::new(py, bk_ground_fn(m.clone().unbind(), scenes)?)?;

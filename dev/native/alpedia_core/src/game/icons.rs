@@ -410,14 +410,14 @@ pub fn icons_item_image<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>, size:
     }
     let (kind, id_) = (item.get_item(0)?, item.get_item(1)?);
     let img = if kind.eq("material")? {
-        let m = reg.call_method1("material", (&id_,))?;
+        let m = crate::game::registry::mat_dict(&reg, &id_)?;
         let m = if m.is_truthy()? { m } else { PyDict::new_bound(py).into_any() };
         let alpha = if id_.eq("glass")? || id_.eq("water")? { 0.72 } else { 1.0 };
         let shiny = if ["steel", "aluminum", "glass", "titanium"].iter().any(|x| id_.eq(*x).unwrap_or(false)) { 0.5 } else { 0.18 };
         let tex = texture_array(py, &m.call_method1("get", ("texture",))?)?;
         icons_sphere(py, size, &m.call_method1("get", ("color", vec![0.7, 0.7, 0.7]))?, Some(&tex), alpha, shiny)?
     } else {
-        let dd = reg.call_method1("device", (&id_,))?;
+        let dd = crate::game::registry::dev_dict(&reg, &id_)?;
         let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
         let tex = texture_array(py, &dd.call_method1("get", ("texture",))?)?;
         let img = icons_sphere(py, size, &dd.call_method1("get", ("color", vec![0.6, 0.6, 0.6]))?, Some(&tex), 1.0, 0.3)?;
@@ -455,7 +455,7 @@ pub fn icons_item_texture<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>, siz
 #[pyfunction]
 pub fn icons_item_name<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>) -> R<B<'py>> {
     let (kind, id_) = (item.get_item(0)?, item.get_item(1)?);
-    let d = if kind.eq("material")? { reg.call_method1("material", (&id_,))? } else { reg.call_method1("device", (&id_,))? };
+    let d = if kind.eq("material")? { crate::game::registry::mat_dict(&reg, &id_)? } else { crate::game::registry::dev_dict(&reg, &id_)? };
     let d = if d.is_truthy()? { d } else { PyDict::new_bound(py).into_any() };
     d.call_method1("get", ("name", id_))
 }

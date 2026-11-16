@@ -1,13 +1,15 @@
 //! ワールド：プレイヤー・出てくる場所・保存・メッセージ
 
+use crate::game::player::{ply, Player};
 use super::*;
+use crate::game::construct::{con, Construct};
 
 #[pymethods]
 impl World {
     /// プレイヤーの見た目の定義。無ければ（MOD を外したなど）宇宙飛行士
     pub(crate) fn player_def<'py>(slf: &Bound<'py, Self>, def_id: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
-        let reg = Self::g(slf, "registry")?;
+        let reg = Self::g_registry(slf)?;
         let id: Bound<'py, PyAny> = if def_id.is_truthy()? { def_id.clone() } else { PyString::new_bound(py, "default").into_any() };
         let d = reg.call_method1("get", ("players", &id))?;
         if d.is_none() {
@@ -27,8 +29,8 @@ impl World {
     }
     /// このワールドにいるプレイヤー全員（自分＋参加者）
     pub(crate) fn all_players<'py>(slf: &Bound<'py, Self>) -> R<Vec<Bound<'py, PyAny>>> {
-        let mut out = vec![Self::g(slf, "local_player")?];
-        for p in Self::g(slf, "remote")?.call_method0("values")?.iter()? {
+        let mut out = vec![Self::g_local_player(slf)?];
+        for p in Self::g_remote(slf)?.call_method0("values")?.iter()? {
             out.push(p?);
         }
         Ok(out)
@@ -49,11 +51,11 @@ impl World {
     /// 構築物 c の操縦席に座っている人が押しているキー
     pub(crate) fn keys_for<'py>(slf: &Bound<'py, Self>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PySet>> {
         let out = PySet::empty_bound(slf.py())?;
-        let lp = Self::g(slf, "local_player")?;
-        let cid = c.getattr("id")?;
+        let lp = Self::g_local_player(slf)?;
+        let cid = Construct::g_id(con(&c)?)?;
         for p in Self::all_players(slf)? {
             if Self::is_seated_on(&p, &cid)? {
-                let k = if p.is(&lp) { Self::g(slf, "input_keys")? } else { p.getattr("input_keys")? };
+                let k = if p.is(&lp) { Self::g_input_keys(slf)? } else { p.getattr("input_keys")? };
                 for x in k.iter()? {
                     out.add(x?)?;
                 }
@@ -67,7 +69,7 @@ impl World {
         let py = slf.py();
         let p = match player {
             Some(p) if p.is_truthy()? => p.clone(),
-            _ => Self::g(slf, "player")?,
+            _ => Self::g_player(slf)?,
         };
         let mut pos: Option<Bound<'_, PyAny>> = None;
         for a in Self::addons_v(slf)? {
@@ -78,8 +80,8 @@ impl World {
             }
         }
         let pos = match pos { Some(p) => p, None => Self::_default_spawn(slf)? };
-        p.setattr("seated", py.None())?;
-        p.setattr("jetpack", false)?;
+        Player::s_seated(ply(&p)?, py.None())?;
+        Player::s_jetpack(ply(&p)?, false)?;
         p.setattr("pos", a1(py, v3(&pos)?))?;
         p.setattr("vel", a1(py, [0.0; 3]))?;
         let pl = Self::nearest_planet(slf, &p.getattr("pos")?)?;
@@ -97,7 +99,7 @@ impl World {
     }
     pub(crate) fn _default_spawn<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
-        let pls = Self::g(slf, "planets")?;
+        let pls = Self::g_planets(slf)?;
         if pls.len()? == 0 {
             return Ok(a1(py, [0.0; 3]));
         }
@@ -117,7 +119,7 @@ impl World {
             a.call_method1("on_save", (slf,))?;
         }
         let pls = PyList::empty_bound(py);
-        for pl in Self::g(slf, "planets")?.iter()? {
+        for pl in Self::g_planets(slf)?.iter()? {
             let pl = pl?;
             let d = PyDict::new_bound(py);
             d.update(pl.call_method0("to_dict")?.downcast::<PyDict>()?.as_mapping())?;
@@ -137,19 +139,19 @@ impl World {
             cl.append(c.call_method0("to_dict")?)?;
         }
         for c in Self::cons_v(slf)? {
-            sp.set_item(c.getattr("id")?, c.call_method0("spawn_dict")?)?;
+            sp.set_item(Construct::g_id(con(&c)?)?, c.call_method0("spawn_dict")?)?;
         }
         out.set_item("constructs.json", cl)?;
         out.set_item("spawn.json", sp)?;
-        out.set_item("player.json", Self::g(slf, "local_player")?.call_method0("to_dict")?)?;
+        out.set_item("player.json", Self::g_local_player(slf)?.call_method0("to_dict")?)?;
         let md = PyDict::new_bound(py);
-        md.set_item("enabled", PyList::new_bound(py, Self::g(slf, "mods")?.iter()?.collect::<R<Vec<_>>>()?))?;
+        md.set_item("enabled", PyList::new_bound(py, Self::g_mods(slf)?.iter()?.collect::<R<Vec<_>>>()?))?;
         out.set_item("mods.json", md)?;
         Ok(out)
     }
     pub(crate) fn save(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let net = Self::g(slf, "net")?;
+        let net = Self::g_net(slf)?;
         if !net.is_none() && !net.call_method0("can_save")?.is_truthy()? {
             return Self::message(slf, "保存はホストが行います（ワールドはホストの PC にあります）");
         }
@@ -157,7 +159,7 @@ impl World {
         if !net.is_none() {
             snap.update(net.call_method0("save_extra")?.downcast::<PyDict>()?.as_mapping())?;      // 参加した人の状態（players.json）
         }
-        let dir = Self::g(slf, "dir")?;
+        let dir = Self::g_dir(slf)?;
         for (f, d) in snap.iter() {
             world_write_json(&dir.call_method1("__truediv__", (f,))?, &d)?;
         }
@@ -168,8 +170,8 @@ impl World {
     // ------------------------------------------------------------------ 共通
     pub(crate) fn message(slf: &Bound<'_, Self>, text: &str) -> R<()> {
         let py = slf.py();
-        let sink = Self::g(slf, "_msg_sink")?;
-        let to = if sink.is_none() { Self::g(slf, "msgs")? } else { sink };
+        let sink = Self::g_msg_sink(slf)?;
+        let to = if sink.is_none() { Self::g_msgs(slf)? } else { sink };
         let t: f64 = imp(py, "time")?.call_method0("time")?.extract()?;
         to.call_method1("append", ((t, text),))?;
         Ok(())

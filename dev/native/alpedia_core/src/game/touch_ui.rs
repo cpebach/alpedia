@@ -8,6 +8,9 @@
 //! 指（タッチ）は画面（Rust）が届ける指の出来事を、指が無ければマウスの左ボタン（1本の指）を使う。
 //! キーボード・マウスで遊ぶときは、Alt を押している間カーソルが出るので、ボタンをクリックできる。
 
+use crate::game::world::{wld, World};
+use crate::game::player::{ply, Player};
+use crate::game::construct::{con, Construct};
 use pyo3::exceptions::{PyException, PyOSError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
@@ -370,7 +373,47 @@ fn tap(py: Python<'_>, kind: u8, g: &B<'_>, k: &str) -> R<PyObject> {
 
 // ---------------------------------------------------------------- TouchHUD
 #[pyclass(module = "main.client.touch_ui", subclass, dict)]
-pub struct TouchHUD {}
+#[allow(non_snake_case)]
+pub struct TouchHUD {
+    /// U（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_U: Option<PyObject>,
+    /// _keys_cache（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_keys_cache: Option<PyObject>,
+    /// _t_scan（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_t_scan: Option<PyObject>,
+    /// act（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_act: Option<PyObject>,
+    /// game（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_game: Option<PyObject>,
+    /// look（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_look: Option<PyObject>,
+    /// own（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_own: Option<PyObject>,
+    /// pills（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_pills: Option<PyObject>,
+    /// ptr（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_ptr: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// seat_btns（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_seat_btns: Option<PyObject>,
+    /// stick（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_stick: Option<PyObject>,
+    /// stick_bg（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_stick_bg: Option<PyObject>,
+    /// stick_home（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_stick_home: Option<PyObject>,
+    /// stick_knob（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_stick_knob: Option<PyObject>,
+    /// targets（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_targets: Option<PyObject>,
+    /// top（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_top: Option<PyObject>,
+    /// visible（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_visible: Option<PyObject>,
+    /// vkeys（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_vkeys: Option<PyObject>,
+}
 
 fn win<'py>(s: &B<'py>) -> R<B<'py>> {
     s.getattr("U")?.get_item("window")
@@ -384,17 +427,17 @@ impl TouchHUD {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        TouchHUD {}
+        TouchHUD { a_U: None, a_keys_cache: None, a_t_scan: None, a_act: None, a_game: None, a_look: None, a_own: None, a_pills: None, a_ptr: None, a_root: None, a_seat_btns: None, a_stick: None, a_stick_bg: None, a_stick_home: None, a_stick_knob: None, a_targets: None, a_top: None, a_visible: None, a_vkeys: None }
     }
     fn __init__(slf: &Bound<'_, Self>, game: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        s.setattr("game", game)?;
+        Self::sa_game(slf, game)?;
         let u = game.getattr("U")?;
-        s.setattr("U", &u)?;
+        Self::sa_U(slf, &u)?;
         let (entity, color) = (u.get_item("Entity")?, u.get_item("color")?);
-        s.setattr("root", entity.call((), Some(&kw(py, vec![("parent", game.getattr("ui_root")?.unbind())])?))?)?;
-        s.setattr("ptr", Py::new(py, TPointers::new(py, game.clone().unbind()))?)?;
+        Self::sa_root(slf, entity.call((), Some(&kw(py, vec![("parent", game.getattr("ui_root")?.unbind())])?))?)?;
+        Self::sa_ptr(slf, Py::new(py, TPointers::new(py, game.clone().unbind()))?)?;
         let g = game;
         let bt = py.get_type_bound::<Btn>();
         let b = |bid: &str, icon: &str, label: &str, r: f64, kind: &str, key: Option<&str>, on_tap: Option<PyObject>| -> R<B<'_>> {
@@ -411,7 +454,7 @@ impl TouchHUD {
             ("export", "出力", tap(py, 0, g, "export")?), ("save", "保存", tap(py, 0, g, "save")?)] {
             top.append(b(id, id, label, SMALL, "tap", None, Some(ot))?)?;
         }
-        s.setattr("top", top)?;
+        Self::sa_top(slf, top)?;
         let act = PyDict::new_bound(py);
         act.set_item("jump", b("jump", "jump", "ジャンプ", BIG, "hold", Some("jump"), None)?)?;
         act.set_item("down", b("down", "down", "下へ", MID, "hold", Some("down"), None)?)?;
@@ -424,41 +467,41 @@ impl TouchHUD {
         // 照準の先の物を使う（E）・設定（P）。見ている物が使えるときだけ出る
         act.set_item("use", b("use", "interact", "使う", MID, "tap", None, Some(tap(py, 0, g, "interact")?))?)?;
         act.set_item("settings", b("settings", "settings", "設定", SMALL, "tap", None, Some(tap(py, 3, g, "")?))?)?;
-        s.setattr("act", act)?;
-        s.setattr("seat_btns", PyDict::new_bound(py))?; // 操縦席：機器に割り当てたキー → ボタン
+        Self::sa_act(slf, act)?;
+        Self::sa_seat_btns(slf, PyDict::new_bound(py))?; // 操縦席：機器に割り当てたキー → ボタン
         let pills = PyList::empty_bound(py);
         for _ in 0..4 {
             pills.append(Py::new(py, Pill::new(py, s)?)?)?;
         }
-        s.setattr("pills", pills)?;
-        s.setattr("targets", PyList::empty_bound(py))?;
-        s.setattr("_t_scan", 0.0)?;
+        Self::sa_pills(slf, pills)?;
+        Self::sa_targets(slf, PyList::empty_bound(py))?;
+        Self::sa_t_scan(slf, 0.0)?;
         // ジョイスティック
-        s.setattr("stick_bg", entity.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()), ("model", po(py, "circle")), ("scale", po(py, STICK_R * 2.0)),
+        Self::sa_stick_bg(slf, entity.call((), Some(&kw(py, vec![("parent", Self::ga_root(slf)?.unbind()), ("model", po(py, "circle")), ("scale", po(py, STICK_R * 2.0)),
             ("color", color.call_method1("rgba", (0, 0, 0, 0.28))?.unbind()), ("enabled", po(py, false))])?))?)?;
-        s.setattr("stick_knob", entity.call((), Some(&kw(py, vec![("parent", s.getattr("root")?.unbind()), ("model", po(py, "circle")), ("scale", po(py, STICK_R * 0.8)),
+        Self::sa_stick_knob(slf, entity.call((), Some(&kw(py, vec![("parent", Self::ga_root(slf)?.unbind()), ("model", po(py, "circle")), ("scale", po(py, STICK_R * 0.8)),
             ("color", color.call_method1("rgba", (1, 1, 1, 0.45))?.unbind()), ("enabled", po(py, false))])?))?)?;
-        s.setattr("stick_home", (0.0, 0.0))?;
+        Self::sa_stick_home(slf, (0.0, 0.0))?;
         let np = imp(py, "numpy")?;
-        s.setattr("stick", np.call_method1("zeros", (2,))?)?; // -1..1（右, 前）
-        s.setattr("look", np.call_method1("zeros", (2,))?)?; // なぞった量（画面の高さ = 1）
-        s.setattr("vkeys", PyDict::new_bound(py))?; // ボタンで押しているキー（押している間 1）
-        s.setattr("own", PyDict::new_bound(py))?; // 指 → 何に使っているか
-        s.setattr("visible", true)?;
+        Self::sa_stick(slf, np.call_method1("zeros", (2,))?)?; // -1..1（右, 前）
+        Self::sa_look(slf, np.call_method1("zeros", (2,))?)?; // なぞった量（画面の高さ = 1）
+        Self::sa_vkeys(slf, PyDict::new_bound(py))?; // ボタンで押しているキー（押している間 1）
+        Self::sa_own(slf, PyDict::new_bound(py))?; // 指 → 何に使っているか
+        Self::sa_visible(slf, true)?;
         Ok(())
     }
 
     // ------------------------------------------------------------------
     #[getter]
     fn touch_mode(slf: &Bound<'_, Self>) -> R<bool> {
-        slf.as_any().getattr("game")?.getattr("cfg")?.get_item("controls")?.call_method1("get", ("touch", false))?.is_truthy()
+        Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?.call_method1("get", ("touch", false))?.is_truthy()
     }
     fn key_hint(slf: &Bound<'_, Self>, action: &B<'_>) -> R<PyObject> {
         let py = slf.py();
         if Self::touch_mode(slf)? {
             return Ok(po(py, ""));
         }
-        let k = slf.as_any().getattr("game")?.getattr("cfg")?.get_item("controls")?.call_method1("get", (action, ""))?;
+        let k = Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?.call_method1("get", (action, ""))?;
         Ok(key_name(py, &k)?.unbind())
     }
     fn over_ui(slf: &Bound<'_, Self>, x: f64, y: f64) -> R<bool> {
@@ -468,7 +511,7 @@ impl TouchHUD {
                 return Ok(true);
             }
         }
-        for p in slf.as_any().getattr("pills")?.iter()? {
+        for p in Self::ga_pills(slf)?.iter()? {
             if p?.downcast::<Pill>()?.borrow().hit(py, x, y)?.is_some() {
                 return Ok(true);
             }
@@ -478,7 +521,7 @@ impl TouchHUD {
     fn mouse_over_ui(slf: &Bound<'_, Self>) -> R<bool> {
         let py = slf.py();
         let r = (|| -> R<bool> {
-            let m = slf.as_any().getattr("ptr")?.call_method0("mouse")?;
+            let m = Self::ga_ptr(slf)?.call_method0("mouse")?;
             Self::over_ui(slf, f64of(&m.get_item(0)?)?, f64of(&m.get_item(1)?)?)
         })();
         match r {
@@ -488,15 +531,14 @@ impl TouchHUD {
         }
     }
     fn _all_btns<'py>(slf: &Bound<'py, Self>) -> R<Vec<Bound<'py, Btn>>> {
-        let s = slf.as_any();
         let mut out = vec![];
-        for b in s.getattr("top")?.iter()? {
+        for b in Self::ga_top(slf)?.iter()? {
             out.push(b?.downcast_into::<Btn>()?);
         }
-        for b in s.getattr("act")?.call_method0("values")?.iter()? {
+        for b in Self::ga_act(slf)?.call_method0("values")?.iter()? {
             out.push(b?.downcast_into::<Btn>()?);
         }
-        for b in s.getattr("seat_btns")?.call_method0("values")?.iter()? {
+        for b in Self::ga_seat_btns(slf)?.call_method0("values")?.iter()? {
             out.push(b?.downcast_into::<Btn>()?);
         }
         Ok(out)
@@ -510,12 +552,12 @@ impl TouchHUD {
     fn layout(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let g = s.getattr("game")?;
+        let g = Self::ga_game(slf)?;
         let w = g.getattr("world")?;
         let wn = win(s)?;
         let (right, top) = (wx(&wn, "right", "x")?, wx(&wn, "top", "y")?);
         let player = w.getattr("player")?;
-        let seated = !player.getattr("seated")?.is_none();
+        let seated = !Player::g_seated(ply(&player)?)?.is_none();
         let city = w.call_method1("addon", ("city",))?;
         let has_city = !city.is_none() && city.getattr("enabled").map(|e| e.is_truthy()).unwrap_or(Ok(false))?;
         let net = w.getattr("net")?;
@@ -542,7 +584,7 @@ impl TouchHUD {
         }
         let hs = |a: &str| -> R<String> { Ok(Self::key_hint(slf, &po(py, a).into_bound(py))?.bind(py).str()?.to_string()) };
         let mut x = right - 0.045;
-        for b in s.getattr("top")?.iter()? {
+        for b in Self::ga_top(slf)?.iter()? {
             let b = b?.downcast_into::<Btn>()?;
             let id: String = b.borrow().id.bind(py).extract()?;
             if !show(&id) {
@@ -557,9 +599,9 @@ impl TouchHUD {
         }
         // 右下の操作
         let (bx, by) = (right - 0.1, -0.36);
-        let a = s.getattr("act")?;
-        let jet = player.getattr("jetpack")?.is_truthy()?;
-        let flying = jet || f64of(&player.getattr("in_water")?)? > 0.3;
+        let a = Self::ga_act(slf)?;
+        let jet = Player::g_jetpack(ply(&player)?)?.is_truthy()?;
+        let flying = jet || f64of(&Player::g_in_water(ply(&player)?)?)? > 0.3;
         let h = g.getattr("hit")?;
         let aim_use = touch && h.is_truthy()? && g.call_method1("_usable", (&h,))?.is_truthy()?; // キーボードでは E・P があるので出さない
         let aim_set = touch && h.is_truthy()? && h.call_method1("get", ("kind",))?.eq("voxel")?
@@ -600,7 +642,7 @@ impl TouchHUD {
         }
         let jb = a.get_item("jetpack")?.downcast_into::<Btn>()?;
         if jb.borrow().visible {
-            let on = if player.getattr("jetpack")?.is_truthy()? { "ON" } else { "OFF" };
+            let on = if Player::g_jetpack(ply(&player)?)?.is_truthy()? { "ON" } else { "OFF" };
             let hk = hs("jetpack")?;
             jb.borrow().text.bind(py).setattr("text", format!("ジェット {}", on) + &if hk.is_empty() { String::new() } else { format!(" {}", hk) })?;
         }
@@ -624,16 +666,16 @@ impl TouchHUD {
             }
         }
         if seated {
-            let w = s.getattr("game")?.getattr("world")?;
-            let c = w.getattr("constructs")?.call_method1("get", (w.getattr("player")?.getattr("seated")?.get_item(0)?,))?;
+            let w = Self::ga_game(slf)?.getattr("world")?;
+            let c = World::g_constructs(wld(&w)?)?.call_method1("get", (w.getattr("player")?.getattr("seated")?.get_item(0)?,))?;
             if !c.is_none() {
                 let reg = c.getattr("reg")?;
-                for d in c.getattr("devs")?.iter()? {
+                for d in Construct::g_devs(con(&c)?)?.iter()? {
                     let d = d?;
                     if !d.is_truthy()? {
                         continue;
                     }
-                    let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+                    let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
                     let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
                     let pr = dd.call_method1("get", ("params",))?;
                     let pr = if pr.is_truthy()? { pr } else { PyDict::new_bound(py).into_any() };
@@ -657,7 +699,7 @@ impl TouchHUD {
                 add(&mut want, k, None);
             }
         }
-        let sb = s.getattr("seat_btns")?.downcast_into::<PyDict>()?;
+        let sb = Self::ga_seat_btns(slf)?.downcast_into::<PyDict>()?;
         let old: Vec<String> = sb.keys().iter().map(|k| k.extract()).collect::<R<_>>()?;
         for k in old {
             if !want.iter().any(|(kk, _)| *kk == k) {
@@ -705,24 +747,23 @@ impl TouchHUD {
     /// 構築物のコンピューターのプログラムが読んでいるキー（ブロックの「キー □」・Python の "x" in api.input など）。
     fn _program_keys(slf: &Bound<'_, Self>, c: &B<'_>) -> R<Vec<String>> {
         let py = slf.py();
-        let s = slf.as_any();
-        let w = s.getattr("game")?.getattr("world")?;
+        let w = Self::ga_game(slf)?.getattr("world")?;
         let mut out: Vec<String> = vec![];
-        let cache = match s.getattr("_keys_cache") {
+        let cache = match Self::ga_keys_cache(slf) {
             Ok(x) => x,
             Err(_) => {
                 let d = PyDict::new_bound(py).into_any();
-                s.setattr("_keys_cache", &d)?;
+                Self::sa_keys_cache(slf, &d)?;
                 d
             }
         };
         let reg = c.getattr("reg")?;
-        for d in c.getattr("devs")?.iter()? {
+        for d in Construct::g_devs(con(&c)?)?.iter()? {
             let d = d?;
             if !d.is_truthy()? {
                 continue;
             }
-            let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+            let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
             let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
             if !dd.call_method1("get", ("type",))?.eq("computer")? {
                 continue;
@@ -797,12 +838,11 @@ impl TouchHUD {
     // ------------------------------------------------------------------
     fn update(slf: &Bound<'_, Self>, _dt: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let g = s.getattr("game")?;
+        let g = Self::ga_game(slf)?;
         let active = g.getattr("editor")?.is_none() && !g.getattr("paused")?.is_truthy()?;
-        if !s.getattr("visible")?.eq(active)? {
-            s.setattr("visible", active)?;
-            s.getattr("root")?.setattr("enabled", active)?;
+        if !Self::ga_visible(slf)?.eq(active)? {
+            Self::sa_visible(slf, active)?;
+            Self::ga_root(slf)?.setattr("enabled", active)?;
             if !active {
                 Self::_release_all(slf)?;
             }
@@ -812,9 +852,9 @@ impl TouchHUD {
         }
         Self::layout(slf)?;
         let now = mono(py)?;
-        if now - f64of(&s.getattr("_t_scan")?)? > 0.2 {
-            s.setattr("_t_scan", now)?;
-            s.setattr("targets", g.call_method0("nearby_targets")?)?;
+        if now - f64of(&Self::ga_t_scan(slf)?)? > 0.2 {
+            Self::sa_t_scan(slf, now)?;
+            Self::sa_targets(slf, g.call_method0("nearby_targets")?)?;
             Self::_layout_pills(slf)?;
         }
         Self::_pointers(slf)?;
@@ -826,10 +866,10 @@ impl TouchHUD {
         let x = wx(&win(s)?, "right", "x")? - 0.26;
         let key = Self::key_hint(slf, &po(py, "interact").into_bound(py))?.into_bound(py);
         let pkey = Self::key_hint(slf, &po(py, "edit_script").into_bound(py))?.into_bound(py);
-        let targets = s.getattr("targets")?;
+        let targets = Self::ga_targets(slf)?;
         let n = targets.len()?;
         let empty = po(py, "").into_bound(py);
-        for (k, p) in s.getattr("pills")?.iter()?.enumerate() {
+        for (k, p) in Self::ga_pills(slf)?.iter()?.enumerate() {
             let p = p?.downcast_into::<Pill>()?;
             if k < n {
                 let t = targets.get_item(k)?;
@@ -847,11 +887,10 @@ impl TouchHUD {
     }
     fn _pointers(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let g = s.getattr("game")?;
-        let pts = s.getattr("ptr")?.call_method0("current")?;
+        let g = Self::ga_game(slf)?;
+        let pts = Self::ga_ptr(slf)?.call_method0("current")?;
         let touch = Self::touch_mode(slf)?;
-        let own = s.getattr("own")?.downcast_into::<PyDict>()?;
+        let own = Self::ga_own(slf)?.downcast_into::<PyDict>()?;
         // 離した指
         let gone: Vec<B<'_>> = own.keys().iter().filter(|p| !pts.contains(p).unwrap_or(false)).collect();
         for pid in gone {
@@ -883,12 +922,12 @@ impl TouchHUD {
                     Self::_tap(slf, b.as_any())?;
                 }
             } else if kind == "stick" {
-                let home = s.getattr("stick_home")?;
+                let home = Self::ga_stick_home(slf)?;
                 let (hx, hy) = (f64of(&home.get_item(0)?)?, f64of(&home.get_item(1)?)?);
                 let np = imp(py, "numpy")?;
                 let v = np.call_method1("array", (vec![x - hx, y - hy],))?.call_method1("__truediv__", (STICK_R,))?;
                 let n = f64of(&np.getattr("linalg")?.call_method1("norm", (&v,))?)?;
-                s.setattr("stick", if n > 1.0 { v.call_method1("__truediv__", (n,))? } else { v })?;
+                Self::sa_stick(slf, if n > 1.0 { v.call_method1("__truediv__", (n,))? } else { v })?;
             } else if kind == "look" {
                 let l = o.get_item(1)?;
                 let (lx, ly) = (f64of(&l.get_item(0)?)?, f64of(&l.get_item(1)?)?);
@@ -898,7 +937,7 @@ impl TouchHUD {
                     o.set_item(4, true)?; // 動いた：なぞって視点を回す（長押しにはしない）
                 }
                 if o.get_item(4)?.is_truthy()? {
-                    s.getattr("look")?.call_method1("__iadd__", ((x - lx, y - ly),))?;
+                    Self::ga_look(slf)?.call_method1("__iadd__", ((x - lx, y - ly),))?;
                 } else if now - f64of(&o.get_item(3)?)? >= HOLD_TIME && now >= f64of(&o.get_item(5)?)? {
                     o.set_item(5, now + REPEAT)?; // 長押し：触っている所を壊す・掘る（くり返す）
                     o.set_item(6, true)?;
@@ -914,9 +953,9 @@ impl TouchHUD {
             }
         }
         if !any_stick {
-            s.getattr("stick")?.set_item(imp(py, "builtins")?.getattr("slice")?.call1((py.None(),))?, 0)?;
+            Self::ga_stick(slf)?.set_item(imp(py, "builtins")?.getattr("slice")?.call1((py.None(),))?, 0)?;
         }
-        g.setattr("vkeys", s.getattr("vkeys")?)?;
+        g.setattr("vkeys", Self::ga_vkeys(slf)?)?;
         Ok(())
     }
     fn _grab<'py>(slf: &Bound<'py, Self>, _pid: &B<'py>, x: f64, y: f64, touch: bool) -> R<B<'py>> {
@@ -928,9 +967,9 @@ impl TouchHUD {
                 b.borrow().show_pressed(py, true)?;
                 if b.borrow().kind == "hold" {
                     let bk = b.borrow().key.clone_ref(py).into_bound(py);
-                    let g = s.getattr("game")?;
+                    let g = Self::ga_game(slf)?;
                     let k = g.getattr("cfg")?.get_item("controls")?.call_method1("get", (&bk, &bk))?;
-                    s.getattr("vkeys")?.set_item(&k, 1)?;
+                    Self::ga_vkeys(slf)?.set_item(&k, 1)?;
                     if b.borrow().press_key {
                         g.call_method1("input", (&k,))?;
                     }
@@ -939,7 +978,7 @@ impl TouchHUD {
                 return Ok(PyList::new_bound(py, [po(py, "btn"), b.into_any().unbind(), po(py, now), po(py, now + HOLD_TIME), po(py, false)]).into_any());
             }
         }
-        for p in s.getattr("pills")?.iter()? {
+        for p in Self::ga_pills(slf)?.iter()? {
             let p = p?.downcast_into::<Pill>()?;
             let h = p.borrow().hit(py, x, y)?;
             if let Some(h) = h {
@@ -952,7 +991,7 @@ impl TouchHUD {
             let (l, b) = (wx(&w, "left", "x")?, wx(&w, "bottom", "y")?);
             let hx = pmin(pmax(x, l + STICK_R + 0.03), l + 0.62 - STICK_R);
             let hy = pmin(pmax(y, b + STICK_R + 0.03), 0.05 - STICK_R);
-            s.setattr("stick_home", (hx, hy))?;
+            Self::sa_stick_home(slf, (hx, hy))?;
             return Ok(PyList::new_bound(py, [po(py, "stick")]).into_any());
         }
         if touch {
@@ -965,17 +1004,16 @@ impl TouchHUD {
     fn _tap(slf: &Bound<'_, Self>, b: &B<'_>) -> R<()> {
         let py = slf.py();
         let r = b.getattr("on_tap")?.call0().map(|_| ());
-        guard(py, &slf.as_any().getattr("game")?, r, "ボタン %s の操作でエラー", vec![b.getattr("id")?.unbind()])
+        guard(py, &Self::ga_game(slf)?, r, "ボタン %s の操作でエラー", vec![b.getattr("id")?.unbind()])
     }
     fn _world_touch(slf: &Bound<'_, Self>, kind: &str, x: f64, y: f64) -> R<()> {
         let py = slf.py();
-        let g = slf.as_any().getattr("game")?;
+        let g = Self::ga_game(slf)?;
         let r = g.call_method1("touch_action", (kind, x, y)).map(|_| ());
         guard(py, &g, r, "タッチの操作でエラー", vec![])
     }
     fn _release(slf: &Bound<'_, Self>, _pid: &B<'_>, o: &B<'_>, _pts: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let kind: String = o.get_item(0)?.extract()?;
         if kind == "btn" {
             let b = o.get_item(1)?.downcast_into::<Btn>()?;
@@ -983,9 +1021,9 @@ impl TouchHUD {
             b.borrow_mut().pressed = false;
             let bk = b.borrow().key.clone_ref(py).into_bound(py);
             if b.borrow().kind == "hold" {
-                let k = s.getattr("game")?.getattr("cfg")?.get_item("controls")?.call_method1("get", (&bk, &bk))?;
+                let k = Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?.call_method1("get", (&bk, &bk))?;
                 let mut other = false;
-                for x in s.getattr("own")?.call_method0("values")?.iter()? {
+                for x in Self::ga_own(slf)?.call_method0("values")?.iter()? {
                     let x = x?;
                     if x.get_item(0)?.eq("btn")? {
                         let xb = x.get_item(1)?;
@@ -996,7 +1034,7 @@ impl TouchHUD {
                     }
                 }
                 if !other {
-                    s.getattr("vkeys")?.call_method1("pop", (k, py.None()))?;
+                    Self::ga_vkeys(slf)?.call_method1("pop", (k, py.None()))?;
                 }
             } else if !b.borrow().on_tap.is_none(py) && !(b.borrow().kind == "repeat" && o.get_item(4)?.is_truthy()?) {
                 Self::_tap(slf, b.as_any())?; // 長押しでくり返したあとは、離したときにはもうしない
@@ -1007,7 +1045,7 @@ impl TouchHUD {
                 Self::_world_touch(slf, "tap", f64of(&p.get_item(0)?)?, f64of(&p.get_item(1)?)?)?; // タップ：触った物を使う（使えなければ置く）
             }
         } else if kind == "pill" && !o.get_item(2)?.is_none() {
-            let g = s.getattr("game")?;
+            let g = Self::ga_game(slf)?;
             let k = PyDict::new_bound(py);
             k.set_item("settings", o.get_item(3)?)?;
             let r = g.call_method("do_target", (o.get_item(2)?,), Some(&k)).map(|_| ());
@@ -1017,8 +1055,7 @@ impl TouchHUD {
     }
     fn _release_all(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let own = s.getattr("own")?;
+        let own = Self::ga_own(slf)?;
         for o in own.call_method0("values")?.iter()? {
             let o = o?;
             if o.get_item(0)?.eq("btn")? {
@@ -1028,16 +1065,16 @@ impl TouchHUD {
             }
         }
         own.call_method0("clear")?;
-        s.getattr("vkeys")?.call_method0("clear")?;
+        Self::ga_vkeys(slf)?.call_method0("clear")?;
         let all = imp(py, "builtins")?.getattr("slice")?.call1((py.None(),))?;
-        s.getattr("stick")?.set_item(&all, 0)?;
-        s.getattr("look")?.set_item(&all, 0)?;
-        s.getattr("game")?.setattr("vkeys", s.getattr("vkeys")?)?;
+        Self::ga_stick(slf)?.set_item(&all, 0)?;
+        Self::ga_look(slf)?.set_item(&all, 0)?;
+        Self::ga_game(slf)?.setattr("vkeys", Self::ga_vkeys(slf)?)?;
         Ok(())
     }
     fn take_look<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
-        let l = slf.as_any().getattr("look")?;
+        let l = Self::ga_look(slf)?;
         let d = l.call_method0("copy")?;
         l.set_item(imp(py, "builtins")?.getattr("slice")?.call1((py.None(),))?, 0)?;
         Ok(d)
@@ -1045,32 +1082,32 @@ impl TouchHUD {
     fn _draw_stick(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
         let on = Self::touch_mode(slf)?;
-        s.getattr("stick_bg")?.setattr("enabled", on)?;
-        s.getattr("stick_knob")?.setattr("enabled", on)?;
+        Self::ga_stick_bg(slf)?.setattr("enabled", on)?;
+        Self::ga_stick_knob(slf)?.setattr("enabled", on)?;
         if !on {
             return Ok(());
         }
         let w = win(s)?;
         let mut any_stick = false;
-        for o in s.getattr("own")?.call_method0("values")?.iter()? {
+        for o in Self::ga_own(slf)?.call_method0("values")?.iter()? {
             if o?.get_item(0)?.eq("stick")? {
                 any_stick = true;
             }
         }
         if !any_stick {
-            s.setattr("stick_home", (wx(&w, "left", "x")? + 0.2, wx(&w, "bottom", "y")? + 0.2))?;
+            Self::sa_stick_home(slf, (wx(&w, "left", "x")? + 0.2, wx(&w, "bottom", "y")? + 0.2))?;
         }
-        let home = s.getattr("stick_home")?;
+        let home = Self::ga_stick_home(slf)?;
         let (hx, hy) = (f64of(&home.get_item(0)?)?, f64of(&home.get_item(1)?)?);
-        s.getattr("stick_bg")?.setattr("position", (hx, hy, 0.01))?;
-        let st = s.getattr("stick")?;
+        Self::ga_stick_bg(slf)?.setattr("position", (hx, hy, 0.01))?;
+        let st = Self::ga_stick(slf)?;
         let (s0, s1) = (f64of(&st.get_item(0)?)?, f64of(&st.get_item(1)?)?);
-        s.getattr("stick_knob")?.setattr("position", (hx + s0 * STICK_R * 0.7, hy + s1 * STICK_R * 0.7, 0))?;
+        Self::ga_stick_knob(slf)?.setattr("position", (hx + s0 * STICK_R * 0.7, hy + s1 * STICK_R * 0.7, 0))?;
         Ok(())
     }
     fn destroy(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        super::client_misc::ui_destroy(py, &slf.as_any().getattr("root")?, &PyTuple::empty_bound(py), None)
+        super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)
     }
 }
 
@@ -1092,3 +1129,41 @@ pub fn register(m: &Bound<'_, PyModule>) -> R<()> {
     m.add_function(wrap_pyfunction_bound!(key_name, m)?)?;
     Ok(())
 }
+
+// ---------------------------------------------------------------- TouchHUD の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! touchhud_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl TouchHUD { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl TouchHUD { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+touchhud_attr_fields!(
+    ga_U sa_U pga_U psa_U a_U "U", ga_keys_cache sa_keys_cache pga_keys_cache psa_keys_cache a_keys_cache "_keys_cache", ga_t_scan sa_t_scan pga_t_scan psa_t_scan a_t_scan "_t_scan", ga_act sa_act pga_act psa_act a_act "act", ga_game sa_game pga_game psa_game a_game "game", ga_look sa_look pga_look psa_look a_look "look", ga_own sa_own pga_own psa_own a_own "own", ga_pills sa_pills pga_pills psa_pills a_pills "pills", ga_ptr sa_ptr pga_ptr psa_ptr a_ptr "ptr", ga_root sa_root pga_root psa_root a_root "root", ga_seat_btns sa_seat_btns pga_seat_btns psa_seat_btns a_seat_btns "seat_btns", ga_stick sa_stick pga_stick psa_stick a_stick "stick", ga_stick_bg sa_stick_bg pga_stick_bg psa_stick_bg a_stick_bg "stick_bg", ga_stick_home sa_stick_home pga_stick_home psa_stick_home a_stick_home "stick_home", ga_stick_knob sa_stick_knob pga_stick_knob psa_stick_knob a_stick_knob "stick_knob", ga_targets sa_targets pga_targets psa_targets a_targets "targets", ga_top sa_top pga_top psa_top a_top "top", ga_visible sa_visible pga_visible psa_visible a_visible "visible", ga_vkeys sa_vkeys pga_vkeys psa_vkeys a_vkeys "vkeys"
+);

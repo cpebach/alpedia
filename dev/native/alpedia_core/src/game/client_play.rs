@@ -1,6 +1,9 @@
 //! 遊ぶ画面で共通に使う物（main/client/game.py）：フォントの候補探し・ほかの人の体（色の箱）・機器の状態の言葉。
 //! 手の操作（main/client/play.py）：狙っている物の説明・置く場所の枠・三人称のカメラ・近くの触れる物。
 
+use crate::game::world::{wld, World};
+use crate::game::player::{ply, Player};
+use crate::game::construct::{con, Construct};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
@@ -100,7 +103,7 @@ impl BoxBody {
     fn new(py: Python<'_>, game: &B<'_>, player: &B<'_>, model: Option<&B<'_>>) -> R<Self> {
         let _ = model;
         let gfx = imp(py, "main.client.gfx")?;
-        let col: Vec<f64> = get(&player.getattr("defn")?, "color", vec![1, 1, 1])?.iter()?.map(|x| f64of(&x?)).collect::<R<_>>()?;
+        let col: Vec<f64> = get(&Player::g_defn(ply(&player)?)?, "color", vec![1, 1, 1])?.iter()?.map(|x| f64of(&x?)).collect::<R<_>>()?;
         let mx = col.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let c: Vec<f64> = if mx > 1.0 { col.iter().map(|x| x / 255.0).collect() } else { col };
         let e = gfx.getattr("RsNode")?.call1((game.getattr("scene_root")?, "body"))?;
@@ -120,7 +123,7 @@ impl BoxBody {
         let up0 = v3(&p.getattr("up")?)?;
         let n = norm(up0);
         let up = [up0[0] / n, up0[1] / n, up0[2] / n];
-        let f0 = v3(&p.getattr("look_fwd")?)?;
+        let f0 = v3(&Player::g_look_fwd(ply(&p)?)?)?;
         let d = dot(f0, up);
         let f1 = [f0[0] - up[0] * d, f0[1] - up[1] * d, f0[2] - up[2] * d];
         let nf = norm(f1);
@@ -264,15 +267,15 @@ pub fn play_aim<'py>(py: Python<'py>, w: &B<'py>, h: &B<'py>, look_vectors: &B<'
         let (axis, sign) = (face.div_euclid(2), if face.rem_euclid(2) == 0 { 1.0 } else { -1.0 });
         let g = ctr.call_method1("__add__", (f.get_item(axis)?.call_method1("__mul__", (sign,))?.call_method1("__mul__", (&size,))?,))?;
         out.set_item("ghost", (g, &f, npm.call_method1("full", (3, sz * 0.98))?))?;
-        let d = c.getattr("devs")?.get_item(&i)?;
+        let d = Construct::g_devs(con(&c)?)?.get_item(&i)?;
         let reg = c.getattr("reg")?;
-        let m = reg.call_method1("material", (c.getattr("mats")?.get_item(&i)?,))?;
+        let m = crate::game::registry::mat_dict(&reg, &Construct::g_mats(con(&c)?)?.get_item(&i)?)?;
         let mut info = format!("{}  [{}]", c.getattr("name")?.str()?, m.get_item("name")?.str()?);
-        if c.getattr("anchor")?.is_truthy()? {
+        if Construct::g_anchor(con(&c)?)?.is_truthy()? {
             info += "  ［固定中：機器以外のブロックで E を押すと切り離し］";
         }
         if d.is_truthy()? {
-            let dd = or_dict(reg.call_method1("device", (d.get_item("def")?,))?)?;
+            let dd = or_dict(crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?)?;
             let t_ = get(&dd, "type", py.None())?;
             info += &format!("\n{}", d.get_item("name")?.str()?);
             if get(&dd, "directional", py.None())?.is_truthy()? {
@@ -281,7 +284,7 @@ pub fn play_aim<'py>(py: Python<'py>, w: &B<'py>, h: &B<'py>, look_vectors: &B<'
             }
             let nm = d.get_item("name")?;
             let mut same = 0;
-            for x in c.getattr("devs")?.iter()? {
+            for x in Construct::g_devs(con(&c)?)?.iter()? {
                 let x = x?;
                 if x.is_truthy()? && x.get_item("name")?.eq(&nm)? {
                     same += 1;
@@ -336,7 +339,7 @@ pub fn play_aim<'py>(py: Python<'py>, w: &B<'py>, h: &B<'py>, look_vectors: &B<'
         }
         out.set_item("text", info)?;
     } else if kind.eq("terrain")? || kind.eq("water")? {
-        let size = f64of(&get(&w.getattr("settings")?, "voxel_size", 0.5)?)?;
+        let size = f64of(&get(&World::g_settings(wld(&w)?)?, "voxel_size", 0.5)?)?;
         let g = h.get_item("point")?.call_method1("__add__", (h.get_item("normal")?.call_method1("__mul__", (size * 0.55,))?,))?;
         let (fwd, right) = (look_vectors.get_item(0)?, look_vectors.get_item(1)?);
         out.set_item("ghost", (g, npm.call_method1("stack", (vec![right, h.get_item("normal")?, fwd],))?, npm.call_method1("full", (3, size))?))?;
@@ -347,7 +350,7 @@ pub fn play_aim<'py>(py: Python<'py>, w: &B<'py>, h: &B<'py>, look_vectors: &B<'
         } else if creative {
             format!("{} の地面（左クリックで掘る）", pl.getattr("name")?.str()?)
         } else {
-            let res = w.getattr("registry")?.call_method1("res_name", (pl.call_method1("resource_at", (h.get_item("point")?,))?,))?;
+            let res = World::g_registry(wld(&w)?)?.call_method1("res_name", (pl.call_method1("resource_at", (h.get_item("point")?,))?,))?;
             format!("{} の地面：{}（左クリックで掘る）", pl.getattr("name")?.str()?, res.str()?)
         };
         out.set_item("text", text)?;
@@ -362,12 +365,12 @@ pub fn play_item_text(py: Python<'_>, w: &B<'_>, item: &B<'_>, sel: i64, dir_ind
         return Ok(format!("[{}] （空）", sel + 1));
     }
     let (kind, id_) = (item.get_item(0)?, item.get_item(1)?);
-    let reg = w.getattr("registry")?;
+    let reg = World::g_registry(wld(&w)?)?;
     if kind.eq("material")? {
-        let m = or_dict(reg.call_method1("material", (&id_,))?)?;
+        let m = or_dict(crate::game::registry::mat_dict(&reg, &id_)?)?;
         return Ok(format!("[{}] 素材: {}", sel + 1, get(&m, "name", &id_)?.str()?));
     }
-    let dd = or_dict(reg.call_method1("device", (&id_,))?)?;
+    let dd = or_dict(crate::game::registry::dev_dict(&reg, &id_)?)?;
     let extra = if get(&dd, "directional", py.None())?.is_truthy()? {
         format!("  向き {}", imp(py, "main.construct")?.getattr("DIR_NAMES")?.get_item(dir_index)?.str()?)
     } else {
@@ -387,7 +390,7 @@ pub fn play_camera_clip<'py>(py: Python<'py>, w: &B<'py>, eye: &B<'py>, offset: 
     let d = [off[0] / n, off[1] / n, off[2] / n];
     let e = v3(eye)?;
     let p = w.getattr("player")?;
-    let seated = p.getattr("seated")?;
+    let seated = Player::g_seated(ply(&p)?)?;
     let own = if seated.is_truthy()? { seated.get_item(0)? } else { none(py) };
     let full = || -> R<B<'py>> { eye.call_method1("__add__", (offset,)) };
     let (mut start, mut left) = (e, n);
@@ -421,11 +424,11 @@ pub fn play_camera_clip<'py>(py: Python<'py>, w: &B<'py>, eye: &B<'py>, offset: 
 #[pyfunction]
 pub fn play_seat_follow<'py>(py: Python<'py>, w: &B<'py>, addons: &B<'py>) -> R<B<'py>> {
     let p = w.getattr("player")?;
-    let seated = p.getattr("seated")?;
+    let seated = Player::g_seated(ply(&p)?)?;
     if !seated.is_truthy()? {
         return Ok(none(py));
     }
-    let c = w.getattr("constructs")?.call_method1("get", (seated.get_item(0)?,))?;
+    let c = World::g_constructs(wld(&w)?)?.call_method1("get", (seated.get_item(0)?,))?;
     if c.is_none() {
         return Ok(none(py));
     }
@@ -448,7 +451,7 @@ pub fn play_seat_follow<'py>(py: Python<'py>, w: &B<'py>, addons: &B<'py>) -> R<
 #[pyo3(signature = (w, addons, radius=2.6))]
 pub fn play_nearby_targets<'py>(py: Python<'py>, w: &B<'py>, addons: &B<'py>, radius: f64) -> R<Bound<'py, PyList>> {
     let p = w.getattr("player")?;
-    if p.getattr("seated")?.is_truthy()? {
+    if Player::g_seated(ply(&p)?)?.is_truthy()? {
         return Ok(PyList::empty_bound(py));
     }
     let eye_o = p.call_method0("eye")?;
@@ -479,16 +482,16 @@ pub fn play_nearby_targets<'py>(py: Python<'py>, w: &B<'py>, addons: &B<'py>, ra
     };
     for c in w.call_method1("constructs_near", (&eye_o, radius))?.iter()? {
         let c = c?;
-        if !c.getattr("n_vox")?.is_truthy()? || !c.getattr("has_devices")?.is_truthy()? {
+        if !Construct::n(con(&c)?)?.into_py(py).into_bound(py).is_truthy()? || !c.getattr("has_devices")?.is_truthy()? {
             continue;
         }
         let reg = c.getattr("reg")?;
-        for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+        for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
             let d = d?;
             if !d.is_truthy()? {
                 continue;
             }
-            let dd = or_dict(reg.call_method1("device", (d.get_item("def")?,))?)?;
+            let dd = or_dict(crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?)?;
             let t_ = get(&dd, "type", py.None())?;
             if quiet.contains(&t_)? {
                 continue;

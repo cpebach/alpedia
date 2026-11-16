@@ -3,9 +3,11 @@
 //! 値（位置・速度・所持品など）は Python から読み書きされるので、Python の値のまま持つ（属性）。
 //! 毎ティックの動き（重力・水・ジェットパック・歩く・地面や建物・ブロックとの当たり）は Rust で計算する。
 
+use crate::game::world::{wld, World};
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PySet, PyTuple};
+use super::construct::{con, fa, to_fa, Construct, FA};
 
 type R<T> = PyResult<T>;
 type V3 = [f64; 3];
@@ -42,74 +44,83 @@ fn float_of(v: &Bound<'_, PyAny>) -> R<f64> {
     crate::game::imp(v.py(), "builtins")?.getattr("float")?.call1((v,))?.extract()
 }
 
+/// Python の値として持っているプレイヤーを、型つきで見る（違う物ならエラー）
+#[inline]
+pub fn ply<'a, 'py>(p: &'a Bound<'py, PyAny>) -> R<&'a Bound<'py, Player>> {
+    Ok(p.downcast::<Player>()?)
+}
+
 #[pyclass(module = "alpedia_core", subclass, dict)]
 pub struct Player {
     #[pyo3(get, set)]
-    defn: PyObject,
+    pub defn: PyObject,
     /// 足元の球の中心
     #[pyo3(get, set)]
-    pos: PyObject,
+    pub pos: FA,
     #[pyo3(get, set)]
-    vel: PyObject,
+    pub vel: FA,
     #[pyo3(get, set)]
-    up: PyObject,
+    pub up: FA,
     #[pyo3(get, set)]
-    on_ground: PyObject,
+    pub on_ground: bool,
     #[pyo3(get, set)]
-    ground_vel: PyObject,
+    pub ground_vel: FA,
     /// (construct_id, cell)
     #[pyo3(get, set)]
-    seated: PyObject,
+    pub seated: PyObject,
     #[pyo3(get, set)]
-    inventory: PyObject,
+    pub inventory: PyObject,
     /// アイテムバー（9枠）: [["material"|"device", id] or None]
     #[pyo3(get, set)]
-    hotbar: PyObject,
+    pub hotbar: PyObject,
     #[pyo3(get, set)]
-    jetpack: PyObject,
+    pub jetpack: bool,
     #[pyo3(get, set)]
-    mass: PyObject,
+    pub mass: f64,
     #[pyo3(get, set)]
-    in_water: PyObject,
+    pub in_water: f64,
     /// サバイバルの最初の資材を受け取ったか
     #[pyo3(get, set)]
-    starter_given: PyObject,
+    pub starter_given: bool,
     /// 最初のクレジットを受け取ったか
     #[pyo3(get, set)]
-    credits_given: PyObject,
+    pub credits_given: bool,
     #[pyo3(get, set)]
-    out_of_fuel: PyObject,
+    pub out_of_fuel: bool,
     // マルチプレイ・描画用
     #[pyo3(get, set)]
-    name: PyObject,
+    pub name: PyObject,
     #[pyo3(get, set)]
-    pid: PyObject,
+    pub pid: PyObject,
     /// ホスト：この人に送るメッセージ
     #[pyo3(get, set)]
-    msgs: PyObject,
+    pub msgs: PyObject,
     /// 参加者が操縦席で押しているキー
     #[pyo3(get, set)]
-    input_keys: PyObject,
+    pub input_keys: PyObject,
     /// ジェットパックで飛んでいる
     #[pyo3(get, set)]
-    flying: PyObject,
+    pub flying: bool,
     #[pyo3(get, set)]
-    thrust: PyObject,
+    pub thrust: FA,
     #[pyo3(get, set)]
-    look_fwd: PyObject,
+    pub look_fwd: FA,
     #[pyo3(get, set)]
-    pitch: PyObject,
+    pub pitch: f64,
     /// 乗っている構築物 (ID, セル)（体重を伝える）
     #[pyo3(get, set)]
-    stand: PyObject,
+    pub stand: PyObject,
     /// MOD のモーションの名前（カメラモードで選ぶ）
     #[pyo3(get, set)]
-    emote: PyObject,
+    pub emote: PyObject,
     #[pyo3(get, set)]
-    emote_t0: PyObject,
+    pub emote_t0: f64,
     /// 体の向き（カメラモードで決める。None ならふだんどおり）
     #[pyo3(get, set)]
-    face_dir: PyObject,
+    pub face_dir: Option<FA>,
+    /// MOD の地面（街の床など）に立っている
+    #[pyo3(get, set, name = "_ext_ground")]
+    pub ext_ground: bool,
 }
 
 impl Player {
@@ -125,35 +136,36 @@ impl Player {
 impl Player {
     #[new]
     fn new(py: Python<'_>, pdef: PyObject, pos: &Bound<'_, PyAny>) -> R<Self> {
-        let z = || arr(py, [0.0; 3]);
+        let z = || fa(py, vec![0.0; 3], &[3]);
         Ok(Player {
             defn: pdef,
-            pos: arr(py, v3(pos)?),
-            vel: z(),
-            up: arr(py, [0.0, 1.0, 0.0]),
-            on_ground: false.into_py(py),
-            ground_vel: z(),
+            pos: fa(py, v3(pos)?.to_vec(), &[3])?,
+            vel: z()?,
+            up: fa(py, vec![0.0, 1.0, 0.0], &[3])?,
+            on_ground: false,
+            ground_vel: z()?,
             seated: py.None(),
             inventory: PyDict::new_bound(py).into_any().unbind(),
             hotbar: py.None(),
-            jetpack: false.into_py(py),
-            mass: 80.0.into_py(py),
-            in_water: 0.0.into_py(py),
-            starter_given: false.into_py(py),
-            credits_given: false.into_py(py),
-            out_of_fuel: false.into_py(py),
+            jetpack: false,
+            mass: 80.0,
+            in_water: 0.0,
+            starter_given: false,
+            credits_given: false,
+            out_of_fuel: false,
             name: "".into_py(py),
             pid: 0.into_py(py),
             msgs: PyList::empty_bound(py).into_any().unbind(),
             input_keys: PySet::empty_bound(py)?.into_any().unbind(),
-            flying: false.into_py(py),
-            thrust: z(),
-            look_fwd: arr(py, [0.0, 0.0, 1.0]),
-            pitch: 0.0.into_py(py),
+            flying: false,
+            thrust: z()?,
+            look_fwd: fa(py, vec![0.0, 0.0, 1.0], &[3])?,
+            pitch: 0.0,
             stand: py.None(),
             emote: py.None(),
-            emote_t0: 0.0.into_py(py),
-            face_dir: py.None(),
+            emote_t0: 0.0,
+            face_dir: None,
+            ext_ground: false,
         })
     }
 
@@ -185,10 +197,10 @@ impl Player {
         } else {
             d.set_item("seated", py.None())?;
         }
-        d.set_item("jetpack", self.jetpack.bind(py))?;
+        d.set_item("jetpack", self.jetpack)?;
         d.set_item("def", self.defn.bind(py).get_item("id")?)?;
-        d.set_item("starter_given", self.starter_given.bind(py))?;
-        d.set_item("credits_given", self.credits_given.bind(py))?;
+        d.set_item("starter_given", self.starter_given)?;
+        d.set_item("credits_given", self.credits_given)?;
         let hb = self.hotbar.bind(py);
         if hb.is_truthy()? {
             let l = PyList::empty_bound(py);
@@ -211,8 +223,8 @@ impl Player {
         let np = crate::game::imp(py, "numpy")?;
         let kw = PyDict::new_bound(py);
         kw.set_item("dtype", np.getattr("float64")?)?;
-        self.pos = np.getattr("asarray")?.call((d.call_method1("get", ("position", self.pos.bind(py)))?,), Some(&kw))?.unbind();
-        self.vel = np.getattr("asarray")?.call((d.call_method1("get", ("velocity", vec![0, 0, 0]))?,), Some(&kw))?.unbind();
+        self.pos = to_fa(&np.getattr("asarray")?.call((d.call_method1("get", ("position", self.pos.bind(py)))?,), Some(&kw))?)?;
+        self.vel = to_fa(&np.getattr("asarray")?.call((d.call_method1("get", ("velocity", vec![0, 0, 0]))?,), Some(&kw))?)?;
         let inv = PyDict::new_bound(py);
         inv.update(d.call_method1("get", ("inventory", PyDict::new_bound(py)))?.downcast::<pyo3::types::PyMapping>()?)?;
         self.inventory = inv.into_any().unbind();
@@ -222,9 +234,9 @@ impl Player {
         } else {
             py.None()
         };
-        self.jetpack = d.call_method1("get", ("jetpack", false))?.is_truthy()?.into_py(py);
-        self.starter_given = d.call_method1("get", ("starter_given", false))?.is_truthy()?.into_py(py);
-        self.credits_given = d.call_method1("get", ("credits_given", false))?.is_truthy()?.into_py(py);
+        self.jetpack = d.call_method1("get", ("jetpack", false))?.is_truthy()?;
+        self.starter_given = d.call_method1("get", ("starter_given", false))?.is_truthy()?;
+        self.credits_given = d.call_method1("get", ("credits_given", false))?.is_truthy()?;
         let hb = d.call_method1("get", ("hotbar",))?;
         self.hotbar = if hb.is_truthy()? {
             let l = PyList::empty_bound(py);
@@ -266,16 +278,16 @@ impl Player {
             up = mul(up, 1.0 / l);
             set("up", up)?;
         }
-        let seated = slf.getattr("seated")?;
+        let seated = slf.try_borrow()?.seated.bind(py).clone();
         if seated.is_truthy()? {
-            let c = world.getattr("constructs")?.call_method1("get", (seated.get_item(0)?,))?;
-            let i = if c.is_truthy()? { c.getattr("index")?.call_method1("get", (seated.get_item(1)?,))? } else { py.None().into_bound(py) };
+            let c = World::g_constructs(wld(&world)?)?.call_method1("get", (seated.get_item(0)?,))?;
+            let i = if c.is_truthy()? { Construct::g_index(con(&c)?)?.call_method1("get", (seated.get_item(1)?,))? } else { py.None().into_bound(py) };
             if i.is_none() {
-                slf.setattr("seated", py.None())?;
+                slf.try_borrow_mut()?.seated = py.None();
             } else {
                 let i: usize = i.extract()?;
-                let cp: numpy::PyReadonlyArray2<f64> = c.getattr("pos")?.extract()?;
-                let cv: numpy::PyReadonlyArray2<f64> = c.getattr("vel")?.extract()?;
+                let cp: numpy::PyReadonlyArray2<f64> = Construct::g_pos(con(&c)?)?.extract()?;
+                let cv: numpy::PyReadonlyArray2<f64> = Construct::g_vel(con(&c)?)?.extract()?;
                 let (ap, av) = (cp.as_array(), cv.as_array());
                 let mut ctr = [0.0; 3];
                 let mut vv = [0.0; 3];
@@ -287,7 +299,7 @@ impl Player {
                 }
                 let fr = c.call_method0("voxel_frames")?.get_item(i)?;
                 let f1 = v3(&fr.get_item(1)?)?;
-                let size = float_of(&c.getattr("size")?)?;
+                let size = con(&c)?.borrow().size;
                 set("pos", add(ctr, mul(f1, size * 0.5 + radius)))?;
                 set("vel", vv)?;
                 set("up", f1)?;
@@ -298,13 +310,13 @@ impl Player {
         let jr = world.call_method1("jetpack", (slf, dt, thrust_dir))?;
         let flying = jr.get_item(0)?.is_truthy()?;
         let td = v3(&jr.get_item(1)?)?;
-        slf.setattr("flying", flying)?;
+        slf.try_borrow_mut()?.flying = flying;
         set("thrust", td)?;
         let g = v3(&world.call_method1("gravity", (pos_np(pos)?,))?.get_item(0)?)?;
         let mut vel = add(get("vel")?, mul(g, dt));
         // 水中：浮力と抵抗、泳ぐ
         let mut in_water = 0.0;
-        let on_ground_prev = slf.getattr("on_ground")?.is_truthy()?;
+        let on_ground_prev = slf.try_borrow()?.on_ground;
         if !pl.is_none() && pl.getattr("has_water")?.is_truthy()? {
             let wd = float_of(&pl.call_method1("water_depth", (pos_np(pos)?,))?.get_item(0)?)?;
             let frac = ((wd + radius) / (height * 0.8)).clamp(0.0, 1.0);
@@ -321,7 +333,7 @@ impl Player {
                 }
             }
         }
-        slf.setattr("in_water", in_water)?;
+        slf.try_borrow_mut()?.in_water = in_water;
         if !pl.is_none() && !on_ground_prev && in_water <= 0.0 {
             // 空気の抵抗（構築物と同じ大気：気圧に比例、高さとともに薄くなる）。人の Cd × 面積 ≒ 0.7 m²（終端速度 約 55 m/s）
             let kpa = match pl.getattr("defn")?.call_method1("get", ("atmosphere_pressure", 101.3)) {
@@ -331,7 +343,7 @@ impl Player {
             let prad = float_of(&pl.getattr("radius")?)?;
             let alt = (norm(sub(pos, v3(&pl.getattr("center")?)?)) - prad).max(0.0);
             let rho = 1.225 * (kpa / 101.3).max(0.0) * (-alt / (prad * 0.25).max(30.0)).exp();
-            let m = float_of(&slf.getattr("mass")?).unwrap_or(80.0).max(1.0);
+            let m = slf.try_borrow()?.mass.max(1.0);
             let s = norm(vel);
             let f = (0.5 * rho * 0.7 * s / m * dt).min(0.9);
             vel = mul(vel, 1.0 - f);
@@ -357,10 +369,10 @@ impl Player {
         pos = add(pos, mul(vel, dt));
         let mut on_ground = false;
         let mut ground_vel = [0.0; 3];
-        slf.setattr("stand", py.None())?;
+        slf.try_borrow_mut()?.stand = py.None();
         let r = radius;
         // 惑星
-        for p in world.getattr("planets")?.iter()? {
+        for p in World::g_planets(wld(&world)?)?.iter()? {
             let p = p?;
             let res = p.call_method1("sdf_grad", (pos_np(pos)?,))?;
             let dd = float_of(&res.get_item(0)?.get_item(0)?)?;
@@ -378,11 +390,11 @@ impl Player {
             }
         }
         // 拡張の物体（街の建物など。動いているステーションの上では、足元の建物と一緒に動く）
-        let addons = world.getattr("addons").ok();
+        let addons = World::g_addons(wld(&world)?).ok();
         if addons.as_ref().map_or(Ok(false), |a| a.is_truthy())? {
-            let was_ground = slf.getattr("_ext_ground").map(|v| v.is_truthy().unwrap_or(false)).unwrap_or(false);
+            let was_ground = slf.try_borrow()?.ext_ground;
             let mut blocked = false;
-            slf.setattr("_ext_ground", false)?;
+            slf.try_borrow_mut()?.ext_ground = false;
             for off in [0.0, height - 2.0 * r] {
                 let center = add(pos, mul(up, off));
                 for it in world.call_method1("push_sphere", (arr(py, center), r))?.iter()? {
@@ -403,7 +415,7 @@ impl Player {
                     // 段の角に乗ったとき（法線が斜め）も足場とみなす
                     if off == 0.0 && dot(n, up) > 0.3 {
                         on_ground = true;
-                        slf.setattr("_ext_ground", true)?;
+                        slf.try_borrow_mut()?.ext_ground = true;
                         ground_vel = vb;
                     }
                     if off == 0.0 && dot(n, up).abs() < 0.6 && dot(n, mv) < -0.3 {
@@ -442,7 +454,7 @@ impl Player {
             }
         }
         // ボクセル（足元と頭の2球）
-        let mass = float_of(&slf.getattr("mass")?)?;
+        let mass = slf.try_borrow()?.mass;
         for off in [0.0, height - 2.0 * r] {
             let center = add(pos, mul(up, off));
             for it in world.call_method1("voxel_contacts", (arr(py, center), r))?.iter()? {
@@ -452,7 +464,7 @@ impl Player {
                 let push = v3(&it.get_item(2)?)?;
                 let n = v3(&it.get_item(3)?)?;
                 pos = add(pos, push);
-                let cv: numpy::PyReadonlyArray2<f64> = c.getattr("vel")?.extract()?;
+                let cv: numpy::PyReadonlyArray2<f64> = Construct::g_vel(con(&c)?)?.extract()?;
                 let av = cv.as_array();
                 let mut vv = [0.0; 3];
                 for k in 0..8 {
@@ -469,10 +481,10 @@ impl Player {
                 if off == 0.0 && dot(n, up) > 0.5 {
                     on_ground = true;
                     ground_vel = vv;
-                    slf.setattr("stand", (c.getattr("id")?, c.getattr("cells")?.get_item(i)?))?;
+                    slf.try_borrow_mut()?.stand = (con(&c)?.borrow().id.clone_ref(py), Construct::g_cells(con(&c)?)?.get_item(i)?).into_py(py);
                     // 体重を構築物に伝える
                     let gn = norm(v3(&world.call_method1("gravity", (pos_np(center)?,))?.get_item(0)?)?);
-                    let f = c.getattr("force")?;
+                    let f = Construct::g_force(con(&c)?)?;
                     let mut fa: numpy::PyReadwriteArray2<f64> = f.extract()?;
                     let mut a = fa.as_array_mut();
                     for k in 0..8 {
@@ -485,8 +497,68 @@ impl Player {
         }
         set("pos", pos)?;
         set("vel", vel)?;
-        slf.setattr("on_ground", on_ground)?;
+        slf.try_borrow_mut()?.on_ground = on_ground;
         set("ground_vel", ground_vel)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------- 欄の読み書き（C-01）
+macro_rules! player_py_fields {
+    ($($g:ident $s:ident $f:ident),* $(,)?) => {
+        #[allow(dead_code)]
+        impl Player { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+                Ok(slf.try_borrow()?.$f.bind(slf.py()).clone().into_any())
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> R<()> {
+                let py = slf.py();
+                let t = v.into_py(py).extract(py)?;
+                slf.try_borrow_mut()?.$f = t;
+                Ok(())
+            }
+        )* }
+    };
+}
+macro_rules! player_val_fields {
+    ($($g:ident $s:ident $f:ident),* $(,)?) => {
+        #[allow(dead_code)]
+        impl Player { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+                Ok(slf.try_borrow()?.$f.clone().into_py(slf.py()).into_bound(slf.py()))
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> R<()> {
+                let py = slf.py();
+                let t = v.into_py(py).extract(py)?;
+                slf.try_borrow_mut()?.$f = t;
+                Ok(())
+            }
+        )* }
+    };
+}
+player_py_fields!(
+    g_defn s_defn defn, g_pos s_pos pos, g_vel s_vel vel, g_up s_up up, g_ground_vel s_ground_vel ground_vel, g_seated s_seated seated, g_inventory s_inventory inventory, g_hotbar s_hotbar hotbar, g_name s_name name, g_pid s_pid pid, g_msgs s_msgs msgs, g_input_keys s_input_keys input_keys, g_thrust s_thrust thrust, g_look_fwd s_look_fwd look_fwd, g_stand s_stand stand, g_emote s_emote emote
+);
+player_val_fields!(
+    g_on_ground s_on_ground on_ground, g_jetpack s_jetpack jetpack, g_mass s_mass mass, g_in_water s_in_water in_water, g_starter_given s_starter_given starter_given, g_credits_given s_credits_given credits_given, g_out_of_fuel s_out_of_fuel out_of_fuel, g_flying s_flying flying, g_pitch s_pitch pitch, g_ext_ground s_ext_ground ext_ground, g_emote_t0 s_emote_t0 emote_t0
+);
+impl Player {
+    pub fn g_face_dir<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+        let py = slf.py();
+        Ok(match &slf.try_borrow()?.face_dir {
+            Some(a) => a.bind(py).clone().into_any(),
+            None => py.None().into_bound(py),
+        })
+    }
+    pub fn s_face_dir(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> R<()> {
+        let py = slf.py();
+        let o = v.into_py(py);
+        let t = if o.is_none(py) { None } else { Some(to_fa(o.bind(py))?) };
+        slf.try_borrow_mut()?.face_dir = t;
         Ok(())
     }
 }

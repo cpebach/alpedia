@@ -1,5 +1,6 @@
 //! 画面：1 フレーム（frame）・カメラ・書き出し
 
+use crate::game::player::{ply, Player};
 use super::*;
 
 #[pymethods]
@@ -8,11 +9,11 @@ impl Viewer {
     pub(crate) fn frame(slf: &Bound<'_, Self>, dt: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let w = ga(s, "w")?;
-        let cfg = ga(s, "cfg")?;
+        let w = Self::ga_w(slf)?;
+        let cfg = Self::ga_cfg(slf)?;
         let c = cfg.get_item("controls")?;
         s.call_method0("_input")?;
-        let game = ga(s, "game")?;
+        let game = Self::ga_game(slf)?;
         let cam_mode = ga(&game, "cam_mode")?;
         let hud = ga(&game, "touch_hud")?;
         if cam_mode.is_none() {
@@ -27,19 +28,19 @@ impl Viewer {
             Self::look_vectors(slf)?;
             let upv = v3(&ga(&player, "up")?)?;
             let ang = tdx * sens;
-            let yf = v3(&ga(s, "yaw_fwd")?)?;
-            s.setattr("yaw_fwd", np3(py, add(mul(yf, ang.cos()), mul(cross(upv, yf), ang.sin()))))?;
-            let p = f64of(&ga(s, "pitch")?)?;
-            s.setattr("pitch", (p + tdy * sens).clamp(-1.55, 1.55))?;
+            let yf = v3(&Self::ga_yaw_fwd(slf)?)?;
+            Self::sa_yaw_fwd(slf, np3(py, add(mul(yf, ang.cos()), mul(cross(upv, yf), ang.sin()))))?;
+            let p = f64of(&Self::ga_pitch(slf)?)?;
+            Self::sa_pitch(slf, (p + tdy * sens).clamp(-1.55, 1.55))?;
         }
         let lv = Self::look_vectors(slf)?;
         let (fwd_o, right_o, up_o, look_o) = (lv.get_item(0)?, lv.get_item(1)?, lv.get_item(2)?, lv.get_item(3)?);
         let (fwd, right, up) = (v3(&fwd_o)?, v3(&right_o)?, v3(&up_o)?);
         let lp = ga(&w, "local_player")?;
-        lp.setattr("look_fwd", &fwd_o)?;
-        lp.setattr("pitch", ga(s, "pitch")?)?;
+        Player::s_look_fwd(ply(&lp)?, &fwd_o)?;
+        Player::s_pitch(ply(&lp)?, Self::ga_pitch(slf)?)?;
         let held = PySet::empty_bound(py)?;
-        for k in ga(s, "held")?.iter()? {
+        for k in Self::ga_held(slf)?.iter()? {
             let k = k?;
             let ks: String = k.extract()?;
             held.add(keymap(&ks))?;
@@ -56,8 +57,8 @@ impl Viewer {
         let st = ga(&hud, "stick")?;
         let (st0, st1) = (f64of(&st.get_item(0)?)?, f64of(&st.get_item(1)?)?);
         let mut mv = [0.0f64; 3];
-        let ui = ga(s, "ui")?;
-        let busy = ga(&ui, "stack")?.is_truthy()? || !ga(s, "editor")?.is_none() || ga(&game, "hold")?.is_truthy()? || !cam_mode.is_none();
+        let ui = Self::ga_ui(slf)?;
+        let busy = ga(&ui, "stack")?.is_truthy()? || !Self::ga_editor(slf)?.is_none() || ga(&game, "hold")?.is_truthy()? || !cam_mode.is_none();
         let seated = ga(&player, "seated")?.is_truthy()?;
         let ci = |n: &str| c.get_item(n);
         if !seated && !busy {
@@ -94,7 +95,7 @@ impl Viewer {
             w.setattr("input_keys", PySet::empty_bound(py)?)?;
         }
         let tick = 1.0 / f64of(&get(&cfg.get_item("physics")?, "tick_rate", 60)?)?;
-        let mut acc = f64of(&ga(s, "acc")?)? + dt;
+        let mut acc = f64of(&Self::ga_acc(slf)?)? + dt;
         let mut n = 0;
         let time = imp(py, "time")?;
         let pc = || -> R<f64> { time.call_method0("perf_counter")?.extract() };
@@ -108,14 +109,14 @@ impl Viewer {
             // マルチプレイに参加中：ホストから届いた世界を当てる
             net.setattr("look", &look_o)?;
             let top = ga(&ui, "top")?;
-            let ed = ga(s, "editor")?;
+            let ed = Self::ga_editor(slf)?;
             let edv = if ed.is_truthy()? { ed } else if top.hasattr("c")? { top } else { none(py) };
             let k = PyDict::new_bound(py);
             k.set_item("editor", edv)?;
             net.call_method1("frame", (imp(py, "types")?.getattr("SimpleNamespace")?.call((), Some(&k))?, dt))?;
             let closed = ga(&net, "closed")?;
             if closed.is_truthy()? {
-                s.setattr("acc", acc)?;
+                Self::sa_acc(slf, acc)?;
                 let k = PyDict::new_bound(py);
                 k.set_item("status", format!("マルチプレイから抜けました：{}", closed.str()?))?;
                 game.call_method("_leave", ("menu",), Some(&k))?;
@@ -136,7 +137,7 @@ impl Viewer {
         if n == 3 {
             acc = 0.0;
         }
-        s.setattr("acc", acc)?;
+        Self::sa_acc(slf, acc)?;
         if !net.is_none() && !client {
             net.call_method1("tick", (dt,))?; // 参加者へ送る・参加者の操作を行う
         }
@@ -146,7 +147,7 @@ impl Viewer {
         let (origin, cam_look, cam_up) = (cam.get_item(0)?, cam.get_item(1)?, cam.get_item(2)?);
         marks.push(("cam", pc()?));
         // 画面いっぱいを覆う画面（ムービーなど、covers_screen = True）を開いている間は、隠れた世界の用意を飛ばす
-        let ed = ga(s, "editor")?;
+        let ed = Self::ga_editor(slf)?;
         let covered = !ed.is_none() && gd(&ed, "covers_screen", tb(py, false)).is_truthy()?;
         if !covered {
             s.call_method1("_render", (&origin,))?;
@@ -157,10 +158,10 @@ impl Viewer {
         }
         marks.push(("bodies", pc()?));
         let g = cfg.get_item("graphics")?;
-        let view = ga(s, "view")?;
+        let view = Self::ga_view(slf)?;
         let sz = view.call_method0("size")?;
         let (ww, hh) = (sz.get_item(0)?, sz.get_item(1)?);
-        let sh = ga(s, "shim")?;
+        let sh = Self::ga_shim(slf)?;
         let fov = if !cam_mode.is_none() { f64of(&ga(&ga(&sh, "camera")?, "fov")?)? } else { f64of(&get(&g, "fov", 80)?)? };
         let hfov = fov.to_radians(); // Panda3D と同じく横の視野角
         let wwf = f64of(&ww)?;
@@ -169,17 +170,17 @@ impl Viewer {
         let cl = v3(&cam_look)?;
         let cu = v3(&cam_up)?;
         view.call_method1("camera", (vec![0.0, 0.0, 0.0], cl.to_vec(), cu.to_vec(), vfov, 0.05))?;
-        s.setattr("_cam", PyTuple::new_bound(py, [origin.clone(), np3(py, cl), np3(py, cu), tb(py, vfov)]))?;
+        Self::sa_cam(slf, PyTuple::new_bound(py, [origin.clone(), np3(py, cl), np3(py, cu), tb(py, vfov)]))?;
         ga(&sh, "camera")?.setattr("fov_pair", (hfov.to_degrees(), vfov))?;
         let far = f64of(&get(&g, "view_distance", 3000)?)?;
         let f = acall(py, "update", vec![origin.clone().unbind(), far.into_py(py)])?;
         Self::_each_addon(slf, &f, false)?;
         marks.push(("mod", pc()?));
         if !cam_mode.is_none() && !ga(&cam_mode, "frame_on")?.is_truthy()? {
-            s.setattr("hit", py.None())?;
-            ga(s, "highlight")?.call_method0("hide")?;
-            ga(s, "ghost")?.call_method0("hide")?;
-            s.setattr("_aim_txt", "")?;
+            Self::sa_hit(slf, py.None())?;
+            Self::ga_highlight(slf)?.call_method0("hide")?;
+            Self::ga_ghost(slf)?.call_method0("hide")?;
+            Self::sa_aim_txt(slf, "")?;
         } else {
             s.call_method1("_aim", (&origin, &look_o))?;
         }
@@ -190,7 +191,7 @@ impl Viewer {
         marks.push(("shim_snd", pc()?));
         view.call_method0("render")?;
         let t2 = pc()?;
-        let perf = ga(s, "perf")?;
+        let perf = Self::ga_perf(slf)?;
         let pi = |k: &str| -> R<f64> { f64of(&perf.get_item(k)?) };
         let frames: i64 = perf.get_item("frames")?.extract::<i64>()? + 1;
         perf.set_item("frames", frames)?;
@@ -217,7 +218,7 @@ impl Viewer {
             let fr = frames as f64;
             let txt = format!("fps {}  物理 {} ms/回  描画 {} ms", pf(py, fr / el, ".0f")?, pf(py, pi("phys")? / (ticks.max(1) as f64) * 1000.0, ".1f")?,
                 pf(py, pi("rend")? / fr * 1000.0, ".1f")?);
-            s.setattr("fps_text", &txt)?;
+            Self::sa_fps_text(slf, &txt)?;
             let mut detail = String::new();
             if let Ok(parts) = perf.get_item("parts") {
                 for k in ["cam", "scene", "bodies", "mod", "aim_ui", "shim_snd", "gpu"] {
@@ -225,7 +226,7 @@ impl Viewer {
                     detail.push_str(&format!(" {} {:.1}", k, v / fr * 1000.0));
                 }
             }
-            s.setattr("fps_detail", &detail)?; // F3 にはフレームの内訳だけ
+            Self::sa_fps_detail(slf, &detail)?; // F3 にはフレームの内訳だけ
             // ログには場面の用意（1フレームあたり）と物理（1回あたり）の内訳も（0.05 ms 未満は省く）
             let mut full = detail.clone();
             {
@@ -246,7 +247,7 @@ impl Viewer {
                 }
             }
             let pl: i64 = gd(s, "_perf_log", tb(py, 0)).extract::<i64>()? + 1;
-            s.setattr("_perf_log", pl)?;
+            Self::sa_perf_log(slf, pl)?;
             if pl % 10 == 1 {
                 // ログは 10 秒ごと
                 lg(py)?.call_method1("info", ("重さ: %s（構築物 %d）内訳 ms:%s", &txt, ga(&w, "constructs")?.len()?, &full))?;
@@ -257,7 +258,7 @@ impl Viewer {
             np.set_item("phys", 0.0)?;
             np.set_item("rend", 0.0)?;
             np.set_item("ticks", 0)?;
-            s.setattr("perf", np)?;
+            Self::sa_perf(slf, np)?;
         }
         Ok(())
     }
@@ -266,27 +267,27 @@ impl Viewer {
         let py = slf.py();
         let s = slf.as_any();
         let play = imp(py, "main.client.play")?;
-        let w = ga(s, "w")?;
+        let w = Self::ga_w(slf)?;
         let player = ga(&w, "player")?;
         let mut origin = player.call_method0("eye")?;
         let seated = !ga(&player, "seated")?.is_none(); // 座ったら三人称（降りたら元に）。V でいつでも切り替え
-        let was = ga(s, "_was_seated")?.is_truthy()?;
+        let was = Self::ga_was_seated(slf)?.is_truthy()?;
         if seated && !was {
-            s.setattr("_third_before_seat", ga(s, "third_person")?)?;
-            s.setattr("third_person", true)?;
+            Self::sa_third_before_seat(slf, Self::ga_third_person(slf)?)?;
+            Self::sa_third_person(slf, true)?;
         } else if was && !seated {
-            s.setattr("third_person", gd(s, "_third_before_seat", tb(py, false)))?;
+            Self::sa_third_person(slf, gd(s, "_third_before_seat", tb(py, false)))?;
         }
-        s.setattr("_was_seated", seated)?;
-        let cm = ga(&ga(s, "game")?, "cam_mode")?;
+        Self::sa_was_seated(slf, seated)?;
+        let cm = ga(&Self::ga_game(slf)?, "cam_mode")?;
         if !cm.is_none() {
             let held = Py::new(py, Held::make(s)?)?;
             cm.call_method1("update", (dt, held, PyDict::new_bound(py), imp(py, "numpy")?.call_method1("zeros", (2,))?))?;
             let r = cm.call_method0("camera")?;
             return Ok(PyTuple::new_bound(py, [r.get_item(0)?, r.get_item(1)?, r.get_item(2)?]));
         }
-        let tp = ga(s, "third_person")?.is_truthy()?;
-        let follow = if tp { play.call_method1("seat_follow", (&w, ga(s, "addons")?))? } else { none(py) };
+        let tp = Self::ga_third_person(slf)?.is_truthy()?;
+        let follow = if tp { play.call_method1("seat_follow", (&w, Self::ga_addons(slf)?))? } else { none(py) };
         let lk = v3(look)?;
         let u = v3(up)?;
         if !follow.is_none() {
@@ -313,11 +314,10 @@ impl Viewer {
     /// F9：見ている（座っている）構築物を OBJ で出力
     pub(crate) fn export_obj(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let w = ga(s, "w")?;
+        let w = Self::ga_w(slf)?;
         let p = ga(&w, "player")?;
         let mut target = none(py);
-        let hit = ga(s, "hit")?;
+        let hit = Self::ga_hit(slf)?;
         if ga(&p, "seated")?.is_truthy()? {
             target = ga(&w, "constructs")?.call_method1("get", (ga(&p, "seated")?.get_item(0)?,))?;
         } else if hit.is_truthy()? && hit.get_item("kind")?.eq("voxel")? {

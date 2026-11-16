@@ -1,5 +1,6 @@
 //! 構築物：動き方の切り替え（剛体・関節・レール・乗り物の枠）
 
+use crate::game::world::{wld, World};
 use super::*;
 
 #[pymethods]
@@ -85,9 +86,9 @@ impl Construct {
         if Self::n(slf)? == 0 || slf.borrow().asleep {
             return Ok(());
         }
-        let phys = world.getattr("cfg")?.call_method1("get", ("physics", PyDict::new_bound(py)))?;
+        let phys = World::g_cfg(wld(&world)?)?.call_method1("get", ("physics", PyDict::new_bound(py)))?;
         // 完全剛体モードでも soft_ok の構築物（物語の見せ場の落石・木箱など）は、曲がる・ちぎれる
-        let mut full = world.getattr("settings")?.call_method1("get", ("full_rigid", false))?.is_truthy()?
+        let mut full = World::g_settings(wld(&world)?)?.call_method1("get", ("full_rigid", false))?.is_truthy()?
             && !Self::t_soft_ok(slf)?;
         if Self::anchored_b(slf)? {          // アンカーで固定：柔らかいブロックのモードでも剛体（＋関節）として扱う
             full = true;

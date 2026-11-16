@@ -1,12 +1,32 @@
 //! 描画：地面の跡（DecalView）
 
+use crate::game::construct::{con, Construct};
 use super::*;
 
 // ---------------------------------------------------------------- DecalView
 /// 機器ブロックの表面に種類の記号を貼る。向きのある機器は、横の面の ▲ が機器の向き、
 /// 向いている面は黄色い輪、反対側の面は薄い記号になる。遠くの構築物では表示しない（負荷対策）
 #[pyclass(module = "main.client.render", subclass, dict)]
-pub struct DecalView {}
+pub struct DecalView {
+    /// _new（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_new: Option<PyObject>,
+    /// _placed（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_placed: Option<PyObject>,
+    /// _sig（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_sig: Option<PyObject>,
+    /// c（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_c: Option<PyObject>,
+    /// items（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_items: Option<PyObject>,
+    /// max_dist（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_max_dist: Option<PyObject>,
+    /// mesh（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_mesh: Option<PyObject>,
+    /// version（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_version: Option<PyObject>,
+    /// visible（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_visible: Option<PyObject>,
+}
 
 #[pymethods]
 impl DecalView {
@@ -21,14 +41,13 @@ impl DecalView {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     pub(crate) fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        DecalView {}
+        DecalView { a_new: None, a_placed: None, a_sig: None, a_c: None, a_items: None, a_max_dist: None, a_mesh: None, a_version: None, a_visible: None }
     }
     #[pyo3(signature = (parent, construct, max_dist=None))]
     pub(crate) fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>, construct: &B<'_>, max_dist: Option<&B<'_>>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("c", construct)?;
-        s.setattr("max_dist", max_dist.cloned().unwrap_or_else(|| tb(py, 30.0)))?;
+        Self::sa_c(slf, construct)?;
+        Self::sa_max_dist(slf, max_dist.cloned().unwrap_or_else(|| tb(py, 30.0)))?;
         let mesh = dmesh(py, parent, &format!("decal{}", construct.getattr("id")?.str()?))?;
         let n = mesh.getattr("np")?;
         n.call_method1("setTransparency", (true,))?;
@@ -43,11 +62,11 @@ impl DecalView {
             cls.setattr("_texture", icons.call_method1("panda_texture", (r.get_item(0)?, "decals"))?)?;
         }
         n.call_method1("setTexture", (cls.getattr("_texture")?, 1))?;
-        s.setattr("mesh", &mesh)?;
-        s.setattr("version", -1)?;
-        s.setattr("items", py.None())?;
-        s.setattr("visible", false)?;
-        s.setattr("_placed", py.None())?;
+        Self::sa_mesh(slf, &mesh)?;
+        Self::sa_version(slf, -1)?;
+        Self::sa_items(slf, py.None())?;
+        Self::sa_visible(slf, false)?;
+        Self::sa_placed(slf, py.None())?;
         Ok(())
     }
     pub(crate) fn _rebuild(slf: &Bound<'_, Self>) -> R<()> {
@@ -55,14 +74,14 @@ impl DecalView {
         let s = slf.as_any();
         let dirs = imp(py, "main.construct")?.getattr("DIRS")?;
         let dirv: Vec<[i64; 3]> = (0..6).map(|k| -> R<[i64; 3]> { let v: Vec<i64> = dirs.get_item(k)?.call_method0("tolist")?.extract()?; Ok([v[0], v[1], v[2]]) }).collect::<R<_>>()?;
-        let c = s.getattr("c")?;
+        let c = Self::ga_c(slf)?;
         let reg = c.getattr("reg")?;
         let act = imp(py, "main.actuator")?;
         let kinds = s.call_method0("_kinds")?;
         let uvmap = s.getattr("_uv")?;
         let rm = rmod(py)?;
-        let index = c.getattr("index")?;
-        let cells = c.getattr("cells")?;
+        let index = Construct::g_index(con(&c)?)?;
+        let cells = Construct::g_cells(con(&c)?)?;
         let (mut vox, mut nrm, mut upv, mut uvs): (Vec<i64>, Vec<f64>, Vec<f64>, Vec<f32>) = (vec![], vec![], vec![], vec![]);
         let mut push = |i: usize, n: [i64; 3], up: [i64; 3], uv: &B<'_>| -> R<()> {
             vox.push(i as i64);
@@ -73,12 +92,12 @@ impl DecalView {
             }
             Ok(())
         };
-        for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+        for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
             let d = d?;
             if !d.is_truthy()? {
                 continue;
             }
-            let dd = or_dict(reg.call_method1("device", (d.get_item("def")?,))?)?;
+            let dd = or_dict(crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?)?;
             let mark = get(&dd, "mark", py.None())?;
             let mut kind = if mark.is_truthy()? { mark } else { get(&dd, "type", py.None())? };
             if !kinds.contains(&kind)? {
@@ -139,11 +158,11 @@ impl DecalView {
                 push(i, n, up, &uvmap.get_item((&kind, var))?)?;
             }
         }
-        s.setattr("version", c.getattr("version")?)?;
-        s.setattr("_placed", py.None())?;
+        Self::sa_version(slf, c.getattr("version")?)?;
+        Self::sa_placed(slf, py.None())?;
         if vox.is_empty() {
-            s.setattr("items", py.None())?;
-            s.getattr("mesh")?.call_method1("set", (zeros12(py)?,))?;
+            Self::sa_items(slf, py.None())?;
+            Self::ga_mesh(slf)?.call_method1("set", (zeros12(py)?,))?;
             return Ok(());
         }
         let nu = uvs.len() / vox.len();
@@ -151,8 +170,8 @@ impl DecalView {
             let a = numpy::PyArray1::from_vec_bound(py, uvs);
             if nu == 1 { a.into_any() } else { numpy::PyArrayMethods::reshape(&a, [vox.len(), nu])?.into_any() }
         };
-        s.setattr("items", PyTuple::new_bound(py, [i64_1(py, vox), f64_2(py, nrm, 3)?, f64_2(py, upv, 3)?, uva]))?;
-        s.setattr("_new", true)?;
+        Self::sa_items(slf, PyTuple::new_bound(py, [i64_1(py, vox), f64_2(py, nrm, 3)?, f64_2(py, upv, 3)?, uva]))?;
+        Self::sa_new(slf, true)?;
         Ok(())
     }
     #[staticmethod]
@@ -161,8 +180,8 @@ impl DecalView {
     }
     pub(crate) fn _display_sig<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
-        let c = slf.as_any().getattr("c")?;
-        let devs = c.getattr("devs")?;
+        let c = Self::ga_c(slf)?;
+        let devs = Construct::g_devs(con(&c)?)?;
         let mut out = vec![];
         for i in c.call_method1("dev_ids", ("computer",))?.iter()? {
             let i = i?;
@@ -177,20 +196,20 @@ impl DecalView {
     pub(crate) fn update(slf: &Bound<'_, Self>, origin: &B<'_>, cam_pos: &B<'_>, view: Option<&B<'_>>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let c = s.getattr("c")?;
-        let ver_diff = !s.getattr("version")?.eq(c.getattr("version")?)?;
-        if !s.getattr("items")?.is_none() || ver_diff {
+        let c = Self::ga_c(slf)?;
+        let ver_diff = !Self::ga_version(slf)?.eq(c.getattr("version")?)?;
+        if !Self::ga_items(slf)?.is_none() || ver_diff {
             let sig = Self::_display_sig(slf)?;
             if ver_diff || !sig.eq(gd(s, "_sig", none(py)))? {
-                s.setattr("_sig", &sig)?;
+                Self::sa_sig(slf, &sig)?;
                 s.call_method0("_rebuild")?;
             }
         }
-        if s.getattr("items")?.is_none() {
+        if Self::ga_items(slf)?.is_none() {
             return Ok(());
         }
         // 遠くの構築物では記号を出さない（外側の球で大まかに、近ければブロックごとに）
-        let md = f64of(&s.getattr("max_dist")?)?;
+        let md = f64of(&Self::ga_max_dist(slf)?)?;
         let bnd = c.call_method0("bounds")?;
         let ctr = v3(&bnd.get_item(0)?)?;
         let rad = f64of(&bnd.get_item(1)?)?;
@@ -212,29 +231,29 @@ impl DecalView {
             }
             mn < md * md
         };
-        let mesh = s.getattr("mesh")?;
+        let mesh = Self::ga_mesh(slf)?;
         if !near {
-            if s.getattr("visible")?.is_truthy()? {
+            if Self::ga_visible(slf)?.is_truthy()? {
                 mesh.getattr("np")?.call_method0("hide")?;
-                s.setattr("visible", false)?;
+                Self::sa_visible(slf, false)?;
             }
             return Ok(());
         }
-        if !s.getattr("visible")?.is_truthy()? {
+        if !Self::ga_visible(slf)?.is_truthy()? {
             mesh.getattr("np")?.call_method0("show")?;
-            s.setattr("visible", true)?;
+            Self::sa_visible(slf, true)?;
         }
         let l = match view.filter(|v| !v.is_none()) { Some(v) => v.call_method0("_local_pos")?, None => none(py) };
         if !l.is_none() {
             // 剛体・静止中：構築物の向きで一度だけ作る（位置と向きは親ノードの行列で動く）
             let key = view.unwrap().getattr("_tf")?.get_item(2)?;
-            if s.getattr("_placed")?.eq(&key)? {
+            if Self::ga_placed(slf)?.eq(&key)? {
                 return Ok(());
             }
-            s.setattr("_placed", key)?;
+            Self::sa_placed(slf, key)?;
             s.call_method1("_write", (l, np(py)?.call_method1("zeros", (3,))?))?;
         } else {
-            s.setattr("_placed", py.None())?;
+            Self::sa_placed(slf, py.None())?;
             s.call_method1("_write", (c.getattr("pos")?.call_method1("reshape", (-1, 8, 3))?, origin))?;
         }
         Ok(())
@@ -242,8 +261,8 @@ impl DecalView {
     pub(crate) fn _write(slf: &Bound<'_, Self>, p8: &B<'_>, origin: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let c = s.getattr("c")?;
-        let it = s.getattr("items")?;
+        let c = Self::ga_c(slf)?;
+        let it = Self::ga_items(slf)?;
         let (vox, nl, al, uv) = (it.get_item(0)?, it.get_item(1)?, it.get_item(2)?, it.get_item(3)?);
         let sel = p8.get_item(&vox)?;
         let npm = np(py)?;
@@ -252,17 +271,55 @@ impl DecalView {
         let v = native(py)?.call_method1("decal_quads", (npm.call_method1("ascontiguousarray", (sel, &f64t))?, npm.call_method1("ascontiguousarray", (nl, &f64t))?,
             npm.call_method1("ascontiguousarray", (al, &f64t))?, npm.call_method1("ascontiguousarray", (uv, &f32t))?, f64of(&c.getattr("size")?)?, a1(origin)?,
             sun(py)?.to_vec(), ambient(py)?))?;
-        let mesh = s.getattr("mesh")?;
+        let mesh = Self::ga_mesh(slf)?;
         if gd(s, "_new", tb(py, false)).is_truthy()? {
             mesh.call_method1("set", (v, qtris(py, nvox)?))?;
-            s.setattr("_new", false)?;
+            Self::sa_new(slf, false)?;
         } else {
             mesh.call_method1("set", (v,))?;
         }
         Ok(())
     }
     pub(crate) fn remove(slf: &Bound<'_, Self>) -> R<()> {
-        slf.as_any().getattr("mesh")?.call_method0("remove")?;
+        Self::ga_mesh(slf)?.call_method0("remove")?;
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------- DecalView の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! decalview_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl DecalView { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl DecalView { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+decalview_attr_fields!(
+    ga_new sa_new pga_new psa_new a_new "_new", ga_placed sa_placed pga_placed psa_placed a_placed "_placed", ga_sig sa_sig pga_sig psa_sig a_sig "_sig", ga_c sa_c pga_c psa_c a_c "c", ga_items sa_items pga_items psa_items a_items "items", ga_max_dist sa_max_dist pga_max_dist psa_max_dist a_max_dist "max_dist", ga_mesh sa_mesh pga_mesh psa_mesh a_mesh "mesh", ga_version sa_version pga_version psa_version a_version "version", ga_visible sa_visible pga_visible psa_visible a_visible "visible"
+);

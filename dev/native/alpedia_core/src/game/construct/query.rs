@@ -245,7 +245,7 @@ impl Construct {
             let mut cols = vec![];
             let mut mid: Vec<(String, String)> = vec![];
             for (m, d) in mats.iter().zip(&devs) {
-                let src = if d.is_truthy()? { reg.call_method1("device", (d.get_item("def")?,))? } else { reg.call_method1("material", (m,))? };
+                let src = if d.is_truthy()? { crate::game::registry::dev_dict(&reg, &d.get_item("def")?)? } else { crate::game::registry::mat_dict(&reg, &m)? };
                 let src = if src.is_truthy()? { src } else { PyDict::new_bound(py).into_any() };
                 cols.push(v3(&dget(&src, "color", &grey)?)?);
                 let dd = if d.is_truthy()? { d.call_method1("get", ("def",))?.repr()?.to_string() } else { "None".into() };

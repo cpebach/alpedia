@@ -1,11 +1,12 @@
 //! ワールド（main/world.py の World）：読み込み・保存・シミュレーションの1ティック・編集操作。
 //! 決まった属性は Rust の欄、それ以外（registry・settings・player など）は __dict__（MOD・画面からも同じ名前で読める）。
 
+use crate::game::player::{ply, Player};
 use pyo3::exceptions::{PyAttributeError, PyFileNotFoundError};
 use pyo3::prelude::*;
 use pyo3::types::{PyCFunction, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple};
 
-use super::construct::{a1, a3, arr, cross, dot, fv, iv, norm, opt, sub, truthy, v3, v3s, with_rw, R, V3};
+use super::construct::{a1, a3, arr, con, Construct, cross, dot, fv, iv, norm, opt, sub, v3, v3s, with_rw, R, V3};
 use super::imp;
 
 use crate::prof::add as prof_add;
@@ -114,7 +115,7 @@ use pyo3::types::IntoPyDict;
 #[pyfunction]
 pub fn world_drop_fuel_generators(reg: &Bound<'_, PyAny>, cons: &Bound<'_, PyAny>) -> R<i64> {
     let py = reg.py();
-    if !reg.call_method1("device", ("generator",))?.is_none() {
+    if !crate::game::registry::dev_dict(&reg, &pyo3::types::PyString::new_bound(py, "generator").into_any())?.is_none() {
         return Ok(0);
     }
     let mut n = 0;
@@ -190,7 +191,7 @@ pub fn world_missing_references(reg: &Bound<'_, PyAny>, settings: &Bound<'_, PyA
 #[pyfunction]
 pub fn world_limit_dv(c: &Bound<'_, PyAny>, v0: &Bound<'_, PyAny>, rb0: &Bound<'_, PyAny>, cap: f64) -> R<()> {
     let py = c.py();
-    let vel_o = c.getattr("vel")?;
+    let vel_o = Construct::g_vel(con(&c)?)?;
     if !vel_o.getattr("shape")?.eq(v0.getattr("shape")?)? {
         return Ok(());
     }
@@ -208,10 +209,10 @@ pub fn world_limit_dv(c: &Bound<'_, PyAny>, v0: &Bound<'_, PyAny>, rb0: &Bound<'
     let k = cap / m;
     let nv: Vec<f64> = v0v.iter().zip(&dv).flat_map(|(a, d)| [a[0] + d[0] * k, a[1] + d[1] * k, a[2] + d[2] * k]).collect();
     if !with_rw(&vel_o, |s| s.copy_from_slice(&nv))? {
-        c.setattr("vel", arr(py, nv, &[dv.len(), 3])?)?;
+        Construct::s_vel(con(&c)?, arr(py, nv, &[dv.len(), 3])?)?;
     }
     let rb = c.getattr("rb")?;
-    if rb0.is_truthy()? && !rb.is_none() && c.getattr("mode")?.eq("rigid")? {
+    if rb0.is_truthy()? && !rb.is_none() && Construct::g_mode(con(&c)?)?.eq("rigid")? {
         for (q, key) in ["v", "w"].iter().enumerate() {
             let a = v3(&rb0.get_item(q)?)?;
             let b = v3(&rb.get_item(*key)?)?;
@@ -237,9 +238,9 @@ impl AsPlayer {
         if p.is_none() || p.is(&w.getattr("player")?) {
             return Ok(());
         }
-        self.prev = Some((w.getattr("player")?.unbind(), w.getattr("_msg_sink")?.unbind()));
+        self.prev = Some((w.getattr("player")?.unbind(), World::g_msg_sink(wld(&w)?)?.unbind()));
         w.setattr("player", p)?;
-        w.setattr("_msg_sink", p.getattr("msgs")?)?;
+        World::s_msg_sink(wld(&w)?, p.getattr("msgs")?)?;
         Ok(())
     }
     #[pyo3(signature = (*_a))]
@@ -247,10 +248,16 @@ impl AsPlayer {
         if let Some((p, s)) = self.prev.take() {
             let w = self.world.bind(py);
             w.setattr("player", p)?;
-            w.setattr("_msg_sink", s)?;
+            World::s_msg_sink(wld(&w)?, s)?;
         }
         Ok(false)
     }
+}
+
+/// Python の値として持っているワールドを、型つきで見る（違う物ならエラー）
+#[inline]
+pub fn wld<'a, 'py>(w: &'a Bound<'py, PyAny>) -> R<&'a Bound<'py, World>> {
+    Ok(w.downcast::<World>()?)
 }
 
 #[pyclass(module = "alpedia_core", subclass, dict)]
@@ -297,35 +304,51 @@ pub struct World {
     pub substeps: i64,
     #[pyo3(get, set)]
     pub iters: i64,
+    /// ブロック・素材・機器などの定義（読み込みで作る）
+    #[pyo3(get, set)]
+    pub registry: PyObject,
+    /// ワールドの設定（world.json の settings）
+    #[pyo3(get, set)]
+    pub settings: PyObject,
+    /// 今動かしているプレイヤー（ほかの参加者の操作の間は、その人に入れ替わる）・この PC のプレイヤー
+    #[pyo3(get, set)]
+    pub player: PyObject,
+    #[pyo3(get, set)]
+    pub local_player: PyObject,
+    /// 計算の覚え（Python からは見えない）
+    pub cache: WorldCaches,
+}
+
+/// ワールドの計算の覚え
+#[derive(Default)]
+pub struct WorldCaches {
+    pub bnd: Option<PyObject>,
+    pub bnd_at: Option<PyObject>,
+    pub bnd_t: Option<PyObject>,
+    pub grav: Option<PyObject>,
+    pub grav_key: Option<PyObject>,
+    pub far: Option<PyObject>,
+    pub far_t: Option<PyObject>,
+    pub far_n: Option<PyObject>,
+    pub far_prev: Option<PyObject>,
+    pub pool_obj: Option<PyObject>,
 }
 
 impl World {
-    fn g<'py>(slf: &Bound<'py, Self>, k: &str) -> R<Bound<'py, PyAny>> {
-        slf.as_any().getattr(k)
-    }
-    fn set(slf: &Bound<'_, Self>, k: &str, v: impl IntoPy<PyObject>) -> R<()> {
-        slf.as_any().setattr(k, v.into_py(slf.py()))
-    }
     fn addons_v<'py>(slf: &Bound<'py, Self>) -> R<Vec<Bound<'py, PyAny>>> {
-        Self::g(slf, "addons")?.iter()?.collect()
+        Self::g_addons(slf)?.iter()?.collect()
     }
     fn cons_v<'py>(slf: &Bound<'py, Self>) -> R<Vec<Bound<'py, PyAny>>> {
-        Self::g(slf, "constructs")?.call_method0("values")?.iter()?.collect()
+        Self::g_constructs(slf)?.call_method0("values")?.iter()?.collect()
     }
     fn settings<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
-        Self::g(slf, "settings")
+        Self::g_settings(slf)
     }
     fn gscale(slf: &Bound<'_, Self>) -> R<f64> {
         fget(&Self::settings(slf)?, "gravity_scale", 1.0)
     }
-    fn dict_get<'py>(slf: &Bound<'py, Self>, k: &str) -> R<Option<Bound<'py, PyAny>>> {
-        match slf.as_any().getattr("__dict__")?.downcast::<PyDict>()?.get_item(k)? {
-            Some(v) => Ok(Some(v)),
-            None => Ok(None),
-        }
-    }
     fn is_seated_on(p: &Bound<'_, PyAny>, cid: &Bound<'_, PyAny>) -> R<bool> {
-        let s = p.getattr("seated")?;
+        let s = Player::g_seated(ply(&p)?)?;
         Ok(s.is_truthy()? && s.get_item(0)?.eq(cid)?)
     }
 }
@@ -363,6 +386,8 @@ impl World {
             msgs: msgs.unbind(), input_keys: PySet::empty_bound(py)?.into_any().unbind(), time_scale: 1.0,
             runner: py.None(), radio: py.None(), given_addons: given, addons: list,
             mods: PyList::empty_bound(py).into_any().unbind(), timers: timers.into_any().unbind(), substeps, iters,
+            registry: py.None(), settings: PyDict::new_bound(py).into_any().unbind(), player: py.None(), local_player: py.None(),
+            cache: WorldCaches::default(),
         })
     }
 
@@ -390,10 +415,10 @@ impl World {
     // ------------------------------------------------------------------ 読み込み・保存
     fn load<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, Self>> {
         let py = slf.py();
-        let dir = Self::g(slf, "dir")?;
+        let dir = Self::g_dir(slf)?;
         let lg = log(py)?;
         if !dir.call_method0("exists")?.is_truthy()? {
-            return Err(PyFileNotFoundError::new_err(format!("ワールド '{}' がありません: {}", Self::g(slf, "name")?.str()?, dir.str()?)));
+            return Err(PyFileNotFoundError::new_err(format!("ワールド '{}' がありません: {}", Self::g_name(slf)?.str()?, dir.str()?)));
         }
         let div = |k: &str| -> R<Bound<'_, PyAny>> { dir.call_method1("__truediv__", (k,)) };
         for sub_ in ["scripts", "exports", "imports"] {
@@ -432,10 +457,10 @@ impl World {
             lg.call_method1("info", ("依存する MOD を足しました: %s", &added))?;
             save_mods(&mods)?;
         }
-        Self::set(slf, "mods", PyList::new_bound(py, mods.iter()?.collect::<R<Vec<_>>>()?))?;
+        Self::s_mods(slf, PyList::new_bound(py, mods.iter()?.collect::<R<Vec<_>>>()?))?;
         // MOD はここで一括で読み込む（定義・プログラムの全ファイル）。エラーがあればワールドを始めない
         let reg = imp(py, "main.registry")?.getattr("Registry")?.call0()?.call_method1("load", (&mods,))?;
-        Self::set(slf, "registry", &reg)?;
+        Self::s_registry(slf, &reg)?;
         let errors = reg.getattr("errors")?;
         for m in missing.iter()? {
             let m = m?;
@@ -445,12 +470,12 @@ impl World {
         }
         if given_none {
             modcode.call_method1("load", (reg.getattr("loaded_mods")?, &errors))?;
-            Self::set(slf, "addons", modcode.call_method1("world_addons", (reg.getattr("loaded_mods")?, &errors))?)?;
+            Self::s_addons(slf, modcode.call_method1("world_addons", (reg.getattr("loaded_mods")?, &errors))?)?;
         }
         let survival = imp(py, "main.survival")?;
         if survival.call_method1("mode_of", (&s,))?.eq("survival")? && Self::addon(slf, "survival")?.is_none() {
             let sr = survival.getattr("SurvivalRules")?.call0()?;
-            Self::g(slf, "addons")?.call_method1("insert", (0, sr))?;      // 本体の遊び方（MOD ではない）
+            Self::g_addons(slf)?.call_method1("insert", (0, sr))?;      // 本体の遊び方（MOD ではない）
         }
         let extra = PyList::empty_bound(py);
         for a in Self::addons_v(slf)? {
@@ -469,11 +494,11 @@ impl World {
         cl.update(ds.get_item("cleanup")?.downcast::<PyDict>()?.as_mapping())?;
         cl.update(getd(&s, "cleanup", PyDict::new_bound(py))?.downcast::<PyDict>()?.as_mapping())?;
         settings.set_item("cleanup", cl)?;
-        Self::set(slf, "settings", &settings)?;
+        Self::s_settings(slf, &settings)?;
         slf.borrow_mut().time = fget(settings.as_any(), "time", 0.0)?;
         let cons = world_read_json(&div("constructs.json")?, PyList::empty_bound(py).as_any())?;
         let n_gen = world_drop_fuel_generators(&reg, &cons)?;
-        for e in world_missing_references(&reg, settings.as_any(), &cons, &Self::g(slf, "mods")?)? {
+        for e in world_missing_references(&reg, settings.as_any(), &cons, &Self::g_mods(slf)?)? {
             errors.call_method1("append", (e,))?;
         }
         if errors.is_truthy()? {
@@ -494,7 +519,7 @@ impl World {
             p.setattr("defn_override", ov)?;
             planets.append(p)?;
         }
-        Self::set(slf, "planets", &planets)?;
+        Self::s_planets(slf, &planets)?;
         let spawn = world_read_json(&div("spawn.json")?, PyDict::new_bound(py).as_any())?;
         for cd in cons.iter()? {
             for m in savefmt.call_method1("check_construct", (cd?,))?.iter()? {
@@ -505,12 +530,12 @@ impl World {
             lg.call_method1("warning", ("保存形式: %s", m?))?;
         }
         let ccls = imp(py, "main.construct")?.getattr("Construct")?;
-        let constructs = Self::g(slf, "constructs")?;
+        let constructs = Self::g_constructs(slf)?;
         for cd in cons.iter()? {
             let cd = cd?;
             let r = cd.get_item("id").and_then(|id| ccls.call_method1("from_dict", (&reg, &cd, getd(&spawn, &id.str()?.to_string(), PyDict::new_bound(py))?)));
             match r {
-                Ok(c) => constructs.set_item(c.getattr("id")?, c)?,
+                Ok(c) => constructs.set_item(Construct::g_id(con(&c)?)?, c)?,
                 Err(e) if e.is_instance_of::<pyo3::exceptions::PyException>(py) => {
                     let kw = PyDict::new_bound(py);
                     kw.set_item("exc_info", e.value_bound(py))?;
@@ -531,14 +556,14 @@ impl World {
             }
         }
         let player = Self::make_player(slf, &pick, None)?;
-        Self::set(slf, "player", &player)?;
+        Self::s_player(slf, &player)?;
         if pj.is_truthy()? {
             for m in savefmt.call_method1("check_player", (&pj,))?.iter()? {
                 lg.call_method1("warning", ("保存形式: %s", m?))?;
             }
             player.call_method1("load_dict", (&pj,))?;
         }
-        Self::set(slf, "local_player", &player)?;
+        Self::s_local_player(slf, &player)?;
         for a in Self::addons_v(slf)? {
             a.call_method1("on_load", (slf,))?;
         }
@@ -546,9 +571,9 @@ impl World {
             Self::_place_starter_sample(slf)?;
         }
         Self::_refresh_script_readme(slf)?;
-        lg.call_method1("info", ("ワールド '%s' を読み込み: 構築物 %d, 惑星 %d, MOD %s", Self::g(slf, "name")?, constructs.len()?,
+        lg.call_method1("info", ("ワールド '%s' を読み込み: 構築物 %d, 惑星 %d, MOD %s", Self::g_name(slf)?, constructs.len()?,
             planets.len(), &mods))?;
-        Self::message(slf, &format!("ワールド「{}」を読み込みました", Self::g(slf, "name")?.str()?))?;
+        Self::message(slf, &format!("ワールド「{}」を読み込みました", Self::g_name(slf)?.str()?))?;
         if added.is_truthy()? && given_none {
             let names: Vec<String> = added.iter()?.map(|m| Ok(modmeta.call_method1("name_of", (m?,))?.str()?.to_string())).collect::<R<_>>()?;
             Self::message(slf, &format!("必要な MOD を足しました: {}", names.join("、")))?;
@@ -563,7 +588,7 @@ impl World {
     fn _refresh_script_readme(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let text = imp(py, "main.content")?.getattr("SCRIPT_README")?;
-        let p = Self::g(slf, "dir")?.call_method1("__truediv__", ("scripts",))?.call_method1("__truediv__", ("README.txt",))?;
+        let p = Self::g_dir(slf)?.call_method1("__truediv__", ("scripts",))?.call_method1("__truediv__", ("README.txt",))?;
         let enc = [("encoding", "utf-8")].into_py_dict_bound(py);
         let r: R<()> = (|| {
             if p.getattr("parent")?.call_method0("is_dir")?.is_truthy()?
@@ -590,8 +615,8 @@ impl World {
             return Ok(());
         }
         let r: R<()> = (|| {
-            let data = imp(py, "main.objio")?.call_method1("import_construct", (Self::g(slf, "registry")?, &bp))?;
-            let ppos = v3(&Self::g(slf, "player")?.getattr("pos")?)?;
+            let data = imp(py, "main.objio")?.call_method1("import_construct", (Self::g_registry(slf)?, &bp))?;
+            let ppos = v3(&Self::g_player(slf)?.getattr("pos")?)?;
             let pl = Self::nearest_planet(slf, &a1(py, ppos))?;
             let up = if pl.is_none() { [0.0, 1.0, 0.0] } else { v3(&pl.call_method1("up", (a1(py, ppos),))?)? };
             let mut side = cross(up, [0.0, 0.0, 1.0]);
@@ -635,3 +660,85 @@ mod query;
 mod edit;
 mod interact;
 mod inner;
+
+// ---------------------------------------------------------------- 欄の読み書き（C-01）
+// g_欄：値（Python の値として）、s_欄：入れる（型を確かめる）
+macro_rules! world_py_fields {
+    ($($g:ident $s:ident $f:ident),* $(,)?) => {
+        #[allow(dead_code)]
+        impl World { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+                Ok(slf.try_borrow()?.$f.bind(slf.py()).clone().into_any())
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> R<()> {
+                let py = slf.py();
+                let t = v.into_py(py).extract(py)?;
+                slf.try_borrow_mut()?.$f = t;
+                Ok(())
+            }
+        )* }
+    };
+}
+macro_rules! world_val_fields {
+    ($($g:ident $s:ident $f:ident),* $(,)?) => {
+        #[allow(dead_code)]
+        impl World { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+                Ok(slf.try_borrow()?.$f.into_py(slf.py()).into_bound(slf.py()))
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> R<()> {
+                let py = slf.py();
+                let t = v.into_py(py).extract(py)?;
+                slf.try_borrow_mut()?.$f = t;
+                Ok(())
+            }
+        )* }
+    };
+}
+world_py_fields!(
+    g_addons s_addons addons,
+    g_cfg s_cfg cfg,
+    g_constructs s_constructs constructs,
+    g_dir s_dir dir,
+    g_exports_dir s_exports_dir exports_dir,
+    g_given_addons s_given_addons given_addons,
+    g_input_keys s_input_keys input_keys,
+    g_local_player s_local_player local_player,
+    g_mods s_mods mods,
+    g_msg_sink s_msg_sink msg_sink,
+    g_msgs s_msgs msgs,
+    g_name s_name name,
+    g_net s_net net,
+    g_planets s_planets planets,
+    g_player s_player player,
+    g_registry s_registry registry,
+    g_remote s_remote remote,
+    g_settings s_settings settings,
+    g_timers s_timers timers
+);
+world_val_fields!(
+    g_iters s_iters iters,
+    g_substeps s_substeps substeps,
+    g_time s_time time,
+    g_time_scale s_time_scale time_scale
+);
+
+impl World {
+    /// 覚えの欄を読む（無い・None なら None）
+    pub fn cache_get<'py>(slf: &Bound<'py, Self>, f: impl Fn(&WorldCaches) -> &Option<PyObject>) -> R<Option<Bound<'py, PyAny>>> {
+        let b = slf.try_borrow()?;
+        Ok(match f(&b.cache) {
+            Some(o) if !o.is_none(slf.py()) => Some(o.bind(slf.py()).clone()),
+            _ => None,
+        })
+    }
+    pub fn cache_put(slf: &Bound<'_, Self>, f: impl Fn(&mut WorldCaches) -> &mut Option<PyObject>, v: impl IntoPy<PyObject>) -> R<()> {
+        let o = v.into_py(slf.py());
+        *f(&mut slf.try_borrow_mut()?.cache) = Some(o);
+        Ok(())
+    }
+}

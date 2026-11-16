@@ -80,9 +80,36 @@ impl TouchStub {
 // ---------------------------------------------------------------- GameAdapter
 /// 今までの画面の部品（ScriptPanel・BlockEditor・DevicePanel など）が使う game のまね
 #[pyclass(module = "alpedia_core", subclass, dict)]
+#[allow(non_snake_case)]
 pub struct GameAdapter {
     #[pyo3(get, set)]
     v: PyObject,
+    /// U（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_U: Option<PyObject>,
+    /// cam_mode（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cam_mode: Option<PyObject>,
+    /// cfg（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cfg: Option<PyObject>,
+    /// emotes（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_emotes: Option<PyObject>,
+    /// hold（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hold: Option<PyObject>,
+    /// leaving（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_leaving: Option<PyObject>,
+    /// load_errors（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_load_errors: Option<PyObject>,
+    /// mouse_captured（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_mouse_captured: Option<PyObject>,
+    /// scene_root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_scene_root: Option<PyObject>,
+    /// touch_hud（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_touch_hud: Option<PyObject>,
+    /// ui_root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_ui_root: Option<PyObject>,
+    /// vkeys（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_vkeys: Option<PyObject>,
+    /// world（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_world: Option<PyObject>,
 }
 
 #[pymethods]
@@ -90,33 +117,32 @@ impl GameAdapter {
     #[new]
     pub(crate) fn new(py: Python<'_>, viewer: &B<'_>) -> R<Self> {
         let _ = py;
-        Ok(GameAdapter { v: viewer.clone().unbind() })
+        Ok(GameAdapter { a_U: None, a_cam_mode: None, a_cfg: None, a_emotes: None, a_hold: None, a_leaving: None, a_load_errors: None, a_mouse_captured: None, a_scene_root: None, a_touch_hud: None, a_ui_root: None, a_vkeys: None, a_world: None, v: viewer.clone().unbind() })
     }
     pub(crate) fn __init__(slf: &Bound<'_, Self>, viewer: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let u = shim(py)?;
         slf.borrow_mut().v = viewer.clone().unbind();
-        s.setattr("world", ga(viewer, "w")?)?;
-        s.setattr("cfg", ga(viewer, "cfg")?)?;
+        Self::sa_world(slf, ga(viewer, "w")?)?;
+        Self::sa_cfg(slf, ga(viewer, "cfg")?)?;
         let d = PyDict::new_bound(py);
         for (k, n) in [("Entity", "Entity"), ("Text", "Text"), ("Button", "Button"), ("camera", "camera"), ("window", "window"), ("color", "color"),
                        ("held_keys", "held_keys"), ("mouse", "mouse"), ("utime", "time"), ("application", "application")] {
             d.set_item(k, u.getattr(n)?)?;
         }
-        s.setattr("U", d)?;
+        Self::sa_U(slf, d)?;
         let k = PyDict::new_bound(py);
         k.set_item("parent", u.getattr("camera")?.getattr("ui")?)?;
-        s.setattr("ui_root", u.getattr("Entity")?.call((), Some(&k))?)?;
-        s.setattr("scene_root", ga(viewer, "root")?)?; // MOD の 3D の物（DynamicMesh・SceneView）を付ける所
-        s.setattr("hold", false)?; // MOD が世界の時間を止める（ムービーなど）
-        s.setattr("cam_mode", py.None())?;
-        s.setattr("emotes", PyDict::new_bound(py))?;
-        s.setattr("leaving", false)?;
-        s.setattr("load_errors", PyList::empty_bound(py))?;
-        s.setattr("touch_hud", Py::new(py, TouchStub::new(py)?)?)?;
-        s.setattr("vkeys", PyDict::new_bound(py))?;
-        s.setattr("mouse_captured", false)?;
+        Self::sa_ui_root(slf, u.getattr("Entity")?.call((), Some(&k))?)?;
+        Self::sa_scene_root(slf, ga(viewer, "root")?)?; // MOD の 3D の物（DynamicMesh・SceneView）を付ける所
+        Self::sa_hold(slf, false)?; // MOD が世界の時間を止める（ムービーなど）
+        Self::sa_cam_mode(slf, py.None())?;
+        Self::sa_emotes(slf, PyDict::new_bound(py))?;
+        Self::sa_leaving(slf, false)?;
+        Self::sa_load_errors(slf, PyList::empty_bound(py))?;
+        Self::sa_touch_hud(slf, Py::new(py, TouchStub::new(py)?)?)?;
+        Self::sa_vkeys(slf, PyDict::new_bound(py))?;
+        Self::sa_mouse_captured(slf, false)?;
         Ok(())
     }
     #[getter]
@@ -127,13 +153,11 @@ impl GameAdapter {
     }
     #[getter]
     pub(crate) fn third_person<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        let py = slf.py();
-        ga(slf.borrow().v.bind(py), "third_person")
+        ga(&Self::vb(slf), "third_person")
     }
     #[setter]
     pub(crate) fn set_third_person(slf: &Bound<'_, Self>, on: &B<'_>) -> R<()> {
-        let py = slf.py();
-        slf.borrow().v.bind(py).setattr("third_person", on.is_truthy()?)
+        Self::vb(slf).setattr("third_person", on.is_truthy()?)
     }
     pub(crate) fn _camera_hook(slf: &Bound<'_, Self>, on: &B<'_>) -> R<()> {
         let py = slf.py();
@@ -147,12 +171,12 @@ impl GameAdapter {
         let py = slf.py();
         let s = slf.as_any();
         let v = slf.borrow().v.clone_ref(py).into_bound(py);
-        if !ga(s, "cam_mode")?.is_none() || !ga(s, "editor")?.is_none() || ga(&ga(&v, "ui")?, "stack")?.is_truthy()?
-            || ga(&ga(&ga(s, "world")?, "player")?, "seated")?.is_truthy()? {
+        if !Self::ga_cam_mode(slf)?.is_none() || !ga(s, "editor")?.is_none() || ga(&ga(&v, "ui")?, "stack")?.is_truthy()?
+            || ga(&ga(&Self::ga_world(slf)?, "player")?, "seated")?.is_truthy()? {
             return Ok(());
         }
         ga(&v, "held")?.call_method0("clear")?;
-        s.setattr("cam_mode", imp(py, "main.client.camera_mode")?.getattr("CameraMode")?.call1((s,))?)?;
+        Self::sa_cam_mode(slf, imp(py, "main.client.camera_mode")?.getattr("CameraMode")?.call1((s,))?)?;
         s.call_method1("_camera_hook", (true,))?;
         Ok(())
     }
@@ -176,29 +200,27 @@ impl GameAdapter {
             }
         }
         let cls = imp(py, "main.client.keys_panel")?.getattr("KeysPanel")?;
-        let f = imp(py, "functools")?.getattr("partial")?.call1((cls, ga(s, "U")?, ga(s, "cfg")?, ga(&ga(s, "ui_root")?, "parent")?, ga(s, "editor_closed")?, extra))?;
+        let f = imp(py, "functools")?.getattr("partial")?.call1((cls, Self::ga_U(slf)?, Self::ga_cfg(slf)?, ga(&Self::ga_ui_root(slf)?, "parent")?, ga(s, "editor_closed")?, extra))?;
         s.call_method1("_open_panel", (f,))?;
         Ok(())
     }
     #[getter]
     pub(crate) fn paused(slf: &Bound<'_, Self>) -> R<bool> {
-        let py = slf.py();
-        ga(&ga(slf.borrow().v.bind(py), "ui")?, "stack")?.is_truthy()
+        ga(&ga(&Self::vb(slf), "ui")?, "stack")?.is_truthy()
     }
     pub(crate) fn look_vectors<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        let py = slf.py();
-        slf.borrow().v.bind(py).call_method0("look_vectors")
+        Self::vb(slf).call_method0("look_vectors")
     }
     pub(crate) fn exit_camera(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
-        let cm = ga(s, "cam_mode")?;
+        let cm = Self::ga_cam_mode(slf)?;
         if cm.is_none() {
             return Ok(());
         }
         cm.call_method0("destroy")?;
-        s.setattr("cam_mode", s.py().None())?;
+        Self::sa_cam_mode(slf, s.py().None())?;
         s.call_method1("_camera_hook", (false,))?;
-        ga(s, "ui_root")?.setattr("enabled", true)?;
+        Self::ga_ui_root(slf)?.setattr("enabled", true)?;
         s.call_method1("set_mouse_capture", (true,))?;
         Ok(())
     }
@@ -207,8 +229,8 @@ impl GameAdapter {
         let py = slf.py();
         let s = slf.as_any();
         s.call_method1("set_mouse_capture", (false,))?;
-        ga(slf.borrow().v.bind(py), "held")?.call_method0("clear")?;
-        ga(s, "ui_root")?.setattr("enabled", false)?;
+        ga(&Self::vb(slf), "held")?.call_method0("clear")?;
+        Self::ga_ui_root(slf)?.setattr("enabled", false)?;
         match make.call0() {
             Ok(e) => s.setattr("editor", e)?,
             Err(e) if is_exc(py, &e) => {
@@ -220,7 +242,7 @@ impl GameAdapter {
                     shim(py)?.call_method1("destroy", (root,))?;
                 }
                 s.call_method0("editor_closed")?;
-                ga(s, "world")?.call_method1("message", (format!("⚠ 画面を開けませんでした: {}", e.value_bound(py).str()?),))?;
+                Self::ga_world(slf)?.call_method1("message", (format!("⚠ 画面を開けませんでした: {}", e.value_bound(py).str()?),))?;
             }
             Err(e) => return Err(e),
         }
@@ -230,11 +252,10 @@ impl GameAdapter {
     #[pyo3(signature = (action, save=true, status=""))]
     pub(crate) fn _leave(slf: &Bound<'_, Self>, action: &B<'_>, save: bool, status: &str) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        if ga(s, "leaving")?.is_truthy()? {
+        if Self::ga_leaving(slf)?.is_truthy()? {
             return Ok(());
         }
-        s.setattr("leaving", true)?;
+        Self::sa_leaving(slf, true)?;
         let v = slf.borrow().v.clone_ref(py).into_bound(py);
         v.setattr("leave_action", (action, save, status))?;
         v.setattr("quit", true)?;
@@ -242,19 +263,19 @@ impl GameAdapter {
     }
     #[getter]
     pub(crate) fn sel<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        ga(slf.borrow().v.bind(slf.py()), "sel")
+        ga(&Self::vb(slf), "sel")
     }
     #[setter]
     pub(crate) fn set_sel(slf: &Bound<'_, Self>, k: &B<'_>) -> R<()> {
-        slf.borrow().v.bind(slf.py()).setattr("sel", k)
+        Self::vb(slf).setattr("sel", k)
     }
     #[getter]
     pub(crate) fn editor<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        ga(slf.borrow().v.bind(slf.py()), "editor")
+        ga(&Self::vb(slf), "editor")
     }
     #[setter]
     pub(crate) fn set_editor(slf: &Bound<'_, Self>, e: &B<'_>) -> R<()> {
-        slf.borrow().v.bind(slf.py()).setattr("editor", e)
+        Self::vb(slf).setattr("editor", e)
     }
     pub(crate) fn editor_closed(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
@@ -265,16 +286,16 @@ impl GameAdapter {
         Ok(())
     }
     pub(crate) fn set_mouse_capture(slf: &Bound<'_, Self>, on: &B<'_>) -> R<()> {
-        slf.borrow().v.bind(slf.py()).call_method1("set_grab", (on,))?;
+        Self::vb(slf).call_method1("set_grab", (on,))?;
         Ok(())
     }
     // ---- 画面のボタン（touch_ui.TouchHUD）が使う口 ----
     #[getter]
     pub(crate) fn hit<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        ga(slf.borrow().v.bind(slf.py()), "hit")
+        ga(&Self::vb(slf), "hit")
     }
     pub(crate) fn _usable<'py>(slf: &Bound<'py, Self>, hit: &B<'py>) -> R<B<'py>> {
-        slf.borrow().v.bind(slf.py()).call_method1("_usable", (hit,))
+        Self::vb(slf).call_method1("_usable", (hit,))
     }
     /// 画面のボタンがキーを押した（ursina のキーの名前）
     pub(crate) fn input(slf: &Bound<'_, Self>, key: &B<'_>) -> R<()> {
@@ -284,11 +305,11 @@ impl GameAdapter {
         Ok(())
     }
     pub(crate) fn do_remove(slf: &Bound<'_, Self>) -> R<()> {
-        slf.borrow().v.bind(slf.py()).call_method1("_click", (0,))?;
+        Self::vb(slf).call_method1("_click", (0,))?;
         Ok(())
     }
     pub(crate) fn do_place(slf: &Bound<'_, Self>) -> R<()> {
-        slf.borrow().v.bind(slf.py()).call_method1("_click", (1,))?;
+        Self::vb(slf).call_method1("_click", (1,))?;
         Ok(())
     }
     #[pyo3(signature = (hit=None))]
@@ -303,7 +324,7 @@ impl GameAdapter {
     }
     #[pyo3(signature = (radius=2.6))]
     pub(crate) fn nearby_targets<'py>(slf: &Bound<'py, Self>, radius: f64) -> R<B<'py>> {
-        slf.borrow().v.bind(slf.py()).call_method1("nearby_targets", (radius,))
+        Self::vb(slf).call_method1("nearby_targets", (radius,))
     }
     #[pyo3(signature = (t, settings=false))]
     pub(crate) fn do_target(slf: &Bound<'_, Self>, t: &B<'_>, settings: bool) -> R<()> {
@@ -311,17 +332,17 @@ impl GameAdapter {
         if settings || get(t, "kind", py.None())?.eq("p")? {
             slf.call_method1("open_editor", (t.get_item("hit")?,))?;
         } else {
-            slf.borrow().v.bind(py).call_method1("do_interact", (t.get_item("hit")?,))?;
+            Self::vb(slf).call_method1("do_interact", (t.get_item("hit")?,))?;
         }
         Ok(())
     }
     pub(crate) fn touch_action(slf: &Bound<'_, Self>, kind: &B<'_>, x: &B<'_>, y: &B<'_>) -> R<()> {
-        slf.borrow().v.bind(slf.py()).call_method1("touch_action", (kind, x, y))?;
+        Self::vb(slf).call_method1("touch_action", (kind, x, y))?;
         Ok(())
     }
     #[pyo3(signature = (name, volume=1.0))]
     pub(crate) fn sfx(slf: &Bound<'_, Self>, name: &B<'_>, volume: f64) -> R<()> {
-        slf.borrow().v.bind(slf.py()).call_method1("sfx", (name, volume))?;
+        Self::vb(slf).call_method1("sfx", (name, volume))?;
         Ok(())
     }
 }
@@ -335,4 +356,49 @@ pub fn register(m: &Bound<'_, PyModule>) -> R<()> {
     m.add_class::<GameAdapter>()?;
     m.add_function(wrap_pyfunction_bound!(viewer_run, m)?)?;
     Ok(())
+}
+
+// ---------------------------------------------------------------- GameAdapter の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! gameadapter_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl GameAdapter { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl GameAdapter { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+gameadapter_attr_fields!(
+    ga_U sa_U pga_U psa_U a_U "U", ga_cam_mode sa_cam_mode pga_cam_mode psa_cam_mode a_cam_mode "cam_mode", ga_cfg sa_cfg pga_cfg psa_cfg a_cfg "cfg", ga_emotes sa_emotes pga_emotes psa_emotes a_emotes "emotes", ga_hold sa_hold pga_hold psa_hold a_hold "hold", ga_leaving sa_leaving pga_leaving psa_leaving a_leaving "leaving", ga_load_errors sa_load_errors pga_load_errors psa_load_errors a_load_errors "load_errors", ga_mouse_captured sa_mouse_captured pga_mouse_captured psa_mouse_captured a_mouse_captured "mouse_captured", ga_scene_root sa_scene_root pga_scene_root psa_scene_root a_scene_root "scene_root", ga_touch_hud sa_touch_hud pga_touch_hud psa_touch_hud a_touch_hud "touch_hud", ga_ui_root sa_ui_root pga_ui_root psa_ui_root a_ui_root "ui_root", ga_vkeys sa_vkeys pga_vkeys psa_vkeys a_vkeys "vkeys", ga_world sa_world pga_world psa_world a_world "world"
+);
+
+impl GameAdapter {
+    /// 画面（Viewer）。借りたままにしない（Python を呼ぶ間に、MOD がこの物の欄を書き換えても困らないように）
+    pub(crate) fn vb<'py>(slf: &Bound<'py, Self>) -> Bound<'py, PyAny> {
+        slf.borrow().v.bind(slf.py()).clone()
+    }
 }

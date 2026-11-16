@@ -5,7 +5,31 @@ use super::*;
 // ---------------------------------------------------------------- PlanetView
 /// 遠景用の粗い球（キューブスフィア）
 #[pyclass(module = "main.client.render", subclass, dict)]
-pub struct PlanetView {}
+#[allow(non_snake_case)]
+pub struct PlanetView {
+    /// CUT（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_CUT: Option<PyObject>,
+    /// base（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_base: Option<PyObject>,
+    /// cut（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cut: Option<PyObject>,
+    /// dirs（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_dirs: Option<PyObject>,
+    /// frame_key（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_frame_key: Option<PyObject>,
+    /// mesh（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_mesh: Option<PyObject>,
+    /// p（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_p: Option<PyObject>,
+    /// pos（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_pos: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// tris（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_tris: Option<PyObject>,
+    /// verts（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_verts: Option<PyObject>,
+}
 
 #[pymethods]
 impl PlanetView {
@@ -18,19 +42,18 @@ impl PlanetView {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     pub(crate) fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        PlanetView {}
+        PlanetView { a_CUT: None, a_base: None, a_cut: None, a_dirs: None, a_frame_key: None, a_mesh: None, a_p: None, a_pos: None, a_root: None, a_tris: None, a_verts: None }
     }
     #[pyo3(signature = (parent, loader, planet, n=48))]
     pub(crate) fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>, loader: &B<'_>, planet: &B<'_>, n: usize) -> R<()> {
         let _ = loader;
         let py = slf.py();
-        let s = slf.as_any();
         let n = if planet.getattr("has_water")?.is_truthy()? { 96 } else { n }; // 山や海岸線が見えるように細かく
-        s.setattr("p", planet)?;
+        Self::sa_p(slf, planet)?;
         let root = parent.call_method1("attachNewNode", (format!("planet_{}", planet.getattr("id")?.str()?),))?;
-        s.setattr("root", &root)?;
+        Self::sa_root(slf, &root)?;
         let mesh = dmesh(py, &root, "far")?;
-        s.setattr("mesh", &mesh)?;
+        Self::sa_mesh(slf, &mesh)?;
         let step = 2.0 / n as f64;
         let g: Vec<f64> = (0..=n).map(|i| if i == n { 1.0 } else { i as f64 * step + -1.0 }).collect();
         let m1 = n + 1;
@@ -97,12 +120,12 @@ impl PlanetView {
             rr[9] = 1.0;
         }
         let base_o = f32_2(py, base, 12)?;
-        s.setattr("base", &base_o)?;
-        s.setattr("tris", &tris_o)?;
-        s.setattr("dirs", &dirs_o)?;
-        s.setattr("pos", &pos_o)?;
-        s.setattr("cut", py.None())?;
-        s.setattr("frame_key", py.None())?;
+        Self::sa_base(slf, &base_o)?;
+        Self::sa_tris(slf, &tris_o)?;
+        Self::sa_dirs(slf, &dirs_o)?;
+        Self::sa_pos(slf, &pos_o)?;
+        Self::sa_cut(slf, py.None())?;
+        Self::sa_frame_key(slf, py.None())?;
         let mut e = 0.0f64;
         for t in tris.chunks(3) {
             let (a, c) = (t[0] as usize, t[2] as usize);
@@ -110,7 +133,7 @@ impl PlanetView {
             e = e.max(rnorm(&d));
         }
         // プレイヤーのまわりは詳細な地表があるので、遠景の球をくり抜く（洞窟や穴を覆わないように）
-        s.setattr("CUT", (46.0 - e).max(0.0))?;
+        Self::sa_CUT(slf, (46.0 - e).max(0.0))?;
         mesh.call_method1("set", (&base_o, &tris_o))?;
         let _ = normals;
         Ok(())
@@ -120,12 +143,12 @@ impl PlanetView {
     pub(crate) fn _sunk<'py>(slf: &Bound<'py, Self>, frame: &B<'py>) -> R<B<'py>> {
         let py = slf.py();
         let s = slf.as_any();
-        let base = s.getattr("base")?;
+        let base = Self::ga_base(slf)?;
         if frame.is_none() {
             return Ok(base);
         }
         let (up, t1, t2, r0, half) = (v3(&frame.get_item(0)?)?, v3(&frame.get_item(1)?)?, v3(&frame.get_item(2)?)?, f64of(&frame.get_item(3)?)?, f64of(&frame.get_item(4)?)?);
-        let q_o = s.getattr("pos")?;
+        let q_o = Self::ga_pos(slf)?;
         let c = matvec(py, &q_o, up)?;
         let qa = matvec(py, &q_o, t1)?;
         let qb = matvec(py, &q_o, t2)?;
@@ -141,7 +164,7 @@ impl PlanetView {
         if !any {
             return Ok(base);
         }
-        let (tris, nt) = i2(&s.getattr("tris")?, 3)?;
+        let (tris, nt) = i2(&Self::ga_tris(slf)?, 3)?;
         let mut bad = vec![false; nv];
         for t in 0..nt {
             let tr = &tris[3 * t..3 * t + 3];
@@ -156,7 +179,7 @@ impl PlanetView {
             return Ok(base);
         }
         let q = a2(&q_o, 3)?;
-        let dirs = a2(&s.getattr("dirs")?, 3)?;
+        let dirs = a2(&Self::ga_dirs(slf)?, 3)?;
         let sk = f64of(&s.getattr("SINK")?)?;
         let npm = np(py)?;
         let v = base.call_method0("copy")?;
@@ -178,10 +201,10 @@ impl PlanetView {
     pub(crate) fn update(slf: &Bound<'_, Self>, origin: &B<'_>, player_pos: Option<&B<'_>>, patch_frame: Option<&B<'_>>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let p = s.getattr("p")?;
+        let p = Self::ga_p(slf)?;
         let ctr = v3(&p.getattr("center")?)?;
         let o = v3(origin)?;
-        s.getattr("root")?.call_method1("setPos", (ctr[0] - o[0], ctr[1] - o[1], ctr[2] - o[2]))?;
+        Self::ga_root(slf)?.call_method1("setPos", (ctr[0] - o[0], ctr[1] - o[1], ctr[2] - o[2]))?;
         let pf = patch_frame.filter(|x| !x.is_none());
         let fkey = match pf {
             None => none(py),
@@ -196,10 +219,10 @@ impl PlanetView {
                 PyTuple::new_bound(py, r).into_any()
             }
         };
-        if !fkey.eq(s.getattr("frame_key")?)? {
-            s.setattr("frame_key", &fkey)?;
-            s.setattr("verts", Self::_sunk(slf, &pf.cloned().unwrap_or_else(|| none(py)))?)?;
-            s.setattr("cut", "redo")?;
+        if !fkey.eq(Self::ga_frame_key(slf)?)? {
+            Self::sa_frame_key(slf, &fkey)?;
+            Self::sa_verts(slf, Self::_sunk(slf, &pf.cloned().unwrap_or_else(|| none(py)))?)?;
+            Self::sa_cut(slf, "redo")?;
         }
         let radius = f64of(&p.getattr("radius")?)?;
         let mut cut: Option<[f64; 3]> = None;
@@ -212,7 +235,7 @@ impl PlanetView {
                 cut = Some([rel[0] / d, rel[1] / d, rel[2] / d]);
             }
         }
-        let cur = s.getattr("cut")?;
+        let cur = Self::ga_cut(slf)?;
         if cut.is_none() && cur.is_none() {
             return Ok(());
         }
@@ -227,11 +250,11 @@ impl PlanetView {
                 }
             }
         }
-        s.setattr("cut", match cut { Some(c) => np3(py, c), None => none(py) })?;
-        let tris_o = s.getattr("tris")?;
+        Self::sa_cut(slf, match cut { Some(c) => np3(py, c), None => none(py) })?;
+        let tris_o = Self::ga_tris(slf)?;
         let tris_out = if let Some(cv) = cut {
-            let dirs = a2(&s.getattr("dirs")?, 3)?;
-            let cutr = f64of(&s.getattr("CUT")?)?;
+            let dirs = a2(&Self::ga_dirs(slf)?, 3)?;
+            let cutr = f64of(&Self::ga_CUT(slf)?)?;
             let near: Vec<bool> = (0..dirs.n).map(|i| {
                 let d = dirs.r3(i);
                 rnorm(&[d[0] - cv[0], d[1] - cv[1], d[2] - cv[2]]) * radius < cutr
@@ -248,8 +271,8 @@ impl PlanetView {
         } else {
             tris_o
         };
-        let verts = gd(s, "verts", s.getattr("base")?);
-        s.getattr("mesh")?.call_method1("set", (verts, tris_out))?;
+        let verts = gd(s, "verts", Self::ga_base(slf)?);
+        Self::ga_mesh(slf)?.call_method1("set", (verts, tris_out))?;
         Ok(())
     }
 }
@@ -257,75 +280,101 @@ impl PlanetView {
 // ---------------------------------------------------------------- TerrainPatch
 /// プレイヤー周辺の詳細な地表（掘削跡も反映）と水面
 #[pyclass(module = "main.client.render", subclass, dict)]
-pub struct TerrainPatch {}
+pub struct TerrainPatch {
+    /// anchor（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_anchor: Option<PyObject>,
+    /// carve_version（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_carve_version: Option<PyObject>,
+    /// cells（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cells: Option<PyObject>,
+    /// center（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_center: Option<PyObject>,
+    /// frame（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_frame: Option<PyObject>,
+    /// loader（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_loader: Option<PyObject>,
+    /// mesh（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_mesh: Option<PyObject>,
+    /// planet（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_planet: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// shown（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_shown: Option<PyObject>,
+    /// step（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_step: Option<PyObject>,
+    /// version（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_version: Option<PyObject>,
+    /// water（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_water: Option<PyObject>,
+}
 
 #[pymethods]
 impl TerrainPatch {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     pub(crate) fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        TerrainPatch {}
+        TerrainPatch { a_anchor: None, a_carve_version: None, a_cells: None, a_center: None, a_frame: None, a_loader: None, a_mesh: None, a_planet: None, a_root: None, a_shown: None, a_step: None, a_version: None, a_water: None }
     }
     #[pyo3(signature = (parent, loader, cells=48, step=1.0))]
     pub(crate) fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>, loader: &B<'_>, cells: i64, step: f64) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let root = parent.call_method1("attachNewNode", ("terrain_patch",))?;
-        s.setattr("root", &root)?;
-        s.setattr("mesh", dmesh(py, &root, "patch")?)?;
+        Self::sa_root(slf, &root)?;
+        Self::sa_mesh(slf, dmesh(py, &root, "patch")?)?;
         let w = dmesh(py, &root, "water")?;
         let n = w.getattr("np")?;
         n.call_method1("setTransparency", (true,))?;
         n.call_method1("setDepthWrite", (false,))?;
         n.call_method1("setBin", ("transparent", 10))?;
-        s.setattr("water", w)?;
-        s.setattr("loader", loader)?;
-        s.setattr("cells", cells)?;
-        s.setattr("step", step)?;
-        s.setattr("anchor", py.None())?;
-        s.setattr("planet", py.None())?;
-        s.setattr("version", -1)?;
-        s.setattr("carve_version", -1)?;
-        s.setattr("center", np(py)?.call_method1("zeros", (3,))?)?;
+        Self::sa_water(slf, w)?;
+        Self::sa_loader(slf, loader)?;
+        Self::sa_cells(slf, cells)?;
+        Self::sa_step(slf, step)?;
+        Self::sa_anchor(slf, py.None())?;
+        Self::sa_planet(slf, py.None())?;
+        Self::sa_version(slf, -1)?;
+        Self::sa_carve_version(slf, -1)?;
+        Self::sa_center(slf, np(py)?.call_method1("zeros", (3,))?)?;
         Ok(())
     }
     /// この惑星の上に詳細な地表を出しているなら (上, 接線1, 接線2, 半径, 半幅)（遠景の球を沈める範囲）
     pub(crate) fn frame_for<'py>(slf: &Bound<'py, Self>, planet: &B<'py>) -> R<B<'py>> {
         let py = slf.py();
         let s = slf.as_any();
-        if !s.getattr("planet")?.is(planet) || !gd(s, "shown", tb(py, false)).is_truthy()? || s.getattr("anchor")?.is_none() {
+        if !Self::ga_planet(slf)?.is(planet) || !gd(s, "shown", tb(py, false)).is_truthy()? || Self::ga_anchor(slf)?.is_none() {
             return Ok(none(py));
         }
-        s.getattr("frame")
+        Self::ga_frame(slf)
     }
     #[pyo3(signature = (planet, player_pos, origin, carve=None))]
     pub(crate) fn update(slf: &Bound<'_, Self>, planet: &B<'_>, player_pos: &B<'_>, origin: &B<'_>, carve: Option<&B<'_>>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let root = s.getattr("root")?;
+        let root = Self::ga_root(slf)?;
         let pp = v3(player_pos)?;
         if planet.is_none() || {
             let c = v3(&planet.getattr("center")?)?;
             npnorm(py, [pp[0] - c[0], pp[1] - c[1], pp[2] - c[2]])? - f64of(&planet.getattr("radius")?)? > 400.0
         } {
             root.call_method0("hide")?;
-            s.setattr("shown", false)?;
+            Self::sa_shown(slf, false)?;
             return Ok(());
         }
-        s.setattr("shown", true)?;
+        Self::sa_shown(slf, true)?;
         root.call_method0("show")?;
         let carve = carve.filter(|c| !c.is_none());
         let cv = match carve { Some(c) => c.getattr("version")?, None => tb(py, -1) };
-        let anchor = s.getattr("anchor")?;
-        let need = !s.getattr("planet")?.is(planet) || anchor.is_none() || !s.getattr("version")?.eq(planet.getattr("version")?)?
-            || !cv.eq(s.getattr("carve_version")?)? || {
+        let anchor = Self::ga_anchor(slf)?;
+        let need = !Self::ga_planet(slf)?.is(planet) || anchor.is_none() || !Self::ga_version(slf)?.eq(planet.getattr("version")?)?
+            || !cv.eq(Self::ga_carve_version(slf)?)? || {
                 let a = v3(&anchor)?;
-                npnorm(py, [pp[0] - a[0], pp[1] - a[1], pp[2] - a[2]])? > f64of(&s.getattr("step")?)? * f64of(&s.getattr("cells")?)? * 0.25
+                npnorm(py, [pp[0] - a[0], pp[1] - a[1], pp[2] - a[2]])? > f64of(&Self::ga_step(slf)?)? * f64of(&Self::ga_cells(slf)?)? * 0.25
             };
         if need {
             s.call_method1("_build", (planet, player_pos, carve.cloned().unwrap_or_else(|| none(py))))?;
         }
-        let c = v3(&s.getattr("center")?)?;
+        let c = v3(&Self::ga_center(slf)?)?;
         let o = v3(origin)?;
         root.call_method1("setPos", (c[0] - o[0], c[1] - o[1], c[2] - o[2]))?;
         Ok(())
@@ -333,12 +382,11 @@ impl TerrainPatch {
     #[pyo3(signature = (pl, player_pos, carve=None))]
     pub(crate) fn _build(slf: &Bound<'_, Self>, pl: &B<'_>, player_pos: &B<'_>, carve: Option<&B<'_>>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let npm = np(py)?;
         let carve = carve.filter(|c| !c.is_none());
-        s.setattr("planet", pl)?;
-        s.setattr("version", pl.getattr("version")?)?;
-        s.setattr("carve_version", match carve { Some(c) => c.getattr("version")?, None => tb(py, -1) })?;
+        Self::sa_planet(slf, pl)?;
+        Self::sa_version(slf, pl.getattr("version")?)?;
+        Self::sa_carve_version(slf, match carve { Some(c) => c.getattr("version")?, None => tb(py, -1) })?;
         let use_carve = match carve { Some(c) => c.getattr("enabled")?.is_truthy()?, None => false };
         let up_o = pl.call_method1("up", (player_pos,))?;
         let up = v3(&up_o)?;
@@ -349,9 +397,9 @@ impl TerrainPatch {
         let n1 = npnorm(py, t1)?;
         t1 = [t1[0] / n1, t1[1] / n1, t1[2] / n1];
         let t2 = cross(up, t1);
-        let n: i64 = s.getattr("cells")?.extract()?;
-        let step = f64of(&s.getattr("step")?)?;
-        s.setattr("frame", (np3(py, up), np3(py, t1), np3(py, t2), r0, n as f64 * step))?;
+        let n: i64 = Self::ga_cells(slf)?.extract()?;
+        let step = f64of(&Self::ga_step(slf)?)?;
+        Self::sa_frame(slf, (np3(py, up), np3(py, t1), np3(py, t2), r0, n as f64 * step))?;
         let m = (2 * n + 1) as usize;
         let g: Vec<f64> = (-n..=n).map(|k| k as f64 * step).collect();
         let nv = m * m;
@@ -418,9 +466,9 @@ impl TerrainPatch {
             }
         }
         let pos: Vec<f64> = (0..nv * 3).map(|j| center[j % 3] + d[j] * r[j / 3]).collect();
-        s.setattr("anchor", player_pos.call_method0("copy")?)?;
+        Self::sa_anchor(slf, player_pos.call_method0("copy")?)?;
         let cen = [center[0] + up[0] * r0, center[1] + up[1] * r0, center[2] + up[2] * r0];
-        s.setattr("center", np3(py, cen))?;
+        Self::sa_center(slf, np3(py, cen))?;
         let rel: Vec<f64> = (0..nv * 3).map(|j| pos[j] - cen[j % 3]).collect();
         // np.gradient（中は中心差分、端は片側差分）
         let at = |a: usize, b: usize, k: usize| rel[(a * m + b) * 3 + k];
@@ -496,15 +544,15 @@ impl TerrainPatch {
             quads.retain(|q| !q.iter().all(|&k| inside[k as usize]));
         }
         let tris: Vec<i64> = quads.iter().flat_map(|q| [q[0], q[1], q[2], q[0], q[2], q[3]]).collect();
-        let mesh = s.getattr("mesh")?;
+        let mesh = Self::ga_mesh(slf)?;
         mesh.call_method1("set", (f32_2(py, v, 12)?, i64_2(py, tris, 3)?))?;
         let rm = rmod(py)?;
-        let tex = rm.call_method1("load_texture", (s.getattr("loader")?, get(&pl.getattr("defn")?, "texture", py.None())?))?;
+        let tex = rm.call_method1("load_texture", (Self::ga_loader(slf)?, get(&pl.getattr("defn")?, "texture", py.None())?))?;
         if tex.is_truthy()? {
             mesh.getattr("np")?.call_method1("setTexture", (tex, 1))?;
         }
         // 水面
-        let water = s.getattr("water")?;
+        let water = Self::ga_water(slf)?;
         if pl.getattr("has_water")?.is_truthy()? {
             // 掘った穴に満ちた水：穴の上の格子点（少し外まで）は、その水面の高さにする（外側は地面の下で見えない）
             let mut wr = wr.clone();
@@ -551,3 +599,79 @@ impl TerrainPatch {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------- TerrainPatch の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! terrainpatch_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl TerrainPatch { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl TerrainPatch { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+terrainpatch_attr_fields!(
+    ga_anchor sa_anchor pga_anchor psa_anchor a_anchor "anchor", ga_carve_version sa_carve_version pga_carve_version psa_carve_version a_carve_version "carve_version", ga_cells sa_cells pga_cells psa_cells a_cells "cells", ga_center sa_center pga_center psa_center a_center "center", ga_frame sa_frame pga_frame psa_frame a_frame "frame", ga_loader sa_loader pga_loader psa_loader a_loader "loader", ga_mesh sa_mesh pga_mesh psa_mesh a_mesh "mesh", ga_planet sa_planet pga_planet psa_planet a_planet "planet", ga_root sa_root pga_root psa_root a_root "root", ga_shown sa_shown pga_shown psa_shown a_shown "shown", ga_step sa_step pga_step psa_step a_step "step", ga_version sa_version pga_version psa_version a_version "version", ga_water sa_water pga_water psa_water a_water "water"
+);
+
+// ---------------------------------------------------------------- PlanetView の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! planetview_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl PlanetView { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl PlanetView { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+planetview_attr_fields!(
+    ga_CUT sa_CUT pga_CUT psa_CUT a_CUT "CUT", ga_base sa_base pga_base psa_base a_base "base", ga_cut sa_cut pga_cut psa_cut a_cut "cut", ga_dirs sa_dirs pga_dirs psa_dirs a_dirs "dirs", ga_frame_key sa_frame_key pga_frame_key psa_frame_key a_frame_key "frame_key", ga_mesh sa_mesh pga_mesh psa_mesh a_mesh "mesh", ga_p sa_p pga_p psa_p a_p "p", ga_pos sa_pos pga_pos psa_pos a_pos "pos", ga_root sa_root pga_root psa_root a_root "root", ga_tris sa_tris pga_tris psa_tris a_tris "tris", ga_verts sa_verts pga_verts psa_verts a_verts "verts"
+);

@@ -3,6 +3,8 @@
 //! キーのボタンを押してから、割り当てたいキーを押すと変わる（Esc でやめる）。ほかの操作と同じキーなら入れ替える。
 //! 設定は config/settings.json の controls に保存する。
 
+use crate::game::world::{wld, World};
+use crate::game::construct::{con, Construct};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
@@ -79,14 +81,40 @@ fn action_label(py: Python<'_>, aid: &B<'_>) -> R<String> {
 }
 
 #[pyclass(module = "main.client.keys_panel", subclass, dict)]
-pub struct KeysPanel {}
+#[allow(non_snake_case)]
+pub struct KeysPanel {
+    /// Button（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_Button: Option<PyObject>,
+    /// Text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_Text: Option<PyObject>,
+    /// U（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_U: Option<PyObject>,
+    /// btns（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_btns: Option<PyObject>,
+    /// cfg（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cfg: Option<PyObject>,
+    /// color（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_color: Option<PyObject>,
+    /// keys（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_keys: Option<PyObject>,
+    /// on_change（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_on_change: Option<PyObject>,
+    /// on_close（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_on_close: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// status（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_status: Option<PyObject>,
+    /// waiting（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_waiting: Option<PyObject>,
+}
 
 #[pymethods]
 impl KeysPanel {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        KeysPanel {}
+        KeysPanel { a_Button: None, a_Text: None, a_U: None, a_btns: None, a_cfg: None, a_color: None, a_keys: None, a_on_change: None, a_on_close: None, a_root: None, a_status: None, a_waiting: None }
     }
     #[pyo3(signature = (u, cfg, parent, on_close, extra_help=None, on_change=None))]
     fn __init__(slf: &Bound<'_, Self>, u: &B<'_>, cfg: &B<'_>, parent: &B<'_>, on_close: &B<'_>, extra_help: Option<&B<'_>>, on_change: Option<&B<'_>>) -> R<()> {
@@ -94,15 +122,15 @@ impl KeysPanel {
         let s = slf.as_any();
         let ur = ursina(py)?;
         let (entity, text, button, color) = (ur.getattr("Entity")?, ur.getattr("Text")?, ur.getattr("Button")?, ur.getattr("color")?);
-        s.setattr("U", u)?;
-        s.setattr("cfg", cfg)?;
-        s.setattr("on_close", on_close)?;
-        s.setattr("on_change", on_change.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None()))?;
-        s.setattr("color", &color)?;
-        s.setattr("Button", &button)?;
-        s.setattr("Text", &text)?;
+        Self::sa_U(slf, u)?;
+        Self::sa_cfg(slf, cfg)?;
+        Self::sa_on_close(slf, on_close)?;
+        Self::sa_on_change(slf, on_change.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None()))?;
+        Self::sa_color(slf, &color)?;
+        Self::sa_Button(slf, &button)?;
+        Self::sa_Text(slf, &text)?;
         let root = entity.call((), Some(&kw(py, vec![("parent", parent.clone().unbind())])?))?;
-        s.setattr("root", &root)?;
+        Self::sa_root(slf, &root)?;
         let rgba = |r: f64, g: f64, b: f64, a: f64| -> R<PyObject> { Ok(color.call_method1("rgba", (r, g, b, a))?.unbind()) };
         let rgb = |r: f64, g: f64, b: f64| -> R<PyObject> { Ok(color.call_method1("rgb", (r, g, b))?.unbind()) };
         let r_ = || root.clone().unbind();
@@ -112,11 +140,11 @@ impl KeysPanel {
         text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "操作とキー設定")), ("position", po(py, (0, 0.42))), ("origin", po(py, (0, 0))), ("scale", po(py, 1.4))])?))?;
         text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "キーのボタンを押してから、割り当てたいキーを押します（Esc でやめる）")),
             ("position", po(py, (0, 0.37))), ("origin", po(py, (0, 0))), ("scale", po(py, 0.65)), ("color", color.getattr("light_gray")?.unbind())])?))?;
-        s.setattr("waiting", py.None())?;
-        s.setattr("status", text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (0, -0.335))), ("origin", po(py, (0, 0))),
+        Self::sa_waiting(slf, py.None())?;
+        Self::sa_status(slf, text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (0, -0.335))), ("origin", po(py, (0, 0))),
             ("scale", po(py, 0.7)), ("color", color.getattr("orange")?.unbind())])?))?)?;
         let btns = PyDict::new_bound(py);
-        s.setattr("btns", &btns)?;
+        Self::sa_btns(slf, &btns)?;
         let c = cfg.get_item("controls")?;
         for (k, a) in kp(py)?.getattr("ACTIONS")?.iter()?.enumerate() {
             let a = a?;
@@ -143,26 +171,25 @@ impl KeysPanel {
         let b = button.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "閉じる")), ("position", po(py, (0.15, -0.4))), ("scale", po(py, (0.22, 0.05))),
             ("color", rgb(0.2, 0.5, 0.3)?), ("text_size", po(py, 0.75))])?))?;
         b.setattr("on_click", s.getattr("close")?)?;
-        s.setattr("keys", key_catcher(py, &root, s, "_key")?)?;
+        Self::sa_keys(slf, key_catcher(py, &root, s, "_key")?)?;
         Ok(())
     }
     fn _listen(slf: &Bound<'_, Self>, aid: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("waiting", aid)?;
-        let color = s.getattr("color")?;
-        for kv in s.getattr("btns")?.call_method0("items")?.iter()? {
+        Self::sa_waiting(slf, aid)?;
+        let color = Self::ga_color(slf)?;
+        for kv in Self::ga_btns(slf)?.call_method0("items")?.iter()? {
             let kv = kv?;
             let c = if kv.get_item(0)?.eq(aid)? { color.call_method1("rgb", (0.75, 0.5, 0.15))? } else { color.call_method1("rgb", (0.22, 0.32, 0.45))? };
             kv.get_item(1)?.setattr("color", c)?;
         }
-        s.getattr("status")?.setattr("text", format!("「{}」に割り当てるキーを押してください", action_label(py, aid)?))?;
+        Self::ga_status(slf)?.setattr("text", format!("「{}」に割り当てるキーを押してください", action_label(py, aid)?))?;
         Ok(())
     }
     fn _key(slf: &Bound<'_, Self>, key: &str) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let waiting = s.getattr("waiting")?;
+        let waiting = Self::ga_waiting(slf)?;
         if waiting.is_none() {
             if key == "escape" {
                 s.call_method0("close")?;
@@ -173,16 +200,16 @@ impl KeysPanel {
             return Ok(());
         }
         let aid = waiting;
-        s.setattr("waiting", py.None())?;
-        let color = s.getattr("color")?;
-        for b in s.getattr("btns")?.call_method0("values")?.iter()? {
+        Self::sa_waiting(slf, py.None())?;
+        let color = Self::ga_color(slf)?;
+        for b in Self::ga_btns(slf)?.call_method0("values")?.iter()? {
             b?.setattr("color", color.call_method1("rgb", (0.22, 0.32, 0.45))?)?;
         }
         if key == "escape" {
-            s.getattr("status")?.setattr("text", "やめました")?;
+            Self::ga_status(slf)?.setattr("text", "やめました")?;
             return Ok(());
         }
-        let c = s.getattr("cfg")?.get_item("controls")?;
+        let c = Self::ga_cfg(slf)?.get_item("controls")?;
         let old = c.call_method1("get", (&aid,))?;
         let mut other = py.None().into_bound(py);
         for a in kp(py)?.getattr("ACTIONS")?.iter()? {
@@ -205,33 +232,32 @@ impl KeysPanel {
         let py = slf.py();
         let s = slf.as_any();
         let defaults = imp(py, "main.config")?.getattr("DEFAULTS")?.get_item("controls")?;
-        let c = s.getattr("cfg")?.get_item("controls")?;
+        let c = Self::ga_cfg(slf)?.get_item("controls")?;
         for a in kp(py)?.getattr("ACTIONS")?.iter()? {
             let aid = a?.get_item(0)?;
             c.set_item(&aid, defaults.call_method1("get", (&aid, ""))?)?;
         }
-        s.setattr("waiting", py.None())?;
+        Self::sa_waiting(slf, py.None())?;
         s.call_method1("_save", ("初期値に戻しました",))?;
         Ok(())
     }
     fn _save(slf: &Bound<'_, Self>, msg: &str) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let cfg = s.getattr("cfg")?;
+        let cfg = Self::ga_cfg(slf)?;
         let c = cfg.get_item("controls")?;
-        for kv in s.getattr("btns")?.call_method0("items")?.iter()? {
+        for kv in Self::ga_btns(slf)?.call_method0("items")?.iter()? {
             let kv = kv?;
             kv.get_item(1)?.setattr("text", key_name(py, &c.call_method1("get", (kv.get_item(0)?, ""))?)?)?;
         }
         match imp(py, "main.client.menu").and_then(|m| m.call_method1("save_config", (&cfg,))) {
-            Ok(_) => s.getattr("status")?.setattr("text", msg)?,
+            Ok(_) => Self::ga_status(slf)?.setattr("text", msg)?,
             Err(e) if e.is_instance_of::<PyException>(py) => {
                 log_exc(py, "keys", &e, "設定を保存できません")?;
-                s.getattr("status")?.setattr("text", format!("保存できません: {}", e.value_bound(py).str()?))?;
+                Self::ga_status(slf)?.setattr("text", format!("保存できません: {}", e.value_bound(py).str()?))?;
             }
             Err(e) => return Err(e),
         }
-        let oc = s.getattr("on_change")?;
+        let oc = Self::ga_on_change(slf)?;
         if oc.is_truthy()? {
             oc.call0()?;
         }
@@ -239,9 +265,8 @@ impl KeysPanel {
     }
     fn close(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        super::client_misc::ui_destroy(py, &s.getattr("root")?, &PyTuple::empty_bound(py), None)?;
-        let oc = s.getattr("on_close")?;
+        super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)?;
+        let oc = Self::ga_on_close(slf)?;
         if oc.is_truthy()? {
             oc.call0()?;
         }
@@ -293,7 +318,7 @@ fn dui(py: Python<'_>) -> R<B<'_>> {
 #[pyfunction]
 pub fn dui_same_named<'py>(c: &B<'py>, name: &B<'py>) -> R<Vec<usize>> {
     let mut out = vec![];
-    for (k, d) in c.getattr("devs")?.iter()?.enumerate() {
+    for (k, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
         let d = d?;
         if d.is_truthy()? && d.get_item("name")?.eq(name)? {
             out.push(k);
@@ -309,7 +334,7 @@ pub fn dui_number_same_named(py: Python<'_>, c: &B<'_>, name: &B<'_>) -> R<i64> 
     if idx.len() < 2 {
         return Ok(0);
     }
-    let cells = c.getattr("cells")?;
+    let cells = Construct::g_cells(con(&c)?)?;
     let mut keyed = vec![];
     for &k in &idx {
         let cl: Vec<i64> = cells.get_item(k)?.extract()?;
@@ -317,7 +342,7 @@ pub fn dui_number_same_named(py: Python<'_>, c: &B<'_>, name: &B<'_>) -> R<i64> 
     }
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
     idx = keyed.into_iter().map(|x| x.1).collect();
-    let devs = c.getattr("devs")?;
+    let devs = Construct::g_devs(con(&c)?)?;
     let mut used = std::collections::HashSet::new();
     for d in devs.iter()? {
         let d = d?;
@@ -365,8 +390,8 @@ fn replace_dev(x: &B<'_>, old: &B<'_>, new: &B<'_>, hit: &mut bool) -> R<()> {
 pub fn dui_update_programs(py: Python<'_>, world: &B<'_>, c: &B<'_>, old: &B<'_>, new: &B<'_>) -> R<i64> {
     let b = imp(py, "main.blocks")?;
     let mut count = 0;
-    let scripts = world.getattr("dir")?.call_method1("__truediv__", ("scripts",))?;
-    for d in c.getattr("devs")?.iter()? {
+    let scripts = World::g_dir(wld(&world)?)?.call_method1("__truediv__", ("scripts",))?;
+    for d in Construct::g_devs(con(&c)?)?.iter()? {
         let d = d?;
         if !d.is_truthy()? {
             continue;
@@ -426,14 +451,42 @@ pub fn dui_find_code_font<'py>(py: Python<'py>, cfg: &B<'py>) -> R<B<'py>> {
 
 /// 機器の名前などを設定するメニュー（ursina のまね）。owner がいれば、その上に重ねて開く（エディタなどから）
 #[pyclass(module = "main.client.device_ui", name = "UDevicePanel", subclass, dict)]
-pub struct UDevicePanel {}
+#[allow(non_snake_case)]
+pub struct UDevicePanel {
+    /// U（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_U: Option<PyObject>,
+    /// c（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_c: Option<PyObject>,
+    /// cell（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cell: Option<PyObject>,
+    /// default_name（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_default_name: Option<PyObject>,
+    /// field（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_field: Option<PyObject>,
+    /// game（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_game: Option<PyObject>,
+    /// info（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_info: Option<PyObject>,
+    /// keys（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_keys: Option<PyObject>,
+    /// owner（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_owner: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// type_name（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_type_name: Option<PyObject>,
+    /// valve_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_valve_text: Option<PyObject>,
+    /// world（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_world: Option<PyObject>,
+}
 
 #[pymethods]
 impl UDevicePanel {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        UDevicePanel {}
+        UDevicePanel { a_U: None, a_c: None, a_cell: None, a_default_name: None, a_field: None, a_game: None, a_info: None, a_keys: None, a_owner: None, a_root: None, a_type_name: None, a_valve_text: None, a_world: None }
     }
     #[pyo3(signature = (game, construct, index, owner=None))]
     fn __init__(slf: &Bound<'_, Self>, game: &B<'_>, construct: &B<'_>, index: &B<'_>, owner: Option<&B<'_>>) -> R<()> {
@@ -443,17 +496,17 @@ impl UDevicePanel {
         let (entity, text, button, inputf, camera, color, mouse) = (ur.getattr("Entity")?, ur.getattr("Text")?, ur.getattr("Button")?,
             ur.getattr("InputField")?, ur.getattr("camera")?, ur.getattr("color")?, ur.getattr("mouse")?);
         let owner = owner.cloned().unwrap_or_else(|| py.None().into_bound(py));
-        s.setattr("game", game)?;
-        s.setattr("world", game.getattr("world")?)?;
-        s.setattr("c", construct)?;
-        s.setattr("cell", construct.getattr("cells")?.get_item(index)?)?;
-        s.setattr("owner", &owner)?;
+        Self::sa_game(slf, game)?;
+        Self::sa_world(slf, game.getattr("world")?)?;
+        Self::sa_c(slf, construct)?;
+        Self::sa_cell(slf, Construct::g_cells(con(&construct)?)?.get_item(index)?)?;
+        Self::sa_owner(slf, &owner)?;
         let u = PyDict::new_bound(py);
         u.set_item("Entity", &entity)?;
         u.set_item("Text", &text)?;
         u.set_item("Button", &button)?;
         u.set_item("color", &color)?;
-        s.setattr("U", u)?;
+        Self::sa_U(slf, u)?;
         mouse.setattr("locked", false)?;
         if !owner.is_none() {
             owner.setattr("modal", s)?;
@@ -463,15 +516,15 @@ impl UDevicePanel {
                 }
             }
         }
-        let d = construct.getattr("devs")?.get_item(index)?;
+        let d = Construct::g_devs(con(&construct)?)?.get_item(index)?;
         let dd = construct.getattr("reg")?.call_method1("device", (d.get_item("def")?,))?;
         let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
         let ty = dd.call_method1("get", ("type",))?;
-        s.setattr("default_name", dd.call_method1("get", ("name", d.get_item("def")?))?)?;
+        Self::sa_default_name(slf, dd.call_method1("get", ("name", d.get_item("def")?))?)?;
         let type_name = dui(py)?.getattr("TYPE_NAMES")?.call_method1("get", (&ty, dd.call_method1("get", ("type", "機器"))?))?;
-        s.setattr("type_name", &type_name)?;
+        Self::sa_type_name(slf, &type_name)?;
         let root = entity.call((), Some(&kw(py, vec![("parent", camera.getattr("ui")?.unbind()), ("z", po(py, -0.5))])?))?;
-        s.setattr("root", &root)?;
+        Self::sa_root(slf, &root)?;
         let rgba = |r: f64, g: f64, b: f64, a: f64| -> R<PyObject> { Ok(color.call_method1("rgba", (r, g, b, a))?.unbind()) };
         let rgb = |r: f64, g: f64, b: f64| -> R<PyObject> { Ok(color.call_method1("rgb", (r, g, b))?.unbind()) };
         let r_ = || root.clone().unbind();
@@ -496,7 +549,7 @@ impl UDevicePanel {
         text.setattr("default_monospace_font", old_mono)?;
         app.setattr("fonts_folder", old_folder)?;
         let field = field?;
-        s.setattr("field", &field)?;
+        Self::sa_field(slf, &field)?;
         field.setattr("submit_on", vec!["enter"])?;
         field.setattr("on_submit", s.getattr("ok")?)?;
         let btn = |t: &str, pos: (f64, f64), f: B<'_>, w: f64, col: Option<PyObject>, ts: f64| -> R<B<'_>> {
@@ -505,19 +558,19 @@ impl UDevicePanel {
             b.setattr("on_click", f)?;
             Ok(b)
         };
-        btn("既定の名前", (-0.27, 0.16), partial(&s.getattr("set_text")?, vec![s.getattr("default_name")?.unbind()])?, 0.17, None, 0.7)?;
+        btn("既定の名前", (-0.27, 0.16), partial(&s.getattr("set_text")?, vec![Self::ga_default_name(slf)?.unbind()])?, 0.17, None, 0.7)?;
         btn("1文字消す", (-0.09, 0.16), s.getattr("backspace")?, 0.17, None, 0.7)?;
         btn("全部消す", (0.09, 0.16), partial(&s.getattr("set_text")?, vec![po(py, "")])?, 0.17, None, 0.7)?;
         btn("同名に番号を振る", (0.29, 0.16), s.getattr("number_all")?, 0.2, Some(rgb(0.6, 0.45, 0.15)?), 0.7)?;
-        s.setattr("info", text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.5, 0.08))), ("origin", po(py, (-0.5, 0.5))),
+        Self::sa_info(slf, text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.5, 0.08))), ("origin", po(py, (-0.5, 0.5))),
             ("scale", po(py, 0.72)), ("color", color.getattr("light_gray")?.unbind())])?))?)?;
         text.call((), Some(&kw(py, vec![("parent", r_()), ("position", po(py, (-0.5, -0.10))), ("origin", po(py, (-0.5, 0.5))), ("scale", po(py, 0.62)),
             ("color", color.getattr("light_gray")?.unbind()),
             ("text", po(py, "同じ名前の機器は、コンピューターからまとめて動きます。\n名前を分けると、ブロックの機器選択や api.device(\"名前\") で個別に制御できます。\n（名前はキーボードで入力します）"))])?))?;
-        s.setattr("valve_text", py.None())?;
+        Self::sa_valve_text(slf, py.None())?;
         if ty.eq("valve")? {
             // バルブの開き具合（燃料・物資を通す量。推進機につなげば推力が変わる）
-            s.setattr("valve_text", text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.5, -0.245))), ("origin", po(py, (-0.5, 0))),
+            Self::sa_valve_text(slf, text.call((), Some(&kw(py, vec![("parent", r_()), ("text", po(py, "")), ("position", po(py, (-0.5, -0.245))), ("origin", po(py, (-0.5, 0))),
                 ("scale", po(py, 0.8))])?))?)?;
             let fmt = py.import_bound("builtins")?.getattr("format")?;
             for (k, v) in [0.0f64, 0.1, 0.25, 0.5, 0.75, 1.0].iter().enumerate() {
@@ -531,7 +584,7 @@ impl UDevicePanel {
         }
         btn("OK", (0.2, -0.33), s.getattr("ok")?, 0.16, Some(rgb(0.2, 0.5, 0.3)?), 0.8)?;
         btn("キャンセル", (0.38, -0.33), s.getattr("close")?, 0.16, Some(rgb(0.3, 0.3, 0.33)?), 0.8)?;
-        s.setattr("keys", hook(py, &root, Some(s.getattr("_on_key")?), Some(s.getattr("refresh")?))?)?;
+        Self::sa_keys(slf, hook(py, &root, Some(s.getattr("_on_key")?), Some(s.getattr("refresh")?))?)?;
         s.call_method0("refresh")?;
         Ok(())
     }
@@ -543,16 +596,15 @@ impl UDevicePanel {
     }
     #[getter]
     fn index<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        let s = slf.as_any();
-        s.getattr("c")?.getattr("index")?.call_method1("get", (s.getattr("cell")?,))
+        Self::ga_c(slf)?.getattr("index")?.call_method1("get", (Self::ga_cell(slf)?,))
     }
     fn text(slf: &Bound<'_, Self>) -> R<String> {
-        Ok(slf.as_any().getattr("field")?.getattr("text_field")?.getattr("text")?.call_method0("strip")?.extract()?)
+        Ok(Self::ga_field(slf)?.getattr("text_field")?.getattr("text")?.call_method0("strip")?.extract()?)
     }
     fn set_text(slf: &Bound<'_, Self>, s_: &str) -> R<()> {
         let py = slf.py();
         let lim: usize = dui(py)?.getattr("NAME_LIMIT")?.extract()?;
-        let field = slf.as_any().getattr("field")?;
+        let field = Self::ga_field(slf)?;
         let tf = field.getattr("text_field")?;
         let t: String = s_.chars().take(lim).collect();
         tf.setattr("text", &t)?;
@@ -563,19 +615,18 @@ impl UDevicePanel {
         Ok(())
     }
     fn backspace(slf: &Bound<'_, Self>) -> R<()> {
-        let mut t: String = slf.as_any().getattr("field")?.getattr("text_field")?.getattr("text")?.extract()?;
+        let mut t: String = Self::ga_field(slf)?.getattr("text_field")?.getattr("text")?.extract()?;
         t.pop();
         Self::set_text(slf, &t)
     }
     fn number_all(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let i = Self::index(slf)?;
         if i.is_none() {
             return Ok(());
         }
-        let c = s.getattr("c")?;
-        let d = c.getattr("devs")?.get_item(&i)?;
+        let c = Self::ga_c(slf)?;
+        let d = Construct::g_devs(con(&c)?)?.get_item(&i)?;
         let t = Self::text(slf)?;
         let name: B<'_> = if t.is_empty() { d.get_item("name")? } else { po(py, t).into_bound(py) };
         d.set_item("name", &name)?;
@@ -583,16 +634,15 @@ impl UDevicePanel {
         let nn: String = d.get_item("name")?.extract()?;
         Self::set_text(slf, &nn)?;
         let msg = if n != 0 { format!("「{}」{} 個に番号を付けました", name.str()?, n) } else { format!("「{}」という名前の機器は1つだけです", name.str()?) };
-        s.getattr("world")?.call_method1("message", (msg,))?;
+        Self::ga_world(slf)?.call_method1("message", (msg,))?;
         Ok(())
     }
     fn set_open(slf: &Bound<'_, Self>, v: f64) -> R<()> {
-        let s = slf.as_any();
         let i = Self::index(slf)?;
         if i.is_none() {
             return Ok(());
         }
-        let st = s.getattr("c")?.getattr("devs")?.get_item(&i)?.get_item("state")?;
+        let st = Self::ga_c(slf)?.getattr("devs")?.get_item(&i)?.get_item("state")?;
         st.set_item("open", v)?;
         if v > 0.0 {
             st.set_item("set", v)?;
@@ -601,16 +651,15 @@ impl UDevicePanel {
     }
     fn refresh(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let i = Self::index(slf)?;
-        let info = s.getattr("info")?;
+        let info = Self::ga_info(slf)?;
         if i.is_none() {
             info.setattr("text", "機器が見つかりません")?;
             return Ok(());
         }
-        let c = s.getattr("c")?;
-        let d = c.getattr("devs")?.get_item(&i)?;
-        let vt = s.getattr("valve_text")?;
+        let c = Self::ga_c(slf)?;
+        let d = Construct::g_devs(con(&c)?)?.get_item(&i)?;
+        let vt = Self::ga_valve_text(slf)?;
         if !vt.is_none() {
             let o: f64 = d.get_item("state")?.call_method1("get", ("open", 1.0))?.extract()?;
             let pct: String = py.import_bound("builtins")?.getattr("format")?.call1((o, ".0%"))?.extract()?;
@@ -619,7 +668,7 @@ impl UDevicePanel {
         let name = Self::text(slf)?;
         let ii: usize = i.extract()?;
         let dup = dui_same_named(&c, &po(py, name.as_str()).into_bound(py))?.into_iter().filter(|k| *k != ii).count();
-        let mut lines = vec![format!("構築物: {}　種類: {}（{}）", c.getattr("name")?.str()?, s.getattr("type_name")?.str()?, d.get_item("def")?.str()?)];
+        let mut lines = vec![format!("構築物: {}　種類: {}（{}）", c.getattr("name")?.str()?, Self::ga_type_name(slf)?.str()?, d.get_item("def")?.str()?)];
         if name.is_empty() {
             lines.push("名前が空です".into());
         } else if dup > 0 {
@@ -637,16 +686,16 @@ impl UDevicePanel {
         let i = Self::index(slf)?;
         let name = Self::text(slf)?;
         if !i.is_none() && !name.is_empty() {
-            let c = s.getattr("c")?;
-            let d = c.getattr("devs")?.get_item(&i)?;
+            let c = Self::ga_c(slf)?;
+            let d = Construct::g_devs(con(&c)?)?.get_item(&i)?;
             let old = d.get_item("name")?;
             d.set_item("name", &name)?;
             if !old.eq(&name)? {
                 let mut n = 0;
                 if dui_same_named(&c, &old)?.is_empty() {
-                    n = dui_update_programs(py, &s.getattr("world")?, &c, &old, &po(py, name.as_str()).into_bound(py))?;
+                    n = dui_update_programs(py, &Self::ga_world(slf)?, &c, &old, &po(py, name.as_str()).into_bound(py))?;
                 }
-                s.getattr("world")?.call_method1("message", (format!("名前を変更: {} → {}{}", old.str()?, name,
+                Self::ga_world(slf)?.call_method1("message", (format!("名前を変更: {} → {}{}", old.str()?, name,
                     if n != 0 { format!("（ブロックプログラム {} 個も更新）", n) } else { String::new() }),))?;
                 imp(py, "main.log")?.call_method1("get", ("device_ui",))?.call_method1("info", ("機器の名前を変更: %s → %s", &old, &name))?;
             }
@@ -656,16 +705,15 @@ impl UDevicePanel {
     }
     fn close(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        super::client_misc::ui_destroy(py, &s.getattr("root")?, &PyTuple::empty_bound(py), None)?;
-        let owner = s.getattr("owner")?;
+        super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)?;
+        let owner = Self::ga_owner(slf)?;
         if !owner.is_none() {
             owner.setattr("modal", py.None())?;
             if owner.hasattr("after_modal")? {
                 owner.call_method0("after_modal")?;
             }
         } else {
-            s.getattr("game")?.call_method0("editor_closed")?;
+            Self::ga_game(slf)?.call_method0("editor_closed")?;
         }
         Ok(())
     }
@@ -704,3 +752,79 @@ pub fn register(m: &Bound<'_, PyModule>) -> R<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------- UDevicePanel の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! udevicepanel_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl UDevicePanel { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl UDevicePanel { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+udevicepanel_attr_fields!(
+    ga_U sa_U pga_U psa_U a_U "U", ga_c sa_c pga_c psa_c a_c "c", ga_cell sa_cell pga_cell psa_cell a_cell "cell", ga_default_name sa_default_name pga_default_name psa_default_name a_default_name "default_name", ga_field sa_field pga_field psa_field a_field "field", ga_game sa_game pga_game psa_game a_game "game", ga_info sa_info pga_info psa_info a_info "info", ga_keys sa_keys pga_keys psa_keys a_keys "keys", ga_owner sa_owner pga_owner psa_owner a_owner "owner", ga_root sa_root pga_root psa_root a_root "root", ga_type_name sa_type_name pga_type_name psa_type_name a_type_name "type_name", ga_valve_text sa_valve_text pga_valve_text psa_valve_text a_valve_text "valve_text", ga_world sa_world pga_world psa_world a_world "world"
+);
+
+// ---------------------------------------------------------------- KeysPanel の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! keyspanel_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl KeysPanel { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl KeysPanel { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+keyspanel_attr_fields!(
+    ga_Button sa_Button pga_Button psa_Button a_Button "Button", ga_Text sa_Text pga_Text psa_Text a_Text "Text", ga_U sa_U pga_U psa_U a_U "U", ga_btns sa_btns pga_btns psa_btns a_btns "btns", ga_cfg sa_cfg pga_cfg psa_cfg a_cfg "cfg", ga_color sa_color pga_color psa_color a_color "color", ga_keys sa_keys pga_keys psa_keys a_keys "keys", ga_on_change sa_on_change pga_on_change psa_on_change a_on_change "on_change", ga_on_close sa_on_close pga_on_close psa_on_close a_on_close "on_close", ga_root sa_root pga_root psa_root a_root "root", ga_status sa_status pga_status psa_status a_status "status", ga_waiting sa_waiting pga_waiting psa_waiting a_waiting "waiting"
+);

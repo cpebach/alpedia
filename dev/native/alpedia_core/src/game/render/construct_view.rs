@@ -1,5 +1,6 @@
 //! 描画：構築物の見た目（ConstructView）
 
+use crate::game::construct::{con, Construct};
 use super::*;
 
 // ---------------------------------------------------------------- ConstructView
@@ -8,7 +9,40 @@ use super::*;
 /// 全部を1つの親ノード（root）の下に置く。剛体・静止中の構築物は、形・記号・看板を構築物の向きで一度だけ作り、
 /// 毎フレームは親ノードの位置と向き（行列1つ）だけを動かす。ブロックごとに動いている構築物は毎フレーム作り直す。
 #[pyclass(module = "main.client.render", subclass, dict)]
-pub struct ConstructView {}
+pub struct ConstructView {
+    /// _baked（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_baked: Option<PyObject>,
+    /// _devs（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_devs: Option<PyObject>,
+    /// _devs_ver（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_devs_ver: Option<PyObject>,
+    /// _lp（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_lp: Option<PyObject>,
+    /// _mat_key（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_mat_key: Option<PyObject>,
+    /// _parent0（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_parent0: Option<PyObject>,
+    /// _tf（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_tf: Option<PyObject>,
+    /// blob（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_blob: Option<PyObject>,
+    /// c（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_c: Option<PyObject>,
+    /// displays（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_displays: Option<PyObject>,
+    /// groups（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_groups: Option<PyObject>,
+    /// loader（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_loader: Option<PyObject>,
+    /// parent（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_parent: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// version（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_version: Option<PyObject>,
+    /// visible（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_visible: Option<PyObject>,
+}
 
 pub(crate) fn remove_groups(s: &B<'_>) -> R<()> {
     for g in s.getattr("groups")?.iter()? {
@@ -22,59 +56,55 @@ impl ConstructView {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     pub(crate) fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        ConstructView {}
+        ConstructView { a_baked: None, a_devs: None, a_devs_ver: None, a_lp: None, a_mat_key: None, a_parent0: None, a_tf: None, a_blob: None, a_c: None, a_displays: None, a_groups: None, a_loader: None, a_parent: None, a_root: None, a_version: None, a_visible: None }
     }
     pub(crate) fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>, loader: &B<'_>, construct: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("c", construct)?;
+        Self::sa_c(slf, construct)?;
         let root = gfx(py)?.getattr("RsNode")?.call1((parent,))?;
-        s.setattr("root", &root)?;
-        s.setattr("_parent0", parent)?;
-        s.setattr("parent", &root)?;
-        s.setattr("loader", loader)?;
-        s.setattr("version", -1)?;
-        s.setattr("groups", PyList::empty_bound(py))?;
-        s.setattr("displays", PyDict::new_bound(py))?;
-        s.setattr("_devs_ver", py.None())?;
-        s.setattr("_mat_key", py.None())?;
-        s.setattr("visible", true)?;
+        Self::sa_root(slf, &root)?;
+        Self::sa_parent0(slf, parent)?;
+        Self::sa_parent(slf, &root)?;
+        Self::sa_loader(slf, loader)?;
+        Self::sa_version(slf, -1)?;
+        Self::sa_groups(slf, PyList::empty_bound(py))?;
+        Self::sa_displays(slf, PyDict::new_bound(py))?;
+        Self::sa_devs_ver(slf, py.None())?;
+        Self::sa_mat_key(slf, py.None())?;
+        Self::sa_visible(slf, true)?;
         Ok(())
     }
     // -- 共通 --
     pub(crate) fn set_visible(slf: &Bound<'_, Self>, on: &B<'_>) -> R<()> {
-        let s = slf.as_any();
-        if !on.eq(s.getattr("visible")?)? {
-            s.setattr("visible", on)?;
-            s.getattr("root")?.call_method0(if on.is_truthy()? { "show" } else { "hide" })?;
+        if !on.eq(Self::ga_visible(slf)?)? {
+            Self::sa_visible(slf, on)?;
+            Self::ga_root(slf)?.call_method0(if on.is_truthy()? { "show" } else { "hide" })?;
         }
         Ok(())
     }
     /// 機器のあるボクセルの番号（形が変わったときだけ数え直す）
     pub(crate) fn _dev_ids<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
-        let s = slf.as_any();
-        let c = s.getattr("c")?;
+        let c = Self::ga_c(slf)?;
         let ver = c.getattr("version")?;
-        if !s.getattr("_devs_ver")?.eq(&ver)? {
-            s.setattr("_devs_ver", &ver)?;
+        if !Self::ga_devs_ver(slf)?.eq(&ver)? {
+            Self::sa_devs_ver(slf, &ver)?;
             let l = PyList::empty_bound(py);
-            for (i, d) in c.getattr("devs")?.iter()?.enumerate() {
+            for (i, d) in Construct::g_devs(con(&c)?)?.iter()?.enumerate() {
                 if d?.is_truthy()? {
                     l.append(i)?;
                 }
             }
-            s.setattr("_devs", l)?;
+            Self::sa_devs(slf, l)?;
         }
-        s.getattr("_devs")
+        Self::ga_devs(slf)
     }
     pub(crate) fn _firing<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
-        let s = slf.as_any();
-        let c = s.getattr("c")?;
-        let n: usize = c.getattr("n_vox")?.extract()?;
+        let c = Self::ga_c(slf)?;
+        let n: usize = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
         let mut f = vec![0.0f64; n];
-        let devs = c.getattr("devs")?;
+        let devs = Construct::g_devs(con(&c)?)?;
         for i in Self::_dev_ids(slf)?.iter()? {
             let i: usize = i?.extract()?;
             let d = devs.get_item(i)?;
@@ -87,21 +117,20 @@ impl ConstructView {
     /// M：4x4（行ベクトル形式）か None（単位行列）
     pub(crate) fn _set_root_mat(slf: &Bound<'_, Self>, m: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let root = s.getattr("root")?;
+        let root = Self::ga_root(slf)?;
         if m.is_none() {
-            if s.getattr("_mat_key")?.is_none() {
+            if Self::ga_mat_key(slf)?.is_none() {
                 return Ok(());
             }
-            s.setattr("_mat_key", py.None())?;
+            Self::sa_mat_key(slf, py.None())?;
             root.call_method1("setMat", (np(py)?.call_method1("eye", (4,))?.call_method0("ravel")?.call_method0("tolist")?,))?;
             return Ok(());
         }
         let key = m.call_method0("tobytes")?;
-        if s.getattr("_mat_key")?.eq(&key)? {
+        if Self::ga_mat_key(slf)?.eq(&key)? {
             return Ok(());
         }
-        s.setattr("_mat_key", key)?;
+        Self::sa_mat_key(slf, key)?;
         root.call_method1("setMat", (m.call_method0("ravel")?.call_method0("tolist")?,))?;
         Ok(())
     }
@@ -109,7 +138,7 @@ impl ConstructView {
     pub(crate) fn _rebuild(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
         remove_groups(s)?;
-        s.setattr("version", s.getattr("c")?.getattr("version")?)
+        Self::sa_version(slf, Self::ga_c(slf)?.getattr("version")?)
     }
     pub(crate) fn _rebuild_blob(slf: &Bound<'_, Self>) -> R<bool> {
         let py = slf.py();
@@ -117,29 +146,29 @@ impl ConstructView {
         let shape = imp(py, "main.shape")?;
         let rm = rmod(py)?;
         remove_groups(s)?;
-        let c = s.getattr("c")?;
+        let c = Self::ga_c(slf)?;
         let m = shape.call_method1("mesh_for", (&c,))?;
-        s.setattr("blob", &m)?;
-        s.setattr("version", c.getattr("version")?)?;
+        Self::sa_blob(slf, &m)?;
+        Self::sa_version(slf, c.getattr("version")?)?;
         if m.is_none() {
             return Ok(false);
         }
         let reg = c.getattr("reg")?;
-        let n_vox: usize = c.getattr("n_vox")?.extract()?;
-        let devs = c.getattr("devs")?;
-        let mats = c.getattr("mats")?;
+        let n_vox: usize = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
+        let devs = Construct::g_devs(con(&c)?)?;
+        let mats = Construct::g_mats(con(&c)?)?;
         let dev_tex = rm.getattr("DEVICE_TEXTURE")?;
         let mut col_v: Vec<[f64; 3]> = Vec::with_capacity(n_vox);
         let mut tex_v: Vec<(B<'_>, f64)> = Vec::with_capacity(n_vox);
         for i in 0..n_vox {
             let d = devs.get_item(i)?;
             if d.is_truthy()? {
-                let dd = or_dict(reg.call_method1("device", (d.get_item("def")?,))?)?;
+                let dd = or_dict(crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?)?;
                 col_v.push(v3(&get(&dd, "color", vec![1, 0, 1])?)?);
                 let t = get(&dd, "texture", py.None())?;
                 tex_v.push((if t.is_truthy()? { t } else { dev_tex.clone() }, 1.0));
             } else {
-                let mt = reg.call_method1("material", (mats.get_item(i)?,))?;
+                let mt = crate::game::registry::mat_dict(&reg, &mats.get_item(i)?)?;
                 col_v.push(v3(&mt.get_item("color")?)?);
                 // 半透明の素材（ガラス：opacity）は別のメッシュにして、透かして描く
                 tex_v.push((get(&mt, "texture", py.None())?, f64of(&get(&mt, "opacity", 1.0)?)?));
@@ -196,10 +225,10 @@ impl ConstructView {
                 }
             }
         }
-        let edges = if get(&style, "edges", true)?.is_truthy()? { rm.call_method1("load_texture", (s.getattr("loader")?, rm.getattr("EDGE_TEXTURE")?))? } else { none(py) };
-        let root = s.getattr("root")?;
+        let edges = if get(&style, "edges", true)?.is_truthy()? { rm.call_method1("load_texture", (Self::ga_loader(slf)?, rm.getattr("EDGE_TEXTURE")?))? } else { none(py) };
+        let root = Self::ga_root(slf)?;
         let cid = c.getattr("id")?;
-        let out_groups = s.getattr("groups")?;
+        let out_groups = Self::ga_groups(slf)?;
         for (key, fl) in order.iter().zip(lists.iter()) {
             let (tex, alpha) = (key.get_item(0)?, f64of(&key.get_item(1)?)?);
             let mut keys: Vec<i64> = Vec::with_capacity(fl.len() * 3);
@@ -221,7 +250,7 @@ impl ConstructView {
                 mnp.call_method1("setDepthWrite", (false,))?;
                 mnp.call_method1("setBin", ("transparent", 4))?;
             }
-            let t = rm.call_method1("load_texture", (s.getattr("loader")?, &tex))?;
+            let t = rm.call_method1("load_texture", (Self::ga_loader(slf)?, &tex))?;
             if t.is_truthy()? {
                 mnp.call_method1("setTexture", (&t, 1))?;
             }
@@ -274,11 +303,11 @@ impl ConstructView {
         let py = slf.py();
         let s = slf.as_any();
         let shape = imp(py, "main.shape")?;
-        let c = s.getattr("c")?;
+        let c = Self::ga_c(slf)?;
         let (rr, x, epoch) = (tf.get_item(0)?, tf.get_item(1)?, tf.get_item(2)?);
         let npm = np(py)?;
         let mut firing = none(py);
-        let devs = c.getattr("devs")?;
+        let devs = Construct::g_devs(con(&c)?)?;
         if highlight_flames.is_truthy()? {
             let thr = c.call_method1("dev_ids", ("thruster",))?; // 噴射の色は推進機だけ
             if thr.is_truthy()? {
@@ -291,7 +320,7 @@ impl ConstructView {
                 firing = PyTuple::new_bound(py, v).into_any();
             }
         }
-        let groups: Vec<B<'_>> = s.getattr("groups")?.iter()?.collect::<R<_>>()?;
+        let groups: Vec<B<'_>> = Self::ga_groups(slf)?.iter()?.collect::<R<_>>()?;
         let any_new = |gs: &Vec<B<'_>>| -> R<bool> {
             for g in gs {
                 if g.get_item("new")?.is_truthy()? {
@@ -306,7 +335,7 @@ impl ConstructView {
             return Ok(()); // 止まっている物：作り直す物は無い（位置は親の行列で）
         }
         if b.is_none() || !b.get_item("epoch")?.eq(&epoch)? {
-            let blob = s.getattr("blob")?;
+            let blob = Self::ga_blob(slf)?;
             let v = shape.call_method1("skin", (&c, &blob))?;
             let local = v.call_method1("__sub__", (&x,))?.call_method1("__matmul__", (&rr,))?; // 構築物の向きでの形
             let nl = shape.call_method1("vertex_normals", (&local, blob.get_item("faces")?))?;
@@ -316,7 +345,7 @@ impl ConstructView {
             nb.set_item("nl", nl)?;
             nb.set_item("R", py.None())?;
             nb.set_item("firing", py.None())?;
-            s.setattr("_baked", &nb)?;
+            Self::sa_baked(slf, &nb)?;
             b = nb.into_any();
             for g in &groups {
                 g.set_item("new", true)?;
@@ -330,7 +359,7 @@ impl ConstructView {
         if need_color || any_new(&groups)? {
             b.set_item("R", rr.call_method0("copy")?)?;
             b.set_item("firing", &firing)?;
-            let n_vox: usize = c.getattr("n_vox")?.extract()?;
+            let n_vox: usize = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
             let mut fl_all: Option<Vec<f64>> = None;
             if !firing.is_none() {
                 let fv: Vec<f64> = firing.iter()?.map(|x| f64of(&x?)).collect::<R<_>>()?;
@@ -390,13 +419,12 @@ impl ConstructView {
     }
     pub(crate) fn _update_blob(slf: &Bound<'_, Self>, origin: &B<'_>, highlight_flames: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let c = s.getattr("c")?;
-        let m = s.getattr("blob")?;
+        let c = Self::ga_c(slf)?;
+        let m = Self::ga_blob(slf)?;
         let firing = if highlight_flames.is_truthy()? { Self::_firing(slf)? } else { none(py) };
         let npm = np(py)?;
         let pos = npm.call_method1("ascontiguousarray", (c.getattr("pos")?, npm.getattr("float64")?))?;
-        let groups: Vec<B<'_>> = s.getattr("groups")?.iter()?.collect::<R<_>>()?;
+        let groups: Vec<B<'_>> = Self::ga_groups(slf)?.iter()?.collect::<R<_>>()?;
         let gl = PyList::empty_bound(py);
         for g in &groups {
             gl.append((g.get_item("verts")?, g.get_item("cols")?, g.get_item("uv")?, g.get_item("owner")?))?;
@@ -424,21 +452,21 @@ impl ConstructView {
         let s = slf.as_any();
         let hf = highlight_flames.cloned().unwrap_or_else(|| tb(py, true));
         let sr = static_root.filter(|x| !x.is_none());
-        let c = s.getattr("c")?;
-        let want_parent = match sr { Some(x) => x.clone(), None => s.getattr("_parent0")? };
-        let root = s.getattr("root")?;
+        let c = Self::ga_c(slf)?;
+        let want_parent = match sr { Some(x) => x.clone(), None => Self::ga_parent0(slf)? };
+        let root = Self::ga_root(slf)?;
         if !root.getattr("parent")?.is(&want_parent) {
             root.setattr("parent", &want_parent)?;
-            s.setattr("_mat_key", "reparent")?; // 行列は必ず付け直す
+            Self::sa_mat_key(slf, "reparent")?; // 行列は必ず付け直す
         }
         let base = if sr.is_some() { anchor.cloned().unwrap_or_else(|| none(py)) } else { origin.clone() };
-        s.setattr("_tf", py.None())?;
-        if !s.getattr("version")?.eq(c.getattr("version")?)? {
+        Self::sa_tf(slf, py.None())?;
+        if !Self::ga_version(slf)?.eq(c.getattr("version")?)? {
             if !Self::_rebuild_blob(slf)? {
-                s.setattr("blob", py.None())?;
+                Self::sa_blob(slf, py.None())?;
                 Self::_rebuild(slf)?;
             }
-            s.setattr("_baked", py.None())?;
+            Self::sa_baked(slf, py.None())?;
         }
         let tf = if c.hasattr("render_transform")? { c.call_method0("render_transform")? } else { none(py) };
         if !tf.is_none() {
@@ -461,12 +489,12 @@ impl ConstructView {
         } else {
             Self::_set_root_mat(slf, &none(py))?;
         }
-        s.setattr("_tf", &tf)?;
+        Self::sa_tf(slf, &tf)?;
         if !gd(s, "blob", none(py)).is_none() {
             if !tf.is_none() {
                 s.call_method1("_update_rigid", (origin, &tf, &hf))?;
             } else {
-                s.setattr("_baked", py.None())?;
+                Self::sa_baked(slf, py.None())?;
                 s.call_method1("_update_blob", (origin, &hf))?;
             }
         }
@@ -476,16 +504,16 @@ impl ConstructView {
     pub(crate) fn _local_pos<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
         let s = slf.as_any();
-        let tf = s.getattr("_tf")?;
+        let tf = Self::ga_tf(slf)?;
         if tf.is_none() {
             return Ok(none(py));
         }
         let (rr, x, epoch) = (tf.get_item(0)?, tf.get_item(1)?, tf.get_item(2)?);
         let lp = gd(s, "_lp", none(py));
         if lp.is_none() || !lp.get_item(0)?.eq(&epoch)? {
-            let l = s.getattr("c")?.getattr("pos")?.call_method1("__sub__", (&x,))?.call_method1("__matmul__", (&rr,))?.call_method1("reshape", (-1, 8, 3))?;
+            let l = Self::ga_c(slf)?.getattr("pos")?.call_method1("__sub__", (&x,))?.call_method1("__matmul__", (&rr,))?.call_method1("reshape", (-1, 8, 3))?;
             let t = PyTuple::new_bound(py, [epoch, l]);
-            s.setattr("_lp", &t)?;
+            Self::sa_lp(slf, &t)?;
             return t.get_item(1);
         }
         lp.get_item(1)
@@ -494,7 +522,7 @@ impl ConstructView {
         let py = slf.py();
         let s = slf.as_any();
         if !s.hasattr("decals")? {
-            s.setattr("decals", rmod(py)?.getattr("DecalView")?.call1((s.getattr("root")?, s.getattr("c")?, max_dist))?)?;
+            s.setattr("decals", rmod(py)?.getattr("DecalView")?.call1((Self::ga_root(slf)?, Self::ga_c(slf)?, max_dist))?)?;
         }
         let d = s.getattr("decals")?;
         d.setattr("max_dist", max_dist)?;
@@ -513,11 +541,10 @@ impl ConstructView {
     /// コンピューターの表示（看板）
     pub(crate) fn update_displays(slf: &Bound<'_, Self>, origin: &B<'_>, far: f64) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let c = s.getattr("c")?;
+        let c = Self::ga_c(slf)?;
         let want = PyDict::new_bound(py);
         let lim2 = far.min(400.0).powi(2);
-        let devs = c.getattr("devs")?;
+        let devs = Construct::g_devs(con(&c)?)?;
         let pos = c.getattr("pos")?;
         let o = v3(origin)?;
         let rm = rmod(py)?;
@@ -540,7 +567,7 @@ impl ConstructView {
                 want.set_item((i, f?), &disp)?;
             }
         }
-        let displays = s.getattr("displays")?;
+        let displays = Self::ga_displays(slf)?;
         let keys: Vec<B<'_>> = displays.iter()?.collect::<R<_>>()?;
         for k in keys {
             if !want.contains(&k)? {
@@ -551,10 +578,10 @@ impl ConstructView {
             return Ok(());
         }
         let l = Self::_local_pos(slf)?;
-        let tf = s.getattr("_tf")?;
+        let tf = Self::ga_tf(slf)?;
         let key = if tf.is_none() { none(py) } else { tf.get_item(2)? };
         let size = f64of(&c.getattr("size")?)?;
-        let root = s.getattr("root")?;
+        let root = Self::ga_root(slf)?;
         for (k, disp) in want.iter() {
             let (i, f): (i64, i64) = k.extract()?;
             let mut v = displays.call_method1("get", (&k,))?;
@@ -587,10 +614,48 @@ impl ConstructView {
         if s.hasattr("decals")? {
             s.getattr("decals")?.call_method0("remove")?;
         }
-        for v in s.getattr("displays")?.call_method0("values")?.iter()? {
+        for v in Self::ga_displays(slf)?.call_method0("values")?.iter()? {
             v?.call_method0("remove")?;
         }
-        s.setattr("displays", PyDict::new_bound(py))?;
-        crate::game::client_misc::ui_destroy(py, &s.getattr("root")?, &PyTuple::empty_bound(py), None)
+        Self::sa_displays(slf, PyDict::new_bound(py))?;
+        crate::game::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)
     }
 }
+
+// ---------------------------------------------------------------- ConstructView の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! constructview_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl ConstructView { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl ConstructView { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+constructview_attr_fields!(
+    ga_baked sa_baked pga_baked psa_baked a_baked "_baked", ga_devs sa_devs pga_devs psa_devs a_devs "_devs", ga_devs_ver sa_devs_ver pga_devs_ver psa_devs_ver a_devs_ver "_devs_ver", ga_lp sa_lp pga_lp psa_lp a_lp "_lp", ga_mat_key sa_mat_key pga_mat_key psa_mat_key a_mat_key "_mat_key", ga_parent0 sa_parent0 pga_parent0 psa_parent0 a_parent0 "_parent0", ga_tf sa_tf pga_tf psa_tf a_tf "_tf", ga_blob sa_blob pga_blob psa_blob a_blob "blob", ga_c sa_c pga_c psa_c a_c "c", ga_displays sa_displays pga_displays psa_displays a_displays "displays", ga_groups sa_groups pga_groups psa_groups a_groups "groups", ga_loader sa_loader pga_loader psa_loader a_loader "loader", ga_parent sa_parent pga_parent psa_parent a_parent "parent", ga_root sa_root pga_root psa_root a_root "root", ga_version sa_version pga_version psa_version a_version "version", ga_visible sa_visible pga_visible psa_visible a_visible "visible"
+);

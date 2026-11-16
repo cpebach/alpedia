@@ -1,12 +1,18 @@
 //! 描画：光の層（LightLayer）・遠くの物の層（LodLayer）
 
+use crate::game::construct::{con, Construct};
 use super::*;
 
 // ---------------------------------------------------------------- LightLayer
 /// ライト（電力で光るブロック）：点いている物の上に、影をつけない明るい色の箱を重ねる（少し大きく）。
 /// 点滅（blink）もここで。読み込み済み（近く）の構築物だけ
 #[pyclass(module = "main.client.render", subclass, dict)]
-pub struct LightLayer {}
+pub struct LightLayer {
+    /// mesh（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_mesh: Option<PyObject>,
+    /// n（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_n: Option<PyObject>,
+}
 
 #[pymethods]
 impl LightLayer {
@@ -18,17 +24,16 @@ impl LightLayer {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     pub(crate) fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        LightLayer {}
+        LightLayer { a_mesh: None, a_n: None }
     }
     pub(crate) fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let m = dmesh(py, parent, "lights")?;
         let n = m.getattr("np")?;
         n.call_method1("setTransparency", (true,))?;
         n.call_method1("setDepthOffset", (1,))?;
-        s.setattr("mesh", m)?;
-        s.setattr("n", -1)?;
+        Self::sa_mesh(slf, m)?;
+        Self::sa_n(slf, -1)?;
         Ok(())
     }
     pub(crate) fn update(slf: &Bound<'_, Self>, constructs: &B<'_>, origin: &B<'_>, now: f64) -> R<()> {
@@ -45,7 +50,7 @@ impl LightLayer {
             if !ids.is_truthy()? {
                 continue;
             }
-            let devs = c.getattr("devs")?;
+            let devs = Construct::g_devs(con(&c)?)?;
             let reg = c.getattr("reg")?;
             let pos = c.getattr("pos")?;
             for i in ids.iter()? {
@@ -63,7 +68,7 @@ impl LightLayer {
                         continue;
                     }
                 }
-                let dd = or_dict(reg.call_method1("device", (d.get_item("def")?,))?)?;
+                let dd = or_dict(crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?)?;
                 let mut col = get(&st, "color", py.None())?;
                 if !col.is_truthy()? {
                     col = get(&get(&dd, "params", PyDict::new_bound(py))?, "color", py.None())?;
@@ -88,12 +93,12 @@ impl LightLayer {
                 cols.push(col);
             }
         }
-        let mesh = s.getattr("mesh")?;
-        let n_old: i64 = s.getattr("n")?.extract()?;
+        let mesh = Self::ga_mesh(slf)?;
+        let n_old: i64 = Self::ga_n(slf)?.extract()?;
         if ps.is_empty() {
             if n_old != 0 {
                 mesh.call_method1("set", (zeros12(py)?,))?;
-                s.setattr("n", 0)?;
+                Self::sa_n(slf, 0)?;
             }
             return Ok(());
         }
@@ -112,11 +117,11 @@ impl LightLayer {
         }
         let t: PyObject = if ps.len() as i64 != n_old { qtris(py, ps.len() * 6)?.unbind() } else { py.None() };
         mesh.call_method1("set", (f32_2(py, out, 12)?, t))?;
-        s.setattr("n", ps.len())?;
+        Self::sa_n(slf, ps.len())?;
         Ok(())
     }
     pub(crate) fn remove(slf: &Bound<'_, Self>) -> R<()> {
-        slf.as_any().getattr("mesh")?.call_method0("remove")?;
+        Self::ga_mesh(slf)?.call_method0("remove")?;
         Ok(())
     }
 }
@@ -125,7 +130,16 @@ impl LightLayer {
 /// 読み込み距離より遠い構築物を、それっぽい色の箱でまとめて描く（ブロックのメッシュを作らない・記号も看板も出さない）。
 /// 止まっている物は1つのメッシュにまとめ（入れ替わったときだけ作り直す）、動いている物は毎フレーム作る
 #[pyclass(module = "main.client.render", subclass, dict)]
-pub struct LodLayer {}
+pub struct LodLayer {
+    /// base（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_base: Option<PyObject>,
+    /// key（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_key: Option<PyObject>,
+    /// moving（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_moving: Option<PyObject>,
+    /// n_moving（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_n_moving: Option<PyObject>,
+}
 
 pub(crate) fn concat12<'py>(py: Python<'py>, vs: Vec<B<'py>>) -> R<B<'py>> {
     if vs.is_empty() {
@@ -139,26 +153,24 @@ impl LodLayer {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     pub(crate) fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        LodLayer {}
+        LodLayer { a_base: None, a_key: None, a_moving: None, a_n_moving: None }
     }
     pub(crate) fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("static", dmesh(py, parent, "lod_static")?)?;
-        s.setattr("moving", dmesh(py, parent, "lod_moving")?)?;
-        s.setattr("key", py.None())?;
-        s.setattr("base", np(py)?.call_method1("zeros", (3,))?)?;
-        s.setattr("n_moving", 0)?;
+        slf.as_any().setattr("static", dmesh(py, parent, "lod_static")?)?;
+        Self::sa_moving(slf, dmesh(py, parent, "lod_moving")?)?;
+        Self::sa_key(slf, py.None())?;
+        Self::sa_base(slf, np(py)?.call_method1("zeros", (3,))?)?;
+        Self::sa_n_moving(slf, 0)?;
         Ok(())
     }
     pub(crate) fn update(slf: &Bound<'_, Self>, constructs: &B<'_>, origin: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let mut statics = vec![];
         let mut moving = vec![];
         for c in constructs.iter()? {
             let c = c?;
-            if c.getattr("is_static")?.is_truthy()? || c.getattr("asleep")?.is_truthy()? {
+            if c.getattr("is_static")?.is_truthy()? || Construct::g_asleep(con(&c)?)?.is_truthy()? {
                 statics.push(c);
             } else {
                 moving.push(c);
@@ -170,11 +182,11 @@ impl LodLayer {
         }
         let key = py.import_bound("builtins")?.getattr("tuple")?.call1((py.import_bound("builtins")?.getattr("sorted")?.call1((pairs,))?,))?;
         let rm = rmod(py)?;
-        if !key.eq(s.getattr("key")?)? {
-            s.setattr("key", &key)?;
+        if !key.eq(Self::ga_key(slf)?)? {
+            Self::sa_key(slf, &key)?;
             let o = v3(origin)?;
             let base = np3(py, o);
-            s.setattr("base", &base)?;
+            Self::sa_base(slf, &base)?;
             let mut vs = vec![];
             for c in &statics {
                 vs.push(rm.call_method1("lod_vertices", (c, &base))?);
@@ -182,12 +194,12 @@ impl LodLayer {
             let v = concat12(py, vs)?;
             let n = v.len()?;
             let t: PyObject = if n > 0 { qtris(py, n / 4)?.unbind() } else { py.None() };
-            s.getattr("static")?.call_method1("set", (v, t))?;
+            slf.as_any().getattr("static")?.call_method1("set", (v, t))?;
         }
-        let b = v3(&s.getattr("base")?)?;
+        let b = v3(&Self::ga_base(slf)?)?;
         let o = v3(origin)?;
-        s.getattr("static")?.getattr("np")?.call_method1("setPos", (b[0] - o[0], b[1] - o[1], b[2] - o[2]))?;
-        let nm: i64 = s.getattr("n_moving")?.extract()?;
+        slf.as_any().getattr("static")?.getattr("np")?.call_method1("setPos", (b[0] - o[0], b[1] - o[1], b[2] - o[2]))?;
+        let nm: i64 = Self::ga_n_moving(slf)?.extract()?;
         if !moving.is_empty() || nm != 0 {
             let mut vs = vec![];
             for c in &moving {
@@ -196,14 +208,90 @@ impl LodLayer {
             let v = concat12(py, vs)?;
             let n = v.len()?;
             let t: PyObject = if n > 0 { qtris(py, n / 4)?.unbind() } else { py.None() };
-            s.getattr("moving")?.call_method1("set", (v, t))?;
-            s.setattr("n_moving", moving.len())?;
+            Self::ga_moving(slf)?.call_method1("set", (v, t))?;
+            Self::sa_n_moving(slf, moving.len())?;
         }
         Ok(())
     }
     pub(crate) fn remove(slf: &Bound<'_, Self>) -> R<()> {
         slf.as_any().getattr("static")?.call_method0("remove")?;
-        slf.as_any().getattr("moving")?.call_method0("remove")?;
+        Self::ga_moving(slf)?.call_method0("remove")?;
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------- LodLayer の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! lodlayer_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl LodLayer { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl LodLayer { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+lodlayer_attr_fields!(
+    ga_base sa_base pga_base psa_base a_base "base", ga_key sa_key pga_key psa_key a_key "key", ga_moving sa_moving pga_moving psa_moving a_moving "moving", ga_n_moving sa_n_moving pga_n_moving psa_n_moving a_n_moving "n_moving"
+);
+
+// ---------------------------------------------------------------- LightLayer の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! lightlayer_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl LightLayer { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl LightLayer { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+lightlayer_attr_fields!(
+    ga_mesh sa_mesh pga_mesh psa_mesh a_mesh "mesh", ga_n sa_n pga_n psa_n a_n "n"
+);

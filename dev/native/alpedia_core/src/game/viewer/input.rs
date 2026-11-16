@@ -1,5 +1,7 @@
 //! 画面：視線・入力・クリック・画面を開く・キー
 
+use crate::game::player::{ply, Player};
+use crate::game::construct::{con, Construct};
 use super::*;
 
 #[pymethods]
@@ -7,11 +9,10 @@ impl Viewer {
     // ---- 視点 ----
     pub(crate) fn look_vectors<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyTuple>> {
         let py = slf.py();
-        let s = slf.as_any();
-        let up_o = ga(&ga(&ga(s, "w")?, "player")?, "up")?;
+        let up_o = ga(&ga(&Self::ga_w(slf)?, "player")?, "up")?;
         let up = v3(&up_o)?;
         let refv = || if up[2].abs() < 0.9 { [0.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0] };
-        let yo = ga(s, "yaw_fwd")?;
+        let yo = Self::ga_yaw_fwd(slf)?;
         let yaw = if yo.is_none() {
             let r = refv();
             sub(r, mul(up, dot(r, up)))
@@ -26,28 +27,28 @@ impl Viewer {
         let n = norm(f).max(1e-9);
         f = [f[0] / n, f[1] / n, f[2] / n];
         let fo = np3(py, f);
-        s.setattr("yaw_fwd", &fo)?;
-        let pitch = f64of(&ga(s, "pitch")?)?;
+        Self::sa_yaw_fwd(slf, &fo)?;
+        let pitch = f64of(&Self::ga_pitch(slf)?)?;
         let look = add(mul(f, pitch.cos()), mul(up, pitch.sin()));
         Ok(PyTuple::new_bound(py, [fo, np3(py, cross(up, f)), up_o, np3(py, look)]))
     }
     pub(crate) fn _input(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let c = ga(s, "cfg")?.get_item("controls")?;
+        let c = Self::ga_cfg(slf)?.get_item("controls")?;
         let (mut dx, mut dy) = (0.0f64, 0.0f64);
-        let view = ga(s, "view")?;
-        let game = ga(s, "game")?;
-        let sh = ga(s, "shim")?;
-        let ui = ga(s, "ui")?;
-        let held = ga(s, "held")?;
+        let view = Self::ga_view(slf)?;
+        let game = Self::ga_game(slf)?;
+        let sh = Self::ga_shim(slf)?;
+        let ui = Self::ga_ui(slf)?;
+        let held = Self::ga_held(slf)?;
         let evs = view.call_method0("pump")?;
         for ev in evs.iter()? {
             let ev = ev?;
             let (kind_o, a, b, n) = (ev.get_item(0)?, ev.get_item(1)?, ev.get_item(2)?, ev.get_item(3)?);
             let kind: String = kind_o.extract()?;
             let cm = ga(&game, "cam_mode")?;
-            let editor_none = ga(s, "editor")?.is_none();
+            let editor_none = Self::ga_editor(slf)?.is_none();
             let stack = ga(&ui, "stack")?.is_truthy()?;
             if !cm.is_none() && editor_none && !stack {
                 // カメラモード：パネルのボタン・ドラッグは ursina のまねへ、キーとホイールはカメラモードへ
@@ -64,8 +65,8 @@ impl Viewer {
                 } else if kind == "wheel" && a.is_truthy()? {
                     cm.call_method1("on_key", (if f64of(&a)? > 0.0 { "scroll up" } else { "scroll down" },))?;
                 } else if kind == "close" {
-                    s.setattr("quit", true)?;
-                    s.setattr("close_app", true)?;
+                    Self::sa_quit(slf, true)?;
+                    Self::sa_close_app(slf, true)?;
                 }
                 continue;
             }
@@ -78,7 +79,7 @@ impl Viewer {
                 ga(&ga(&game, "touch_hud")?, "ptr")?.call_method1("feed", (&kind_o, (f64of(&a)? - ww / 2.0) / hh, (hh / 2.0 - f64of(&b)?) / hh, &n))?;
                 continue;
             }
-            let grabbed = ga(s, "grabbed")?.is_truthy()?;
+            let grabbed = Self::ga_grabbed(slf)?.is_truthy()?;
             if editor_none && !grabbed && !stack {
                 // 画面の上のボタン（目標の欄・画面のボタン）
                 if kind == "cursor" {
@@ -98,17 +99,17 @@ impl Viewer {
                 continue;
             }
             if kind == "close" {
-                s.setattr("quit", true)?;
-                s.setattr("close_app", true)?;
+                Self::sa_quit(slf, true)?;
+                Self::sa_close_app(slf, true)?;
             } else if let Some(k) = kind.strip_prefix("key:") {
                 if k == "alt" {
                     // Alt を押している間はカーソルを出す（画面のボタンを押せる）
-                    if a.is_truthy()? && ga(s, "grabbed")?.is_truthy()? {
-                        s.setattr("_alt_free", true)?;
+                    if a.is_truthy()? && Self::ga_grabbed(slf)?.is_truthy()? {
+                        Self::sa_alt_free(slf, true)?;
                         s.call_method1("set_grab", (false,))?;
                     } else if !a.is_truthy()? && gd(s, "_alt_free", tb(py, false)).is_truthy()? {
-                        s.setattr("_alt_free", false)?;
-                        if !ga(&ui, "stack")?.is_truthy()? && ga(s, "editor")?.is_none() && ga(&game, "cam_mode")?.is_none() {
+                        Self::sa_alt_free(slf, false)?;
+                        if !ga(&ui, "stack")?.is_truthy()? && Self::ga_editor(slf)?.is_none() && ga(&game, "cam_mode")?.is_none() {
                             s.call_method1("set_grab", (true,))?;
                         }
                     }
@@ -124,15 +125,15 @@ impl Viewer {
             } else if kind == "mouse" {
                 dx += f64of(&a)?;
                 dy += f64of(&b)?;
-            } else if kind == "button" && a.is_truthy()? && !ga(s, "grabbed")?.is_truthy()? {
+            } else if kind == "button" && a.is_truthy()? && !Self::ga_grabbed(slf)?.is_truthy()? {
                 if !s.call_method0("_touch_mode")?.is_truthy()? {
                     s.call_method1("set_grab", (true,))?;
                 }
             } else if kind == "button" && a.is_truthy()? {
                 s.call_method1("_click", (&n,))?;
             } else if kind == "wheel" && a.is_truthy()? {
-                let sel: i64 = ga(s, "sel")?.extract()?;
-                s.setattr("sel", (sel + if f64of(&a)? > 0.0 { -1 } else { 1 }).rem_euclid(9))?;
+                let sel: i64 = Self::ga_sel(slf)?.extract()?;
+                Self::sa_sel(slf, (sel + if f64of(&a)? > 0.0 { -1 } else { 1 }).rem_euclid(9))?;
             } else if kind == "focus" && !a.is_truthy()? {
                 held.call_method0("clear")?;
             }
@@ -140,12 +141,12 @@ impl Viewer {
         if dx != 0.0 || dy != 0.0 {
             let sens = f64of(&get(&c, "mouse_sensitivity", 60.0)?)? / 60.0 * 0.0025;
             Self::look_vectors(slf)?;
-            let up = v3(&ga(&ga(&ga(s, "w")?, "player")?, "up")?)?;
-            let f = v3(&ga(s, "yaw_fwd")?)?;
+            let up = v3(&ga(&ga(&Self::ga_w(slf)?, "player")?, "up")?)?;
+            let f = v3(&Self::ga_yaw_fwd(slf)?)?;
             let ang = dx * sens;
-            s.setattr("yaw_fwd", np3(py, add(mul(f, ang.cos()), mul(cross(up, f), ang.sin()))))?;
-            let p = f64of(&ga(s, "pitch")?)?;
-            s.setattr("pitch", (p - dy * sens).clamp(-1.55, 1.55))?;
+            Self::sa_yaw_fwd(slf, np3(py, add(mul(f, ang.cos()), mul(cross(up, f), ang.sin()))))?;
+            let p = f64of(&Self::ga_pitch(slf)?)?;
+            Self::sa_pitch(slf, (p - dy * sens).clamp(-1.55, 1.55))?;
         }
         Ok(())
     }
@@ -153,9 +154,9 @@ impl Viewer {
     pub(crate) fn _click(slf: &Bound<'_, Self>, button: i64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let w = ga(s, "w")?;
+        let w = Self::ga_w(slf)?;
         let seated = ga(&ga(&w, "player")?, "seated")?.is_truthy()?;
-        let hit = ga(s, "hit")?;
+        let hit = Self::ga_hit(slf)?;
         if seated || hit.is_none() {
             if button == 1 && !seated {
                 s.call_method1("_place", (py.None(),))?;
@@ -179,14 +180,14 @@ impl Viewer {
     pub(crate) fn _place(slf: &Bound<'_, Self>, hit: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let w = ga(s, "w")?;
-        let item = ga(&ga(&w, "player")?, "hotbar")?.get_item(ga(s, "sel")?)?;
+        let w = Self::ga_w(slf)?;
+        let item = ga(&ga(&w, "player")?, "hotbar")?.get_item(Self::ga_sel(slf)?)?;
         if item.is_none() {
             w.call_method1("message", ("アイテムバーのこの枠は空です",))?;
             return Ok(());
         }
         let look = Self::look_vectors(slf)?.get_item(3)?;
-        let ok = w.call_method1("place", (hit, &item, ga(s, "dir_index")?, look))?;
+        let ok = w.call_method1("place", (hit, &item, Self::ga_dir_index(slf)?, look))?;
         let name = if !ok.is(&tb(py, false)) { if item.get_item(0)?.eq("device")? { "device" } else { "place" } } else { "error" };
         s.call_method1("sfx", (name,))?;
         Ok(())
@@ -196,42 +197,42 @@ impl Viewer {
         let py = slf.py();
         let s = slf.as_any();
         let sc = imp(py, "main.client_rs.screens")?;
-        ga(s, "held")?.call_method0("clear")?;
+        Self::ga_held(slf)?.call_method0("clear")?;
         s.call_method1("set_grab", (false,))?;
-        ga(&ga(s, "game")?, "ui_root")?.setattr("enabled", false)?; // MOD の画面の部品（目標の欄など）は隠す
+        ga(&Self::ga_game(slf)?, "ui_root")?.setattr("enabled", false)?; // MOD の画面の部品（目標の欄など）は隠す
         let cls = match name {
             "pause" => sc.getattr("Pause")?,
             "inventory" => sc.getattr("Inventory")?,
             _ => return Err(pyo3::exceptions::PyKeyError::new_err(name.to_string())),
         };
-        ga(s, "ui")?.call_method1("open", (cls, s))?;
+        Self::ga_ui(slf)?.call_method1("open", (cls, s))?;
         Ok(())
     }
     /// P：見ている機器の設定（アクチュエーター・ほかの機器）。コンピューターはプログラムの画面
     pub(crate) fn open_editor(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let w = ga(s, "w")?;
-        let h = ga(s, "hit")?;
+        let w = Self::ga_w(slf)?;
+        let h = Self::ga_hit(slf)?;
         let ok = h.is_truthy()? && h.get_item("kind")?.eq("voxel")? && h.get_item("construct")?.getattr("devs")?.get_item(h.get_item("index")?)?.is_truthy()?;
         if !ok {
             w.call_method1("message", ("機器を見ながら P を押すと設定を開けます",))?;
             return Ok(());
         }
         let (c, i) = (h.get_item("construct")?, h.get_item("index")?);
-        let d = c.getattr("devs")?.get_item(&i)?;
+        let d = Construct::g_devs(con(&c)?)?.get_item(&i)?;
         let dd = c.getattr("reg")?.call_method1("device", (d.get_item("def")?,))?;
         let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
-        ga(s, "held")?.call_method0("clear")?;
+        Self::ga_held(slf)?.call_method0("clear")?;
         if get(&dd, "type", py.None())?.eq("computer")? {
             s.call_method1("open_program", (&c, &i))?;
             return Ok(());
         }
         s.call_method1("set_grab", (false,))?;
-        ga(&ga(s, "game")?, "ui_root")?.setattr("enabled", false)?;
+        ga(&Self::ga_game(slf)?, "ui_root")?.setattr("enabled", false)?;
         let sd = imp(py, "main.client_rs.screens_dev")?;
         let cls = if imp(py, "main.actuator")?.call_method1("is_actuator", (&c, &i))?.is_truthy()? { sd.getattr("ActuatorPanel")? } else { sd.getattr("DevicePanel")? };
-        ga(s, "ui")?.call_method1("open", (cls, s, &c, &i))?;
+        Self::ga_ui(slf)?.call_method1("open", (cls, s, &c, &i))?;
         Ok(())
     }
     /// コンピューターのプログラムの画面（ScriptPanel・BlockEditor を ursina のまねで動かす）
@@ -239,15 +240,15 @@ impl Viewer {
         let py = slf.py();
         let s = slf.as_any();
         s.call_method1("set_grab", (false,))?;
-        let game = ga(s, "game")?;
+        let game = Self::ga_game(slf)?;
         ga(&game, "ui_root")?.setattr("enabled", false)?;
-        let blocks = get(&c.getattr("devs")?.get_item(i)?.get_item("state")?, "blocks", py.None())?;
+        let blocks = get(&Construct::g_devs(con(&c)?)?.get_item(i)?.get_item("state")?, "blocks", py.None())?;
         let ed = if blocks.is_truthy()? {
             imp(py, "main.client.block_editor")?.getattr("BlockEditor")?.call1((&game, c, i))?
         } else {
             imp(py, "main.client.script_panel")?.getattr("ScriptPanel")?.call1((&game, c, i))?
         };
-        s.setattr("editor", ed)?;
+        Self::sa_editor(slf, ed)?;
         Ok(())
     }
     pub(crate) fn _touch_mode(slf: &Bound<'_, Self>) -> R<bool> {
@@ -255,11 +256,10 @@ impl Viewer {
     }
     /// マウスで視点を回す（カーソルを隠して閉じ込める）か。タッチ操作の ON のときは閉じ込めない
     pub(crate) fn set_grab(slf: &Bound<'_, Self>, on: &B<'_>) -> R<()> {
-        let s = slf.as_any();
         let on = on.is_truthy()? && !Self::_touch_mode(slf)?;
-        s.setattr("grabbed", on)?;
-        ga(s, "game")?.setattr("mouse_captured", on)?;
-        ga(s, "view")?.call_method1("grab", (on,))?;
+        Self::sa_grabbed(slf, on)?;
+        Self::ga_game(slf)?.setattr("mouse_captured", on)?;
+        Self::ga_view(slf)?.call_method1("grab", (on,))?;
         Ok(())
     }
     /// 画面の UI 座標 (x, y) を通る視線：(始点, 向き)。タッチで触った所を狙うのに使う
@@ -269,7 +269,7 @@ impl Viewer {
         let cam = gd(s, "_cam", none(py));
         if cam.is_none() {
             let look = Self::look_vectors(slf)?.get_item(3)?;
-            return Ok(PyTuple::new_bound(py, [ga(&ga(s, "w")?, "player")?.call_method0("eye")?, look]));
+            return Ok(PyTuple::new_bound(py, [ga(&Self::ga_w(slf)?, "player")?.call_method0("eye")?, look]));
         }
         let origin = cam.get_item(0)?;
         let look = v3(&cam.get_item(1)?)?;
@@ -290,9 +290,9 @@ impl Viewer {
     pub(crate) fn touch_action(slf: &Bound<'_, Self>, kind: &str, x: f64, y: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let w = ga(s, "w")?;
+        let w = Self::ga_w(slf)?;
         let p = ga(&w, "player")?;
-        if ga(&p, "seated")?.is_truthy()? || !ga(s, "editor")?.is_none() || ga(&ga(s, "ui")?, "stack")?.is_truthy()? {
+        if ga(&p, "seated")?.is_truthy()? || !Self::ga_editor(slf)?.is_none() || ga(&Self::ga_ui(slf)?, "stack")?.is_truthy()? {
             return Ok(());
         }
         let r = Self::screen_ray(slf, x, y)?;
@@ -326,9 +326,8 @@ impl Viewer {
     /// LAN に公開する（一時停止メニューから）
     pub(crate) fn start_hosting(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let w = ga(s, "w")?;
-        let cfg = ga(s, "cfg")?;
+        let w = Self::ga_w(slf)?;
+        let cfg = Self::ga_cfg(slf)?;
         if let Err(e) = imp(py, "main.netserver")?.getattr("Host")?.call1((&w, &cfg)) {
             if e.is_instance_of::<pyo3::exceptions::PyOSError>(py) {
                 log_exc(py, &e, "LAN に公開できません", vec![])?;
@@ -345,9 +344,9 @@ impl Viewer {
     }
     pub(crate) fn screen_closed(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
-        let stack = ga(&ga(s, "ui")?, "stack")?.is_truthy()?;
-        let game = ga(s, "game")?;
-        if !stack && ga(s, "editor")?.is_none() && ga(&game, "cam_mode")?.is_none() {
+        let stack = ga(&Self::ga_ui(slf)?, "stack")?.is_truthy()?;
+        let game = Self::ga_game(slf)?;
+        if !stack && Self::ga_editor(slf)?.is_none() && ga(&game, "cam_mode")?.is_none() {
             ga(&game, "ui_root")?.setattr("enabled", true)?;
         }
         if !stack {
@@ -358,7 +357,7 @@ impl Viewer {
     pub(crate) fn _key(slf: &Bound<'_, Self>, k: &str, c: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let w = ga(s, "w")?;
+        let w = Self::ga_w(slf)?;
         let seat_keys = imp(py, "main.client.game")?.getattr("SEAT_KEYS")?;
         let p = ga(&w, "player")?;
         let ck = |name: &str, d: &str| -> R<bool> { Ok(get(c, name, d)?.eq(k)?) };
@@ -373,8 +372,8 @@ impl Viewer {
                 w.call_method1("interact", (py.None(),))?;
                 s.call_method1("sfx", ("seat",))?;
             } else if ck("third_person", "v")? {
-                let t = ga(s, "third_person")?.is_truthy()?;
-                s.setattr("third_person", !t)?;
+                let t = Self::ga_third_person(slf)?.is_truthy()?;
+                Self::sa_third_person(slf, !t)?;
             } else if ck("save", "f5")? {
                 w.call_method0("save")?;
             } else if ck("export", "f9")? {
@@ -386,12 +385,12 @@ impl Viewer {
             return Ok(());
         }
         if k.chars().count() == 1 && "123456789".contains(k) {
-            s.setattr("sel", k.parse::<i64>().unwrap() - 1)?;
+            Self::sa_sel(slf, k.parse::<i64>().unwrap() - 1)?;
         } else if ci("rotate")? {
-            let d: i64 = ga(s, "dir_index")?.extract()?;
-            s.setattr("dir_index", (d + 1).rem_euclid(6))?;
+            let d: i64 = Self::ga_dir_index(slf)?.extract()?;
+            Self::sa_dir_index(slf, (d + 1).rem_euclid(6))?;
         } else if ci("interact")? {
-            let mut hit = ga(s, "hit")?;
+            let mut hit = Self::ga_hit(slf)?;
             if !Self::_usable(slf, &hit)? {
                 // 見ている物が使えなければ、近くの MOD の物（受付・お店など）
                 for t in Self::nearby_targets(slf, 2.6)?.iter()? {
@@ -416,28 +415,28 @@ impl Viewer {
             s.call_method0("open_editor")?;
         } else if ck("jetpack", "f")? {
             let j = ga(&p, "jetpack")?.is_truthy()?;
-            p.setattr("jetpack", !j)?;
+            Player::s_jetpack(ply(&p)?, !j)?;
         } else if ck("save", "f5")? {
             w.call_method0("save")?;
         } else if ck("third_person", "v")? {
-            let t = ga(s, "third_person")?.is_truthy()?;
-            s.setattr("third_person", !t)?;
+            let t = Self::ga_third_person(slf)?.is_truthy()?;
+            Self::sa_third_person(slf, !t)?;
         } else if ck("toggle_help", "f1")? {
             let t = gd(s, "show_help", tb(py, false)).is_truthy()?;
-            s.setattr("show_help", !t)?;
+            Self::sa_show_help(slf, !t)?;
         } else if ck("debug_hud", "f3")? {
             let t = gd(s, "debug_hud", tb(py, false)).is_truthy()?;
-            s.setattr("debug_hud", !t)?;
+            Self::sa_debug_hud(slf, !t)?;
         } else if k == "f11" {
-            let v = ga(s, "view")?;
+            let v = Self::ga_view(slf)?;
             let fs = v.call_method0("fullscreen")?.is_truthy()?;
             v.call_method1("set_fullscreen", (!fs,))?;
         } else if ck("camera_mode", "c")? {
-            ga(s, "game")?.call_method0("enter_camera")?;
+            Self::ga_game(slf)?.call_method0("enter_camera")?;
         } else if ck("export", "f9")? {
             s.call_method0("export_obj")?;
         } else if ck("import", "f8")? {
-            ga(s, "game")?.call_method0("open_import")?;
+            Self::ga_game(slf)?.call_method0("open_import")?;
         } else if !(ci("forward")? || ci("back")? || ci("left")? || ci("right")? || ci("jump")?) {
             let f = acall(py, "on_key", vec![k.into_py(py)])?;
             Self::_each_addon(slf, &f, true)?;

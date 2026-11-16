@@ -9,7 +9,7 @@ impl BlockEditor {
                  glow: bool) -> R<B<'py>> {
         let py = slf.py();
         let s = slf.as_any();
-        let rr = s.getattr("rows_root")?;
+        let rr = Self::ga_rows_root(slf)?;
         if glow {
             mk(s, "Entity", vec![("parent", rr.clone().unbind()), ("model", shape(py, (w + 0.016) / (h + 0.016), radius)?.unbind()),
                 ("position", po(py, (x + w / 2.0, y, z + 0.002))), ("scale", po(py, (w + 0.016, h + 0.016))), ("color", rgb(s, HINT_RGB)?.unbind())])?;
@@ -54,7 +54,7 @@ impl BlockEditor {
             let n = ops.len()? as i64;
             let i = if ops.contains(&v)? { ops.call_method1("index", (&v,))?.extract::<i64>()? } else { -1 };
             cur.set_item(&key, ops.get_item((i + 1).rem_euclid(n))?)?;
-            s.setattr("dirty", true)?;
+            Self::sa_dirty(s.downcast::<Self>()?, true)?;
             s.call_method0("render_dialog")?;
             s.call_method0("render")?;
             Ok(())

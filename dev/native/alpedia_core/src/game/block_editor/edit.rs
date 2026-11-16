@@ -1,5 +1,6 @@
 //! ブロックエディター：ブロックを選ぶ・入れる・消す・名前の一覧
 
+use crate::game::construct::{con, Construct};
 use super::*;
 
 #[pymethods]
@@ -10,7 +11,7 @@ impl BlockEditor {
         if Self::_is_sel(slf, owner, key)? {
             return Self::open_dialog(slf, owner, key, kind);
         }
-        slf.as_any().setattr("slot_sel", PyTuple::new_bound(py, [owner, key, kind]))?;
+        Self::sa_slot_sel(slf, PyTuple::new_bound(py, [owner, key, kind]))?;
         Self::_status(slf, "左の「値・条件のブロック」を押すとここに入ります（もう一度押すと数値などを入力）")?;
         Self::build_palette(slf)?;
         Self::render(slf)
@@ -20,7 +21,7 @@ impl BlockEditor {
         let py = slf.py();
         if key.eq("op")? && getd(node, "type")?.eq("logic")? {
             node.set_item("op", if getd(node, "op")?.eq("and")? { "or" } else { "and" })?;
-            slf.as_any().setattr("dirty", true)?;
+            Self::sa_dirty(slf, true)?;
             return Self::render(slf);
         }
         let mut o = vec![];
@@ -32,10 +33,9 @@ impl BlockEditor {
     /// パレットの式ブロックを、選んだ入力欄に入れる（演算などは、今の値を左側に入れたまま包む）。
     pub(crate) fn put_reporter(slf: &Bound<'_, Self>, node: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let b = bm(py)?;
-        let mut ssel = s.getattr("slot_sel")?;
-        let h = s.getattr("hint")?;
+        let mut ssel = Self::ga_slot_sel(slf)?;
+        let h = Self::ga_hint(slf)?;
         if !h.is_none() && h.get_item("kind")?.eq("expr")? && getd(node, "type")?.eq(getd(&h.get_item("node")?, "type")?)?
             && getd(node, "name")?.eq(getd(&h.get_item("node")?, "name")?)? {
             ssel = PyTuple::new_bound(py, [h.get_item("owner")?, h.get_item("key")?, h.get_item("slot")?]).into_any(); // ヒントの欄に入れる
@@ -80,31 +80,30 @@ impl BlockEditor {
             Some(x) if x.is_truthy()? => x,
             _ => PyTuple::new_bound(py, [owner, key, kind]).into_any(),
         };
-        s.setattr("slot_sel", nxt)?;
-        s.setattr("dirty", true)?;
-        s.setattr("discard_armed", false)?;
+        Self::sa_slot_sel(slf, nxt)?;
+        Self::sa_dirty(slf, true)?;
+        Self::sa_discard_armed(slf, false)?;
         Self::build_palette(slf)?;
         Self::render(slf)
     }
     pub(crate) fn select(slf: &Bound<'_, Self>, row: &Bound<'_, Row>) -> R<()> {
         let py = slf.py();
         let r = row.borrow();
-        slf.as_any().setattr("sel", PyTuple::new_bound(py, [r.parent.clone_ref(py), r.index.clone_ref(py), po(py, r.kind.as_str())]))?;
+        Self::sa_sel(slf, PyTuple::new_bound(py, [r.parent.clone_ref(py), r.index.clone_ref(py), po(py, r.kind.as_str())]))?;
         drop(r);
         Self::render(slf)
     }
     pub(crate) fn _update_title(slf: &Bound<'_, Self>) -> R<()> {
-        let s = slf.as_any();
         let d = Self::device(slf)?;
-        let title = s.getattr("title")?;
+        let title = Self::ga_title(slf)?;
         if d.is_none() {
             title.setattr("text", "コンピューターが失われました")?;
             return Ok(());
         }
         let st = d.get_item("state")?;
         let run = if getd(&st, "running")?.is_truthy()? { "実行中" } else { "停止中" };
-        let mark = if s.getattr("dirty")?.is_truthy()? { " ●未保存" } else { "" };
-        title.setattr("text", safe(&format!("ブロックプログラム — {}（{}） [{}]  {}{}", ss(&d.get_item("name")?)?, ss(&s.getattr("c")?.getattr("name")?)?,
+        let mark = if Self::ga_dirty(slf)?.is_truthy()? { " ●未保存" } else { "" };
+        title.setattr("text", safe(&format!("ブロックプログラム — {}（{}） [{}]  {}{}", ss(&d.get_item("name")?)?, ss(&Self::ga_c(slf)?.getattr("name")?)?,
             Self::file_base(slf)?, run, mark)))?;
         Ok(())
     }
@@ -113,15 +112,13 @@ impl BlockEditor {
     // 編集
     // ------------------------------------------------------------------
     pub(crate) fn changed(slf: &Bound<'_, Self>) -> R<()> {
-        let s = slf.as_any();
-        s.setattr("dirty", true)?;
-        s.setattr("discard_armed", false)?;
+        Self::sa_dirty(slf, true)?;
+        Self::sa_discard_armed(slf, false)?;
         Self::_refresh_hint(slf, true)?;
         Self::render(slf)
     }
     pub(crate) fn insert(slf: &Bound<'_, Self>, kind: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let b = bm(py)?;
         let spec = b.getattr("STATEMENTS")?.get_item(kind)?;
         let node = b.call_method1("new_stmt", (kind,))?;
@@ -135,17 +132,17 @@ impl BlockEditor {
                 }
             }
         }
-        let scripts = s.getattr("prog")?.get_item("scripts")?;
-        let h = s.getattr("hint")?;
+        let scripts = Self::ga_prog(slf)?.get_item("scripts")?;
+        let h = Self::ga_hint(slf)?;
         if getd(&spec, "hat")?.is_truthy()? {
             scripts.call_method1("append", (&node,))?;
-            s.setattr("sel", PyTuple::new_bound(py, [scripts.clone(), po(py, scripts.len()? as i64 - 1).into_bound(py), po(py, "block").into_bound(py)]))?;
+            Self::sa_sel(slf, PyTuple::new_bound(py, [scripts.clone(), po(py, scripts.len()? as i64 - 1).into_bound(py), po(py, "block").into_bound(py)]))?;
         } else if !h.is_none() && h.get_item("kind")?.eq("insert")? && h.get_item("type")?.eq(kind)? {
             h.get_item("list")?.call_method1("insert", (h.get_item("index")?, &node))?; // ヒントの所に入れる
-            s.setattr("sel", PyTuple::new_bound(py, [h.get_item("list")?, h.get_item("index")?, po(py, "block").into_bound(py)]))?;
+            Self::sa_sel(slf, PyTuple::new_bound(py, [h.get_item("list")?, h.get_item("index")?, po(py, "block").into_bound(py)]))?;
         } else {
             let mut target: Option<(B<'_>, i64)> = None;
-            let sel = s.getattr("sel")?;
+            let sel = Self::ga_sel(slf)?;
             if sel.is_truthy()? {
                 let (lst, i, k) = (sel.get_item(0)?, sel.get_item(1)?.extract::<i64>()?, ss(&sel.get_item(2)?)?);
                 if k == "end" && !lst.is(&scripts) {
@@ -168,24 +165,23 @@ impl BlockEditor {
                 }
             };
             target.call_method1("insert", (idx, &node))?;
-            s.setattr("sel", PyTuple::new_bound(py, [target, po(py, idx).into_bound(py), po(py, "block").into_bound(py)]))?;
+            Self::sa_sel(slf, PyTuple::new_bound(py, [target, po(py, idx).into_bound(py), po(py, "block").into_bound(py)]))?;
         }
         Self::_ensure_visible(slf)?;
         Self::changed(slf)
     }
     pub(crate) fn _ensure_visible(slf: &Bound<'_, Self>) -> R<()> {
-        let s = slf.as_any();
         let rows = Self::flatten(slf)?;
-        let sel = s.getattr("sel")?;
+        let sel = Self::ga_sel(slf)?;
         for (k, r) in rows.iter().enumerate() {
             let r = r.downcast_into::<Row>()?;
             if sel.is_truthy()? && same_sel(&r, &sel)? {
                 let k = k as i64;
-                let scroll: i64 = s.getattr("scroll")?.extract()?;
+                let scroll: i64 = Self::ga_scroll(slf)?.extract()?;
                 if k < scroll {
-                    s.setattr("scroll", k)?;
+                    Self::sa_scroll(slf, k)?;
                 } else if k >= scroll + VISIBLE {
-                    s.setattr("scroll", k - VISIBLE + 2)?;
+                    Self::sa_scroll(slf, k - VISIBLE + 2)?;
                 }
                 return Ok(());
             }
@@ -193,7 +189,7 @@ impl BlockEditor {
         Ok(())
     }
     pub(crate) fn _selected_block<'py>(slf: &Bound<'py, Self>) -> R<Option<(B<'py>, i64)>> {
-        let sel = slf.as_any().getattr("sel")?;
+        let sel = Self::ga_sel(slf)?;
         if !sel.is_truthy()? || !sel.get_item(2)?.eq("block")? {
             Self::_status(slf, "ブロックを選んでください")?;
             return Ok(None);
@@ -209,7 +205,7 @@ impl BlockEditor {
             let (a, b) = (lst.get_item(j)?, lst.get_item(i)?);
             lst.set_item(i, a)?;
             lst.set_item(j, b)?;
-            slf.as_any().setattr("sel", PyTuple::new_bound(py, [lst, po(py, j).into_bound(py), po(py, "block").into_bound(py)]))?;
+            Self::sa_sel(slf, PyTuple::new_bound(py, [lst, po(py, j).into_bound(py), po(py, "block").into_bound(py)]))?;
             Self::changed(slf)?;
         }
         Ok(())
@@ -218,7 +214,7 @@ impl BlockEditor {
         let py = slf.py();
         let Some((lst, i)) = Self::_selected_block(slf)? else { return Ok(()) };
         lst.call_method1("insert", (i + 1, deepcopy(&lst.get_item(i)?)?))?;
-        slf.as_any().setattr("sel", PyTuple::new_bound(py, [lst, po(py, i + 1).into_bound(py), po(py, "block").into_bound(py)]))?;
+        Self::sa_sel(slf, PyTuple::new_bound(py, [lst, po(py, i + 1).into_bound(py), po(py, "block").into_bound(py)]))?;
         Self::changed(slf)
     }
     pub(crate) fn delete(slf: &Bound<'_, Self>) -> R<()> {
@@ -227,9 +223,9 @@ impl BlockEditor {
         lst.del_item(i)?;
         let n = lst.len()? as i64;
         if n > 0 {
-            slf.as_any().setattr("sel", PyTuple::new_bound(py, [lst, po(py, i.min(n - 1)).into_bound(py), po(py, "block").into_bound(py)]))?;
+            Self::sa_sel(slf, PyTuple::new_bound(py, [lst, po(py, i.min(n - 1)).into_bound(py), po(py, "block").into_bound(py)]))?;
         } else {
-            slf.as_any().setattr("sel", py.None())?;
+            Self::sa_sel(slf, py.None())?;
         }
         Self::changed(slf)
     }
@@ -240,7 +236,7 @@ impl BlockEditor {
     #[pyo3(signature = (kind=None))]
     pub(crate) fn device_names(slf: &Bound<'_, Self>, kind: Option<String>) -> R<Vec<String>> {
         let py = slf.py();
-        let c = slf.as_any().getattr("c")?;
+        let c = Self::ga_c(slf)?;
         let reg = c.getattr("reg")?;
         let behavior_of = imp(py, "main.extensions")?.getattr("behavior_of")?;
         let mut names: Vec<String> = vec![];
@@ -249,12 +245,12 @@ impl BlockEditor {
             Some((a, b)) => (a.to_string(), b.to_string()), // "actuator.rotate"：その動作ができる物だけ
             None => (k.clone(), String::new()),
         };
-        for d in c.getattr("devs")?.iter()? {
+        for d in Construct::g_devs(con(&c)?)?.iter()? {
             let d = d?;
             if !d.is_truthy()? {
                 continue;
             }
-            let dd = reg.call_method1("device", (d.get_item("def")?,))?;
+            let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
             let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
             if !action.is_empty() && (!getd(&dd, "type")?.eq(&kind_)?
                 || !imp(py, "main.actuator")?.call_method1("actions_for", (&d, &reg))?.contains(&action)?) {
@@ -293,7 +289,7 @@ impl BlockEditor {
             }
             Ok(())
         }
-        walk(&slf.as_any().getattr("prog")?, vec, &mut found)?;
+        walk(&Self::ga_prog(slf)?, vec, &mut found)?;
         for n in bm(py)?.getattr(if vec { "PRESET_VVARS" } else { "PRESET_VARS" })?.iter()? {
             found.push(n?);
         }

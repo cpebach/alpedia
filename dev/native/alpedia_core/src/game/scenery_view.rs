@@ -121,21 +121,30 @@ fn texture<'py>(py: Python<'py>, kind: &str) -> R<B<'py>> {
 
 /// 景色の箱1か所の描画。ふつうの箱（影つき・模様つき）・明かり（点く／消える）・点滅のメッシュ
 #[pyclass(module = "main.client.scenery_view", subclass, dict)]
-pub struct SceneView {}
+pub struct SceneView {
+    /// edges（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_edges: Option<PyObject>,
+    /// meshes（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_meshes: Option<PyObject>,
+    /// s（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_s: Option<PyObject>,
+    /// state（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_state: Option<PyObject>,
+}
 
 #[pymethods]
 impl SceneView {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        SceneView {}
+        SceneView { a_edges: None, a_meshes: None, a_s: None, a_state: None }
     }
     fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>, scene: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        s.setattr("s", scene)?;
+        Self::sa_s(slf, scene)?;
         let meshes = PyDict::new_bound(py);
-        s.setattr("meshes", &meshes)?;
+        Self::sa_meshes(slf, &meshes)?;
         let parts: Vec<B<'_>> = scene.getattr("parts")?.iter()?.collect::<R<_>>()?;
         let mut order: Vec<String> = vec![];
         let mut groups: Vec<Vec<usize>> = vec![];
@@ -155,7 +164,7 @@ impl SceneView {
                 }
             }
         }
-        s.setattr("state", PyDict::new_bound(py))?;
+        Self::sa_state(slf, PyDict::new_bound(py))?;
         let m = sv(py)?;
         let textures = m.getattr("TEXTURES")?;
         let rm = imp(py, "main.client.render")?;
@@ -218,7 +227,7 @@ impl SceneView {
                 s.call_method1("_colors", (name, py.None()))?;
             }
         }
-        s.setattr("edges", Self::_edges(slf, parent, scene)?)?;
+        Self::sa_edges(slf, Self::_edges(slf, parent, scene)?)?;
         Ok(())
     }
     /// ふつうの箱（光らない物）のふちに細い線（景色が平らな色の板に見えないように）。
@@ -311,12 +320,11 @@ impl SceneView {
     /// 色を入れる。光る部品は（static なら いつも、lights なら on のとき）光の色で影なし、ほかは影つき
     fn _colors(slf: &Bound<'_, Self>, name: &str, on: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let it = s.getattr("meshes")?.call_method1("get", (name,))?;
+        let it = Self::ga_meshes(slf)?.call_method1("get", (name,))?;
         if it.is_none() {
             return Ok(());
         }
-        let parts = s.getattr("s")?.getattr("parts")?;
+        let parts = Self::ga_s(slf)?.getattr("parts")?;
         let nf: usize = it.get_item("nf")?.extract()?;
         let per = nf * 4;
         let stat = name.starts_with("static");
@@ -365,18 +373,18 @@ impl SceneView {
     fn update(slf: &Bound<'_, Self>, origin: &B<'_>, lights_on: &B<'_>, t: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let c = v3(&s.getattr("s")?.getattr("center")?)?;
+        let c = v3(&Self::ga_s(slf)?.getattr("center")?)?;
         let o = v3(origin)?;
         let pos = [c[0] - o[0], c[1] - o[1], c[2] - o[2]];
-        let meshes = s.getattr("meshes")?;
+        let meshes = Self::ga_meshes(slf)?;
         for it in meshes.call_method0("values")?.iter()? {
             it?.get_item("mesh")?.getattr("np")?.call_method1("setPos", (pos[0], pos[1], pos[2]))?;
         }
-        let edges = s.getattr("edges").unwrap_or_else(|_| none(py));
+        let edges = Self::ga_edges(slf).unwrap_or_else(|_| none(py));
         if !edges.is_none() {
             edges.call_method1("setPos", (pos[0], pos[1], pos[2]))?;
         }
-        let state = s.getattr("state")?;
+        let state = Self::ga_state(slf)?;
         if !state.call_method1("get", ("lights",))?.eq(lights_on)? {
             state.set_item("lights", lights_on)?;
             s.call_method1("_colors", ("lights", lights_on))?;
@@ -384,7 +392,7 @@ impl SceneView {
         let it = meshes.call_method1("get", ("blink",))?;
         if !it.is_none() && t - f64of(&state.call_method1("get", ("blink_t", -1))?)? > 0.08 {
             state.set_item("blink_t", t)?;
-            let parts = s.getattr("s")?.getattr("parts")?;
+            let parts = Self::ga_s(slf)?.getattr("parts")?;
             let nf: usize = it.get_item("nf")?.extract()?;
             let idx: Vec<i64> = it.get_item("idx")?.extract()?;
             let np = imp(py, "numpy")?;
@@ -416,14 +424,13 @@ impl SceneView {
     }
     fn remove(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        for it in s.getattr("meshes")?.call_method0("values")?.iter()? {
+        for it in Self::ga_meshes(slf)?.call_method0("values")?.iter()? {
             it?.get_item("mesh")?.call_method0("remove")?;
         }
-        let e = s.getattr("edges").unwrap_or_else(|_| none(py));
+        let e = Self::ga_edges(slf).unwrap_or_else(|_| none(py));
         if !e.is_none() {
             e.call_method0("removeNode")?;
-            s.setattr("edges", py.None())?;
+            Self::sa_edges(slf, py.None())?;
         }
         let _ = PyList::empty_bound(py);
         Ok(())
@@ -436,3 +443,41 @@ pub fn register(m: &Bound<'_, PyModule>) -> R<()> {
     m.add_class::<SceneView>()?;
     Ok(())
 }
+
+// ---------------------------------------------------------------- SceneView の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! sceneview_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl SceneView { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl SceneView { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+sceneview_attr_fields!(
+    ga_edges sa_edges pga_edges psa_edges a_edges "edges", ga_meshes sa_meshes pga_meshes psa_meshes a_meshes "meshes", ga_s sa_s pga_s psa_s a_s "s", ga_state sa_state pga_state psa_state a_state "state"
+);
