@@ -1,6 +1,7 @@
 //! MOD の情報（mods/<MOD名>/mod.json）と、MOD どうしの依存関係。main/modmeta.py の中身。
 //! 設定ファイル（config/settings.json）の読み書き（main/config.py の中身）もここ。
 
+use crate::game::PyDictOps;
 use std::path::PathBuf;
 
 use pyo3::prelude::*;
@@ -200,7 +201,7 @@ pub fn modmeta_dependents(py: Python<'_>, mod_id: &str, selected: Vec<String>, m
 #[pyfunction]
 #[pyo3(signature = (mod_id, mods_dir=None))]
 pub fn modmeta_name_of<'py>(py: Python<'py>, mod_id: &str, mods_dir: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
-    modmeta_read(py, mod_id, mods_dir)?.as_any().call_method1("get", ("name", mod_id))
+    modmeta_read(py, mod_id, mods_dir)?.as_any().dget2("name", mod_id)
 }
 
 /// 選んだ MOD のうち、ワールドの形を決めるもの（最初の1つ）：(MOD の ID, world の設定) か (None, None)

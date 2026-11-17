@@ -1,5 +1,7 @@
 //! ワールド：プレイヤー・出てくる場所・保存・メッセージ
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use super::*;
 use crate::game::construct::{con, Construct};
@@ -11,10 +13,10 @@ impl World {
         let py = slf.py();
         let reg = Self::g_registry(slf)?;
         let id: Bound<'py, PyAny> = if def_id.is_truthy()? { def_id.clone() } else { PyString::new_bound(py, "default").into_any() };
-        let d = reg.call_method1("get", ("players", &id))?;
+        let d = reg.dget2("players", &id)?;
         if d.is_none() {
             log(py)?.call_method1("warning", ("プレイヤーの見た目 '%s' の定義が無いので、宇宙飛行士にします", def_id))?;
-            return reg.call_method1("get", ("players", "default"));
+            return reg.dget2("players", "default");
         }
         Ok(d)
     }
@@ -86,7 +88,7 @@ impl World {
         p.setattr("vel", a1(py, [0.0; 3]))?;
         let pl = Self::nearest_planet(slf, &p.getattr("pos")?)?;
         if !pl.is_none() {
-            p.setattr("up", pl.call_method1("up", (p.getattr("pos")?,))?)?;
+            p.setattr("up", Planet::up(pla(&pl)?, &IntoPy::<PyObject>::into_py(p.getattr("pos")?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?)?;
         }
         let mut msgs = vec![];
         for a in Self::addons_v(slf)? {
@@ -122,7 +124,7 @@ impl World {
         for pl in Self::g_planets(slf)?.iter()? {
             let pl = pl?;
             let d = PyDict::new_bound(py);
-            d.update(pl.call_method0("to_dict")?.downcast::<PyDict>()?.as_mapping())?;
+            d.update(Planet::to_dict(pla(&pl)?).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.downcast::<PyDict>()?.as_mapping())?;
             if let Some(o) = opt(&pl, "defn_override")? {
                 if o.is_truthy()? {
                     d.set_item("override", o)?;
@@ -136,10 +138,10 @@ impl World {
         let cl = PyList::empty_bound(py);
         let sp = PyDict::new_bound(py);
         for c in Self::cons_v(slf)? {
-            cl.append(c.call_method0("to_dict")?)?;
+            cl.append(Construct::to_dict(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?;
         }
         for c in Self::cons_v(slf)? {
-            sp.set_item(Construct::g_id(con(&c)?)?, c.call_method0("spawn_dict")?)?;
+            sp.set_item(Construct::g_id(con(&c)?)?, Construct::spawn_dict(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?;
         }
         out.set_item("constructs.json", cl)?;
         out.set_item("spawn.json", sp)?;

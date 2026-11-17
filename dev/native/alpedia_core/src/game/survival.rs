@@ -3,6 +3,7 @@
 //! world.json の "mode" が "survival" のワールドで、ワールドの拡張の先頭に入る（MOD ではない）。
 //! "mode" が無い・"creative" ならクリエイティブ（資源なしで何でも置ける・タンクは満タン）。
 
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::player::{ply, Player};
 use crate::game::construct::{con, Construct};
@@ -35,7 +36,7 @@ fn goal_text(g: &str) -> &'static str {
 }
 
 fn fget(d: &Bound<'_, PyAny>, k: &str) -> R<f64> {
-    d.call_method1("get", (k, 0.0))?.extract()
+    d.dget2(k, 0.0)?.extract()
 }
 
 fn fmt0(v: f64) -> String {
@@ -45,7 +46,7 @@ fn fmt0(v: f64) -> String {
 /// ワールドの遊び方："survival" か "creative"
 #[pyfunction]
 pub fn survival_mode_of(settings: &Bound<'_, PyAny>) -> R<&'static str> {
-    if !settings.is_none() && settings.is_truthy()? && settings.call_method1("get", ("mode",))?.eq("survival")? {
+    if !settings.is_none() && settings.is_truthy()? && settings.dget1("mode")?.eq("survival")? {
         return Ok("survival");
     }
     Ok("creative")
@@ -59,11 +60,11 @@ pub struct SurvivalRules {
 /// （main.survival の GOALS は settings だけ持つ仮のワールドで呼ぶので、属性で読む）
 fn st<'py>(world: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let py = world.py();
-    world.getattr("settings")?.call_method1("setdefault", ("survival", PyDict::new_bound(py)))?.call_method1("setdefault", ("goals", PyDict::new_bound(py)))
+    world.getattr("settings")?.dsetdefault("survival", PyDict::new_bound(py))?.dsetdefault("goals", PyDict::new_bound(py))
 }
 
 fn message(world: &Bound<'_, PyAny>, text: String) -> R<()> {
-    world.call_method1("message", (text,))?;
+    World::message(wld(&world)?, &IntoPy::<PyObject>::into_py(text, world.py()).extract::<String>(world.py())?).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
     Ok(())
 }
 
@@ -81,7 +82,7 @@ fn check_goals(world: &Bound<'_, PyAny>) -> R<()> {
     let p = World::g_player(wld(&world)?)?;
     let inv = Player::g_inventory(ply(&p)?)?;
     let done = |g: &str| -> R<()> {
-        if !s.call_method1("get", (g,))?.is_truthy()? {
+        if !s.dget1(g)?.is_truthy()? {
             s.set_item(g, true)?;
             message(world, format!("◎ 目標達成：{}", first_part(goal_text(g))))?;
         }
@@ -91,7 +92,7 @@ fn check_goals(world: &Bound<'_, PyAny>) -> R<()> {
         done("ore")?;
     }
     let cons: Vec<Bound<'_, PyAny>> = World::g_constructs(wld(&world)?)?.call_method0("values")?.iter()?.collect::<R<_>>()?;
-    if !s.call_method1("get", ("refiner",))?.is_truthy()? {
+    if !s.dget1("refiner")?.is_truthy()? {
         let mut any = false;
         'outer: for c in &cons {
             for d in Construct::g_devs(con(&c)?)?.iter()? {
@@ -111,8 +112,8 @@ fn check_goals(world: &Bound<'_, PyAny>) -> R<()> {
         for d in Construct::g_devs(con(&c)?)?.iter()? {
             let d = d?;
             if d.is_truthy()? && d.get_item("def")?.eq("tank")? {
-                let cont = d.get_item("state")?.call_method1("get", ("contents", PyDict::new_bound(py)))?;
-                fuel += crate::game::imp(py, "builtins")?.getattr("float")?.call1((cont.call_method1("get", ("fuel", 0.0))?,))?.extract::<f64>()?;
+                let cont = d.get_item("state")?.dget2("contents", PyDict::new_bound(py))?;
+                fuel += crate::game::imp(py, "builtins")?.getattr("float")?.call1((cont.dget2("fuel", 0.0)?,))?.extract::<f64>()?;
             }
         }
     }
@@ -121,15 +122,15 @@ fn check_goals(world: &Bound<'_, PyAny>) -> R<()> {
     }
     let seated = Player::g_seated(ply(&p)?)?;
     if seated.is_truthy()? {
-        let c = World::g_constructs(wld(&world)?)?.call_method1("get", (seated.get_item(0)?,))?;
+        let c = World::g_constructs(wld(&world)?)?.dget1(seated.get_item(0)?)?;
         if !c.is_none() {
-            let o = world.call_method1("orbit_info", (c.call_method0("center_of_mass")?, c.call_method0("velocity")?))?;
+            let o = World::orbit_info(wld(&world)?, &IntoPy::<PyObject>::into_py(c.call_method0("center_of_mass")?, world.py()).into_bound(world.py()), &IntoPy::<PyObject>::into_py(c.call_method0("velocity")?, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
             if o.is_truthy()? {
                 if fget(&o, "altitude")? >= 50.0 {
                     done("fly")?;
                 }
-                let peri: f64 = o.call_method1("get", ("periapsis", -1.0))?.extract()?;
-                let apo: f64 = o.call_method1("get", ("apoapsis", 0.0))?.extract()?;
+                let peri: f64 = o.dget2("periapsis", -1.0)?.extract()?;
+                let apo: f64 = o.dget2("apoapsis", 0.0)?.extract()?;
                 if peri > 0.0 && apo != f64::INFINITY {
                     done("orbit")?;
                 }
@@ -138,7 +139,7 @@ fn check_goals(world: &Bound<'_, PyAny>) -> R<()> {
     }
     let planets = World::g_planets(wld(&world)?)?;
     if planets.len()? > 1 && Player::g_on_ground(ply(&p)?)?.is_truthy()? && !seated.is_truthy()? {
-        let pl = world.call_method1("nearest_planet", (p.getattr("pos")?,))?;
+        let pl = World::nearest_planet(wld(&world)?, &IntoPy::<PyObject>::into_py(p.getattr("pos")?, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
         if !pl.is_none() && !pl.is(&planets.get_item(0)?) {
             let name = match pl.getattr("name") {
                 Ok(n) => n.str()?.to_string(),
@@ -183,7 +184,7 @@ impl SurvivalRules {
     /// 画面用：[(ID, 表示, 済んだか)]
     fn goals_state(&self, world: &Bound<'_, PyAny>) -> R<Vec<(&'static str, &'static str, bool)>> {
         let s = st(world)?;
-        GOALS.iter().map(|(g, t)| Ok((*g, *t, s.call_method1("get", (*g,))?.is_truthy()?))).collect()
+        GOALS.iter().map(|(g, t)| Ok((*g, *t, s.dget1(*g)?.is_truthy()?))).collect()
     }
 
     fn before_physics<'py>(&mut self, py: Python<'py>, world: &Bound<'py, PyAny>, dt: f64) -> R<Bound<'py, PySet>> {
@@ -244,7 +245,7 @@ impl SurvivalRules {
         let short = PyDict::new_bound(py);
         for it in cost.call_method0("items")?.iter()? {
             let (k, v): (Bound<'_, PyAny>, Bound<'_, PyAny>) = it?.extract()?;
-            let have = inv.call_method1("get", (&k, 0.0))?;
+            let have = inv.dget2(&k, 0.0)?;
             if have.lt(&v)? {
                 short.set_item(&k, v.sub(&have)?)?;
             }
@@ -266,7 +267,7 @@ impl SurvivalRules {
         let inv = World::g_player(wld(&world)?)?.getattr("inventory")?;
         for it in cost.call_method0("items")?.iter()? {
             let (k, v): (Bound<'_, PyAny>, Bound<'_, PyAny>) = it?.extract()?;
-            let cur = inv.call_method1("get", (&k, 0.0))?;
+            let cur = inv.dget2(&k, 0.0)?;
             inv.set_item(&k, cur.add(v)?)?;
         }
         Ok(())
@@ -285,7 +286,7 @@ impl SurvivalRules {
     // --- 集める ---------------------------------------------------------------
     fn _gain(&self, world: &Bound<'_, PyAny>, res: &Bound<'_, PyAny>, amount: f64) -> R<()> {
         let inv = World::g_player(wld(&world)?)?.getattr("inventory")?;
-        let cur = inv.call_method1("get", (res, 0.0))?;
+        let cur = inv.dget2(res, 0.0)?;
         let new = cur.add(amount)?;
         inv.set_item(res, &new)?;
         let total: f64 = new.extract()?;
@@ -325,7 +326,7 @@ impl SurvivalRules {
     /// 手持ちの燃料が要る（噴かしている間だけ減る）
     fn jetpack(&self, py: Python<'_>, world: &Bound<'_, PyAny>, p: &Bound<'_, PyAny>, dt: f64, thrust_dir: &Bound<'_, PyAny>)
         -> R<(bool, PyObject)> {
-        let rate: f64 = crate::game::imp(py, "builtins")?.getattr("float")?.call1((Player::g_defn(ply(&p)?)?.call_method1("get", ("jetpack_fuel_rate", 1.0))?,))?.extract()?;
+        let rate: f64 = crate::game::imp(py, "builtins")?.getattr("float")?.call1((Player::g_defn(ply(&p)?)?.dget2("jetpack_fuel_rate", 1.0)?,))?.extract()?;
         let usef = rate * dt;
         let np = crate::game::imp(py, "numpy")?;
         let inv = Player::g_inventory(ply(&p)?)?;
@@ -356,8 +357,8 @@ fn fill_tank(world: &Bound<'_, PyAny>, d: &Bound<'_, PyAny>, dd: &Bound<'_, PyAn
     let py = world.py();
     let p = World::g_player(wld(&world)?)?;
     let fl = crate::game::imp(py, "builtins")?.getattr("float")?;
-    let cap: f64 = fl.call1((dd.get_item("params")?.call_method1("get", ("capacity", 0))?,))?.extract()?;
-    let cont = d.get_item("state")?.call_method1("setdefault", ("contents", PyDict::new_bound(py)))?;
+    let cap: f64 = fl.call1((dd.get_item("params")?.dget2("capacity", 0)?,))?.extract()?;
+    let cont = d.get_item("state")?.dsetdefault("contents", PyDict::new_bound(py))?;
     let inv = Player::g_inventory(ply(&p)?)?;
     let have = fget(&inv, "fuel")?;
     let mut total = 0.0;
@@ -394,25 +395,25 @@ fn exchange(world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, d: &Bound<'_, PyAny>
     let p = World::g_player(wld(&world)?)?;
     let inv = Player::g_inventory(ply(&p)?)?;
     let mut moved: Vec<String> = Vec::new();
-    let store = d.get_item("state")?.call_method1("setdefault", ("store", PyDict::new_bound(py)))?;
+    let store = d.get_item("state")?.dsetdefault("store", PyDict::new_bound(py))?;
     for k in dev.getattr("proc_inputs")?.call1((dd,))?.iter()? {
         let k = k?;
-        let amt = inv.call_method1("pop", (&k, 0.0))?;
+        let amt = inv.dpop2(&k, 0.0)?;
         if amt.is_truthy()? {
-            let cur = store.call_method1("get", (&k, 0.0))?;
+            let cur = store.dget2(&k, 0.0)?;
             store.set_item(&k, cur.add(&amt)?)?;
             moved.push(format!("{} {} 投入", res_name(world, &k)?, fmt0(amt.extract()?)));
         }
     }
     for k in dev.getattr("proc_outputs")?.call1((dd,))?.iter()? {
         let k = k?;
-        let amt: f64 = store.call_method1("pop", (&k, 0.0))?.extract()?;
+        let amt: f64 = store.dpop2(&k, 0.0)?.extract()?;
         if amt >= 1e-6 {
-            let cur = inv.call_method1("get", (&k, 0.0))?;
+            let cur = inv.dget2(&k, 0.0)?;
             inv.set_item(&k, cur.add(amt)?)?;
             moved.push(format!("{} {} 回収", res_name(world, &k)?, fmt0(amt)));
             let s = st(world)?;
-            if k.eq("iron")? && !s.call_method1("get", ("iron",))?.is_truthy()? {
+            if k.eq("iron")? && !s.dget1("iron")?.is_truthy()? {
                 s.set_item("iron", true)?;
                 message(world, format!("◎ 目標達成：{}", first_part(goal_text("iron"))))?;
             }
@@ -423,8 +424,8 @@ fn exchange(world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, d: &Bound<'_, PyAny>
     }
     let stt = Construct::g_status(con(&c)?)?;
     let stt = if stt.is_truthy()? { stt } else { PyDict::new_bound(py).into_any() };
-    let stored: f64 = stt.call_method1("get", ("stored", 0))?.extract()?;
-    let prod: f64 = stt.call_method1("get", ("production", 0))?.extract()?;
+    let stored: f64 = stt.dget2("stored", 0)?.extract()?;
+    let prod: f64 = stt.dget2("production", 0)?.extract()?;
     let hint = if stored > 1.0 || prod > 0.0 { "" } else { "（電気がありません：手回し発電機・太陽光パネル・燃えている推進機をつなげて）" };
     Ok(Some(format!("{}: {}{hint}", d.get_item("name")?.str()?, moved.join(", "))))
 }

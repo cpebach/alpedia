@@ -3,6 +3,8 @@
 //! 値は Rust の型のある欄に持つ（C-01）。配列は numpy の配列（型つき）のまま持つので、MOD・描画・テストからも今までと同じ名前で読み書きできる。
 //! 計算の途中の覚え（キャッシュ）は Python からは見えない欄。MOD が足した属性だけ __dict__ に入る。
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use numpy::ndarray::IxDyn;
 use numpy::{PyArray1, PyArrayDyn, PyArrayMethods, PyReadonlyArrayDyn, PyReadwriteArrayDyn, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyAttributeError, PyValueError};
@@ -68,7 +70,7 @@ pub fn fv(o: &Bound<'_, PyAny>) -> R<Vec<f64>> {
         }
         return Ok(r.as_array().iter().copied().collect());
     }
-    let a = np(o.py())?.call_method1("asarray", (o, "float64"))?;
+    let a = crate::game::construct::as_f64(&o)?;
     let r: PyReadonlyArrayDyn<f64> = a.extract()?;
     Ok(r.as_array().iter().copied().collect())
 }
@@ -76,7 +78,7 @@ pub fn iv(o: &Bound<'_, PyAny>) -> R<Vec<i64>> {
     if let Ok(r) = o.extract::<PyReadonlyArrayDyn<i64>>() {
         return Ok(r.as_array().iter().copied().collect());
     }
-    let a = np(o.py())?.call_method1("asarray", (o, "int64"))?;
+    let a = crate::game::construct::as_i64(&o)?;
     let r: PyReadonlyArrayDyn<i64> = a.extract()?;
     Ok(r.as_array().iter().copied().collect())
 }
@@ -222,7 +224,7 @@ pub fn opt<'py>(o: &Bound<'py, PyAny>, k: &str) -> R<Option<Bound<'py, PyAny>>> 
     }
 }
 pub fn dget<'py>(d: &Bound<'py, PyAny>, k: &str, dflt: impl IntoPy<PyObject>) -> R<Bound<'py, PyAny>> {
-    d.call_method1("get", (k, dflt))
+    d.dget2(k, dflt)
 }
 pub fn cell_of(o: &Bound<'_, PyAny>) -> R<[i64; 3]> {
     let t: (i64, i64, i64) = o.extract()?;
@@ -308,13 +310,13 @@ pub fn construct_native_planets<'py>(py: Python<'py>, planets: &Bound<'py, PyAny
     let out = PyList::empty_bound(py);
     for pl in planets.iter()? {
         let pl = pl?;
-        let nat = pl.call_method0("_nat")?;
+        let nat = Planet::_nat(pla(&pl)?).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;
         if nat.is_none() {
             return Ok(py.None());
         }
         let f = |k: &str| -> R<f64> { pl.getattr(k)?.extract::<f64>() };
         // 大気：地表の空気の密度（気圧に比例。101.3 kPa で 1.225 kg/m³）と、密度が 1/e になる高さ（空の色と同じ：半径の 1/4、30 m 以上）
-        let kpa: f64 = match pl.getattr("defn")?.call_method1("get", ("atmosphere_pressure", 101.3)) {
+        let kpa: f64 = match pl.getattr("defn")?.dget2("atmosphere_pressure", 101.3) {
             Ok(v) if !v.is_none() => v.extract().unwrap_or(101.3),
             _ => 101.3,
         };
@@ -549,7 +551,7 @@ pub fn to_fa(o: &Bound<'_, PyAny>) -> R<FA> {
     if let Ok(a) = o.downcast::<PyArrayDyn<f64>>() {
         return Ok(a.clone().unbind());
     }
-    Ok(np(o.py())?.call_method1("asarray", (o, "float64"))?.downcast_into::<PyArrayDyn<f64>>()?.unbind())
+    Ok(crate::game::construct::as_f64(&o)?.downcast_into::<PyArrayDyn<f64>>()?.unbind())
 }
 
 fn zeros<'py>(py: Python<'py>, shape: &[usize]) -> R<Bound<'py, PyAny>> {
@@ -620,7 +622,7 @@ impl Construct {
         Ok(out)
     }
     fn idx_of(index: &Bound<'_, PyAny>, cell: &Bound<'_, PyAny>) -> R<Option<usize>> {
-        let v = index.call_method1("get", (cell,))?;
+        let v = index.dget1(cell)?;
         Ok(if v.is_none() { None } else { Some(v.extract()?) })
     }
     fn rotor_keys<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PySet>> {
@@ -835,7 +837,7 @@ impl Construct {
     }
 
     /// 機器の情報を決まった形にする（状態は devstate の表のとおりにそろえる）
-    fn _init_device<'py>(slf: &Bound<'py, Self>, dev: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
+    pub(crate) fn _init_device<'py>(slf: &Bound<'py, Self>, dev: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
         let py = slf.py();
         let dev = super::actuator::act_migrate_device(py, dev)?;   // 古い「アクチュエーター」で押し出していた物はピストンに
         let reg = Self::g_reg(slf)?;
@@ -863,7 +865,7 @@ impl Construct {
     }
 
     /// トポロジ（ボクセル・結合）が変わったら呼ぶ
-    fn rebuild(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn rebuild(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let cells = Self::cells_v(slf)?;
         let n = cells.len();
@@ -1086,7 +1088,7 @@ impl Construct {
             let shape = imp(py, "main.shape")?;
             Self::s_topo(slf, shape.call_method1("topology", (slf,))?)?;
             Self::s_prox_w(slf, shape.call_method1("collision_proxies", (slf,))?)?;
-            slf.call_method0("_build_contacts")?;
+            Self::_build_contacts(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         } else {
             let t = PyDict::new_bound(py);
             t.set_item("points", iarr(py, vec![], &[0])?)?;
@@ -1102,7 +1104,7 @@ impl Construct {
 
     /// soft=True：形が変わる操作（アクチュエーターの動作・ブロックの追加削除）なので剛体扱いも解く
     #[pyo3(signature = (soft=false))]
-    fn wake(slf: &Bound<'_, Self>, soft: bool) -> R<()> {
+    pub(crate) fn wake(slf: &Bound<'_, Self>, soft: bool) -> R<()> {
         let mut b = slf.borrow_mut();
         b.asleep = false;
         b.sleep_t = 0.0;
@@ -1119,7 +1121,7 @@ impl Construct {
 
     /// ほぼ静止している構築物は計算を省く（スリープ）
     #[pyo3(signature = (dt, threshold=0.05, delay=1.0))]
-    fn update_sleep(slf: &Bound<'_, Self>, dt: f64, threshold: f64, delay: f64) -> R<()> {
+    pub(crate) fn update_sleep(slf: &Bound<'_, Self>, dt: f64, threshold: f64, delay: f64) -> R<()> {
         if slf.borrow().asleep {
             return Ok(());
         }

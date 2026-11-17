@@ -1,5 +1,8 @@
 //! ワールド：ジェットパック・触る・キー・書き出しと読み込み
 
+use crate::game::PyPathOps;
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use super::*;
 use crate::game::construct::{con, Construct};
@@ -50,7 +53,7 @@ impl World {
             if dtype.as_deref() == Some("tank") {
                 // E でタンクの中身を 燃料満タン → 空気満タン → 空 と切り替え
                 let cap: f64 = getd(&dd.get_item("params")?, "capacity", 0)?.extract()?;
-                let cont = d.get_item("state")?.call_method1("setdefault", ("contents", PyDict::new_bound(py)))?;
+                let cont = d.get_item("state")?.dsetdefault("contents", PyDict::new_bound(py))?;
                 let dn = d.get_item("name")?.str()?.to_string();
                 if fget(&cont, "fuel", 0.0)? >= cap * 0.99 {
                     cont.call_method0("clear")?;
@@ -84,7 +87,7 @@ impl World {
             }
         }
         let m = crate::game::registry::mat_dict(&reg, &Construct::g_mats(con(&c)?)?.get_item(i)?)?;
-        let tm: f64 = c.call_method0("total_mass")?.extract()?;
+        let tm: f64 = Construct::total_mass(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.extract()?;
         Self::message(slf, &format!("{cname}: {} / ボクセル {} / 質量 {:.1} t", m.get_item("name")?.str()?, Construct::n(con(&c)?)?.into_py(py).into_bound(py), tm / 1000.0))
     }
     /// 操縦席で押されたキー：キー割り当てのあるアクチュエータを切り替える
@@ -93,7 +96,7 @@ impl World {
         if !s.is_truthy()? {
             return Ok(());
         }
-        let c = Self::g_constructs(slf)?.call_method1("get", (s.get_item(0)?,))?;
+        let c = Self::g_constructs(slf)?.dget1(s.get_item(0)?)?;
         if !c.is_truthy()? {
             return Ok(());
         }
@@ -180,7 +183,7 @@ impl World {
         let player = Self::g_player(slf)?;
         let pp = Player::g_pos(ply(&player)?)?;
         let pl = Self::nearest_planet(slf, &pp)?;
-        let up = if pl.is_truthy()? { v3(&pl.call_method1("up", (&pp,))?)? } else { [0.0, 1.0, 0.0] };
+        let up = if pl.is_truthy()? { v3(&Planet::up(pla(&pl)?, &IntoPy::<PyObject>::into_py(&pp, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?)? } else { [0.0, 1.0, 0.0] };
         let look = match look_dir { Some(l) if !l.is_none() => v3(l)?, _ => [0.0, 0.0, 1.0] };
         let rm = Self::frame_of_import(up, look);
         let fwd = [rm[0][2], rm[1][2], rm[2][2]];
@@ -193,7 +196,7 @@ impl World {
                 let mut base = [p0[0] + fwd[0] * (em * 0.7 + 3.0), p0[1] + fwd[1] * (em * 0.7 + 3.0), p0[2] + fwd[2] * (em * 0.7 + 3.0)];
                 if !pl.is_none() {
                     // 地表の上に置く
-                    let dd: f64 = pl.call_method1("sdf", (arr(py, base.to_vec(), &[1, 3])?,))?.get_item(0)?.extract()?;
+                    let dd: f64 = Planet::sdf(pla(&pl)?, &IntoPy::<PyObject>::into_py(arr(py, base.to_vec(), &[1, 3])?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?.extract()?;
                     for k in 0..3 {
                         base[k] = base[k] - up[k] * dd + up[k] * 0.5;
                     }
@@ -225,7 +228,7 @@ impl World {
                     continue;
                 }
                 let fp = sdir.call_method1("__truediv__", (&f,))?;
-                if !fp.call_method0("exists")?.is_truthy()? {
+                if !fp.pexists()?.is_truthy()? {
                     fp.call_method("write_text", (&text,), Some(&enc))?;
                 } else if !fp.call_method("read_text", (), Some(&enc))?.eq(&text)? {
                     kept.push(fs);

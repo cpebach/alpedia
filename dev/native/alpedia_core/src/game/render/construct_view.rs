@@ -1,5 +1,6 @@
 //! 描画：構築物の見た目（ConstructView）
 
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use super::*;
 
@@ -309,7 +310,7 @@ impl ConstructView {
         let mut firing = none(py);
         let devs = Construct::g_devs(con(&c)?)?;
         if highlight_flames.is_truthy()? {
-            let thr = c.call_method1("dev_ids", ("thruster",))?; // 噴射の色は推進機だけ
+            let thr = Construct::dev_ids(con(&c)?, Some(&IntoPy::<PyObject>::into_py("thruster", c.py()).into_bound(c.py()))).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?; // 噴射の色は推進機だけ
             if thr.is_truthy()? {
                 let round = py.import_bound("builtins")?.getattr("round")?;
                 let mut v = vec![];
@@ -365,7 +366,7 @@ impl ConstructView {
                 let fv: Vec<f64> = firing.iter()?.map(|x| f64of(&x?)).collect::<R<_>>()?;
                 if fv.iter().any(|x| *x != 0.0) {
                     let mut fa = vec![0.0; n_vox];
-                    for (k, i) in c.call_method1("dev_ids", ("thruster",))?.iter()?.enumerate() {
+                    for (k, i) in Construct::dev_ids(con(&c)?, Some(&IntoPy::<PyObject>::into_py("thruster", c.py()).into_bound(c.py()))).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.iter()?.enumerate() {
                         let i: usize = i?.extract()?;
                         fa[i] = fv[k];
                     }
@@ -468,7 +469,7 @@ impl ConstructView {
             }
             Self::sa_baked(slf, py.None())?;
         }
-        let tf = if c.hasattr("render_transform")? { c.call_method0("render_transform")? } else { none(py) };
+        let tf = if c.hasattr("render_transform")? { Construct::render_transform(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))? } else { none(py) };
         if !tf.is_none() {
             let (rr, x) = (tf.get_item(0)?, tf.get_item(1)?);
             // 行ベクトル形式：p' = p R^T + (x - origin)
@@ -571,7 +572,7 @@ impl ConstructView {
         let keys: Vec<B<'_>> = displays.iter()?.collect::<R<_>>()?;
         for k in keys {
             if !want.contains(&k)? {
-                displays.call_method1("pop", (&k,))?.call_method0("remove")?;
+                displays.dpop1(&k)?.call_method0("remove")?;
             }
         }
         if want.is_empty() {
@@ -584,7 +585,7 @@ impl ConstructView {
         let root = Self::ga_root(slf)?;
         for (k, disp) in want.iter() {
             let (i, f): (i64, i64) = k.extract()?;
-            let mut v = displays.call_method1("get", (&k,))?;
+            let mut v = displays.dget1(&k)?;
             if v.is_none() {
                 v = gfx(py)?.getattr("RsDisplayView")?.call1((&root,))?;
                 displays.set_item(&k, &v)?;

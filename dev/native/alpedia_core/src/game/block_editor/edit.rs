@@ -1,5 +1,6 @@
 //! ブロックエディター：ブロックを選ぶ・入れる・消す・名前の一覧
 
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use super::*;
 
@@ -57,7 +58,7 @@ impl BlockEditor {
             return Self::_status(slf, &format!("この欄（{}）には入れられません", need));
         }
         let nn = deepcopy(node)?;
-        let cur = owner.call_method1("get", (&key,))?;
+        let cur = owner.dget1(&key)?;
         let children = b.call_method1("expr_children", (&nn,))?;
         let mut nxt: Option<B<'_>> = None;
         let has = children.is_truthy()?;
@@ -122,7 +123,7 @@ impl BlockEditor {
         let b = bm(py)?;
         let spec = b.getattr("STATEMENTS")?.get_item(kind)?;
         let node = b.call_method1("new_stmt", (kind,))?;
-        for it in spec.call_method1("get", ("slots", PyDict::new_bound(py)))?.call_method0("items")?.iter()? {
+        for it in spec.dget2("slots", PyDict::new_bound(py))?.call_method0("items")?.iter()? {
             let it = it?;
             let (sl, k) = (it.get_item(0)?, ss(&it.get_item(1)?)?);
             if let Some(dk) = k.strip_prefix("dev:") {

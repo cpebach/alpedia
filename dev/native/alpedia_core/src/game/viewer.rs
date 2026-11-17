@@ -8,6 +8,8 @@
 //!
 //! Viewer・GameAdapter の値は Python の属性（MOD やほかの部品が読み書きする）。処理は Rust。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -37,10 +39,10 @@ fn tb<T: IntoPy<PyObject>>(py: Python<'_>, x: T) -> B<'_> {
 }
 fn get<'py>(d: &B<'py>, k: &str, dflt: impl IntoPy<PyObject>) -> R<B<'py>> {
     let py = d.py();
-    d.call_method1("get", (k, dflt.into_py(py)))
+    d.dget2(k, dflt.into_py(py))
 }
 fn lg(py: Python<'_>) -> R<B<'_>> {
-    imp(py, "main.log")?.call_method1("get", ("client_rs",))
+    imp(py, "main.log")?.dget1("client_rs")
 }
 fn is_exc(py: Python<'_>, e: &PyErr) -> bool {
     e.is_instance_of::<PyException>(py)
@@ -367,12 +369,12 @@ impl Viewer {
         Self::sa_editor(slf, py.None())?; // 今までの画面の部品（ursina のまね）で開いている画面（プログラムなど）
         let game = py.get_type_bound::<GameAdapter>().call1((s,))?;
         Self::sa_game(slf, &game)?;
-        Self::sa_snd(slf, imp(py, "main.client.sound")?.call_method1("get", (cfg,))?)?;
+        Self::sa_snd(slf, imp(py, "main.client.sound")?.dget1(cfg)?)?;
         Self::sa_snd_t(slf, 0.0)?;
         Self::sa_snd_lit(slf, PySet::empty_bound(py)?)?;
         Self::sa_snd_loops(slf, PyDict::new_bound(py))?;
         imp(py, "main.client.inventory")?.call_method1("ensure_hotbar", (World::g_player(wld(&world)?)?, World::g_registry(wld(&world)?)?))?;
-        let addons = s.call_method0("_load_addons")?;
+        let addons = Self::_load_addons(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Self::sa_addons(slf, &addons)?;
         let r = (|| -> R<()> {
             let th = imp(py, "main.client.touch_ui")?.getattr("TouchHUD")?.call1((&game,))?;
@@ -421,7 +423,7 @@ impl Viewer {
 
     // ---- MOD の画面側 ----
     /// MOD の画面側（ClientAddon）を作る（今までの画面と同じ modcode.client_addons）
-    fn _load_addons<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
+    pub(crate) fn _load_addons<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
         let mc = imp(py, "main.modcode")?;
         let errors = PyList::empty_bound(py);
@@ -429,7 +431,7 @@ impl Viewer {
         let game = Self::ga_game(slf)?;
         let out = mc.call_method1("client_addons", (&game, &errors))?;
         let w = Self::ga_w(slf)?;
-        let sv = w.call_method1("addon", ("survival",))?;
+        let sv = World::addon(wld(&w)?, "survival").map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         if !sv.is_none() && gd(&sv, "mod_id", none(py)).is_none() {
             let r = (|| -> R<()> {
                 let sc = imp(py, "main.client.survival_ui")?.getattr("SurvivalClient")?.call1((&game,))?;
@@ -453,14 +455,14 @@ impl Viewer {
         }
         for e in errors.iter() {
             let first: String = e.call_method0("splitlines")?.get_item(0)?.extract()?;
-            w.call_method1("message", (format!("⚠ {}", first),))?;
+            World::message(wld(&w)?, &format!("⚠ {}", first)).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         }
         Self::sa_load_errors(slf, errors)?;
         Ok(out)
     }
     /// MOD の口を順に呼ぶ（エラーは1回だけ記録して続ける）。first：最初に真を返した物の値
     #[pyo3(signature = (f, first=false))]
-    fn _each_addon<'py>(slf: &Bound<'py, Self>, f: &B<'py>, first: bool) -> R<B<'py>> {
+    pub(crate) fn _each_addon<'py>(slf: &Bound<'py, Self>, f: &B<'py>, first: bool) -> R<B<'py>> {
         let py = slf.py();
         let addons: Vec<B<'_>> = Self::ga_addons(slf)?.iter()?.collect::<R<_>>()?;
         for a in addons {
@@ -485,7 +487,7 @@ impl Viewer {
         }
         Ok(none(py))
     }
-    fn _usable(slf: &Bound<'_, Self>, hit: &B<'_>) -> R<bool> {
+    pub(crate) fn _usable(slf: &Bound<'_, Self>, hit: &B<'_>) -> R<bool> {
         let py = slf.py();
         if !hit.is_truthy()? {
             return Ok(false);
@@ -501,12 +503,12 @@ impl Viewer {
     }
     /// 近くの触れる物（機器・MOD の受付・お店・人物など）：使う順（今までの画面と同じ play.nearby_targets）
     #[pyo3(signature = (radius=2.6))]
-    fn nearby_targets<'py>(slf: &Bound<'py, Self>, radius: f64) -> R<B<'py>> {
+    pub(crate) fn nearby_targets<'py>(slf: &Bound<'py, Self>, radius: f64) -> R<B<'py>> {
         let py = slf.py();
         imp(py, "main.client.play")?.call_method1("nearby_targets", (Self::ga_w(slf)?, Self::ga_addons(slf)?, radius))
     }
     /// E：MOD が使わなければワールドの interact（機器・席）
-    fn do_interact(slf: &Bound<'_, Self>, hit: &B<'_>) -> R<()> {
+    pub(crate) fn do_interact(slf: &Bound<'_, Self>, hit: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let f = acall(py, "interact", vec![hit.clone().unbind()])?;
@@ -521,7 +523,7 @@ impl Viewer {
                     kind = get(&dd, "type", py.None())?;
                 }
             }
-            w.call_method1("interact", (hit,))?;
+            World::interact(wld(&w)?, &IntoPy::<PyObject>::into_py(hit, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             s.call_method1("sfx", (if kind.eq("seat")? { "seat" } else { "click" },))?;
         } else {
             s.call_method1("sfx", ("click",))?;
@@ -530,7 +532,7 @@ impl Viewer {
     }
     // ---- 音 ----
     #[pyo3(signature = (name, volume=1.0))]
-    fn sfx(slf: &Bound<'_, Self>, name: &B<'_>, volume: f64) -> R<()> {
+    pub(crate) fn sfx(slf: &Bound<'_, Self>, name: &B<'_>, volume: f64) -> R<()> {
         let snd = ga(slf.as_any(), "snd")?;
         if !snd.is_none() {
             snd.call_method1("sfx", (name, volume))?;
@@ -538,7 +540,7 @@ impl Viewer {
         Ok(())
     }
     /// BGM（MOD が決める）と、近くの推進機・アクチュエーター・ジェットパックの音（今までの画面と同じ）
-    fn _update_sound(slf: &Bound<'_, Self>, dt: f64) -> R<()> {
+    pub(crate) fn _update_sound(slf: &Bound<'_, Self>, dt: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let snd = Self::ga_snd(slf)?;
@@ -577,7 +579,7 @@ pub fn viewer_run<'py>(py: Python<'py>, cfg: &B<'py>, world_name: &B<'py>, frame
     let paths = imp(py, "main.paths")?;
     let name = if world_name.is_truthy()? { world_name.clone() } else { get(&cfg.get_item("game")?, "default_world", "scenario")? };
     let world_cls = imp(py, "main.app")?.call_method1("prepare_world", (&name,))?;
-    if !paths.call_method1("world_dir", (&name,))?.call_method1("__truediv__", ("world.json",))?.call_method0("exists")?.is_truthy()? {
+    if !paths.call_method1("world_dir", (&name,))?.call_method1("__truediv__", ("world.json",))?.pexists()?.is_truthy()? {
         let se = py.import_bound("builtins")?.getattr("SystemExit")?.call1((format!("ワールド {} がありません", name.str()?),))?;
         return Err(PyErr::from_value_bound(se));
     }

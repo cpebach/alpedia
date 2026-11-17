@@ -1,5 +1,6 @@
 //! ワールド：近くの構築物・光線・ボクセルとの接触
 
+use crate::game::planet::{pla, Planet};
 use super::*;
 use crate::game::construct::{con, Construct};
 
@@ -57,7 +58,7 @@ impl World {
                 let v = sub(ctr, q);
                 let l = norm(v);
                 let n = if l > 1e-9 { [v[0] / l, v[1] / l, v[2] / l] } else {
-                    let vc = v3(&c.call_method0("voxel_centers")?.get_item(vi)?)?;
+                    let vc = v3(&Construct::voxel_centers(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.get_item(vi)?)?;
                     let d = sub(ctr, vc);
                     let ln = norm(d).max(1e-9);
                     [d[0] / ln, d[1] / ln, d[2] / ln]
@@ -88,9 +89,8 @@ impl World {
             if Construct::n(con(&c)?)? == 0 {
                 continue;
             }
-            let np = crate::game::construct::np(py)?;
-            let hit = core.call_method1("voxel_raycast", (np.call_method1("ascontiguousarray", (c.call_method0("centers_cached")?, "float64"))?,
-                np.call_method1("ascontiguousarray", (c.call_method0("frames_cached")?, "float64"))?, o.to_vec(), d.to_vec(),
+            let hit = core.call_method1("voxel_raycast", (crate::game::construct::cflt(&Construct::centers_cached(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?,
+                crate::game::construct::cflt(&Construct::frames_cached(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?, o.to_vec(), d.to_vec(),
                 Construct::g_size(con(&c)?)?.extract::<f64>()?, max_dist))?;
             if !hit.is_none() {
                 let t: f64 = hit.get_item(0)?.extract()?;
@@ -111,7 +111,7 @@ impl World {
             if norm(sub(o, v3(&pl.getattr("center")?)?)) > pl.getattr("bound")?.extract::<f64>()? + max_dist {
                 continue;
             }
-            let r = pl.call_method1("raycast", (&oa, &da, max_dist))?;
+            let r = Planet::raycast(pla(&pl)?, &IntoPy::<PyObject>::into_py(&oa, pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(&da, pl.py()).into_bound(pl.py()), IntoPy::<PyObject>::into_py(max_dist, pl.py()).extract::<f64>(pl.py())?).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;
             if r.is_truthy()? {
                 let t: f64 = r.get_item(0)?.extract()?;
                 if bt(&best)?.map(|b| t < b).unwrap_or(true) {
@@ -121,14 +121,14 @@ impl World {
                     x.set_item("planet", &pl)?;
                     x.set_item("point", r.get_item(1)?)?;
                     let p1 = v3(&r.get_item(1)?)?;
-                    x.set_item("normal", pl.call_method1("normal", (arr(py, p1.to_vec(), &[1, 3])?,))?.get_item(0)?)?;
+                    x.set_item("normal", Planet::normal(pla(&pl)?, &IntoPy::<PyObject>::into_py(arr(py, p1.to_vec(), &[1, 3])?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?)?;
                     best = Some(x);
                 }
             }
             // 水面（海・池）：地面や構築物より手前にあれば水を指す
             if pl.getattr("has_water")?.is_truthy()? {
                 let lim = bt(&best)?.unwrap_or(max_dist);
-                let w = pl.call_method1("water_raycast", (&oa, &da, lim))?;
+                let w = Planet::water_raycast(pla(&pl)?, &IntoPy::<PyObject>::into_py(&oa, pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(&da, pl.py()).into_bound(pl.py()), IntoPy::<PyObject>::into_py(lim, pl.py()).extract::<f64>(pl.py())?).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;
                 if w.is_truthy()? {
                     let t: f64 = w.get_item(0)?.extract()?;
                     if bt(&best)?.map(|b| t < b).unwrap_or(true) {
@@ -137,7 +137,7 @@ impl World {
                         x.set_item("t", w.get_item(0)?)?;
                         x.set_item("planet", &pl)?;
                         x.set_item("point", w.get_item(1)?)?;
-                        x.set_item("normal", pl.call_method1("up", (w.get_item(1)?,))?)?;
+                        x.set_item("normal", Planet::up(pla(&pl)?, &IntoPy::<PyObject>::into_py(w.get_item(1)?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?)?;
                         best = Some(x);
                     }
                 }

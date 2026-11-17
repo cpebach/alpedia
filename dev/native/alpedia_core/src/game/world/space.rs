@@ -1,5 +1,6 @@
 //! ワールド：重力・軌道・構築物の出し入れ
 
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use super::*;
 use crate::game::construct::{con, Construct};
@@ -11,7 +12,7 @@ impl World {
         let np = crate::game::construct::np(py)?;
         let pls: Vec<Bound<'py, PyAny>> = Self::g_planets(slf)?.iter()?.collect::<R<_>>()?;
         if pls.is_empty() {
-            return np.call_method1("zeros_like", (np.call_method1("asarray", (p, "float64"))?,));
+            return np.call_method1("zeros_like", (crate::game::construct::as_f64(&p)?,));
         }
         let ok = match Self::cache_get(slf, |c| &c.grav_key)? { Some(k) => k.eq(pls.len())?, None => false };
         if !ok {
@@ -28,7 +29,7 @@ impl World {
             Self::cache_put(slf, |c| &mut c.grav_key, n)?;
         }
         let gr = Self::cache_get(slf, |c| &c.grav)?.ok_or_else(|| PyAttributeError::new_err("_grav"))?;
-        let pa = np.call_method1("ascontiguousarray", (p, "float64"))?.call_method1("reshape", (-1, 3))?;
+        let pa = crate::game::construct::cflt(&p)?.call_method1("reshape", (-1, 3))?;
         let g = imp(py, "alpedia_core")?.call_method1("gravity", (pa, gr.get_item(0)?, gr.get_item(1)?, gr.get_item(2)?))?;
         g.call_method1("reshape", (np.call_method1("shape", (p,))?,))?.call_method1("__mul__", (Self::gscale(slf)?,))
     }
@@ -110,12 +111,12 @@ impl World {
         if !crate::game::actuator::act_cmd_detach(c, i)? {
             return Ok(false);
         }
-        for part in c.call_method0("split")?.iter()? {
+        for part in Construct::split(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.iter()? {
             let part = part?;
             Self::add_construct(slf, &part)?;
             part.call_method0("wake")?;
         }
-        c.call_method0("wake")?;
+        Construct::wake(con(&c)?, false).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
         Ok(true)
     }
     /// other を c に取り込む（座っているプレイヤーの参照も付け替える）。片方だけがアンカーで固定されているときは
@@ -127,12 +128,12 @@ impl World {
         let n0: i64 = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
         let ca = c.getattr("anchored")?.is_truthy()?;
         let oa = other.getattr("anchored")?.is_truthy()?;
-        c.call_method1("absorb", (other, cell_map, xform.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None())))?;
+        Construct::absorb(con(&c)?, &IntoPy::<PyObject>::into_py(other, c.py()).into_bound(c.py()), &IntoPy::<PyObject>::into_py(cell_map, c.py()).into_bound(c.py()), Some(&IntoPy::<PyObject>::into_py(xform.map(|x| x.clone().unbind()).unwrap_or_else(|| py.None()), c.py()).into_bound(c.py()))).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
         if ca != oa {
             let n1: i64 = Construct::n(con(&c)?)?.into_py(py).into_bound(py).extract()?;
             let k: Vec<i64> = if ca { (0..n0).collect() } else { (n0..n1).collect() };
             let nk = k.len();
-            c.call_method1("snap_to_lattice", (crate::game::construct::iarr(py, k, &[nk])?,))?;
+            Construct::snap_to_lattice(con(&c)?, &IntoPy::<PyObject>::into_py(crate::game::construct::iarr(py, k, &[nk])?, c.py()).into_bound(c.py())).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
         }
         // 結合した直後は、めり込みの押し出しで吹き飛ばないように、しばらく速さの変化をおさえる
         let cur: f64 = con(c)?.borrow().settle;
@@ -145,7 +146,7 @@ impl World {
                 Player::s_seated(ply(&p)?, (Construct::g_id(con(&c)?)?, cell_map.get_item(s.get_item(1)?)?))?;
             }
         }
-        Self::g_constructs(slf)?.call_method1("pop", (&oid, py.None()))?;
+        Self::g_constructs(slf)?.dpop2(&oid, py.None())?;
         log(py)?.call_method1("info", ("構築物を結合: %s ← %s", Construct::g_name(con(&c)?)?, other.getattr("name")?))?;
         Ok(())
     }

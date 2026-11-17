@@ -2,6 +2,7 @@
 //! 形 = 芯（ボクセル中心の点・結合の線・2×2×2 で結合しているボクセル群の凸包の三角形）を半径 r でなぞった和集合。
 //! 描画（マーチングキューブでメッシュ化してボクセルの8頂点で変形）と当たり判定の両方で使う。
 
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use std::collections::HashMap;
 
@@ -87,7 +88,7 @@ impl Csr {
     }
     fn sort_indices(&self) {}
     fn __matmul__<'py>(&self, py: Python<'py>, x: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-        let a = super::construct::np(py)?.call_method1("asarray", (x, "float64"))?;
+        let a = crate::game::construct::as_f64(&x)?;
         let sh: Vec<usize> = a.getattr("shape")?.extract()?;
         let inner: usize = sh[1..].iter().product();
         let xv = fv(&a)?;
@@ -127,7 +128,7 @@ pub fn block_kinds_v(c: &Bound<'_, PyAny>) -> R<Vec<i64>> {
         let key = if d.is_truthy()? { PyTuple::new_bound(py, ["dev".into_py(py), d.get_item("def")?.unbind()]) }
                   else { PyTuple::new_bound(py, ["mat".into_py(py), m.unbind()]) };
         let n = names.len();
-        out.push(names.call_method1("setdefault", (key, n))?.extract::<i64>()?);
+        out.push(names.dsetdefault(key, n)?.extract::<i64>()?);
     }
     Ok(out)
 }
@@ -146,8 +147,8 @@ pub fn shape_topology<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'p
         let mut out = vec![];
         for k in keys.iter()? {
             let k = k?;
-            let a = idx.call_method1("get", (k.get_item(0)?,))?;
-            let b = idx.call_method1("get", (k.get_item(1)?,))?;
+            let a = idx.dget1(k.get_item(0)?)?;
+            let b = idx.dget1(k.get_item(1)?)?;
             if !a.is_none() && !b.is_none() {
                 out.push([a.extract()?, b.extract()?]);
             }
@@ -182,7 +183,7 @@ pub fn facet_v(c: &Bound<'_, PyAny>) -> R<Vec<bool>> {
             None => {
                 let d = crate::game::registry::mat_dict(&reg, &m)?;
                 let d = if d.is_truthy()? { d } else { PyDict::new_bound(py).into_any() };
-                let v = d.call_method1("get", ("facet", false))?.is_truthy()?;
+                let v = d.dget2("facet", false)?.is_truthy()?;
                 cache.insert(key, v);
                 v
             }
@@ -208,7 +209,7 @@ pub fn clear_v(c: &Bound<'_, PyAny>) -> R<Vec<bool>> {
             None => {
                 let md = crate::game::registry::mat_dict(&reg, &m)?;
                 let v = if md.is_truthy()? {
-                    let o = md.call_method1("get", ("opacity", 1.0))?;
+                    let o = md.dget2("opacity", 1.0)?;
                     !o.is_none() && o.extract::<f64>().unwrap_or(1.0) < 0.999
                 } else {
                     false
@@ -318,7 +319,7 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
     };
     let has_rotors = match opt(c, "rotors")? { Some(x) => x.is_truthy()?, None => false };
     let rotor_gid: Option<Vec<usize>> = if has_rotors && c.hasattr("_art_groups")? {
-        Some(iv(&c.call_method0("_art_groups")?)?.into_iter().map(|x| x as usize).collect())
+        Some(iv(&Construct::_art_groups(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?.into_iter().map(|x| x as usize).collect())
     } else { None };
     // 透ける素材（ガラス）と透けない素材は別の部分（別の形）にする。1つの形だと、ガラスと接した所に
     // 透けないブロックの面ができず、ガラス越しに隣のブロックの中（裏側）が見えてしまうため。
@@ -549,12 +550,12 @@ pub fn shape_closest_on_shape<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, p: &B
     if Construct::n(con(&c)?)? == 0 {
         return Ok(py.None().into_bound(py));
     }
-    let cen = if c.hasattr("centers_cached")? { c.call_method0("centers_cached")? } else { c.call_method0("voxel_centers")? };
+    let cen = if c.hasattr("centers_cached")? { Construct::centers_cached(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))? } else { Construct::voxel_centers(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))? };
     let topo = Construct::g_topo(con(&c)?)?;
     let np = super::construct::np(py)?;
-    let segs = np.call_method1("asarray", (topo.get_item("segs")?, "int64"))?.call_method1("reshape", (-1, 2))?;
-    let tris = np.call_method1("asarray", (topo.get_item("tris")?, "int64"))?.call_method1("reshape", (-1, 3))?;
-    let res = imp(py, "alpedia_core")?.call_method1("closest_on_shape", (np.call_method1("ascontiguousarray", (cen, "float64"))?, segs, tris,
+    let segs = crate::game::construct::as_i64(&topo.get_item("segs")?)?.call_method1("reshape", (-1, 2))?;
+    let tris = crate::game::construct::as_i64(&topo.get_item("tris")?)?.call_method1("reshape", (-1, 3))?;
+    let res = imp(py, "alpedia_core")?.call_method1("closest_on_shape", (crate::game::construct::cflt(&cen)?, segs, tris,
         v3(p)?.to_vec(), max_dist, Construct::g_size(con(&c)?)?.extract::<f64>()?))?;
     if res.is_none() {
         return Ok(res);

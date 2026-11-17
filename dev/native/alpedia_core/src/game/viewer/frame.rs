@@ -1,5 +1,7 @@
 //! 画面：1 フレーム（frame）・カメラ・書き出し
 
+use crate::game::world::{wld, World};
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use super::*;
 
@@ -12,7 +14,7 @@ impl Viewer {
         let w = Self::ga_w(slf)?;
         let cfg = Self::ga_cfg(slf)?;
         let c = cfg.get_item("controls")?;
-        s.call_method0("_input")?;
+        Self::_input(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         let game = Self::ga_game(slf)?;
         let cam_mode = ga(&game, "cam_mode")?;
         let hud = ga(&game, "touch_hud")?;
@@ -129,7 +131,7 @@ impl Viewer {
             if client {
                 net.call_method1("step", (tick, &mvo, jump && n == 0, &tho))?; // 自分の体だけ動かす
             } else {
-                w.call_method1("step", (tick, &mvo, jump && n == 0, &tho))?;
+                World::step(wld(&w)?, IntoPy::<PyObject>::into_py(tick, w.py()).extract::<f64>(w.py())?, Some(&IntoPy::<PyObject>::into_py(&mvo, w.py()).into_bound(w.py())), Some(&IntoPy::<PyObject>::into_py(jump && n == 0, w.py()).into_bound(w.py())), Some(&IntoPy::<PyObject>::into_py(&tho, w.py()).into_bound(w.py()))).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             }
             acc -= tick;
             n += 1;
@@ -184,10 +186,10 @@ impl Viewer {
         } else {
             s.call_method1("_aim", (&origin, &look_o))?;
         }
-        s.call_method1("_overlay", (&ww, &hh))?;
+        Self::_overlay(slf, IntoPy::<PyObject>::into_py(&ww, slf.py()).extract::<f64>(slf.py())?, IntoPy::<PyObject>::into_py(&hh, slf.py()).extract::<f64>(slf.py())?).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         marks.push(("aim_ui", pc()?));
         sh.call_method1("frame", (&view, dt))?; // 今までの画面の部品（プログラムの画面など）
-        s.call_method1("_update_sound", (dt,))?;
+        Self::_update_sound(slf, IntoPy::<PyObject>::into_py(dt, slf.py()).extract::<f64>(slf.py())?).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         marks.push(("shim_snd", pc()?));
         view.call_method0("render")?;
         let t2 = pc()?;
@@ -300,7 +302,7 @@ impl Viewer {
             let mut dist = 5.0;
             if seated {
                 // 乗り物の大きさに合わせて離れる
-                let c = ga(&w, "constructs")?.call_method1("get", (ga(&player, "seated")?.get_item(0)?,))?;
+                let c = ga(&w, "constructs")?.dget1(ga(&player, "seated")?.get_item(0)?)?;
                 if !c.is_none() && ga(&c, "n_vox")?.is_truthy()? {
                     let pos = ga(&c, "pos")?;
                     let ext = f64of(&imp(py, "numpy")?.getattr("linalg")?.call_method1("norm", (pos.call_method1("max", (0,))?.call_method1("__sub__", (pos.call_method1("min", (0,))?,))?,))?)?;
@@ -319,18 +321,18 @@ impl Viewer {
         let mut target = none(py);
         let hit = Self::ga_hit(slf)?;
         if ga(&p, "seated")?.is_truthy()? {
-            target = ga(&w, "constructs")?.call_method1("get", (ga(&p, "seated")?.get_item(0)?,))?;
+            target = ga(&w, "constructs")?.dget1(ga(&p, "seated")?.get_item(0)?)?;
         } else if hit.is_truthy()? && hit.get_item("kind")?.eq("voxel")? {
             target = hit.get_item("construct")?;
         }
         if target.is_none() {
-            w.call_method1("message", ("出力する構築物を見てください",))?;
+            World::message(wld(&w)?, "出力する構築物を見てください").map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             return Ok(());
         }
-        let r = w.call_method1("export_obj", (&target,));
+        let r = World::export_obj(wld(&w)?, &IntoPy::<PyObject>::into_py(&target, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()));
         swallow(py, r, |e| {
             log_exc(py, e, "OBJ 出力失敗", vec![])?;
-            w.call_method1("message", (format!("OBJ 出力失敗: {}", e.value_bound(py).str()?),))?;
+            World::message(wld(&w)?, &format!("OBJ 出力失敗: {}", e.value_bound(py).str()?)).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             Ok(())
         })?;
         Ok(())

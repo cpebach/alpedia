@@ -2,6 +2,8 @@
 //! プログラムは alpedia_mods.<MOD名> というパッケージとして読み込む。ワールドを始めるときに一括で読み込み、
 //! エラーがあればまとめて出してワールドは始めない。画面用のモジュールは画面を作るときまで後回しにする。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
@@ -15,7 +17,7 @@ const PREFIX: &str = "alpedia_mods";
 const CLIENT_LIBS: [&str; 4] = ["ursina", "panda3d", "direct", "main.client"];
 
 fn log(py: Python<'_>) -> R<Bound<'_, PyAny>> {
-    imp(py, "main.log")?.call_method1("get", ("modcode",))
+    imp(py, "main.log")?.dget1("modcode")
 }
 fn mods_dir(py: Python<'_>) -> R<Bound<'_, PyAny>> {
     imp(py, "main.paths")?.getattr("MODS")
@@ -176,7 +178,7 @@ fn load_inner(py: Python<'_>, mod_ids: &Bound<'_, PyAny>, errors: &Bound<'_, PyA
         let mid = mid?;
         let ms: String = mid.str()?.to_string();
         let d = div(&div(&mods_dir(py)?, &mid)?, "code")?;
-        if !div(&d, "__init__.py")?.call_method0("exists")?.is_truthy()? {
+        if !div(&d, "__init__.py")?.pexists()?.is_truthy()? {
             continue;
         }
         if let Err(e) = modcode_package(py, &ms) {
@@ -246,7 +248,7 @@ pub fn modcode_package_py(py: Python<'_>, mod_id: &str) -> R<PyObject> {
 pub fn modcode_package(py: Python<'_>, mod_id: &str) -> R<PyObject> {
     let d = div(&div(&mods_dir(py)?, mod_id)?, "code")?;
     let init = div(&d, "__init__.py")?;
-    if !init.call_method0("exists")?.is_truthy()? {
+    if !init.pexists()?.is_truthy()? {
         return Ok(py.None());
     }
     let name = format!("{PREFIX}.{mod_id}");
@@ -265,7 +267,7 @@ pub fn modcode_package(py: Python<'_>, mod_id: &str) -> R<PyObject> {
     let m = util.call_method1("module_from_spec", (&spec,))?;
     mods.set_item(&name, &m)?;
     if let Err(e) = spec.getattr("loader")?.call_method1("exec_module", (&m,)) {
-        mods.call_method1("pop", (&name, py.None()))?;
+        mods.dpop2(&name, py.None())?;
         return Err(e);
     }
     Ok(m.unbind())

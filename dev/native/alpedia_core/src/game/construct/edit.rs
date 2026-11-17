@@ -1,5 +1,6 @@
 //! 構築物：ボクセルを足す・消す・分ける・合わせる・向きを直す
 
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use super::*;
 
@@ -216,7 +217,7 @@ impl Construct {
         }
         if let Some(x) = xform {
             if x.is_truthy()? {
-                other.call_method1("_reorient", (x,))?;
+                Construct::_reorient(con(&other)?, &IntoPy::<PyObject>::into_py(x, other.py()).into_bound(other.py())).map(|v| IntoPy::<PyObject>::into_py(v, other.py()).into_bound(other.py()))?;
             }
         }
         let mapped: Vec<Bound<'_, PyAny>> = Construct::g_cells(con(&other)?)?.iter()?.map(|c| cell_map.get_item(c?)).collect::<R<_>>()?;
@@ -248,12 +249,12 @@ impl Construct {
         }
         let st = Self::g_storage(slf)?;
         for (k, v) in Construct::g_storage(con(&other)?)?.downcast::<PyDict>()?.iter() {
-            let cur = st.call_method1("get", (&k, 0.0))?;
+            let cur = st.dget2(&k, 0.0)?;
             st.set_item(&k, cur.add(v)?)?;
         }
         let ca = Self::g_cavity_air(slf)?;
         for (k, v) in Construct::g_cavity_air(con(&other)?)?.downcast::<PyDict>()?.iter() {
-            ca.set_item(cell_map.call_method1("get", (&k, &k))?, v)?;
+            ca.set_item(cell_map.dget2(&k, &k)?, v)?;
         }
         Self::s_force(slf, zeros(py, &[8 * n, 3])?)?;
         Self::rebuild(slf)

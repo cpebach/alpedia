@@ -2,6 +2,8 @@
 //! ホストの PC がワールドを持ち、物理・プログラム・MOD の決まりを全部動かす。参加者は自分の体だけ動かして知らせ、
 //! 置く・壊す・掘る・E などの操作はホストへ送る。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::player::{ply, Player};
 use crate::game::construct::{con, Construct};
@@ -21,7 +23,7 @@ const ME_HZ: f64 = 20.0;
 const EDIT_HZ: f64 = 2.0;
 
 fn slog<'py>(py: Python<'py>, name: &str) -> R<Bound<'py, PyAny>> {
-    imp(py, "main.log")?.call_method1("get", (name,))
+    imp(py, "main.log")?.dget1(name)
 }
 fn mono(py: Python<'_>) -> R<f64> {
     imp(py, "time")?.call_method0("monotonic")?.extract()
@@ -104,13 +106,13 @@ pub fn ns_mod_manifest<'py>(py: Python<'py>, mod_ids: &Bound<'py, PyAny>) -> R<B
         let mid = mid?;
         let root = div(&paths(py)?.getattr("MODS")?, &mid)?;
         let files = PyList::empty_bound(py);
-        if root.call_method0("is_dir")?.is_truthy()? {
+        if root.pis_dir()?.is_truthy()? {
             let all = imp(py, "builtins")?.call_method1("sorted", (root.call_method1("rglob", ("*",))?,))?;
             for f in all.iter()? {
                 let f = f?;
                 let parts: Vec<String> = f.getattr("parts")?.extract()?;
                 let suf: String = f.getattr("suffix")?.extract()?;
-                if !f.call_method0("is_file")?.is_truthy()? || parts.iter().any(|p| p == "__pycache__") || suf == ".pyc" || suf == ".pyo" {
+                if !f.pis_file()?.is_truthy()? || parts.iter().any(|p| p == "__pycache__") || suf == ".pyc" || suf == ".pyo" {
                     continue;
                 }
                 let rel = f.call_method1("relative_to", (&root,))?.call_method0("as_posix")?;
@@ -146,8 +148,8 @@ fn host_password(py: Python<'_>, cfg: &Bound<'_, PyAny>) -> R<String> {
     if cfg.is_none() {
         return Ok(String::new());
     }
-    let mp = cfg.call_method1("get", ("multiplayer", PyDict::new_bound(py)))?;
-    let p = mp.call_method1("get", ("password", ""))?;
+    let mp = cfg.dget2("multiplayer", PyDict::new_bound(py))?;
+    let p = mp.dget2("password", "")?;
     Ok(if p.is_none() { String::new() } else { p.str()?.to_string().trim().to_string() })
 }
 
@@ -240,12 +242,12 @@ impl Host {
     #[new]
     #[pyo3(signature = (world, cfg, port=None))]
     fn new(py: Python<'_>, world: &Bound<'_, PyAny>, cfg: &Bound<'_, PyAny>, port: Option<i64>) -> R<Self> {
-        let mp = cfg.call_method1("get", ("multiplayer", PyDict::new_bound(py)))?;
-        let nm = mp.call_method1("get", ("name",))?;
+        let mp = cfg.dget2("multiplayer", PyDict::new_bound(py))?;
+        let nm = mp.dget1("name")?;
         let name: PyObject = if nm.is_truthy()? { nm.unbind() } else { ns_default_name(py)?.into_py(py) };
         let net = net(py)?;
         let inbox = net.call_method0("Inbox")?;
-        let port = match port { Some(p) => p, None => mp.call_method1("get", ("port", net.getattr("PORT")?))?.call_method0("__int__")?.extract()? };
+        let port = match port { Some(p) => p, None => mp.dget2("port", net.getattr("PORT")?)?.call_method0("__int__")?.extract()? };
         let listener = net.call_method1("Listener", (port, &inbox))?;
         let lport = listener.getattr("port")?;
         let craters = PyDict::new_bound(py);
@@ -396,7 +398,7 @@ impl Host {
             let pl = pl?;
             let pc = pl.getattr("craters")?;
             let n = pc.len()?;
-            let n0: usize = cr.call_method1("get", (k, 0))?.extract()?;
+            let n0: usize = cr.dget2(k, 0)?.extract()?;
             if n != n0 {
                 let start = n0.min(n);
                 let lst = PyList::empty_bound(py);
@@ -448,7 +450,7 @@ impl Host {
             let st = nsm.call_method1("jsonable", (st,))?;
             let key = nsm.call_method1("dumps", (&st,))?;
             let nm = a.getattr("name")?;
-            if !sent.call_method1("get", (&nm,))?.eq(&key)? {
+            if !sent.dget1(&nm)?.eq(&key)? {
                 sent.set_item(&nm, key)?;
                 out.set_item(nm, st)?;
             }
@@ -504,24 +506,24 @@ impl Host {
                 if !e.is_instance_of::<pyo3::exceptions::PyException>(py) {
                     return Err(e);
                 }
-                exc_log(py, &slog(py, "netserver")?, &e, "参加者からのメッセージ %s の処理でエラー", vec![msg.call_method1("get", ("t",))?.unbind()])?;
+                exc_log(py, &slog(py, "netserver")?, &e, "参加者からのメッセージ %s の処理でエラー", vec![msg.dget1("t")?.unbind()])?;
             }
         }
         Ok(())
     }
     fn _handle(slf: &Bound<'_, Self>, conn: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>) -> R<()> {
         let py = slf.py();
-        let t = m.call_method1("get", ("t",))?;
+        let t = m.dget1("t")?;
         let ts: String = if t.is_none() { String::new() } else { t.extract()? };
         let peers = Self::g(slf, "peers")?;
         let lg = slog(py, "netserver")?;
         if ts == "_open" {
-            let p = Bound::new(py, Peer::new(py, conn.clone().unbind(), m.call_method1("get", ("addr",))?.unbind()))?;
+            let p = Bound::new(py, Peer::new(py, conn.clone().unbind(), m.dget1("addr")?.unbind()))?;
             peers.set_item(conn, p)?;
-            lg.call_method1("info", ("つながりを受け付けました: %s", m.call_method1("get", ("addr",))?))?;
+            lg.call_method1("info", ("つながりを受け付けました: %s", m.dget1("addr")?))?;
             return Ok(());
         }
-        let peer = peers.call_method1("get", (conn,))?;
+        let peer = peers.dget1(conn)?;
         if peer.is_none() {
             return Ok(());
         }
@@ -529,7 +531,7 @@ impl Host {
             "_closed" | "bye" => {
                 if peer.getattr("player")?.is_none() {
                     let nm = peer.getattr("name")?;
-                    let why = m.call_method1("get", ("why",))?;
+                    let why = m.dget1("why")?;
                     lg.call_method1("info", ("参加の途中で切れました: %s（%s）%s", peer.getattr("addr")?,
                         if nm.is_truthy()? { nm } else { pyo3::types::PyString::new_bound(py, "名前の前").into_any() },
                         if why.is_truthy()? { why } else { pyo3::types::PyString::new_bound(py, "").into_any() }))?;
@@ -540,7 +542,7 @@ impl Host {
             "auth" => Self::_auth(slf, &peer, m),
             // 受け付ける前（名前・合言葉の前）は、ファイルも準備も受け付けない
             "get_files" | "ready" if peer.getattr("pid")?.is_none() => Ok(()),
-            "get_files" => Self::_send_files(slf, &peer, &m.call_method1("get", ("files", PyList::empty_bound(py)))?),
+            "get_files" => Self::_send_files(slf, &peer, &m.dget2("files", PyList::empty_bound(py))?),
             "ready" => Self::_ready(slf, &peer, m),
             _ => {
                 if peer.getattr("ready")?.is_truthy()? {
@@ -552,9 +554,9 @@ impl Host {
     }
     fn _hello(slf: &Bound<'_, Self>, peer: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>) -> R<()> {
         let py = slf.py();
-        slog(py, "netserver")?.call_method1("info", ("参加の申し込み: %s（%s）", m.call_method1("get", ("name",))?, peer.getattr("addr")?))?;
+        slog(py, "netserver")?.call_method1("info", ("参加の申し込み: %s（%s）", m.dget1("name")?, peer.getattr("addr")?))?;
         let conn = peer.getattr("conn")?;
-        if !m.call_method1("get", ("proto",))?.eq(net(py)?.getattr("PROTO")?)? {
+        if !m.dget1("proto")?.eq(net(py)?.getattr("PROTO")?)? {
             conn.call_method1("send", (dict(py, vec![("t", "error".into_py(py)), ("text", "ゲームの版が違うので参加できません（ホストと同じ版にしてください）".into_py(py))])?,))?;
             return Ok(());
         }
@@ -567,7 +569,7 @@ impl Host {
             conn.call_method1("send", (dict(py, vec![("t", "challenge".into_py(py)), ("nonce", nonce.into_py(py))])?,))?;
             return Ok(());
         }
-        let n0 = m.call_method1("get", ("name",))?;
+        let n0 = m.dget1("name")?;
         let n0: String = if n0.is_truthy()? { n0.str()?.to_string() } else { "player".into() };
         let mut name: String = n0.trim().chars().take(24).collect();
         if name.is_empty() {
@@ -613,7 +615,7 @@ impl Host {
         peer.setattr("_nonce", py.None())?;                    // 1つの問いに答えは1回だけ
         let cfg = Self::g(slf, "cfg").unwrap_or_else(|_| py.None().into_bound(py));
         let want = auth_mac(py, &host_password(py, &cfg)?, &nonce)?;
-        let got = m.call_method1("get", ("mac", ""))?.str()?.to_string();
+        let got = m.dget2("mac", "")?.str()?.to_string();
         let ok: bool = imp(py, "hmac")?.call_method1("compare_digest", (want, got))?.extract()?;
         if !ok {
             slog(py, "netserver")?.call_method1("warning", ("合言葉が違うので断りました: %s", peer.getattr("addr")?))?;
@@ -654,7 +656,7 @@ impl Host {
             let root = div(&mods, &mid)?.call_method0("resolve")?;
             let f = div(&root, &rel)?.call_method0("resolve")?;
             let inside = listed && f.getattr("parents")?.contains(&root)? && inside(&mods, &root)?;
-            if !inside || !f.call_method0("is_file")?.is_truthy()? {
+            if !inside || !f.pis_file()?.is_truthy()? {
                 conn.call_method1("send", (dict(py, vec![("t", "file".into_py(py)), ("mod", mid.unbind()), ("rel", rel.unbind()),
                     ("data", PyBytes::new_bound(py, b"").into_any().unbind()), ("last", true.into_py(py)), ("missing", true.into_py(py))])?,))?;
                 continue;
@@ -683,11 +685,11 @@ impl Host {
         let py = slf.py();
         let w = Self::g(slf, "w")?;
         let pname = peer.getattr("name")?;
-        let old = Self::g(slf, "known")?.call_method1("get", (&pname,))?;
+        let old = Self::g(slf, "known")?.dget1(&pname)?;
         let lp = World::g_local_player(wld(&w)?)?;
         let p = if old.is_truthy()? {
-            let d = old.call_method1("get", ("def",))?;
-            let p = w.call_method1("make_player", (if d.is_truthy()? { d } else { m.call_method1("get", ("def",))? },))?;
+            let d = old.dget1("def")?;
+            let p = World::make_player(wld(&w)?, &IntoPy::<PyObject>::into_py(if d.is_truthy()? { d } else { m.dget1("def")? }, w.py()).into_bound(w.py()), None).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             p.call_method1("load_dict", (&old,))?;
             p
         } else {
@@ -696,7 +698,7 @@ impl Host {
             let side = super::construct::cross(up, fwd);
             let pos = super::construct::v3(&Player::g_pos(ply(&lp)?)?)?;
             let at = [pos[0] + side[0] * 1.5 + up[0] * 0.2, pos[1] + side[1] * 1.5 + up[1] * 0.2, pos[2] + side[2] * 1.5 + up[2] * 0.2];
-            let p = w.call_method1("make_player", (m.call_method1("get", ("def",))?, super::construct::a1(py, at)))?;
+            let p = World::make_player(wld(&w)?, &IntoPy::<PyObject>::into_py(m.dget1("def")?, w.py()).into_bound(w.py()), Some(&IntoPy::<PyObject>::into_py(super::construct::a1(py, at), w.py()).into_bound(w.py()))).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             p.setattr("up", Player::g_up(ply(&lp)?)?.call_method0("copy")?)?;
             p
         };
@@ -717,7 +719,7 @@ impl Host {
             }
             Ok(())
         })?;
-        let snap = w.call_method0("snapshot")?;
+        let snap = World::snapshot(wld(&w)?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         snap.set_item("player.json", p.call_method0("to_dict")?)?;
         let scripts = Self::g(slf, "files")?.call_method0("all")?;
         let cf = PyDict::new_bound(py);
@@ -727,22 +729,22 @@ impl Host {
         peer.getattr("conn")?.call_method1("send", (dict(py, vec![("t", "world".into_py(py)), ("files", ns(py)?.call_method1("jsonable", (snap,))?.unbind()),
             ("scripts", scripts.unbind()), ("craters_from", cf.into_any().unbind())])?,))?;
         peer.setattr("ready", true)?;
-        w.call_method1("message", (format!("{} が参加しました", pname.str()?),))?;
+        World::message(wld(&w)?, &format!("{} が参加しました", pname.str()?)).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         slog(py, "netserver")?.call_method1("info", ("参加: %s（%s）", &pname, peer.getattr("addr")?))?;
         let others = PyList::new_bound(py, Self::ready_peers(slf, Some(peer), false)?);
         Self::_broadcast(slf, &others, dict(py, vec![("t", "note".into_py(py)), ("text", format!("{} が参加しました", pname.str()?).into_py(py))])?.as_any())
     }
     fn _leave(slf: &Bound<'_, Self>, peer: &Bound<'_, PyAny>) -> R<()> {
         let py = slf.py();
-        Self::g(slf, "peers")?.call_method1("pop", (peer.getattr("conn")?, py.None()))?;
+        Self::g(slf, "peers")?.dpop2(peer.getattr("conn")?, py.None())?;
         peer.getattr("conn")?.call_method0("close")?;
         let p = peer.getattr("player")?;
         if !p.is_none() {
             let nm = peer.getattr("name")?;
             Self::g(slf, "known")?.set_item(&nm, p.call_method0("to_dict")?)?;
             let w = Self::g(slf, "w")?;
-            World::g_remote(wld(&w)?)?.call_method1("pop", (peer.getattr("pid")?, py.None()))?;
-            w.call_method1("message", (format!("{} が退出しました", nm.str()?),))?;
+            World::g_remote(wld(&w)?)?.dpop2(peer.getattr("pid")?, py.None())?;
+            World::message(wld(&w)?, &format!("{} が退出しました", nm.str()?)).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             slog(py, "netserver")?.call_method1("info", ("退出: %s", &nm))?;
             let rest = PyList::new_bound(py, Self::ready_peers(slf, None, false)?);
             Self::_broadcast(slf, &rest, dict(py, vec![("t", "note".into_py(py)), ("text", format!("{} が退出しました", nm.str()?).into_py(py))])?.as_any())?;
@@ -756,9 +758,8 @@ impl Host {
         let t: String = m.get_item("t")?.extract()?;
         let w = Self::g(slf, "w")?;
         let p = peer.getattr("player")?;
-        let np = imp(py, "numpy")?;
-        let f64a = |o: Bound<'_, PyAny>| np.call_method1("asarray", (o, "float64"));
-        let get = |k: &str, d: PyObject| m.call_method1("get", (k, d));
+        let f64a = |o: Bound<'_, PyAny>| crate::game::construct::as_f64(&o).map(|x| x.unbind());
+        let get = |k: &str, d: PyObject| m.dget2(k, d);
         match t.as_str() {
             "me" => {
                 p.setattr("pos", f64a(m.get_item("pos")?)?)?;
@@ -784,10 +785,10 @@ impl Host {
                     Player::s_emote_t0(ply(&p)?, mono(py)?)?;
                 }
                 let fc = get("face", py.None())?;
-                Player::s_face_dir(ply(&p)?, if fc.is_none() { fc } else { f64a(fc)? })?;
+                Player::s_face_dir(ply(&p)?, if fc.is_none() { fc.unbind() } else { f64a(fc)? })?;
                 let d = get("def", py.None())?;
-                if d.is_truthy()? && !d.eq(Player::g_defn(ply(&p)?)?.call_method1("get", ("id",))?)? {
-                    Player::s_defn(ply(&p)?, w.call_method1("player_def", (d,))?)?;
+                if d.is_truthy()? && !d.eq(Player::g_defn(ply(&p)?)?.dget1("id")?)? {
+                    Player::s_defn(ply(&p)?, World::player_def(wld(&w)?, &IntoPy::<PyObject>::into_py(d, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?)?;
                 }
                 if m.contains("hotbar")? {
                     let hb = m.get_item("hotbar")?;
@@ -801,7 +802,7 @@ impl Host {
                     } else { py.None().into_bound(py) })?;
                 }
                 let s = Player::g_seated(ply(&p)?)?;
-                if s.is_truthy()? && !World::g_constructs(wld(&w)?)?.call_method1("get", (s.get_item(0)?,))?.is_truthy()? {
+                if s.is_truthy()? && !World::g_constructs(wld(&w)?)?.dget1(s.get_item(0)?)?.is_truthy()? {
                     Player::s_seated(ply(&p)?, py.None())?;
                 }
             }
@@ -825,12 +826,12 @@ impl Host {
                 let pm = p.getattr("msgs")?;
                 let n0 = pm.len()?;
                 let ok = as_player(py, &w, &p, || {
-                    match w.call_method1("run_addon_call", (m.get_item("addon")?, m.get_item("path")?, get("args", PyList::empty_bound(py).into_any().unbind())?)) {
+                    match World::run_addon_call(wld(&w)?, &IntoPy::<PyObject>::into_py(m.get_item("addon")?, w.py()).extract::<String>(w.py())?, &IntoPy::<PyObject>::into_py(m.get_item("path")?, w.py()).extract::<String>(w.py())?, &IntoPy::<PyObject>::into_py(get("args", PyList::empty_bound(py).into_any().unbind())?, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py())) {
                         Ok(_) => Ok(true),
                         Err(e) if e.is_instance_of::<pyo3::exceptions::PyException>(py) => {
                             exc_log(py, &slog(py, "netserver")?, &e, "MOD の操作 %s.%s でエラー",
                                 vec![get("addon", py.None())?.unbind(), get("path", py.None())?.unbind()])?;
-                            w.call_method1("message", (format!("⚠ エラー: {}", e.value_bound(py).str()?),))?;
+                            World::message(wld(&w)?, &format!("⚠ エラー: {}", e.value_bound(py).str()?)).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                             Ok(false)
                         }
                         Err(e) => Err(e),
@@ -841,7 +842,7 @@ impl Host {
                 }
             }
             "chat" => {
-                w.call_method1("message", (format!("{}: {}", peer.getattr("name")?.str()?, get("text", "".into_py(py))?.str()?),))?;
+                World::message(wld(&w)?, &format!("{}: {}", peer.getattr("name")?.str()?, get("text", "".into_py(py))?.str()?)).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             }
             _ => {}
         }
@@ -851,62 +852,61 @@ impl Host {
         let py = slf.py();
         let w = Self::g(slf, "w")?;
         let a: String = m.get_item("a")?.extract()?;
-        let np = imp(py, "numpy")?;
-        let eye = np.call_method1("asarray", (m.call_method1("get", ("eye", p.call_method0("eye")?))?, "float64"))?;
-        let look = np.call_method1("asarray", (m.call_method1("get", ("look", vec![0, 0, 1]))?, "float64"))?;
-        let reach: f64 = Player::g_defn(ply(&p)?)?.call_method1("get", ("reach", 8.0))?.extract()?;
-        let hit = || w.call_method1("raycast", (&eye, &look, reach));
+        let eye = crate::game::construct::as_f64(&m.dget2("eye", p.call_method0("eye")?)?)?;
+        let look = crate::game::construct::as_f64(&m.dget2("look", vec![0, 0, 1])?)?;
+        let reach: f64 = Player::g_defn(ply(&p)?)?.dget2("reach", 8.0)?.extract()?;
+        let hit = || World::raycast(wld(&w)?, &IntoPy::<PyObject>::into_py(&eye, w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(&look, w.py()).into_bound(w.py()), IntoPy::<PyObject>::into_py(reach, w.py()).extract::<f64>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()));
         match a.as_str() {
             "remove" => {
                 let h = hit()?;
                 if h.is_truthy()? && h.get_item("kind")?.eq("voxel")? {
-                    w.call_method1("remove", (h,))?;
+                    World::remove(wld(&w)?, &IntoPy::<PyObject>::into_py(h, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                 }
             }
             "dig" => {
                 let h = hit()?;
                 if h.is_truthy()? && (h.get_item("kind")?.eq("terrain")? || h.get_item("kind")?.eq("water")?) {
-                    w.call_method1("dig", (h,))?;
+                    World::dig(wld(&w)?, &IntoPy::<PyObject>::into_py(h, w.py()).into_bound(w.py()), 0.8).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                 }
             }
             "place" => {
-                let h = if m.call_method1("get", ("air",))?.is_truthy()? { py.None().into_bound(py) } else { hit()? };
+                let h = if m.dget1("air")?.is_truthy()? { py.None().into_bound(py) } else { hit()? };
                 let item = PyTuple::new_bound(py, m.get_item("item")?.iter()?.collect::<R<Vec<_>>>()?);
-                w.call_method1("place", (h, item, m.call_method1("get", ("dir", 2))?.call_method0("__int__")?, &look))?;
+                World::place(wld(&w)?, &IntoPy::<PyObject>::into_py(h, w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(item, w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(m.dget2("dir", 2)?.call_method0("__int__")?, w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(&look, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             }
             "interact" => {
-                let tg = m.call_method1("get", ("target",))?;
+                let tg = m.dget1("target")?;
                 if tg.is_truthy()? {
-                    let c = World::g_constructs(wld(&w)?)?.call_method1("get", (tg.get_item("id")?,))?;
+                    let c = World::g_constructs(wld(&w)?)?.dget1(tg.get_item("id")?)?;
                     if c.is_truthy()? {
-                        let i = Construct::g_index(con(&c)?)?.call_method1("get", (PyTuple::new_bound(py, tg.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?),))?;
+                        let i = Construct::g_index(con(&c)?)?.dget1(PyTuple::new_bound(py, tg.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?))?;
                         if !i.is_none() {
                             let iu: usize = i.extract()?;
                             let pos = super::construct::v3s(&c.getattr("pos")?)?;
                             let h = dict(py, vec![("kind", "voxel".into_py(py)), ("construct", c.clone().unbind()), ("index", iu.into_py(py)),
                                 ("t", 0.0.into_py(py)), ("face", 2.into_py(py)), ("point", super::construct::a1(py, super::construct::mean8(&pos[8 * iu..8 * iu + 8])).unbind())])?;
-                            w.call_method1("interact", (h,))?;
+                            World::interact(wld(&w)?, &IntoPy::<PyObject>::into_py(h, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                         }
                     }
                     return Ok(());
                 }
-                let h = if m.call_method1("get", ("none",))?.is_truthy()? { py.None().into_bound(py) } else { hit()? };
-                w.call_method1("interact", (h,))?;
+                let h = if m.dget1("none")?.is_truthy()? { py.None().into_bound(py) } else { hit()? };
+                World::interact(wld(&w)?, &IntoPy::<PyObject>::into_py(h, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             }
             "key" => {
-                w.call_method1("key_pressed", (m.get_item("key")?,))?;
+                World::key_pressed(wld(&w)?, &IntoPy::<PyObject>::into_py(m.get_item("key")?, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             }
             "import" => {
                 let data = ns(py)?.call_method1("unpack_import", (m.get_item("data")?,))?;
                 w.call_method("place_import", (data,), Some(&[("look_dir", &look)].into_py_dict_bound(py)))?;
             }
             "actuator" => {
-                let c = World::g_constructs(wld(&w)?)?.call_method1("get", (m.get_item("id")?,))?;
+                let c = World::g_constructs(wld(&w)?)?.dget1(m.get_item("id")?)?;
                 if c.is_truthy()? {
-                    let i = Construct::g_index(con(&c)?)?.call_method1("get", (PyTuple::new_bound(py, m.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?),))?;
+                    let i = Construct::g_index(con(&c)?)?.dget1(PyTuple::new_bound(py, m.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?))?;
                     if !i.is_none() {
                         let msg = super::actuator::act_execute_preset(&w, &c, i.extract()?)?;
-                        w.call_method1("message", (msg,))?;
+                        World::message(wld(&w)?, &IntoPy::<PyObject>::into_py(msg, w.py()).extract::<String>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                     }
                 }
             }
@@ -1008,6 +1008,12 @@ pub struct Joiner {
     /// 合言葉（ホストが決めているときに使う。空なら無し）
     #[pyo3(get, set)]
     password: PyObject,
+    /// consent（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_consent: Option<PyObject>,
+    /// consent_answer（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_consent_answer: Option<PyObject>,
+    /// welcome（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_welcome: Option<PyObject>,
 }
 
 impl Joiner {
@@ -1026,6 +1032,7 @@ impl Joiner {
     fn new(py: Python<'_>, host: &Bound<'_, PyAny>, port: &Bound<'_, PyAny>, name: PyObject, skin: Option<PyObject>,
            password: Option<PyObject>) -> R<Self> {
         Ok(Joiner {
+            a_consent: None, a_consent_answer: None, a_welcome: None,
             status: format!("{}:{} につないでいます…", host.str()?, port.str()?),
             host: host.clone().unbind(), port: port.call_method0("__int__")?.extract()?, name, skin: skin.unwrap_or_else(|| py.None()),
             done: false, error: py.None(), result: py.None(), conn: py.None(), cancelled: false, orig_mods: paths(py)?.getattr("MODS")?.unbind(),
@@ -1072,14 +1079,14 @@ impl Joiner {
                 Err(e) => return Err(e),
             };
             let m = item.get_item(1)?;
-            let t = m.call_method1("get", ("t",))?;
+            let t = m.dget1("t")?;
             let ts: String = if t.is_none() { String::new() } else { t.str()?.to_string() };
             if ts == "error" {
-                return Err(join_err(py, m.call_method1("get", ("text", "参加できません"))?.str()?.to_string())?);
+                return Err(join_err(py, m.dget2("text", "参加できません")?.str()?.to_string())?);
             }
             if ts == "_closed" || ts == "bye" {
-                let tx = m.call_method1("get", ("text",))?;
-                let why = if tx.is_truthy()? { tx } else { m.call_method1("get", ("why",))? };
+                let tx = m.dget1("text")?;
+                let why = if tx.is_truthy()? { tx } else { m.dget1("why")? };
                 let why = if why.is_truthy()? { format!("（{}）", why.str()?) } else { String::new() };
                 return Err(join_err(py, format!("ホストとのつながりが切れました{why}。ホストがワールドを閉じた・ホストの PC のセキュリティソフトが切った などが考えられます"))?);
             }
@@ -1149,7 +1156,7 @@ impl Joiner {
             Self::set_status(slf, "合言葉を確かめています…".into());
             w = Self::_wait(slf, vec!["welcome".into()], 60.0)?;
         }
-        slf.as_any().setattr("welcome", &w)?;
+        Self::sa_welcome(slf, &w)?;
         // ホストから届いた MOD の名前・ファイルの場所を確かめる（前は「..」などで、この PC のどこにでも書けて、消せた）
         for (mid, files) in w.get_item("manifest")?.downcast::<PyDict>()?.iter() {
             let ms = mid.str()?.to_string();
@@ -1179,7 +1186,7 @@ impl Joiner {
                     n_py += 1;
                     let (size, sha) = (f.get_item(1)?.extract::<i64>()?, f.get_item(2)?.str()?.to_string());
                     let mine = div(&div(&orig, &mid)?, &rel)?;
-                    let same = mine.call_method0("is_file")?.is_truthy()?
+                    let same = mine.pis_file()?.is_truthy()?
                         && mine.call_method0("stat")?.getattr("st_size")?.extract::<i64>()? == size && sha1_file(py, &mine)? == sha;
                     differ |= !same;
                 }
@@ -1188,14 +1195,14 @@ impl Joiner {
                 }
             }
             if !foreign.is_empty() {
-                slf.as_any().setattr("consent", PyList::new_bound(py, &foreign))?;
-                slf.as_any().setattr("consent_answer", py.None())?;
+                Self::sa_consent(slf, PyList::new_bound(py, &foreign))?;
+                Self::sa_consent_answer(slf, py.None())?;
                 Self::set_status(slf, "ホストの MOD のプログラムを動かしてよいか、確かめてください".into());
                 loop {
                     if slf.borrow().cancelled {
                         return Err(join_err(py, "やめました".into())?);
                     }
-                    let a = slf.as_any().getattr("consent_answer")?;
+                    let a = Self::ga_consent_answer(slf)?;
                     if !a.is_none() {
                         if !a.is_truthy()? {
                             return Err(join_err(py, "やめました（ホストの MOD のプログラムを動かさないことにしました）".into())?);
@@ -1204,7 +1211,7 @@ impl Joiner {
                     }
                     imp(py, "time")?.call_method1("sleep", (0.1,))?;
                 }
-                slf.as_any().setattr("consent", py.None())?;
+                Self::sa_consent(slf, py.None())?;
             }
         }
         // MOD：足りない物だけ受け取る
@@ -1220,12 +1227,12 @@ impl Joiner {
             for f in files.iter()? {
                 want.insert(f?.get_item(0)?.str()?.to_string());
             }
-            if dst.call_method0("is_dir")?.is_truthy()? {
+            if dst.pis_dir()?.is_truthy()? {
                 let all = builtins.getattr("sorted")?.call((dst.call_method1("rglob", ("*",))?,), Some(&[("reverse", true)].into_py_dict_bound(py)))?;
                 for f in all.iter()? {
                     let f = f?;
                     let rel = f.call_method1("relative_to", (&dst,))?.call_method0("as_posix")?.str()?.to_string();
-                    if f.call_method0("is_file")?.is_truthy()? && !want.contains(&rel) {
+                    if f.pis_file()?.is_truthy()? && !want.contains(&rel) {
                         f.call_method0("unlink")?;
                     }
                 }
@@ -1235,7 +1242,7 @@ impl Joiner {
                 let (rel, size, sha) = (f.get_item(0)?, f.get_item(1)?.extract::<i64>()?, f.get_item(2)?.str()?.to_string());
                 let t = div(&dst, &rel)?;
                 let ok = |p: &Bound<'_, PyAny>| -> R<bool> {
-                    Ok(p.call_method0("is_file")?.is_truthy()? && p.call_method0("stat")?.getattr("st_size")?.extract::<i64>()? == size && sha1_file(py, p)? == sha)
+                    Ok(p.pis_file()?.is_truthy()? && p.call_method0("stat")?.getattr("st_size")?.extract::<i64>()? == size && sha1_file(py, p)? == sha)
                 };
                 if ok(&t)? {
                     continue;
@@ -1278,10 +1285,10 @@ impl Joiner {
                 parts.get_item(&key)?.unwrap().call_method1("write", (&data,))?;
                 got += data.len()? as f64;
                 Self::set_status(slf, format!("MOD を受け取っています… {:.1} / {:.1} MB", got / 1e6, total / 1e6));
-                if m.call_method1("get", ("last",))?.is_truthy()? {
-                    parts.call_method1("pop", (&key,))?.call_method0("close")?;
+                if m.dget1("last")?.is_truthy()? {
+                    parts.dpop1(&key)?.call_method0("close")?;
                     let fin = div(&div(&cache, &md)?, &rel)?;
-                    if m.call_method1("get", ("missing",))?.is_truthy()? {
+                    if m.dget1("missing")?.is_truthy()? {
                         tmp.call_method0("unlink")?;
                         return Err(join_err(py, format!("ホストの MOD のファイル {}/{} を受け取れません", md.str()?, rel.str()?))?);
                     }
@@ -1294,7 +1301,7 @@ impl Joiner {
         let m = Self::_wait(slf, vec!["world".into()], 120.0)?;
         let nd = nc(py)?.call_method0("net_dir")?;
         let wd = div(&nd, "world")?;
-        if wd.call_method0("exists")?.is_truthy()? {
+        if wd.pexists()?.is_truthy()? {
             imp(py, "shutil")?.call_method("rmtree", (&wd,), Some(&[("ignore_errors", true)].into_py_dict_bound(py)))?;
         }
         div(&wd, "scripts")?.call_method("mkdir", (), Some(&[("parents", true), ("exist_ok", true)].into_py_dict_bound(py)))?;
@@ -1308,7 +1315,7 @@ impl Joiner {
             let text = imp(py, "json")?.call_method("dumps", (data,), Some(&jkw))?;
             div(&wd, fname)?.call_method("write_text", (text,), Some(&enc))?;
         }
-        let sc = m.call_method1("get", ("scripts",))?;
+        let sc = m.dget1("scripts")?;
         if sc.is_truthy()? {
             for (name, data) in sc.downcast::<PyDict>()?.iter() {
                 let n = name.str()?.to_string();
@@ -1320,7 +1327,7 @@ impl Joiner {
         div(&nd, "exports")?.call_method("mkdir", (), Some(&[("parents", true), ("exist_ok", true)].into_py_dict_bound(py)))?;
         Self::set_status(slf, "ワールドを読み込んでいます…".into());
         let res = dict(py, vec![("conn", conn.unbind()), ("pid", w.get_item("pid")?.unbind()), ("name", w.get_item("name")?.unbind()),
-            ("world", w.get_item("world")?.unbind()), ("dir", wd.unbind()), ("host", w.call_method1("get", ("host", ""))?.unbind()),
+            ("world", w.get_item("world")?.unbind()), ("dir", wd.unbind()), ("host", w.dget2("host", "")?.unbind()),
             ("mods", w.get_item("mods")?.unbind())])?;
         slf.borrow_mut().result = res.into_any().unbind();
         Ok(())
@@ -1398,7 +1405,7 @@ fn redirect<'py>(py: Python<'py>, me: &Bound<'py, Client>, kind: &'static str) -
             }
             "interact" => {
                 let hit = arg(0, "hit")?.unwrap_or_else(|| py.None().into_bound(py));
-                if hit.is_truthy()? && hit.call_method1("get", ("kind",))?.eq("voxel")? {
+                if hit.is_truthy()? && hit.dget1("kind")?.eq("voxel")? {
                     let c = hit.get_item("construct")?;
                     let cell = Construct::g_cells(con(&c)?)?.get_item(hit.get_item("index")?)?;
                     kw.set_item("target", dict(py, vec![("id", c.getattr("id")?.unbind()),
@@ -1421,7 +1428,7 @@ fn redirect<'py>(py: Python<'py>, me: &Bound<'py, Client>, kind: &'static str) -
                 kw.set_item("data", ns(py)?.call_method1("pack_import", (&data,))?)?;
                 kw.set_item("look", look)?;
                 me.call_method("act", ("import",), Some(&kw))?;
-                let nm = data.call_method1("get", ("name", ""))?;
+                let nm = data.dget2("name", "")?;
                 me.getattr("w")?.call_method1("message", (format!("読み込み: {}（ホストに送りました）", nm.str()?),))?;
                 Ok(py.None())
             }
@@ -1445,7 +1452,7 @@ impl Client {
         t.set_item("file", 0.0)?;
         Ok(Client {
             conn: info.get_item("conn")?.unbind(), pid: info.get_item("pid")?.unbind(), name: info.get_item("name")?.unbind(),
-            host_name: info.call_method1("get", ("host", ""))?.unbind(), w: world.clone().unbind(), cfg,
+            host_name: info.dget2("host", "")?.unbind(), w: world.clone().unbind(), cfg,
             others: PyDict::new_bound(py).into_any().unbind(), files: files.unbind(), closed: py.None(),
             look: super::construct::a1(py, [0.0, 0.0, 1.0]).unbind(), edit: py.None(), frozen_until: PyDict::new_bound(py).into_any().unbind(),
             t: t.into_any().unbind(), hotbar_key: py.None(), last_s: mono(py)?,
@@ -1474,7 +1481,7 @@ impl Client {
     fn act(slf: &Bound<'_, Self>, a: &str, kw: Option<&Bound<'_, PyDict>>) -> R<()> {
         let py = slf.py();
         let p = Self::g(slf, "w")?.getattr("player")?;
-        let look = match kw.map(|k| k.call_method1("pop", ("look", py.None()))).transpose()? {
+        let look = match kw.map(|k| k.dpop2("look", py.None())).transpose()? {
             Some(l) if !l.is_none() => l,
             _ => Self::g(slf, "look")?,
         };
@@ -1559,8 +1566,7 @@ impl Client {
         let py = slf.py();
         let w = Self::g(slf, "w")?;
         let p = w.getattr("player")?;
-        let np = imp(py, "numpy")?;
-        let tl = |o: Bound<'_, PyAny>| -> R<PyObject> { Ok(np.call_method1("asarray", (o, "float64"))?.call_method0("tolist")?.unbind()) };
+        let tl = |o: Bound<'_, PyAny>| -> R<PyObject> { Ok(crate::game::construct::as_f64(&o)?.call_method0("tolist")?.unbind()) };
         let st = Player::g_stand(ply(&p)?)?;
         let fd = Player::g_face_dir(ply(&p)?)?;
         let keys = imp(py, "builtins")?.call_method1("sorted", (w.getattr("input_keys")?,))?;
@@ -1569,7 +1575,7 @@ impl Client {
             ("gv", tl(Player::g_ground_vel(ply(&p)?)?)?), ("og", Player::g_on_ground(ply(&p)?)?.is_truthy()?.into_py(py)), ("jp", Player::g_jetpack(ply(&p)?)?.is_truthy()?.into_py(py)),
             ("fl", Player::g_flying(ply(&p)?)?.is_truthy()?.into_py(py)), ("thrust", tl(Player::g_thrust(ply(&p)?)?)?),
             ("wt", Player::g_in_water(ply(&p)?)?.call_method0("__float__")?.unbind()), ("keys", keys.unbind()), ("fwd", tl(Player::g_look_fwd(ply(&p)?)?)?),
-            ("pitch", Player::g_pitch(ply(&p)?)?.call_method0("__float__")?.unbind()), ("def", Player::g_defn(ply(&p)?)?.call_method1("get", ("id",))?.unbind()),
+            ("pitch", Player::g_pitch(ply(&p)?)?.call_method0("__float__")?.unbind()), ("def", Player::g_defn(ply(&p)?)?.dget1("id")?.unbind()),
             ("stand", if st.is_truthy()? {
                 PyList::new_bound(py, [st.get_item(0)?, PyList::new_bound(py, st.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any().unbind()
             } else { py.None() }),
@@ -1651,7 +1657,7 @@ impl Client {
                 Err(e) => return Err(e),
             };
             let m = item.get_item(1)?;
-            let t = m.call_method1("get", ("t",))?;
+            let t = m.dget1("t")?;
             let ts: String = if t.is_none() { String::new() } else { t.str()?.to_string() };
             let r = (|| -> R<bool> {
                 match ts.as_str() {
@@ -1661,16 +1667,16 @@ impl Client {
                         let fu = Self::g(slf, "frozen_until")?;
                         for e in m.get_item("c")?.iter()? {
                             let e = e?;
-                            let c = World::g_constructs(wld(&w)?)?.call_method1("get", (e.get_item("id")?,))?;
+                            let c = World::g_constructs(wld(&w)?)?.dget1(e.get_item("id")?)?;
                             if !c.is_none() {
-                                let f: f64 = fu.call_method1("get", (c.getattr("id")?, 0))?.extract()?;
+                                let f: f64 = fu.dget2(c.getattr("id")?, 0)?.extract()?;
                                 nsm.call_method("apply_meta", (&c, &e), Some(&[("devices", f < now)].into_py_dict_bound(py)))?;
                             }
                         }
                     }
                     "a" => {
                         for (name, st) in m.get_item("s")?.downcast::<PyDict>()?.iter() {
-                            let a = w.call_method1("addon", (name,))?;
+                            let a = World::addon(wld(&w)?, &IntoPy::<PyObject>::into_py(name, w.py()).extract::<String>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                             if !a.is_none() {
                                 a.call_method1("net_apply", (&w, st))?;
                             }
@@ -1683,11 +1689,11 @@ impl Client {
                         }
                     }
                     "note" => {
-                        w.call_method1("message", (m.call_method1("get", ("text", ""))?,))?;
+                        World::message(wld(&w)?, &IntoPy::<PyObject>::into_py(m.dget2("text", "")?, w.py()).extract::<String>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                     }
                     "bye" | "_closed" => {
-                        let tx = m.call_method1("get", ("text",))?;
-                        let why = if tx.is_truthy()? { tx } else { m.call_method1("get", ("why",))? };
+                        let tx = m.dget1("text")?;
+                        let why = if tx.is_truthy()? { tx } else { m.dget1("why")? };
                         let why: PyObject = if why.is_truthy()? { why.unbind() } else { "ホストとのつながりが切れました".into_py(py) };
                         slf.borrow_mut().closed = why;
                         return Ok(true);
@@ -1712,16 +1718,16 @@ impl Client {
         let w = Self::g(slf, "w")?;
         let nsm = ns(py)?;
         w.setattr("time", m.get_item("time")?.call_method0("__float__")?)?;
-        let dt: f64 = m.call_method1("get", ("dt", 0.05))?.extract()?;
+        let dt: f64 = m.dget2("dt", 0.05)?.extract()?;
         for e in m.get_item("c")?.iter()? {
             nsm.call_method1("apply_construct", (&w, e?, dt))?;
         }
         let cons = World::g_constructs(wld(&w)?)?;
-        for cid in m.call_method1("get", ("gone", PyList::empty_bound(py)))?.iter()? {
-            cons.call_method1("pop", (cid?, py.None()))?;
+        for cid in m.dget2("gone", PyList::empty_bound(py))?.iter()? {
+            cons.dpop2(cid?, py.None())?;
         }
         let pls = World::g_planets(wld(&w)?)?;
-        for cr in m.call_method1("get", ("craters", PyList::empty_bound(py)))?.iter()? {
+        for cr in m.dget2("craters", PyList::empty_bound(py))?.iter()? {
             let cr = cr?;
             let k: usize = cr.get_item("p")?.extract()?;
             if k < pls.len()? {
@@ -1745,16 +1751,16 @@ impl Client {
         let others = Self::g(slf, "others")?;
         let me = Self::g(slf, "pid")?;
         let seen = pyo3::types::PySet::empty_bound(py)?;
-        for d in m.call_method1("get", ("pl", PyList::empty_bound(py)))?.iter()? {
+        for d in m.dget2("pl", PyList::empty_bound(py))?.iter()? {
             let d = d?;
             let pid = d.get_item("pid")?;
             if pid.eq(&me)? {
                 continue;
             }
             seen.add(&pid)?;
-            let mut p = others.call_method1("get", (&pid,))?;
+            let mut p = others.dget1(&pid)?;
             if p.is_none() {
-                p = w.call_method1("make_player", (d.get_item("def")?, d.get_item("pos")?))?;
+                p = World::make_player(wld(&w)?, &IntoPy::<PyObject>::into_py(d.get_item("def")?, w.py()).into_bound(w.py()), Some(&IntoPy::<PyObject>::into_py(d.get_item("pos")?, w.py()).into_bound(w.py()))).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                 others.set_item(&pid, &p)?;
             }
             nsm.call_method1("apply_player_public", (&w, &p, &d))?;
@@ -1769,17 +1775,17 @@ impl Client {
         let py = slf.py();
         let w = Self::g(slf, "w")?;
         let p = w.getattr("player")?;
-        let inv = m.call_method1("get", ("inventory",))?;
+        let inv = m.dget1("inventory")?;
         Player::s_inventory(ply(&p)?, py.get_type_bound::<PyDict>().call1((if inv.is_truthy()? { inv } else { PyDict::new_bound(py).into_any() },))?)?;
-        let s = m.call_method1("get", ("seated",))?;
+        let s = m.dget1("seated")?;
         Player::s_seated(ply(&p)?, if s.is_truthy()? {
             PyTuple::new_bound(py, [s.get_item(0)?, PyTuple::new_bound(py, s.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any()
         } else { py.None().into_bound(py) })?;
         for k in ["starter_given", "credits_given", "out_of_fuel"] {
-            p.setattr(k, m.call_method1("get", (k,))?.is_truthy()?)?;
+            p.setattr(k, m.dget1(k)?.is_truthy()?)?;
         }
-        for text in m.call_method1("get", ("msgs", PyList::empty_bound(py)))?.iter()? {
-            w.call_method1("message", (text?,))?;
+        for text in m.dget2("msgs", PyList::empty_bound(py))?.iter()? {
+            World::message(wld(&w)?, &IntoPy::<PyObject>::into_py(text?, w.py()).extract::<String>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         }
         Ok(())
     }
@@ -1801,3 +1807,41 @@ impl Client {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------- Joiner の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! joiner_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl Joiner { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl Joiner { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+joiner_attr_fields!(
+    ga_consent sa_consent pga_consent psa_consent a_consent "consent", ga_consent_answer sa_consent_answer pga_consent_answer psa_consent_answer a_consent_answer "consent_answer", ga_welcome sa_welcome pga_welcome psa_welcome a_welcome "welcome"
+);

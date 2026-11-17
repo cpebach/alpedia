@@ -3,6 +3,7 @@
 //! 本体の基本定義は sauce/base/<カテゴリ>/*.json、MOD は mods/<MOD名>/<カテゴリ>/*.json に同じ形式で置く。
 //! 定義に "extends": "<既存ID>" を書くと、その定義を引き継いで差分だけ上書きできる。
 
+use crate::game::PyDictOps;
 use std::path::{Component, Path, PathBuf};
 
 use pyo3::prelude::*;
@@ -216,7 +217,7 @@ pub fn device_def(reg: &Bound<'_, PyAny>, id_: &Bound<'_, PyAny>) -> PyResult<Op
             }
         }
     }
-    let t = d.call_method1("get", ("type",))?;
+    let t = d.dget1("type")?;
     let m = std::sync::Arc::new(DeviceDef {
         kind: if t.is_none() { String::new() } else { t.extract()? },
     });
@@ -403,7 +404,7 @@ impl Registry {
     fn res_name(&self, py: Python<'_>, id_: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         if let Some(r) = self.cat(py, "resources")?.get_item(id_)? {
             if r.is_truthy()? {
-                return Ok(r.call_method1("get", ("name", id_))?.unbind());
+                return Ok(r.dget2("name", id_)?.unbind());
             }
         }
         Ok(id_.clone().unbind())
@@ -456,8 +457,8 @@ impl Registry {
                     }
                 }
             }
-            log.call_method1("info", ("MOD 読み込み開始: %s %s", meta.call_method1("get", ("name", m))?,
-                                      meta.call_method1("get", ("version", ""))?))?;
+            log.call_method1("info", ("MOD 読み込み開始: %s %s", meta.dget2("name", m)?,
+                                      meta.dget2("version", "")?))?;
             let n = me.load_tree(py, &mdir, m, false)?;
             me.loaded_mods.bind(py).append(m)?;
             log.call_method1("info", ("MOD 読み込み完了: %s（%d 件）", m, n))?;

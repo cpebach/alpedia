@@ -1,5 +1,7 @@
 //! ワールド：1 ティック（step）とアドオンの呼び出し
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use super::*;
 use crate::game::construct::{con, Construct};
@@ -25,7 +27,7 @@ impl World {
             let s = Player::g_seated(ply(&p)?)?;
             if s.is_truthy()? {
                 let k = if p.is(&lp) { Self::g_input_keys(slf)? } else { p.getattr("input_keys")? };
-                seats.call_method1("setdefault", (s.get_item(0)?, PySet::empty_bound(py)?))?.call_method1("update", (k,))?;
+                seats.dsetdefault(s.get_item(0)?, PySet::empty_bound(py)?)?.call_method1("update", (k,))?;
             }
         }
         // 構築物の外側の球（問い合わせで使い回す）。全部の作り直しは 0.25 秒ごと
@@ -53,7 +55,7 @@ impl World {
                 continue;
             }
             let dirty = con(&c)?.borrow().dirty;
-            if (!c.getattr("has_devices")?.is_truthy()? || c.call_method0("is_quiet")?.is_truthy()?) && !dirty {
+            if (!c.getattr("has_devices")?.is_truthy()? || Construct::is_quiet(con(&c)?, false).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.is_truthy()?) && !dirty {
                 // 機器の無い物・固定されていて毎ティック処理する機器の無い物は機器・プログラムの処理を飛ばす
                 zero_inplace(&Construct::g_force(con(&c)?)?)?;
                 continue;
@@ -103,10 +105,10 @@ impl World {
             }
             let st = Player::g_stand(ply(&p)?)?;
             if st.is_truthy()? {
-                let c = constructs.call_method1("get", (st.get_item(0)?,))?;
+                let c = constructs.dget1(st.get_item(0)?)?;
                 if c.is_truthy()? {
                     let key = PyTuple::new_bound(py, st.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?);
-                    let i = Construct::g_index(con(&c)?)?.call_method1("get", (key,))?;
+                    let i = Construct::g_index(con(&c)?)?.dget1(key)?;
                     if !i.is_none() {
                         let i: usize = i.extract()?;
                         let pp = v3(&p.getattr("pos")?)?;
@@ -174,7 +176,7 @@ impl World {
                 continue;
             }
             let mode: String = Construct::g_mode(con(&c)?)?.extract()?;
-            if mode == "rigid" && c.getattr("anchored")?.is_truthy()? && !c.call_method0("_actuator_busy")?.is_truthy()? {
+            if mode == "rigid" && c.getattr("anchored")?.is_truthy()? && !Construct::_actuator_busy(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.is_truthy()? {
                 // アンカーで固定されて止まっている物（建物など）：物理計算しない（ほかの物には当たる）
                 Construct::s_touch_moving(con(&c)?, false)?;
                 anchored_ids.add(&cid)?;
@@ -186,10 +188,10 @@ impl World {
                 continue;
             }
             if Construct::g_asleep(con(&c)?)?.is_truthy()? && any_nonzero(&Construct::g_force(con(&c)?)?)? {
-                c.call_method0("wake")?;
+                Construct::wake(con(&c)?, false).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
             }
             Construct::s_touch_moving(con(&c)?, false)?;
-            c.call_method1("update_mode", (dt, slf))?;            // 軽量化：剛体化・レール（遠方）の切り替え
+            Construct::update_mode(con(&c)?, IntoPy::<PyObject>::into_py(dt, c.py()).extract::<f64>(c.py())?, &IntoPy::<PyObject>::into_py(slf, c.py()).into_bound(c.py())).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;            // 軽量化：剛体化・レール（遠方）の切り替え
             if c.getattr("is_static")?.is_truthy()? {             // アンカーで固定（アクチュエーターが止まっている間）
                 anchored_ids.add(&cid)?;
                 zero_inplace(&Construct::g_vel(con(&c)?)?)?;
@@ -197,7 +199,7 @@ impl World {
             } else if Construct::g_asleep(con(&c)?)?.is_truthy()? {
                 sleeping.push(c);
             } else if Construct::g_mode(con(&c)?)?.eq("rails")? {
-                c.call_method1("rails_step", (dt, &gravity_fn))?;    // レールに乗っている構築物は重心の軌道だけを進める
+                Construct::rails_step(con(&c)?, IntoPy::<PyObject>::into_py(dt, c.py()).extract::<f64>(c.py())?, &IntoPy::<PyObject>::into_py(&gravity_fn, c.py()).into_bound(c.py()), 4).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;    // レールに乗っている構築物は重心の軌道だけを進める
                 moved.push(c);
             } else {
                 cons.push(c);
@@ -291,7 +293,7 @@ impl World {
         }
         prof_add(5, &mut pt);
         for c in &cons {
-            c.call_method1("update_sleep", (dt,))?;
+            Construct::update_sleep(con(&c)?, IntoPy::<PyObject>::into_py(dt, c.py()).extract::<f64>(c.py())?, 0.05, 1.0).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
             let st: f64 = con(c)?.borrow().settle;
             if st > 0.0 {
                 Construct::s_settle(con(&c)?, (st - dt).max(0.0))?;
@@ -309,11 +311,11 @@ impl World {
         }
         prof_add(6, &mut pt);
         for cid in broken.iter() {
-            let c = constructs.call_method1("get", (&cid,))?;
+            let c = constructs.dget1(&cid)?;
             if c.is_none() {
                 continue;
             }
-            let parts = c.call_method0("split")?;
+            let parts = Construct::split(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
             for part in parts.iter()? {
                 Self::add_construct(slf, &part?)?;
             }
@@ -336,13 +338,13 @@ impl World {
         if rb_t > 0.25 {
             timers.set_item("rebond", 0.0)?;
             for c in Self::cons_v(slf)? {
-                c.call_method0("try_rebond")?;
+                Construct::try_rebond(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
             }
         }
         for pl in Self::g_planets(slf)?.iter()? {
             let pl = pl?;
             if pl.hasattr("update_water")? {
-                pl.call_method1("update_water", (dt,))?;    // 掘った穴に水が満ちる（水のある惑星）
+                Planet::update_water(pla(&pl)?, IntoPy::<PyObject>::into_py(dt, pl.py()).extract::<f64>(pl.py())?).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;    // 掘った穴に水が満ちる（水のある惑星）
             }
         }
         let cu_t: f64 = timers.get_item("cleanup")?.extract::<f64>()? + dt;

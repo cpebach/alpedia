@@ -8,6 +8,8 @@
 //! 1回の呼び出しが SCRIPT_BUDGET 秒を超えたら、見張りのスレッドが止める（止まらないループでゲームが止まらないように）。
 //! スクリプトそのものは Python のまま（Python で書いて Python で動く）。ここはそれに渡す api と、呼び出す仕組み。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::construct::{con, Construct};
 use numpy::PyReadonlyArray2;
@@ -360,12 +362,12 @@ impl DeviceHandle {
         let me = slf.borrow();
         let beh = me.type_.bind(py);
         let e = ext(py)?;
-        let m = e.getattr("DEVICE_METHODS")?.call_method1("get", (beh, PyDict::new_bound(py)))?.call_method1("get", (name,))?;
+        let m = e.getattr("DEVICE_METHODS")?.dget2(beh, PyDict::new_bound(py))?.dget1(name)?;
         if !m.is_none() {
             let functools = crate::game::imp(py, "functools")?;
             return Ok(functools.getattr("partial")?.call1((m, slf))?.unbind());
         }
-        let pr = e.getattr("DEVICE_PROPS")?.call_method1("get", (beh, PyDict::new_bound(py)))?.call_method1("get", (name,))?;
+        let pr = e.getattr("DEVICE_PROPS")?.dget2(beh, PyDict::new_bound(py))?.dget1(name)?;
         if !pr.is_none() {
             return Ok(pr.call1((slf,))?.unbind());
         }
@@ -597,7 +599,7 @@ impl ScriptAPI {
         if fresh {
             p.bind(py).setattr("frame", comp_idx)?; // 姿勢・速さの向きは、コンピューターの付いている部分で測る
         }
-        let memory = p.bind(py).call_method1("comp_state", (comp_idx,))?.call_method1("setdefault", ("memory", PyDict::new_bound(py)))?.unbind();
+        let memory = p.bind(py).call_method1("comp_state", (comp_idx,))?.dsetdefault("memory", PyDict::new_bound(py))?.unbind();
         Ok(ScriptAPI { p, ci: comp_idx, memory, logs: PyList::empty_bound(py).unbind() })
     }
 
@@ -748,13 +750,13 @@ impl ScriptAPI {
             None => 1.0,
         };
         let st = self.port(py).call_method1("comp_state", (self.ci,))?;
-        let arrows = st.call_method1("setdefault", ("_arrows", PyDict::new_bound(py)))?;
+        let arrows = st.dsetdefault("_arrows", PyDict::new_bound(py))?;
         let t = self.port(py).getattr("time")?;
         let item = PyList::new_bound(py, [(v[0] * k).into_py(py), (v[1] * k).into_py(py), (v[2] * k).into_py(py), t.unbind()]);
         arrows.set_item(format!("{:.3},{:.3},{:.3}", col[0], col[1], col[2]), item)?;
         if arrows.len()? > 8 {
             let first = arrows.iter()?.next().unwrap()?;
-            arrows.call_method1("pop", (first,))?;
+            arrows.dpop1(first)?;
         }
         Ok(())
     }
@@ -810,7 +812,7 @@ impl ScriptAPI {
         if name.starts_with('_') {
             return Err(PyAttributeError::new_err(name.to_string()));
         }
-        let f = ext(py)?.getattr("API_FUNCS")?.call_method1("get", (name,))?;
+        let f = ext(py)?.getattr("API_FUNCS")?.dget1(name)?;
         if f.is_none() {
             return Err(PyAttributeError::new_err(format!("api に '{name}' はありません")));
         }
@@ -823,7 +825,7 @@ impl ScriptAPI {
         let text = parts.join(" ");
         self.logs.bind(py).append(&text)?;
         let st = self.port(py).call_method1("comp_state", (self.ci,))?;
-        let buf = st.call_method1("setdefault", ("_log", PyList::empty_bound(py)))?;
+        let buf = st.dsetdefault("_log", PyList::empty_bound(py))?;
         let t = float_of(&self.port(py).getattr("time")?)?;
         buf.call_method1("append", (format!("[{:.1}] {text}", t),))?;
         let n = buf.len()?;
@@ -876,7 +878,7 @@ impl ScriptRunner {
     }
 
     fn invalidate(&self, py: Python<'_>, name: &Bound<'_, PyAny>) -> R<()> {
-        self.cache.bind(py).call_method1("pop", (name, py.None()))?;
+        self.cache.bind(py).dpop2(name, py.None())?;
         Ok(())
     }
 
@@ -891,7 +893,7 @@ impl ScriptRunner {
             }
         }
         let path = script_path(&self.world.bind(py).getattr("dir")?, name)?;
-        if !path.call_method0("exists")?.is_truthy()? {
+        if !path.pexists()?.is_truthy()? {
             return Err(pyo3::exceptions::PyFileNotFoundError::new_err(format!("スクリプト {} が scripts/ にありません", name.str()?)));
         }
         let stt = path.call_method0("stat")?;
@@ -918,7 +920,7 @@ impl ScriptRunner {
         let world = slf.borrow().world.clone_ref(py).into_bound(py);
         let key = PyTuple::new_bound(py, [Construct::g_version(con(&c)?)?.unbind(), Construct::g_cells(con(&c)?)?.len()?.into_py(py)]).into_any();
         let cd = c.getattr("__dict__")?;
-        let cache = cd.call_method1("get", ("_comp_cache",))?;
+        let cache = cd.dget1("_comp_cache")?;
         let ids: Vec<usize> = if !cache.is_none() && cache.get_item(0)?.eq(&key)? {
             cache.get_item(1)?.extract()?
         } else {
@@ -930,7 +932,7 @@ impl ScriptRunner {
                     continue;
                 }
                 let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
-                if dd.is_truthy()? && dd.call_method1("get", ("type",))?.eq("computer")? {
+                if dd.is_truthy()? && dd.dget1("type")?.eq("computer")? {
                     v.push(i);
                 }
             }
@@ -950,27 +952,27 @@ impl ScriptRunner {
                 continue;
             }
             let st = d.get_item("state")?;
-            if !st.call_method1("get", ("running",))?.is_truthy()? {
+            if !st.dget1("running")?.is_truthy()? {
                 continue;
             }
-            let g = |k: &str, dflt: f64| -> R<f64> { float_of(&status.call_method1("get", (k, dflt))?) };
+            let g = |k: &str, dflt: f64| -> R<f64> { float_of(&status.dget2(k, dflt)?) };
             if g("ratio", 1.0)? <= 0.0 || (g("stored", 0.0)? <= 0.0 && g("production", 0.0)? <= 0.0) {
                 st.set_item("running", false)?;
                 st.set_item("error", "電力不足")?;
                 continue;
             }
-            let acc = float_of(&st.call_method1("get", ("_acc", 0.0))?)? + dt;
+            let acc = float_of(&st.dget2("_acc", 0.0)?)? + dt;
             st.set_item("_acc", acc)?;
-            let interval = float_of(&dd.get_item("params")?.call_method1("get", ("interval", 0.05))?)?;
+            let interval = float_of(&dd.get_item("params")?.dget2("interval", 0.05)?)?;
             if acc < interval {
                 continue;
             }
             st.set_item("_acc", 0.0)?;
-            let sname = st.call_method1("get", ("script", ""))?;
+            let sname = st.dget2("script", "")?;
             let res: R<()> = (|| {
                 let code = slf.borrow()._load(py, &sname)?;
-                let mut env = st.call_method1("get", ("_env",))?;
-                let stale = env.is_none() || !env.call_method1("get", ("__code__",))?.is(&code);
+                let mut env = st.dget1("_env")?;
+                let stale = env.is_none() || !env.dget1("__code__")?.is(&code);
                 if stale {
                     let e = PyDict::new_bound(py);
                     e.set_item("__builtins__", safe_builtins(py)?)?;
@@ -999,7 +1001,7 @@ impl ScriptRunner {
                 }
                 let api = Py::new(py, ScriptAPI::new(py, world.clone().unbind(), c.clone().unbind(), i as i64, None)?)?;
                 env.get_item("__builtins__")?.set_item("print", api.bind(py).getattr("log")?)?;
-                let f = env.call_method1("get", ("tick",))?;
+                let f = env.dget1("tick")?;
                 if f.is_none() {
                     return Err(PyRuntimeError::new_err("tick(api) 関数がありません"));
                 }
@@ -1040,17 +1042,17 @@ impl ScriptRunner {
                         msg.push_str(&format!("（{l} 行目）"));
                     }
                     None => {
-                        st.call_method1("pop", ("error_line", py.None()))?;
+                        st.dpop2("error_line", py.None())?;
                     }
                 }
                 st.set_item("error", &msg)?;
-                let buf = st.call_method1("setdefault", ("_log", PyList::empty_bound(py)))?;
+                let buf = st.dsetdefault("_log", PyList::empty_bound(py))?;
                 let t = float_of(&World::g_time(wld(&world)?)?)?;
                 buf.call_method1("append", (format!("[{:.1}] エラー: {msg}", t),))?;
-                st.call_method1("pop", ("_env", py.None()))?;
+                st.dpop2("_env", py.None())?;
                 crate::game::imp(py, "logging")?.getattr("getLogger")?.call1(("alpedia.script",))?
                     .call_method1("error", ("スクリプトエラー [%s/%s]: %s", Construct::g_name(con(&c)?)?, d.get_item("name")?, &msg))?;
-                world.call_method1("message", (format!("スクリプトエラー: {msg}"),))?;
+                World::message(wld(&world)?, &format!("スクリプトエラー: {msg}")).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
             }
         }
         Ok(())

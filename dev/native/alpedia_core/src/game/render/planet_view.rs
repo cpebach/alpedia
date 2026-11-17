@@ -1,5 +1,6 @@
 //! 描画：星（PlanetView）と地表の区画（TerrainPatch）
 
+use crate::game::planet::{pla, Planet};
 use super::*;
 
 // ---------------------------------------------------------------- PlanetView
@@ -82,7 +83,7 @@ impl PlanetView {
         }
         let nv = dirs.len() / 3;
         let dirs_o = f64_2(py, dirs.clone(), 3)?;
-        let fs = planet.call_method1("far_samples", (&dirs_o,))?;
+        let fs = Planet::far_samples(pla(&planet)?, &IntoPy::<PyObject>::into_py(&dirs_o, planet.py()).into_bound(planet.py())).map(|v| IntoPy::<PyObject>::into_py(v, planet.py()).into_bound(planet.py()))?;
         let r = a1(&fs.get_item(0)?)?;
         let col = a2(&fs.get_item(1)?, 3)?;
         let mut pos = vec![0.0; nv * 3];
@@ -181,10 +182,9 @@ impl PlanetView {
         let q = a2(&q_o, 3)?;
         let dirs = a2(&Self::ga_dirs(slf)?, 3)?;
         let sk = f64of(&s.getattr("SINK")?)?;
-        let npm = np(py)?;
         let v = base.call_method0("copy")?;
         let mut vv: Vec<f32> = {
-            let r: numpy::PyReadonlyArray2<f32> = npm.call_method1("ascontiguousarray", (&v,))?.extract()?;
+            let r: numpy::PyReadonlyArray2<f32> = crate::game::construct::contig(&v)?.extract()?;
             r.as_slice()?.to_vec()
         };
         for i in 0..nv {
@@ -388,9 +388,9 @@ impl TerrainPatch {
         Self::sa_version(slf, pl.getattr("version")?)?;
         Self::sa_carve_version(slf, match carve { Some(c) => c.getattr("version")?, None => tb(py, -1) })?;
         let use_carve = match carve { Some(c) => c.getattr("enabled")?.is_truthy()?, None => false };
-        let up_o = pl.call_method1("up", (player_pos,))?;
+        let up_o = Planet::up(pla(&pl)?, &IntoPy::<PyObject>::into_py(player_pos, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;
         let up = v3(&up_o)?;
-        let r0 = f64of(&pl.call_method1("surface_radius", (up_o.get_item(py.None())?,))?.get_item(0)?)?;
+        let r0 = f64of(&Planet::surface_radius(pla(&pl)?, &IntoPy::<PyObject>::into_py(up_o.get_item(py.None())?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?)?;
         // 格子をスナップしてちらつきを防ぐ
         let rf = if up[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
         let mut t1 = cross(up, rf);
@@ -419,7 +419,7 @@ impl TerrainPatch {
             }
         }
         let d_o = f64_2(py, d.clone(), 3)?;
-        let sm = a2(&pl.call_method1("_sample", (&d_o,))?, 2)?;
+        let sm = a2(&Planet::_sample(pla(&pl)?, &IntoPy::<PyObject>::into_py(&d_o, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?, 2)?;
         let mut r: Vec<f64> = (0..nv).map(|i| sm.d[i * 2]).collect();
         let wr: Vec<f64> = (0..nv).map(|i| sm.d[i * 2 + 1]).collect();
         let r_nat = r.clone();
@@ -428,7 +428,7 @@ impl TerrainPatch {
         let has_craters = craters.is_truthy()?;
         if has_craters && !use_carve {
             let pts: Vec<f64> = (0..nv * 3).map(|j| center[j % 3] + d[j] * r[j / 3]).collect();
-            let sv = a1(&pl.call_method1("sdf", (f64_2(py, pts, 3)?,))?)?;
+            let sv = a1(&Planet::sdf(pla(&pl)?, &IntoPy::<PyObject>::into_py(f64_2(py, pts, 3)?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?)?;
             let idx: Vec<usize> = (0..nv).filter(|&i| sv[i] > 1e-4).collect();
             if !idx.is_empty() {
                 let mut maxr = f64::NEG_INFINITY;
@@ -440,7 +440,7 @@ impl TerrainPatch {
                 for _ in 0..16 {
                     let mid: Vec<f64> = lo.iter().zip(hi.iter()).map(|(a, b)| (a + b) * 0.5).collect();
                     let pts: Vec<f64> = (0..idx.len() * 3).map(|j| center[j % 3] + d[idx[j / 3] * 3 + j % 3] * mid[j / 3]).collect();
-                    let s2 = a1(&pl.call_method1("sdf", (f64_2(py, pts, 3)?,))?)?;
+                    let s2 = a1(&Planet::sdf(pla(&pl)?, &IntoPy::<PyObject>::into_py(f64_2(py, pts, 3)?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?)?;
                     for k in 0..idx.len() {
                         if s2[k] > 0.0 {
                             hi[k] = mid[k];
@@ -502,7 +502,7 @@ impl TerrainPatch {
             }
         }
         let nrm_o = f64_2(py, nrm.clone(), 3)?;
-        let mut col = a2(&pl.call_method1("surface_color", (&d_o, f64_1(py, r_nat.clone()), &nrm_o))?, 3)?;
+        let mut col = a2(&Planet::surface_color(pla(&pl)?, &IntoPy::<PyObject>::into_py(&d_o, pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(f64_1(py, r_nat.clone()), pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(&nrm_o, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?, 3)?;
         // 掘った所は土の色に
         if has_craters && !use_carve {
             let dirt = [0.45, 0.33, 0.22];

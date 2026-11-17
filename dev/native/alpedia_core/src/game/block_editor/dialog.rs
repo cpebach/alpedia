@@ -1,5 +1,6 @@
 //! ブロックエディター：値を入れる窓・名前を変える窓
 
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use super::*;
 
@@ -50,7 +51,7 @@ impl BlockEditor {
         let last = dialogs.get_item(-1)?;
         let (node, key, kind) = (last.get_item(0)?, last.get_item(1)?, last.get_item(2)?);
         let kinds = ss(&kind)?;
-        let cur = node.call_method1("get", (&key,))?;
+        let cur = node.dget1(&key)?;
         let dark = || col_.call_method1("rgba", (0, 0, 0, 0.55));
         let blocker = mk(s, "Button", vec![("parent", r.clone().unbind()), ("model", po(py, "quad")), ("scale", po(py, (3, 2))), ("color", dark()?.unbind()),
             ("z", po(py, 0.05)), ("highlight_color", dark()?.unbind()), ("pressed_color", dark()?.unbind())])?;
@@ -93,7 +94,7 @@ impl BlockEditor {
             let od = s.getattr("open_dialog")?;
             for ch in &children {
                 let (ck, ckind) = (ch.get_item(0)?, ch.get_item(1)?);
-                let label = format!("{}: {}", ss(&ck)?, ss(&b.call_method1("summary", (cur.call_method1("get", (&ck,))?,))?)?);
+                let label = format!("{}: {}", ss(&ck)?, ss(&b.call_method1("summary", (cur.dget1(&ck)?,))?)?);
                 let w = 0.5f64.min(0.14f64.max(label.chars().count() as f64 * 0.013));
                 let bt = btn(s, &r, &label, (x + w / 2.0, y), &partial(&od, vec![cur.clone().unbind(), ck.unbind(), ckind.unbind()])?, w, 0.04,
                     Some(rgb(s, (0.85, 0.85, 0.85))?), 0.7)?;
@@ -251,7 +252,7 @@ impl BlockEditor {
                 })?;
                 y = input_row(s, r, y, "数値を入力", &v0, "0123456789.-", &on_ok)?;
             } else {
-                let v0 = if isd && getd(cur, "type")?.eq("text")? { ss(&cur.call_method1("get", ("v", ""))?)? } else { String::new() };
+                let v0 = if isd && getd(cur, "type")?.eq("text")? { ss(&cur.dget2("v", "")?)? } else { String::new() };
                 let on_ok = clo1(py, move |t| {
                     let py = t.py();
                     let d = dict(py, vec![("type", po(py, "text")), ("v", t.clone().unbind())])?;

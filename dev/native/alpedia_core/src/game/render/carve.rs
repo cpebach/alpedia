@@ -1,5 +1,7 @@
 //! 描画：掘った所（CarveView）・区画の距離（ChunkDist）
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use super::*;
 
 // ---------------------------------------------------------------- CarveView
@@ -188,7 +190,7 @@ impl CarveView {
                 }
             }
         }
-        let parts = pl.call_method1("sdf_parts", (f64_2(py, pts2, 3)?,))?;
+        let parts = Planet::sdf_parts(pla(&pl)?, &IntoPy::<PyObject>::into_py(f64_2(py, pts2, 3)?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;
         let (dd, cc) = (a1(&parts.get_item(1)?)?, parts.get_item(2)?);
         let sv: Vec<f64> = if cc.is_none() {
             dd
@@ -216,14 +218,14 @@ impl CarveView {
         let verts: Vec<f64> = (0..nv * 3).map(|j| vr.d[j] + o[j % 3]).collect();
         let wp: Vec<f64> = (0..nv * 3).map(|j| verts[j] + c0[j % 3]).collect();
         let wp_o = f64_2(py, wp, 3)?;
-        let nrm_o = pl.call_method1("sdf_grad", (&wp_o,))?.get_item(1)?;
+        let nrm_o = Planet::sdf_grad(pla(&pl)?, &IntoPy::<PyObject>::into_py(&wp_o, pl.py()).into_bound(pl.py()), 0.05).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(1)?;
         let nrm = a2(&nrm_o, 3)?;
-        let hv = a1(&pl.call_method1("sdf_parts", (&wp_o,))?.get_item(0)?)?;
+        let hv = a1(&Planet::sdf_parts(pla(&pl)?, &IntoPy::<PyObject>::into_py(&wp_o, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?)?;
         let depth: Vec<f64> = hv.iter().map(|h| (-h).max(0.0)).collect();
         let vn: Vec<f64> = (0..nv).map(|i| rnorm(&verts[i * 3..i * 3 + 3])).collect();
         let dirs: Vec<f64> = (0..nv * 3).map(|j| verts[j] / vn[j / 3]).collect();
         let radii: Vec<f64> = (0..nv).map(|i| vn[i] + depth[i]).collect();
-        let top = a2(&pl.call_method1("surface_color", (f64_2(py, dirs, 3)?, f64_1(py, radii), &nrm_o))?, 3)?;
+        let top = a2(&Planet::surface_color(pla(&pl)?, &IntoPy::<PyObject>::into_py(f64_2(py, dirs, 3)?, pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(f64_1(py, radii), pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(&nrm_o, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?, 3)?;
         let dirt = [0.42, 0.34, 0.26];
         let stone = [0.44, 0.42, 0.4];
         let mut col = vec![0.0f64; nv * 3];
@@ -235,7 +237,7 @@ impl CarveView {
                 col[i * 3 + c] = top.d[i * 3 + c] * (1.0 - k) + under * k;
             }
         }
-        let col = a2(&pl.call_method1("underground_tint", (f64_2(py, verts.clone(), 3)?, f64_2(py, col, 3)?))?, 3)?;
+        let col = a2(&Planet::underground_tint(pla(&pl)?, &IntoPy::<PyObject>::into_py(f64_2(py, verts.clone(), 3)?, pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(f64_2(py, col, 3)?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?, 3)?;
         // 地中は日が当たらないので、向きによる陰影を弱めて少し暗くする（真っ暗にはしない）
         let s_ = sun(py)?;
         let amb = ambient(py)?;
@@ -307,7 +309,7 @@ impl CarveView {
                     let lo: Vec<f64> = (0..3).map(|j| k[j] as f64 * ch - cr - 1.0).collect();
                     let hi: Vec<f64> = (0..3).map(|j| lo[j] + ch + 2.0 * cr + 2.0).collect();
                     if (0..3).all(|j| cc[j] >= lo[j] && cc[j] <= hi[j]) {
-                        cache.call_method1("pop", (&key,))?;
+                        cache.dpop1(&key)?;
                     }
                 }
             }
@@ -344,7 +346,7 @@ impl CarveView {
         let pending = Self::ga_pending(slf)?;
         let cache = Self::ga_cache(slf)?;
         while pending.is_truthy()? && pc()? - t0 < 0.012 {
-            let k = pending.call_method1("pop", (0,))?;
+            let k = pending.dpop1(0)?;
             if !cache.contains(&k)? {
                 cache.set_item(&k, Self::_mesh_chunk(slf, pl, &k)?)?;
             }
@@ -352,7 +354,7 @@ impl CarveView {
         }
         if Self::ga_dirty(slf)?.is_truthy()? && (!pending.is_truthy()? || pc()? - f64of(&gd(s, "_last_asm", tb(py, 0.0)))? > 0.4) {
             Self::sa_last_asm(slf, pc()?)?;
-            s.call_method0("_assemble")?;
+            Self::_assemble(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         }
         let c = v3(&pl.getattr("center")?)?;
         let o = v3(origin)?;
@@ -371,7 +373,7 @@ impl CarveView {
         let npm = np(py)?;
         for k in want.iter()? {
             let k = k?;
-            let m = cache.call_method1("get", (&k,))?;
+            let m = cache.dget1(&k)?;
             if m.is_none() {
                 continue;
             }
@@ -409,7 +411,7 @@ impl CarveView {
             let keys: Vec<B<'_>> = cache.iter()?.collect::<R<_>>()?;
             for k in keys {
                 if !want.contains(&k)? {
-                    cache.call_method1("pop", (&k,))?;
+                    cache.dpop1(&k)?;
                 }
             }
         }

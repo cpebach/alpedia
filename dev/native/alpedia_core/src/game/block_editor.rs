@@ -7,6 +7,8 @@
 //!
 //! プログラム（ブロックの木）は Python の辞書・リストのまま扱う（選んでいる行・ヒントは、そのリストそのもので覚える）。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::construct::{con, Construct};
 use pyo3::exceptions::{PyException, PySyntaxError, PyValueError};
@@ -34,7 +36,7 @@ fn bm(py: Python<'_>) -> R<B<'_>> {
     Ok(imp(py, "main.blocks")?.into_any())
 }
 fn lg(py: Python<'_>) -> R<B<'_>> {
-    imp(py, "main.log")?.call_method1("get", ("blocks",))
+    imp(py, "main.log")?.dget1("blocks")
 }
 fn now(py: Python<'_>) -> R<f64> {
     imp(py, "time")?.call_method0("time")?.extract()
@@ -55,7 +57,7 @@ fn none(py: Python<'_>) -> B<'_> {
     py.None().into_bound(py)
 }
 fn getd<'py>(d: &B<'py>, k: &str) -> R<B<'py>> {
-    d.call_method1("get", (k,))
+    d.dget1(k)
 }
 fn tup3(o: &B<'_>) -> R<(f64, f64, f64)> {
     Ok((f64of(&o.get_item(0)?)?, f64of(&o.get_item(1)?)?, f64of(&o.get_item(2)?)?))
@@ -173,7 +175,7 @@ pub fn be_expr_parts<'py>(py: Python<'py>, node: &B<'py>) -> R<Bound<'py, PyList
     let child = |k: &str, kind: &str| -> R<()> { out.append(("child", k, kind)) };
     let lst = |n: &str| -> R<B<'py>> { Ok(PyList::new_bound(py, b.getattr(n)?.iter()?.collect::<R<Vec<_>>>()?).into_any()) };
     let menu = |k: &str, opts: B<'py>, shown: B<'py>| -> R<()> { out.append(("menu", k, opts, shown)) };
-    let g = |k: &str, d: &str| -> R<B<'py>> { node.call_method1("get", (k, d)) };
+    let g = |k: &str, d: &str| -> R<B<'py>> { node.dget2(k, d) };
     match ts.as_str() {
         "op" => {
             child("a", "num")?;
@@ -540,9 +542,9 @@ impl BlockEditor {
     // ------------------------------------------------------------------
     #[getter]
     fn index<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        Self::ga_c(slf)?.getattr("index")?.call_method1("get", (Self::ga_cell(slf)?,))
+        Self::ga_c(slf)?.getattr("index")?.dget1(Self::ga_cell(slf)?)
     }
-    fn device<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
+    pub(crate) fn device<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
         let i = Self::index(slf)?;
         if i.is_none() {
@@ -550,18 +552,18 @@ impl BlockEditor {
         }
         Self::ga_c(slf)?.getattr("devs")?.get_item(i)
     }
-    fn scripts_dir<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
+    pub(crate) fn scripts_dir<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
         let d = Self::ga_world(slf)?.getattr("dir")?.call_method1("__truediv__", ("scripts",))?;
         d.call_method("mkdir", (), Some(&kw(py, vec![("exist_ok", po(py, true))])?))?;
         Ok(d)
     }
-    fn _load(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _load(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let b = bm(py)?;
         let d = Self::device(slf)?;
         let dd = if d.is_truthy()? { d.clone() } else { PyDict::new_bound(py).into_any() };
-        let name = dd.call_method1("get", ("state", PyDict::new_bound(py)))?.call_method1("get", ("blocks", ""))?;
+        let name = dd.dget2("state", PyDict::new_bound(py))?.dget2("blocks", "")?;
         Self::sa_prog(slf, py.None())?;
         if name.is_truthy()? {
             let nm = ss(&name)?;
@@ -582,13 +584,13 @@ impl BlockEditor {
             sc.call_method1("append", (b.call_method1("new_stmt", ("on_tick",))?,))?;
             Self::sa_prog(slf, prog)?;
             let mut k = 1;
-            while Self::scripts_dir(slf)?.call_method1("__truediv__", (format!("blocks{}.blocks.json", k),))?.call_method0("exists")?.is_truthy()? {
+            while Self::scripts_dir(slf)?.call_method1("__truediv__", (format!("blocks{}.blocks.json", k),))?.pexists()?.is_truthy()? {
                 k += 1;
             }
             Self::sa_base(slf, format!("blocks{}", k))?;
             Self::sa_dirty(slf, true)?;
             if d.is_truthy()? {
-                let sc = d.get_item("state")?.call_method1("get", ("script",))?;
+                let sc = d.get_item("state")?.dget1("script")?;
                 if sc.is_truthy()? {
                     Self::_status(slf, &format!("新しいブロックプログラムです（今の {} は変換されません）", ss(&d.get_item("state")?.get_item("script")?)?))?;
                 }
@@ -600,7 +602,7 @@ impl BlockEditor {
         Ok(())
     }
     /// scripts/ にあるブロックプログラムを順に開く（保存するとこのコンピューターに設定される）。
-    fn open_next_file(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn open_next_file(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let mut files: Vec<String> = vec![];
         for p in Self::scripts_dir(slf)?.call_method1("glob", ("*.blocks.json",))?.iter()? {
@@ -628,21 +630,21 @@ impl BlockEditor {
         Self::sa_sel(slf, py.None())?;
         Self::sa_scroll(slf, 0)?;
         let d = Self::device(slf)?;
-        let dirty = !(d.is_truthy()? && d.get_item("state")?.call_method1("get", ("blocks",))?.eq(&nxt)?);
+        let dirty = !(d.is_truthy()? && d.get_item("state")?.dget1("blocks")?.eq(&nxt)?);
         Self::sa_dirty(slf, dirty)?;
         Self::_status(slf, &format!("{} を開きました{}", nxt, if dirty { "（保存するとこのコンピューターに設定されます）" } else { "" }))?;
         Self::render(slf)
     }
-    fn file_base(slf: &Bound<'_, Self>) -> R<String> {
+    pub(crate) fn file_base(slf: &Bound<'_, Self>) -> R<String> {
         let t = Self::ga_name_field(slf)?.getattr("text_field")?.getattr("text")?.call_method0("strip")?;
         let n: String = ss(&t)?.chars().filter(|c| NAME_CHARS.contains(*c)).collect();
         Ok(if n.is_empty() { "blocks".into() } else { n })
     }
-    fn code<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
+    pub(crate) fn code<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
         bm(py)?.call_method1("to_python", (Self::ga_prog(slf)?, format!("{}.blocks.json", Self::file_base(slf)?)))
     }
-    fn save(slf: &Bound<'_, Self>) -> R<bool> {
+    pub(crate) fn save(slf: &Bound<'_, Self>) -> R<bool> {
         let py = slf.py();
         let d = Self::device(slf)?;
         if d.is_none() {
@@ -675,7 +677,7 @@ impl BlockEditor {
         st.set_item("script", pyp.getattr("name")?)?;
         st.set_item("blocks", format!("{}.blocks.json", base))?;
         for k in ["_env", "error", "error_line"] {
-            st.call_method1("pop", (k, py.None()))?;
+            st.dpop2(k, py.None())?;
         }
         Self::sa_base(slf, &base)?;
         Self::sa_dirty(slf, false)?;
@@ -683,14 +685,14 @@ impl BlockEditor {
         lg(py)?.call_method1("info", ("ブロックプログラム保存: %s", &base))?;
         Ok(true)
     }
-    fn save_and_run(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn save_and_run(slf: &Bound<'_, Self>) -> R<()> {
         if Self::save(slf)? {
             Self::device(slf)?.get_item("state")?.set_item("running", true)?;
             Self::_status(slf, "保存して実行しました")?;
         }
         Ok(())
     }
-    fn stop(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn stop(slf: &Bound<'_, Self>) -> R<()> {
         let d = Self::device(slf)?;
         if d.is_truthy()? {
             d.get_item("state")?.set_item("running", false)?;
@@ -698,7 +700,7 @@ impl BlockEditor {
         }
         Ok(())
     }
-    fn copy_python(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn copy_python(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let code = Self::code(slf)?;
         let r = (|| -> R<()> {
@@ -715,7 +717,7 @@ impl BlockEditor {
             Err(e) => Err(e),
         }
     }
-    fn open_python(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn open_python(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         if Self::ga_dirty(slf)?.is_truthy()? && !Self::save(slf)? {
             return Ok(());
@@ -730,7 +732,7 @@ impl BlockEditor {
         Ok(())
     }
     #[pyo3(signature = (force=false))]
-    fn close(slf: &Bound<'_, Self>, force: bool) -> R<()> {
+    pub(crate) fn close(slf: &Bound<'_, Self>, force: bool) -> R<()> {
         let py = slf.py();
         if Self::ga_dirty(slf)?.is_truthy()? && !force && !Self::ga_discard_armed(slf)?.is_truthy()? {
             Self::sa_discard_armed(slf, true)?;

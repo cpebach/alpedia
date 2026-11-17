@@ -1,5 +1,9 @@
 //! 画面：狙い・構築物の見た目・名札・アイテムバー・重ねて出す物
 
+use crate::game::planet::{pla, Planet};
+use crate::game::world::{wld, World};
+use crate::game::construct::{con, Construct};
+use crate::game::PyDictOps;
 use super::*;
 
 #[pymethods]
@@ -13,7 +17,7 @@ impl Viewer {
         let hit = if ga(&p, "seated")?.is_truthy()? {
             none(py)
         } else {
-            w.call_method1("raycast", (p.call_method0("eye")?, look, f64of(&get(&ga(&p, "defn")?, "reach", 8.0)?)?))?
+            World::raycast(wld(&w)?, &IntoPy::<PyObject>::into_py(p.call_method0("eye")?, w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(look, w.py()).into_bound(w.py()), IntoPy::<PyObject>::into_py(f64of(&get(&ga(&p, "defn")?, "reach", 8.0)?)?, w.py()).extract::<f64>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?
         };
         Self::sa_hit(slf, &hit)?;
         let gx = gfx(py)?;
@@ -82,7 +86,7 @@ impl Viewer {
         let ov = v3(origin)?;
         for (key, p) in list {
             seen.add(&key)?;
-            let mut b = bodies.call_method1("get", (&key,))?;
+            let mut b = bodies.dget1(&key)?;
             let defid = get(&ga(&p, "defn")?, "id", py.None())?;
             if !b.is_none() {
                 let bd = if b.hasattr("_defid")? { ga(&b, "_defid")? } else { none(py) };
@@ -134,14 +138,14 @@ impl Viewer {
         let keys: Vec<B<'_>> = bodies.iter()?.collect::<R<_>>()?;
         for k in keys {
             if !seen.contains(&k)? {
-                bodies.call_method1("pop", (&k,))?.call_method0("destroy")?;
+                bodies.dpop1(&k)?.call_method0("destroy")?;
             }
         }
         let labels = Self::ga_labels(slf)?;
         let keys: Vec<B<'_>> = labels.iter()?.collect::<R<_>>()?;
         for k in keys {
             if !seen.contains(&k)? || k.eq("me")? {
-                labels.call_method1("pop", (&k,))?.call_method0("remove")?;
+                labels.dpop1(&k)?.call_method0("remove")?;
             }
         }
         Ok(())
@@ -150,7 +154,7 @@ impl Viewer {
     pub(crate) fn _label(slf: &Bound<'_, Self>, key: &B<'_>, p: &B<'_>, origin: &B<'_>, shown: bool) -> R<()> {
         let py = slf.py();
         let labels = Self::ga_labels(slf)?;
-        let mut t = labels.call_method1("get", (key,))?;
+        let mut t = labels.dget1(key)?;
         if t.is_none() {
             t = rs_text(py, Self::ga_root(slf)?, false, Some(BG), None)?;
             labels.set_item(key, &t)?;
@@ -183,7 +187,7 @@ impl Viewer {
         let items: Vec<B<'_>> = hb.iter()?.collect::<R<_>>()?;
         let mut allowed = vec![];
         for it in &items {
-            allowed.push(it.is_truthy()? && w.call_method1("item_allowed", (it,))?.is_truthy()?);
+            allowed.push(it.is_truthy()? && World::item_allowed(wld(&w)?, &IntoPy::<PyObject>::into_py(it, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?.is_truthy()?);
         }
         let sel = Self::ga_sel(slf)?;
         let state = PyTuple::new_bound(py, [PyTuple::new_bound(py, &items).into_any(), sel.clone(), PyTuple::new_bound(py, &allowed).into_any()]);
@@ -244,9 +248,9 @@ impl Viewer {
             return Ok(());
         }
         let p = ga(&w, "player")?;
-        let pl = w.call_method1("nearest_planet", (ga(&p, "pos")?,))?;
+        let pl = World::nearest_planet(wld(&w)?, &IntoPy::<PyObject>::into_py(ga(&p, "pos")?, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         let pos = ga(&p, "pos")?;
-        let alt = if pl.is_truthy()? { f64of(&pl.call_method1("sdf", (pos.get_item(py.None())?,))?.get_item(0)?)? } else { 0.0 };
+        let alt = if pl.is_truthy()? { f64of(&Planet::sdf(pla(&pl)?, &IntoPy::<PyObject>::into_py(pos.get_item(py.None())?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?)? } else { 0.0 };
         let pname = if pl.is_truthy()? { ga(&pl, "name")?.str()?.to_string() } else { "宇宙".into() };
         let vel = norm(v3(&ga(&p, "vel")?)?);
         let mut lines = vec![format!("{}  高度 {} m  速度 {} m/s", pname, pf(py, alt, ".1f")?, pf(py, vel, ".1f")?)];
@@ -257,7 +261,7 @@ impl Viewer {
         let cs = ga(&w, "constructs")?;
         if seated.is_truthy()? && cs.contains(seated.get_item(0)?)? {
             let c = cs.get_item(seated.get_item(0)?)?;
-            let cv = norm(v3(&c.call_method0("velocity")?)?);
+            let cv = norm(v3(&Construct::velocity(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?);
             lines.push(format!("操縦中: {}  速度 {} m/s", ga(&c, "name")?.str()?, pf(py, cv, ".1f")?));
         }
         let net = gd(&w, "net", none(py));
@@ -266,7 +270,7 @@ impl Viewer {
         } else if !net.is_none() {
             let a = net.call_method0("addresses")?.get_item(pyo3::types::PySlice::new_bound(py, 0, 1, 1))?;
             let j = PyString::new_bound(py, "  ").call_method1("join", (a,))?;
-            let locked = net.call_method0("_info")?.call_method1("get", ("locked", false))?.is_truthy()?;
+            let locked = net.call_method0("_info")?.dget2("locked", false)?.is_truthy()?;
             lines.push(format!("LAN に公開中 {}  {} 人{}", j.str()?, 1 + ga(&w, "remote")?.len()?, if locked { "（合言葉あり）" } else { "" }));
         }
         let ft = gd(s, "fps_text", tb(py, ""));

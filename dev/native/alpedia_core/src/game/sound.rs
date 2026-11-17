@@ -7,6 +7,9 @@
 //! どの場面でどの曲を流すかは、画面側の拡張の bgm()（シナリオなら章ごと）とムービー（set_override）が決める。
 //! 曲のファイルが無ければ鳴らさない（BGM の MOD は入れなくても遊べる）。
 
+use crate::game::PyPathOps;
+use crate::game::world::{wld, World};
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use crate::game::construct::{con, Construct};
 use pyo3::exceptions::PyException;
@@ -24,7 +27,7 @@ fn tb<T: IntoPy<PyObject>>(py: Python<'_>, x: T) -> B<'_> {
     x.into_py(py).into_bound(py)
 }
 fn lg(py: Python<'_>) -> R<B<'_>> {
-    imp(py, "main.log")?.call_method1("get", ("sound",))
+    imp(py, "main.log")?.dget1("sound")
 }
 fn is_exc(py: Python<'_>, e: &PyErr) -> bool {
     e.is_instance_of::<PyException>(py)
@@ -68,7 +71,7 @@ pub fn sound_get(py: Python<'_>, cfg: Option<&B<'_>>) -> R<PyObject> {
 pub fn sound_volume_of(py: Python<'_>, cfg: &B<'_>, key: &B<'_>, default: f64) -> R<f64> {
     let r = (|| -> R<f64> {
         let c = if cfg.is_truthy()? { cfg.clone() } else { PyDict::new_bound(py).into_any() };
-        let v = c.call_method1("get", ("audio", PyDict::new_bound(py)))?.call_method1("get", (key, default))?;
+        let v = c.dget2("audio", PyDict::new_bound(py))?.dget2(key, default)?;
         let f: f64 = py.import_bound("builtins")?.getattr("float")?.call1((v,))?.extract()?;
         Ok(f)
     })();
@@ -94,16 +97,16 @@ pub fn sound_library(py: Python<'_>) -> R<Bound<'_, PyDict>> {
         Err(e) if is_exc(py, &e) => return Ok(out),
         Err(e) => return Err(e),
     };
-    let tracks = meta.call_method1("get", ("tracks",))?;
+    let tracks = meta.dget1("tracks")?;
     let tracks = if tracks.is_truthy()? { tracks } else { PyDict::new_bound(py).into_any() };
     for kv in tracks.call_method0("items")?.iter()? {
         let kv = kv?;
         let (tid, t) = (kv.get_item(0)?, kv.get_item(1)?);
         let r = (|| -> R<()> {
             let f = d.call_method1("__truediv__", (t.get_item("file")?,))?;
-            if f.call_method0("exists")?.is_truthy()? {
-                let g: f64 = py.import_bound("builtins")?.getattr("float")?.call1((t.call_method1("get", ("gain_db", 0.0))?,))?.extract()?;
-                out.set_item(&tid, (f, 10f64.powf(g / 20.0), t.call_method1("get", ("title", &tid))?))?;
+            if f.pexists()?.is_truthy()? {
+                let g: f64 = py.import_bound("builtins")?.getattr("float")?.call1((t.dget2("gain_db", 0.0)?,))?.extract()?;
+                out.set_item(&tid, (f, 10f64.powf(g / 20.0), t.dget2("title", &tid)?))?;
             }
             Ok(())
         })();
@@ -125,25 +128,25 @@ impl Silent {
     fn new() -> Self {
         Silent {}
     }
-    fn apply(&self, cfg: &B<'_>) {
+    pub(crate) fn apply(&self, cfg: &B<'_>) {
         let _ = cfg;
     }
     #[pyo3(signature = (name, volume=1.0))]
-    fn sfx(&self, name: &B<'_>, volume: f64) {
+    pub(crate) fn sfx(&self, name: &B<'_>, volume: f64) {
         let _ = (name, volume);
     }
     #[pyo3(name = "loop")]
-    fn loop_(&self, name: &B<'_>, volume: &B<'_>) {
+    pub(crate) fn loop_(&self, name: &B<'_>, volume: &B<'_>) {
         let _ = (name, volume);
     }
-    fn stop_loops(&self) {}
-    fn set_bgm(&self, want: &B<'_>) {
+    pub(crate) fn stop_loops(&self) {}
+    pub(crate) fn set_bgm(&self, want: &B<'_>) {
         let _ = want;
     }
-    fn set_override(&self, want: &B<'_>) {
+    pub(crate) fn set_override(&self, want: &B<'_>) {
         let _ = want;
     }
-    fn update(&self, dt: &B<'_>) {
+    pub(crate) fn update(&self, dt: &B<'_>) {
         let _ = dt;
     }
 }
@@ -261,7 +264,7 @@ impl RsLoader {
     fn new(base: PyObject) -> Self {
         RsLoader { base }
     }
-    fn _load(&self, py: Python<'_>, f: &B<'_>, music: bool) -> R<PyObject> {
+    pub(crate) fn _load(&self, py: Python<'_>, f: &B<'_>, music: bool) -> R<PyObject> {
         let path = if f.hasattr("toOsSpecific")? { f.call_method0("toOsSpecific")? } else { f.str()?.into_any() };
         let b = self.base.bind(py);
         let sid: i64 = b.getattr("au")?.call_method1("load", (path,))?.extract()?;
@@ -310,13 +313,29 @@ impl RsLoader {
 
 /// application.base のうち、SoundSystem が使う所のまね
 #[pyclass(module = "main.client.sound", name = "_RsBase", subclass, dict)]
-pub struct RsBase {}
+#[allow(non_snake_case)]
+pub struct RsBase {
+    /// au（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_au: Option<PyObject>,
+    /// loader（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_loader: Option<PyObject>,
+    /// made（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_made: Option<PyObject>,
+    /// musicManager（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_musicManager: Option<PyObject>,
+    /// music_vol（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_music_vol: Option<PyObject>,
+    /// sfxManagerList（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_sfxManagerList: Option<PyObject>,
+    /// sfx_vol（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_sfx_vol: Option<PyObject>,
+}
 #[pymethods]
 impl RsBase {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        RsBase {}
+        RsBase { a_au: None, a_loader: None, a_made: None, a_musicManager: None, a_music_vol: None, a_sfxManagerList: None, a_sfx_vol: None }
     }
     fn __init__(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
@@ -325,13 +344,13 @@ impl RsBase {
         if !au.call_method0("ok")?.is_truthy()? {
             lg(py)?.call_method1("warning", ("音の出口が見つかりません（音は鳴りません）",))?;
         }
-        s.setattr("au", au)?;
-        s.setattr("music_vol", 1.0)?;
-        s.setattr("sfx_vol", 1.0)?;
-        s.setattr("made", PyList::empty_bound(py))?;
-        s.setattr("loader", Py::new(py, RsLoader::new(s.clone().unbind()))?)?;
-        s.setattr("musicManager", Py::new(py, RsVolume::new(s.clone().unbind(), "music_vol".into()))?)?;
-        s.setattr("sfxManagerList", vec![Py::new(py, RsVolume::new(s.clone().unbind(), "sfx_vol".into()))?])?;
+        Self::sa_au(slf, au)?;
+        Self::sa_music_vol(slf, 1.0)?;
+        Self::sa_sfx_vol(slf, 1.0)?;
+        Self::sa_made(slf, PyList::empty_bound(py))?;
+        Self::sa_loader(slf, Py::new(py, RsLoader::new(s.clone().unbind()))?)?;
+        Self::sa_musicManager(slf, Py::new(py, RsVolume::new(s.clone().unbind(), "music_vol".into()))?)?;
+        Self::sa_sfxManagerList(slf, vec![Py::new(py, RsVolume::new(s.clone().unbind(), "sfx_vol".into()))?])?;
         Ok(())
     }
 }
@@ -388,15 +407,14 @@ impl SoundSystem {
         Ok(p.str()?.to_string())
     }
     // --- 音量 ---
-    fn apply(slf: &Bound<'_, Self>, cfg: &B<'_>) -> R<()> {
+    pub(crate) fn apply(slf: &Bound<'_, Self>, cfg: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let bv = sound_volume_of(py, cfg, &tb(py, "bgm"), 60.0)?;
         let sv = sound_volume_of(py, cfg, &tb(py, "sfx"), 80.0)?;
         Self::sa_bgm_vol(slf, bv)?;
         Self::sa_sfx_vol(slf, sv)?;
         let r = (|| -> R<()> {
-            let b = g(s, "base")?;
+            let b = Self::ga_base(slf)?;
             b.getattr("musicManager")?.call_method1("setVolume", (bv,))?;
             for m in b.getattr("sfxManagerList")?.iter()? {
                 m?.call_method1("setVolume", (sv,))?;
@@ -410,15 +428,15 @@ impl SoundSystem {
     }
     // --- 効果音 ---
     #[pyo3(signature = (name, music=false))]
-    fn _load<'py>(slf: &Bound<'py, Self>, name: &B<'py>, music: bool) -> R<B<'py>> {
+    pub(crate) fn _load<'py>(slf: &Bound<'py, Self>, name: &B<'py>, music: bool) -> R<B<'py>> {
         let py = slf.py();
         let s = slf.as_any();
         let p = imp(py, "main.paths")?.getattr("SAUCE")?.call_method1("__truediv__", ("sounds",))?.call_method1("__truediv__", (format!("{}.wav", name.str()?),))?;
-        if !p.call_method0("exists")?.is_truthy()? {
+        if !p.pexists()?.is_truthy()? {
             return Ok(py.None().into_bound(py));
         }
         let r = (|| -> R<B<'py>> {
-            let ld = g(s, "base")?.getattr("loader")?;
+            let ld = Self::ga_base(slf)?.getattr("loader")?;
             let f = s.call_method1("_fname", (&p,))?;
             ld.call_method1(if music { "loadMusic" } else { "loadSfx" }, (f,))
         })();
@@ -430,14 +448,14 @@ impl SoundSystem {
     }
     /// 効果音を1回鳴らす（同じ音は 3 つまで重ねて鳴る）
     #[pyo3(signature = (name, volume=1.0))]
-    fn sfx(slf: &Bound<'_, Self>, name: &B<'_>, volume: f64) -> R<()> {
+    pub(crate) fn sfx(slf: &Bound<'_, Self>, name: &B<'_>, volume: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        if f64of(&g(s, "sfx_vol")?)? <= 0.0 || volume <= 0.01 {
+        if f64of(&Self::ga_sfx_vol(slf)?)? <= 0.0 || volume <= 0.01 {
             return Ok(());
         }
-        let cache = g(s, "cache")?;
-        let mut pool = cache.call_method1("get", (name,))?;
+        let cache = Self::ga_cache(slf)?;
+        let mut pool = cache.dget1(name)?;
         if pool.is_none() {
             let l = PyList::empty_bound(py);
             for _ in 0..3 {
@@ -466,11 +484,11 @@ impl SoundSystem {
     }
     /// 繰り返す効果音の大きさ（0 で止める）。毎フレーム呼ぶ
     #[pyo3(name = "loop")]
-    fn loop_(slf: &Bound<'_, Self>, name: &B<'_>, volume: f64) -> R<()> {
+    pub(crate) fn loop_(slf: &Bound<'_, Self>, name: &B<'_>, volume: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        let loops = g(s, "loops")?;
-        let mut snd = loops.call_method1("get", (name,))?;
+        let loops = Self::ga_loops(slf)?;
+        let mut snd = loops.dget1(name)?;
         if volume <= 0.01 {
             if !snd.is_none() && snd.call_method0("status")?.eq(snd.getattr("PLAYING")?)? {
                 snd.call_method0("stop")?;
@@ -492,7 +510,7 @@ impl SoundSystem {
         }
         Ok(())
     }
-    fn stop_loops(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn stop_loops(slf: &Bound<'_, Self>) -> R<()> {
         for snd in g(slf.as_any(), "loops")?.call_method0("values")?.iter()? {
             let snd = snd?;
             if !snd.is_none() {
@@ -503,26 +521,26 @@ impl SoundSystem {
     }
     // --- BGM ---
     /// 場面の曲：(曲の ID, 始める秒) か None（止める）。毎フレーム呼んでよい（変わったときだけ替える）
-    fn set_bgm(slf: &Bound<'_, Self>, want: &B<'_>) -> R<()> {
+    pub(crate) fn set_bgm(slf: &Bound<'_, Self>, want: &B<'_>) -> R<()> {
         Self::sa_want(slf, want)
     }
     /// ムービーの曲（None で場面の曲に戻す）
-    fn set_override(slf: &Bound<'_, Self>, want: &B<'_>) -> R<()> {
+    pub(crate) fn set_override(slf: &Bound<'_, Self>, want: &B<'_>) -> R<()> {
         slf.as_any().setattr("override", want)
     }
-    fn _start<'py>(slf: &Bound<'py, Self>, key: &B<'py>) -> R<B<'py>> {
+    pub(crate) fn _start<'py>(slf: &Bound<'py, Self>, key: &B<'py>) -> R<B<'py>> {
         let py = slf.py();
         let s = slf.as_any();
         let none = py.None().into_bound(py);
-        if g(s, "lib")?.is_none() {
+        if Self::ga_lib(slf)?.is_none() {
             Self::sa_lib(slf, smod(py)?.call_method0("library")?)?;
         }
         let (tid, start) = (key.get_item(0)?, key.get_item(1)?);
-        let t = g(s, "lib")?.call_method1("get", (&tid,))?;
+        let t = Self::ga_lib(slf)?.dget1(&tid)?;
         if t.is_none() {
             return Ok(none);
         }
-        let snd = match s.call_method1("_fname", (t.get_item(0)?,)).and_then(|f| g(s, "base")?.getattr("loader")?.call_method1("loadMusic", (f,))) {
+        let snd = match s.call_method1("_fname", (t.get_item(0)?,)).and_then(|f| Self::ga_base(slf)?.getattr("loader")?.call_method1("loadMusic", (f,))) {
             Ok(x) => x,
             Err(e) if is_exc(py, &e) => {
                 lg(py)?.call_method1("warning", ("BGM を読めません: %s", t.get_item(0)?))?;
@@ -550,30 +568,30 @@ impl SoundSystem {
         d.set_item("vol", 0.0)?;
         Ok(d.into_any())
     }
-    fn update(slf: &Bound<'_, Self>, dt: f64) -> R<()> {
+    pub(crate) fn update(slf: &Bound<'_, Self>, dt: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let ov = g(s, "override")?;
-        let k0 = if ov.is_truthy()? { ov } else { g(s, "want")? };
+        let k0 = if ov.is_truthy()? { ov } else { Self::ga_want(slf)? };
         let key = if k0.is_truthy()? { py.import_bound("builtins")?.getattr("tuple")?.call1((k0,))? } else { py.None().into_bound(py) };
-        let cur = g(s, "music")?;
+        let cur = Self::ga_music(slf)?;
         let ck = if cur.is_truthy()? { cur.get_item("key")? } else { py.None().into_bound(py) };
         if !ck.eq(&key)? {
             if !cur.is_none() {
-                g(s, "fading")?.call_method1("append", (&cur,))?;
+                Self::ga_fading(slf)?.call_method1("append", (&cur,))?;
             }
             let m = if key.is_truthy()? { Self::_start(slf, &key)? } else { py.None().into_bound(py) };
             Self::sa_music(slf, m)?;
         }
         let fade = f64of(&smod(py)?.getattr("FADE")?)?;
         let step = dt / fade;
-        let m = g(s, "music")?;
+        let m = Self::ga_music(slf)?;
         if !m.is_none() {
             let v = (f64of(&m.get_item("vol")?)? + step).min(1.0);
             m.set_item("vol", v)?;
             m.get_item("snd")?.call_method1("setVolume", (v * f64of(&m.get_item("gain")?)?,))?;
         }
-        let fading = g(s, "fading")?;
+        let fading = Self::ga_fading(slf)?;
         let fl: Vec<B<'_>> = fading.iter()?.collect::<R<_>>()?;
         for f in fl {
             let v = f64of(&f.get_item("vol")?)? - step;
@@ -598,7 +616,7 @@ pub fn sound_sources<'py>(py: Python<'py>, w: &B<'py>, prev_lit: &B<'py>, sfx: &
     let eye = w.getattr("player")?.call_method0("eye")?;
     let (mut thr, mut mot, mut jet) = (0.0f64, 0.0f64, 0.0f64);
     let lit = PySet::empty_bound(py)?;
-    for c in w.call_method1("constructs_near", (&eye, 150.0))?.iter()? {
+    for c in World::constructs_near(wld(&w)?, &IntoPy::<PyObject>::into_py(&eye, w.py()).into_bound(w.py()), 150.0).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?.iter()? {
         let c = c?;
         if !Construct::n(con(&c)?)?.into_py(py).into_bound(py).is_truthy()? || !c.getattr("has_devices")?.is_truthy()? {
             continue;
@@ -611,10 +629,10 @@ pub fn sound_sources<'py>(py: Python<'py>, w: &B<'py>, prev_lit: &B<'py>, sfx: &
             }
             let st = d.get_item("state")?;
             if st.contains("firing")? || st.contains("lit")? {
-                let fv = st.call_method1("get", ("firing", 0.0))?;
+                let fv = st.dget2("firing", 0.0)?;
                 let f = if fv.is_truthy()? { f64of(&fv)? } else { 0.0 };
-                if f > 0.01 || st.call_method1("get", ("lit",))?.is_truthy()? {
-                    let dist = f64of(&npl.call_method1("norm", (c.call_method1("voxel_center", (i,))?.call_method1("__sub__", (&eye,))?,))?)?;
+                if f > 0.01 || st.dget1("lit")?.is_truthy()? {
+                    let dist = f64of(&npl.call_method1("norm", (Construct::voxel_center(con(&c)?, IntoPy::<PyObject>::into_py(i, c.py()).extract::<usize>(c.py())?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.call_method1("__sub__", (&eye,))?,))?)?;
                     let att = 1.0 / (1.0 + (dist / 12.0).powi(2));
                     thr += f.max(0.15) * att * 0.5;
                     let key = PyTuple::new_bound(py, [cid.clone(), tb(py, i)]);
@@ -624,7 +642,7 @@ pub fn sound_sources<'py>(py: Python<'py>, w: &B<'py>, prev_lit: &B<'py>, sfx: &
                     }
                 }
             } else if st.contains("angle_target")? && act.call_method1("busy", (&st,))?.is_truthy()? {
-                let dist = f64of(&npl.call_method1("norm", (c.call_method1("voxel_center", (i,))?.call_method1("__sub__", (&eye,))?,))?)?;
+                let dist = f64of(&npl.call_method1("norm", (Construct::voxel_center(con(&c)?, IntoPy::<PyObject>::into_py(i, c.py()).extract::<usize>(c.py())?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.call_method1("__sub__", (&eye,))?,))?)?;
                 mot += 0.7 / (1.0 + (dist / 8.0).powi(2));
             }
         }
@@ -693,4 +711,42 @@ macro_rules! soundsystem_attr_fields {
 }
 soundsystem_attr_fields!(
     ga_base sa_base pga_base psa_base a_base "base", ga_bgm_vol sa_bgm_vol pga_bgm_vol psa_bgm_vol a_bgm_vol "bgm_vol", ga_cache sa_cache pga_cache psa_cache a_cache "cache", ga_fading sa_fading pga_fading psa_fading a_fading "fading", ga_lib sa_lib pga_lib psa_lib a_lib "lib", ga_loops sa_loops pga_loops psa_loops a_loops "loops", ga_music sa_music pga_music psa_music a_music "music", ga_sfx_vol sa_sfx_vol pga_sfx_vol psa_sfx_vol a_sfx_vol "sfx_vol", ga_want sa_want pga_want psa_want a_want "want"
+);
+
+// ---------------------------------------------------------------- RsBase の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! rsbase_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl RsBase { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl RsBase { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+rsbase_attr_fields!(
+    ga_au sa_au pga_au psa_au a_au "au", ga_loader sa_loader pga_loader psa_loader a_loader "loader", ga_made sa_made pga_made psa_made a_made "made", ga_musicManager sa_musicManager pga_musicManager psa_musicManager a_musicManager "musicManager", ga_music_vol sa_music_vol pga_music_vol psa_music_vol a_music_vol "music_vol", ga_sfxManagerList sa_sfxManagerList pga_sfxManagerList psa_sfxManagerList a_sfxManagerList "sfxManagerList", ga_sfx_vol sa_sfx_vol pga_sfx_vol psa_sfx_vol a_sfx_vol "sfx_vol"
 );

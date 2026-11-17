@@ -4,6 +4,7 @@
 //! 推進機：点火のときだけ電気を使い、燃えている間は燃料を使って推力と電気を出す。
 //! 精錬機・加工機：原料は配管でつながった所から受け取り、作った物は自分の中にためる。
 
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use std::collections::HashMap;
 
@@ -75,7 +76,7 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
     for i in 0..n {
         let k = match devs.get(i) {
             Some(d) => match dev_def(c, d)? {
-                Some(dd) if dd.call_method1("get", ("pipe_port",))?.is_truthy()? => {
+                Some(dd) if dd.dget1("pipe_port")?.is_truthy()? => {
                     Some(if dd.get_item("type")?.eq("valve")? { 'v' } else { 'p' })
                 }
                 _ => None,
@@ -101,7 +102,7 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
     }
     for k in keys {
         let (a, b) = (k.get_item(0)?, k.get_item(1)?);
-        let (ia, ib) = (index.call_method1("get", (a,))?, index.call_method1("get", (b,))?);
+        let (ia, ib) = (index.dget1(a)?, index.dget1(b)?);
         if ia.is_none() || ib.is_none() {
             continue;
         }
@@ -187,7 +188,7 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
         if old.is_truthy()? {
             for cav in old.getattr("cavities")?.iter()? {
                 let cav = cav?;
-                let air = float_of(&cavity_air.call_method1("get", (cav.get_item("rep")?, 0.0))?)?;
+                let air = float_of(&cavity_air.dget2(cav.get_item("rep")?, 0.0)?)?;
                 let dens = air / float_of(&cav.get_item("volume")?)?.max(1e-9);
                 for cell in cav.get_item("cells")?.iter()? {
                     old_density.insert(cell?.extract()?, dens);
@@ -211,7 +212,7 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
         let air = if !old_density.is_empty() {
             cs.iter().map(|x| old_density.get(&(x[0], x[1], x[2])).copied().unwrap_or(0.0)).sum::<f64>() * vol1
         } else {
-            float_of(&cavity_air.call_method1("get", (rep_t, 0.0))?)?
+            float_of(&cavity_air.dget2(rep_t, 0.0)?)?
         };
         new_air.set_item(rep_t, air)?;
         let set = PySet::new_bound(py, &cs.iter().map(|x| PyTuple::new_bound(py, x)).collect::<Vec<_>>())?;
@@ -235,33 +236,33 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
 #[pyfunction]
 pub fn dev_is_fluid(reg: &Bound<'_, PyAny>, res: &Bound<'_, PyAny>) -> R<bool> {
     let py = reg.py();
-    let r = reg.getattr("defs")?.call_method1("get", ("resources", PyDict::new_bound(py)))?.call_method1("get", (res,))?;
+    let r = reg.getattr("defs")?.dget2("resources", PyDict::new_bound(py))?.dget1(res)?;
     if r.is_truthy()? {
-        return r.call_method1("get", ("fluid",))?.is_truthy();
+        return r.dget1("fluid")?.is_truthy();
     }
     Ok(res.eq("fuel")? || res.eq("air")? || res.eq("water")?)
 }
 
 #[pyfunction]
 pub fn dev_valve_opening(st: &Bound<'_, PyAny>) -> R<f64> {
-    Ok(float_of(&st.call_method1("get", ("open", 1.0))?)?.max(0.0).min(1.0))
+    Ok(float_of(&st.dget2("open", 1.0)?)?.max(0.0).min(1.0))
 }
 
 /// 精錬機・加工機が出す物（作る物のうち、自分の原料ではないもの）
 #[pyfunction]
 pub fn dev_proc_outputs<'py>(py: Python<'py>, dd: &Bound<'py, PyAny>) -> R<Bound<'py, PySet>> {
-    let rs = dd.get_item("params")?.call_method1("get", ("recipes", PyList::empty_bound(py)))?;
+    let rs = dd.get_item("params")?.dget2("recipes", PyList::empty_bound(py))?;
     let ins = PySet::empty_bound(py)?;
     let outs = PySet::empty_bound(py)?;
     for r in rs.iter()? {
         let r = r?;
-        for k in r.call_method1("get", ("in", PyDict::new_bound(py)))?.iter()? {
+        for k in r.dget2("in", PyDict::new_bound(py))?.iter()? {
             ins.add(k?)?;
         }
     }
     for r in rs.iter()? {
         let r = r?;
-        for k in r.call_method1("get", ("out", PyDict::new_bound(py)))?.iter()? {
+        for k in r.dget2("out", PyDict::new_bound(py))?.iter()? {
             let k = k?;
             if !ins.contains(&k)? {
                 outs.add(k)?;
@@ -273,12 +274,12 @@ pub fn dev_proc_outputs<'py>(py: Python<'py>, dd: &Bound<'py, PyAny>) -> R<Bound
 
 #[pyfunction]
 pub fn dev_proc_inputs<'py>(py: Python<'py>, dd: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
-    let rs = dd.get_item("params")?.call_method1("get", ("recipes", PyList::empty_bound(py)))?;
+    let rs = dd.get_item("params")?.dget2("recipes", PyList::empty_bound(py))?;
     let out = PyDict::new_bound(py);
     for r in rs.iter()? {
-        for it in r?.call_method1("get", ("in", PyDict::new_bound(py)))?.call_method0("items")?.iter()? {
+        for it in r?.dget2("in", PyDict::new_bound(py))?.call_method0("items")?.iter()? {
             let (k, v): (Bound<'py, PyAny>, Bound<'py, PyAny>) = it?.extract()?;
-            let cur = float_of(&out.as_any().call_method1("get", (&k, 0.0))?)?;
+            let cur = float_of(&out.as_any().dget2(&k, 0.0)?)?;
             out.set_item(&k, cur.max(float_of(&v)?))?;
         }
     }
@@ -298,7 +299,7 @@ pub fn dev_tanks_in<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net_id: &Bound<
         let d = devs.get_item(&i)?;
         if let Some(dd) = dev_def(c, &d)? {
             if dd.get_item("type")?.eq("tank")? {
-                let cap = float_of(&dd.get_item("params")?.call_method1("get", ("capacity", 0))?)?;
+                let cap = float_of(&dd.get_item("params")?.dget2("capacity", 0)?)?;
                 out.append((i, d.get_item("state")?.get_item("contents")?, cap))?;
             }
         }
@@ -310,7 +311,7 @@ pub fn dev_tanks_in<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net_id: &Bound<
 pub fn dev_fluid_amount(py: Python<'_>, c: &Bound<'_, PyAny>, net_id: &Bound<'_, PyAny>, res: &Bound<'_, PyAny>) -> R<f64> {
     let mut s = 0.0;
     for t in dev_tanks_in(py, c, net_id)?.iter() {
-        s += float_of(&t.get_item(1)?.call_method1("get", (res, 0.0))?)?;
+        s += float_of(&t.get_item(1)?.dget2(res, 0.0)?)?;
     }
     Ok(s)
 }
@@ -330,7 +331,7 @@ pub fn dev_storage_total<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound
             for it in st.get_item("store")?.call_method0("items")?.iter()? {
                 let (k, v): (Bound<'py, PyAny>, Bound<'py, PyAny>) = it?.extract()?;
                 if v.gt(1e-9)? {
-                    let cur = out.as_any().call_method1("get", (&k, 0.0))?;
+                    let cur = out.as_any().dget2(&k, 0.0)?;
                     out.set_item(&k, cur.add(v)?)?;
                 }
             }
@@ -345,7 +346,7 @@ pub fn dev_storage_total<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound
 pub fn dev_world_axis<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, i: usize, d: i64, frames: Option<&Bound<'py, PyAny>>) -> R<PyObject> {
     let f = match frames.filter(|f| !f.is_none()) {
         Some(f) => f.get_item(i)?,
-        None => c.call_method0("voxel_frames")?.get_item(i)?,
+        None => Construct::voxel_frames(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.get_item(i)?,
     };
     let axis = d.div_euclid(2);
     let sign = if d.rem_euclid(2) == 0 { 1.0 } else { -1.0 };
@@ -358,7 +359,7 @@ fn adjacent_cavity(c: &Bound<'_, PyAny>, i: usize) -> R<Option<usize>> {
     let (x, y, z): (i64, i64, i64) = (cell.get_item(0)?.extract()?, cell.get_item(1)?.extract()?, cell.get_item(2)?.extract()?);
     let cav_of = c.getattr("_net")?.getattr("cavity_of")?;
     for d in DIRS {
-        let k = cav_of.call_method1("get", ((x + d[0], y + d[1], z + d[2]),))?;
+        let k = cav_of.dget1((x + d[0], y + d[1], z + d[2]))?;
         if !k.is_none() {
             return Ok(Some(k.extract()?));
         }
@@ -388,7 +389,7 @@ fn native_plan<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net: &Bound<'py, PyA
     let key = PyTuple::new_bound(py, [Construct::g_version(con(&c)?)?.unbind(), Construct::g_cells(con(&c)?)?.len()?.into_py(py),
                                        (net.as_ptr() as usize).into_py(py)]);
     let cd = c.getattr("__dict__")?;
-    let cache = cd.call_method1("get", ("_devplan",))?;
+    let cache = cd.dget1("_devplan")?;
     if !cache.is_none() && cache.get_item(0)?.eq(&key)? {
         return Ok((cache.get_item(1)?, cache.get_item(2)?.extract()?));
     }
@@ -402,43 +403,43 @@ fn native_plan<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net: &Bound<'py, PyA
     for &i in &order {
         let d = cdevs.get_item(i)?;
         let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
-        let p = dd.call_method1("get", ("params", PyDict::new_bound(py)))?;
+        let p = dd.dget2("params", PyDict::new_bound(py))?;
         let t = dd.get_item("type")?;
         let is_proc = t.eq("processor")?;
         let e = PyDict::new_bound(py);
-        let pg = |k: &str, dflt: f64| -> R<f64> { fl(p.call_method1("get", (k, dflt))?) };
+        let pg = |k: &str, dflt: f64| -> R<f64> { fl(p.dget2(k, dflt)?) };
         e.set_item("vox", i)?;
         e.set_item("type", &t)?;
-        e.set_item("name", d.call_method1("get", ("name", ""))?)?;
-        e.set_item("dir", crate::game::imp(py, "builtins")?.getattr("int")?.call1((d.call_method1("get", ("dir", 0))?,))?)?;
-        e.set_item("electric", dd.call_method1("get", ("power",))?.eq("electric")?)?;
-        e.set_item("power_use", fl(dd.call_method1("get", ("power_use", 0))?)?)?;
+        e.set_item("name", d.dget2("name", "")?)?;
+        e.set_item("dir", crate::game::imp(py, "builtins")?.getattr("int")?.call1((d.dget2("dir", 0)?,))?)?;
+        e.set_item("electric", dd.dget1("power")?.eq("electric")?)?;
+        e.set_item("power_use", fl(dd.dget2("power_use", 0)?)?)?;
         e.set_item("capacity", pg("capacity", if is_proc { 400.0 } else { 0.0 })?)?;
         e.set_item("output", pg("output", 0.0)?)?;
-        e.set_item("fuel", p.call_method1("get", ("fuel", "fuel"))?)?;
+        e.set_item("fuel", p.dget2("fuel", "fuel")?)?;
         e.set_item("fuel_rate", pg("fuel_rate", 0.0)?)?;
         e.set_item("thrust", pg("thrust", 0.0)?)?;
         e.set_item("power_output", pg("power_output", 0.0)?)?;
         e.set_item("ignite_energy", pg("ignite_energy", 0.0)?)?;
         e.set_item("max_flow", pg("max_flow", 6.0)?)?;
-        let key = p.call_method1("get", ("key",))?;
+        let key = p.dget1("key")?;
         e.set_item("key", if key.is_truthy()? { key.unbind() } else { py.None() })?;
         e.set_item("rate", pg("rate", 1.0)?)?;
         e.set_item("target_kpa", pg("target_kpa", 101.3)?)?;
         if is_proc {
             let recipes = PyList::empty_bound(py);
-            for r in p.call_method1("get", ("recipes", PyList::empty_bound(py)))?.iter()? {
+            for r in p.dget2("recipes", PyList::empty_bound(py))?.iter()? {
                 let r = r?;
                 let conv = |k: &str| -> R<Bound<'py, PyList>> {
                     let l = PyList::empty_bound(py);
-                    for it in r.call_method1("get", (k, PyDict::new_bound(py)))?.call_method0("items")?.iter()? {
+                    for it in r.dget2(k, PyDict::new_bound(py))?.call_method0("items")?.iter()? {
                         let (a, b): (Bound<'py, PyAny>, Bound<'py, PyAny>) = it?.extract()?;
                         l.append((a, float_of(&b)?))?;
                     }
                     Ok(l)
                 };
                 let power: PyObject = if r.contains("power")? { float_of(&r.get_item("power")?)?.into_py(py) } else { py.None() };
-                recipes.append((conv("in")?, conv("out")?, fl(r.call_method1("get", ("time", 1.0))?)?, power))?;
+                recipes.append((conv("in")?, conv("out")?, fl(r.dget2("time", 1.0)?)?, power))?;
             }
             e.set_item("recipes", recipes)?;
             e.set_item("inputs", PyList::new_bound(py, dev_proc_inputs(py, &dd)?.items().iter()))?;
@@ -509,7 +510,7 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
     let key = PyTuple::new_bound(py, [Construct::g_version(con(&c)?)?.unbind(), Construct::g_cells(con(&c)?)?.len()?.into_py(py)]);
     let cd = c.getattr("__dict__")?;
     let devs = Construct::g_devs(con(&c)?)?;
-    let cache = cd.call_method1("get", ("_bytype_cache",))?;
+    let cache = cd.dget1("_bytype_cache")?;
     let idx: Vec<(String, Vec<usize>)> = if !cache.is_none() && cache.get_item(0)?.eq(&key)? {
         cache.get_item(1)?.call_method0("items")?.iter()?.map(|it| it?.extract::<(String, Vec<usize>)>()).collect::<R<_>>()?
     } else {
@@ -550,10 +551,10 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
     if storage.is_truthy()? {
         if let Some((_, procs)) = by_type.iter().find(|x| x.0 == "processor") {
             // 古いセーブ：構築物で共有していた資源は、最初の精錬機・加工機に入れる
-            let st0 = procs[0].1.get_item("state")?.call_method1("setdefault", ("store", PyDict::new_bound(py)))?;
+            let st0 = procs[0].1.get_item("state")?.dsetdefault("store", PyDict::new_bound(py))?;
             for it in storage.call_method0("items")?.iter()? {
                 let (k, v): (Bound<'_, PyAny>, Bound<'_, PyAny>) = it?.extract()?;
-                let cur = st0.call_method1("get", (&k, 0.0))?;
+                let cur = st0.dget2(&k, 0.0)?;
                 st0.set_item(&k, cur.add(v)?)?;
             }
             Construct::s_storage(con(&c)?, PyDict::new_bound(py))?;
@@ -569,7 +570,7 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
     let reps: Vec<Bound<'_, PyAny>> = net.getattr("cavities")?.iter()?.map(|cv| cv?.get_item("rep")).collect::<R<_>>()?;
     let mut cav = Vec::with_capacity(reps.len());
     for r in &reps {
-        cav.push(float_of(&cav_air.call_method1("get", (r, 0.0))?)?);
+        cav.push(float_of(&cav_air.dget2(r, 0.0)?)?);
     }
     let cav_arr = PyArray1::from_vec_bound(py, cav);
     c.call_method1("_contig", ("pos", "force"))?;
@@ -618,7 +619,7 @@ pub fn dev_cavity_report<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound
     for cav in net.getattr("cavities")?.iter()? {
         let cav = cav?;
         let rep = cav.get_item("rep")?;
-        let a = float_of(&air.call_method1("get", (&rep, 0.0))?)?;
+        let a = float_of(&air.dget2(&rep, 0.0)?)?;
         let v = float_of(&cav.get_item("volume")?)?;
         out.append((rep, cav.get_item("cells")?.len()?, crate::game::airtight::airtight_pressure_kpa(a, v)))?;
     }
@@ -645,7 +646,7 @@ pub fn dev_interact(py: Python<'_>, c: &Bound<'_, PyAny>, i: usize, player: Opti
     let st = d.get_item("state")?;
     let t: String = dd.get_item("type")?.extract()?;
     let name = d.get_item("name")?.str()?.to_string();
-    let g = |k: &str, dflt: PyObject| -> R<Bound<'_, PyAny>> { st.call_method1("get", (k, dflt)) };
+    let g = |k: &str, dflt: PyObject| -> R<Bound<'_, PyAny>> { st.dget2(k, dflt) };
     Ok(Some(match t.as_str() {
         "valve" => {
             let o = dev_valve_opening(&st)?;
@@ -662,7 +663,7 @@ pub fn dev_interact(py: Python<'_>, c: &Bound<'_, PyAny>, i: usize, player: Opti
         "anchor" => format!("{name}: {} を惑星に固定しています（ブロック {} 個。アクチュエーターの先は動けます。アンカーとはなれた部分は動きます）",
                             Construct::g_name(con(&c)?)?.str()?, Construct::n(con(&c)?)?.into_py(py).into_bound(py).str()?),
         "crank" => {
-            let e = float_of(&dd.get_item("params")?.call_method1("get", ("energy_per_use", 5000))?)?;
+            let e = float_of(&dd.get_item("params")?.dget2("energy_per_use", 5000)?)?;
             let cur = float_of(&g("pending", 0.0.into_py(py))?)?;
             st.set_item("pending", cur + e)?;
             format!("{name}: {:.1} kJ 発電", e / 1000.0)
@@ -670,8 +671,8 @@ pub fn dev_interact(py: Python<'_>, c: &Bound<'_, PyAny>, i: usize, player: Opti
         "computer" => {
             let running = !g("running", false.into_py(py))?.is_truthy()?;
             st.set_item("running", running)?;
-            st.call_method1("pop", ("error", py.None()))?;
-            let sc = st.call_method1("get", ("script",))?;
+            st.dpop2("error", py.None())?;
+            let sc = st.dget1("script")?;
             let scs = if sc.is_truthy()? { sc.str()?.to_string() } else { "スクリプト未設定".into() };
             format!("{name}: {}（{scs}）", if running { "起動" } else { "停止" })
         }

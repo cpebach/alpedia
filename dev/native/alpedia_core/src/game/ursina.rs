@@ -5,6 +5,7 @@
 //! main.client_rs.ursina_shim を sys.modules["ursina"] に入れておくと（install）、そのコードが Rust の画面に描かれる。
 //! 座標は ursina と同じ（画面の縦の高さが 1、真ん中が原点、x 右・y 上。z が小さいほど手前）。
 
+use crate::game::PyDictOps;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use pyo3::prelude::*;
@@ -349,7 +350,7 @@ fn set_focus(py: Python<'_>, f: &Bound<'_, PyAny>) -> R<()> {
     st(py)?.focus.bind(py).set_item(0, f)
 }
 fn log_exc(py: Python<'_>, msg: &str, e: PyErr) -> R<()> {
-    let lg = imp(py, "main.log")?.call_method1("get", ("ursina_shim",))?;
+    let lg = imp(py, "main.log")?.dget1("ursina_shim")?;
     lg.call_method("exception", (msg,), Some(&[("exc_info", e.value_bound(py).clone())].into_py_dict_bound(py)))?;
     Ok(())
 }

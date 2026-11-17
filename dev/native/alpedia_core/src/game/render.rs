@@ -5,6 +5,7 @@
 //!
 //! 部品（ConstructView など）の値は Python の属性（ほかの部品・MOD が読む）。計算は Rust。
 
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -28,7 +29,7 @@ fn gd<'py>(o: &B<'py>, k: &str, d: B<'py>) -> B<'py> {
 }
 fn get<'py>(d: &B<'py>, k: &str, dflt: impl IntoPy<PyObject>) -> R<B<'py>> {
     let py = d.py();
-    d.call_method1("get", (k, dflt.into_py(py)))
+    d.dget2(k, dflt.into_py(py))
 }
 fn or_dict<'py>(o: B<'py>) -> R<B<'py>> {
     let py = o.py();
@@ -236,7 +237,7 @@ pub fn render_block_ao<'py>(py: Python<'py>, c: &B<'py>, p: &B<'py>, n: &B<'py>,
     let owner = owner.filter(|o| !o.is_none());
     let mut gid = none(py);
     if owner.is_some() && gd(c, "rotors", none(py)).is_truthy()? && c.hasattr("_art_groups")? {
-        gid = c.call_method0("_art_groups")?;
+        gid = Construct::_art_groups(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
     }
     let use_ = !gid.is_none() && gid.len()? > 0 && gid.call_method0("max")?.gt(0)?;
     let i64t = npm.getattr("int64")?;
@@ -356,12 +357,12 @@ pub fn render_display_faces<'py>(py: Python<'py>, c: &B<'py>, i: &B<'py>, disp: 
 /// 構築物 c の遠景の箱（lod_boxes）を、ワールド座標 − base の頂点 (N,12) にする（6面×4頂点ずつ）
 #[pyfunction]
 pub fn render_lod_vertices<'py>(py: Python<'py>, c: &B<'py>, base: &B<'py>) -> R<B<'py>> {
-    let lb = c.call_method0("lod_boxes")?;
+    let lb = Construct::lod_boxes(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
     let (cc, h, col) = (lb.get_item(0)?, lb.get_item(1)?, lb.get_item(2)?);
     if cc.len()? == 0 {
         return zeros12(py);
     }
-    let lp = c.call_method0("lattice_pose")?;
+    let lp = Construct::lattice_pose(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
     let (r, t) = (lp.get_item(0)?, lp.get_item(1)?);
     let npm = np(py)?;
     let f64t = npm.getattr("float64")?;

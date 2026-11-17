@@ -1,5 +1,6 @@
 //! ブロックエディター：キー入力・ヒント・毎フレーム
 
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use super::*;
 
@@ -73,7 +74,7 @@ impl BlockEditor {
         let b = bm(py)?;
         let mut h = none(py);
         let sol = Self::ga_hint_sol(slf)?;
-        if sol.is_truthy()? && f64of(&s.getattr("_hint_time")?.call_method1("get", (Self::_hint_key(slf)?, 0.0))?)? >= HINT_AFTER {
+        if sol.is_truthy()? && f64of(&s.getattr("_hint_time")?.dget2(Self::_hint_key(slf)?, 0.0)?)? >= HINT_AFTER {
             match b.call_method1("find_hint", (Self::ga_prog(slf)?, &sol)) {
                 Ok(x) => h = x,
                 Err(e) if is_exc(py, &e) => {
@@ -118,7 +119,7 @@ impl BlockEditor {
         }
         let b = bm(py)?;
         if h.get_item("kind")?.eq("insert")? {
-            let cat = b.getattr("STATEMENTS")?.call_method1("get", (h.get_item("type")?, PyDict::new_bound(py)))?.call_method1("get", ("cat",))?;
+            let cat = b.getattr("STATEMENTS")?.dget2(h.get_item("type")?, PyDict::new_bound(py))?.dget1("cat")?;
             return Ok(PyTuple::new_bound(py, [cat, h.get_item("type")?, none(py)]));
         }
         if h.get_item("kind")?.eq("expr")? {
@@ -161,7 +162,7 @@ impl BlockEditor {
         if Self::ga_hint_sol(slf)?.is_truthy()? {
             let k = Self::_hint_key(slf)?;
             let ht = s.getattr("_hint_time")?;
-            let v = f64of(&ht.call_method1("get", (&k, 0.0))?)?;
+            let v = f64of(&ht.dget2(&k, 0.0)?)?;
             ht.set_item(&k, v + dt)?;
         }
         let hp = f64of(&Self::ga_hint_poll(slf)?)? - dt;
@@ -178,7 +179,7 @@ impl BlockEditor {
         let st = d.get_item("state")?;
         let cs = Self::ga_c(slf)?.getattr("status")?;
         let cs = if cs.is_truthy()? { cs } else { PyDict::new_bound(py).into_any() };
-        let stored = f64of(&cs.call_method1("get", ("stored", 0))?)?;
+        let stored = f64of(&cs.dget2("stored", 0)?)?;
         let mut info = vec![format!("状態: {}", if getd(&st, "running")?.is_truthy()? { "実行中" } else { "停止中" }),
             format!("電力: {} MJ", py.import_bound("builtins")?.getattr("format")?.call1((stored / 1e6, ".2f"))?.extract::<String>()?)];
         let err = getd(&st, "error")?;
@@ -186,7 +187,7 @@ impl BlockEditor {
             info.push(format!("エラー: {}", safe(&wrap(&ss(&st.get_item("error")?)?, 30))));
         }
         Self::ga_info(slf)?.setattr("text", info.join("\n"))?;
-        let logs = st.call_method1("get", ("_log", PyList::empty_bound(py)))?;
+        let logs = st.dget2("_log", PyList::empty_bound(py))?;
         let n = logs.len()?;
         let mut lines = vec![];
         for (k, l) in logs.iter()?.enumerate() {

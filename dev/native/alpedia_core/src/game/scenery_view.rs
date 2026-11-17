@@ -1,5 +1,6 @@
 //! 景色の箱（main/scenery.py の Scenery）を描く（main/client/scenery_view.py）。シナリオ・場所の MOD の画面側が使う。
 
+use crate::game::PyDictOps;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
@@ -232,7 +233,7 @@ impl SceneView {
     }
     /// ふつうの箱（光らない物）のふちに細い線（景色が平らな色の板に見えないように）。
     /// 線は細い十字の板（辺ごとに2枚）で描く
-    fn _edges<'py>(slf: &Bound<'py, Self>, parent: &B<'py>, scene: &B<'py>) -> R<B<'py>> {
+    pub(crate) fn _edges<'py>(slf: &Bound<'py, Self>, parent: &B<'py>, scene: &B<'py>) -> R<B<'py>> {
         let py = slf.py();
         let parts: Vec<B<'_>> = scene.getattr("parts")?.iter()?.collect::<R<_>>()?;
         let mut idx = vec![];
@@ -318,9 +319,9 @@ impl SceneView {
         Ok(n)
     }
     /// 色を入れる。光る部品は（static なら いつも、lights なら on のとき）光の色で影なし、ほかは影つき
-    fn _colors(slf: &Bound<'_, Self>, name: &str, on: &B<'_>) -> R<()> {
+    pub(crate) fn _colors(slf: &Bound<'_, Self>, name: &str, on: &B<'_>) -> R<()> {
         let py = slf.py();
-        let it = Self::ga_meshes(slf)?.call_method1("get", (name,))?;
+        let it = Self::ga_meshes(slf)?.dget1(name)?;
         if it.is_none() {
             return Ok(());
         }
@@ -334,9 +335,8 @@ impl SceneView {
         let sun = v3(&rm.getattr("SUN")?)?;
         let amb = f64of(&rm.getattr("AMBIENT")?)?;
         let va = it.get_item("v")?;
-        let np = imp(py, "numpy")?;
         let mut v: Vec<f32> = {
-            let r: numpy::PyReadonlyArray2<f32> = np.call_method1("ascontiguousarray", (&va,))?.extract()?;
+            let r: numpy::PyReadonlyArray2<f32> = crate::game::construct::contig(&va)?.extract()?;
             r.as_slice()?.to_vec()
         };
         let idx: Vec<i64> = it.get_item("idx")?.extract()?;
@@ -370,7 +370,7 @@ impl SceneView {
         }
         Ok(())
     }
-    fn update(slf: &Bound<'_, Self>, origin: &B<'_>, lights_on: &B<'_>, t: f64) -> R<()> {
+    pub(crate) fn update(slf: &Bound<'_, Self>, origin: &B<'_>, lights_on: &B<'_>, t: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let c = v3(&Self::ga_s(slf)?.getattr("center")?)?;
@@ -385,19 +385,18 @@ impl SceneView {
             edges.call_method1("setPos", (pos[0], pos[1], pos[2]))?;
         }
         let state = Self::ga_state(slf)?;
-        if !state.call_method1("get", ("lights",))?.eq(lights_on)? {
+        if !state.dget1("lights")?.eq(lights_on)? {
             state.set_item("lights", lights_on)?;
             s.call_method1("_colors", ("lights", lights_on))?;
         }
-        let it = meshes.call_method1("get", ("blink",))?;
-        if !it.is_none() && t - f64of(&state.call_method1("get", ("blink_t", -1))?)? > 0.08 {
+        let it = meshes.dget1("blink")?;
+        if !it.is_none() && t - f64of(&state.dget2("blink_t", -1)?)? > 0.08 {
             state.set_item("blink_t", t)?;
             let parts = Self::ga_s(slf)?.getattr("parts")?;
             let nf: usize = it.get_item("nf")?.extract()?;
             let idx: Vec<i64> = it.get_item("idx")?.extract()?;
-            let np = imp(py, "numpy")?;
             let mut v: Vec<f32> = {
-                let r: numpy::PyReadonlyArray2<f32> = np.call_method1("ascontiguousarray", (it.get_item("v")?,))?.extract()?;
+                let r: numpy::PyReadonlyArray2<f32> = crate::game::construct::contig(&it.get_item("v")?)?.extract()?;
                 r.as_slice()?.to_vec()
             };
             let per = nf * 4;
@@ -422,7 +421,7 @@ impl SceneView {
         }
         Ok(())
     }
-    fn remove(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn remove(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         for it in Self::ga_meshes(slf)?.call_method0("values")?.iter()? {
             it?.get_item("mesh")?.call_method0("remove")?;

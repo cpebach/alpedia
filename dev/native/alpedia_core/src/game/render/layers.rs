@@ -178,7 +178,7 @@ impl LodLayer {
         }
         let pairs = PyList::empty_bound(py);
         for c in &statics {
-            pairs.append((c.getattr("id")?, c.call_method0("_pose_key")?))?;
+            pairs.append((c.getattr("id")?, Construct::_pose_key(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?))?;
         }
         let key = py.import_bound("builtins")?.getattr("tuple")?.call1((py.import_bound("builtins")?.getattr("sorted")?.call1((pairs,))?,))?;
         let rm = rmod(py)?;

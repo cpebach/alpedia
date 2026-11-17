@@ -1,5 +1,6 @@
 //! 構築物：Rust の中だけで使う道具（剛体の動き・関節の組み・接触の箱など）
 
+use crate::game::PyDictOps;
 use super::*;
 
 pub struct RigidMotion {
@@ -10,15 +11,46 @@ pub struct RigidMotion {
     pub r: Vec<V3>,
 }
 
-/// np.ascontiguousarray（すでにそうならそのまま）
+/// np.ascontiguousarray（すでにそうならそのまま。numpy を呼ぶのは作り直すときだけ）
 pub fn contig<'py>(o: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    if let Ok(a) = o.downcast::<numpy::PyUntypedArray>() {
+        if a.is_c_contiguous() {
+            return Ok(o.clone());
+        }
+    }
     np(o.py())?.call_method1("ascontiguousarray", (o,))
 }
+/// np.ascontiguousarray(o, "float64")
 pub fn cflt<'py>(o: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    if let Ok(a) = o.downcast::<PyArrayDyn<f64>>() {
+        if a.is_c_contiguous() {
+            return Ok(o.clone());
+        }
+    }
     np(o.py())?.call_method1("ascontiguousarray", (o, "float64"))
 }
+/// np.ascontiguousarray(o, "int64")
 pub fn cint<'py>(o: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    if let Ok(a) = o.downcast::<PyArrayDyn<i64>>() {
+        if a.is_c_contiguous() {
+            return Ok(o.clone());
+        }
+    }
     np(o.py())?.call_method1("ascontiguousarray", (o, "int64"))
+}
+/// np.asarray(o, "float64")（すでに float64 の配列ならそのまま）
+pub fn as_f64<'py>(o: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    if o.downcast::<PyArrayDyn<f64>>().is_ok() {
+        return Ok(o.clone());
+    }
+    np(o.py())?.call_method1("asarray", (o, "float64"))
+}
+/// np.asarray(o, "int64")
+pub fn as_i64<'py>(o: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    if o.downcast::<PyArrayDyn<i64>>().is_ok() {
+        return Ok(o.clone());
+    }
+    np(o.py())?.call_method1("asarray", (o, "int64"))
 }
 /// 連続した書き込める float64 でなければ作り直した配列（そうなら None）
 pub fn fix_contig<'py>(o: &Bound<'py, PyAny>) -> R<Option<Bound<'py, PyAny>>> {
@@ -201,8 +233,8 @@ impl Construct {
         for e in exts.bind(py).iter() {
             let d = devs.get_item(e.get_item(0)?)?;
             let st = if d.is_truthy()? { d.get_item("state")? } else { PyDict::new_bound(py).into_any() };
-            w.push(st.call_method1("get", ("ext", e.get_item(3)?))?.extract::<f64>()?);
-            s.push(st.call_method1("get", ("ext_speed", 0.5))?.extract::<f64>()?);
+            w.push(st.dget2("ext", e.get_item(3)?)?.extract::<f64>()?);
+            s.push(st.dget2("ext_speed", 0.5)?.extract::<f64>()?);
         }
         Ok((w, s))
     }
@@ -211,8 +243,8 @@ impl Construct {
         let devs = a.borrow().devs.clone_ref(a.py());
         for dv in devs.bind(a.py()).iter() {
             let st = dv.get_item("state")?;
-            w.push(st.call_method1("get", ("angle", 0.0))?.extract::<f64>()?);
-            s.push(st.call_method1("get", ("rot_speed", 90.0))?.extract::<f64>()?);
+            w.push(st.dget2("angle", 0.0)?.extract::<f64>()?);
+            s.push(st.dget2("rot_speed", 90.0)?.extract::<f64>()?);
         }
         Ok((w, s))
     }
@@ -273,7 +305,7 @@ impl Construct {
         for &j in broken {
             let key = jkey.get_item(j)?;
             if key.get_item(0)?.eq("x")? {
-                extras.call_method1("pop", (key.downcast::<PyTuple>()?.get_slice(1, 3), py.None()))?;
+                extras.dpop2(key.downcast::<PyTuple>()?.get_slice(1, 3), py.None())?;
             } else {
                 links.call_method1("discard", (key,))?;
             }

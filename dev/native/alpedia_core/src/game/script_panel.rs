@@ -3,6 +3,8 @@
 //! スクリプトの編集はゲームの外のエディタ（メモ帳・VS Code など）で行う。
 //! 「エディタで開く」でファイルを開き、保存するとゲームが自動で読み込み直す（実行中でも次の tick から新しいコード）。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -16,7 +18,7 @@ type R<T> = PyResult<T>;
 type B<'py> = Bound<'py, PyAny>;
 
 fn lg(py: Python<'_>) -> R<B<'_>> {
-    imp(py, "main.log")?.call_method1("get", ("script_panel",))
+    imp(py, "main.log")?.dget1("script_panel")
 }
 fn sp(py: Python<'_>) -> R<B<'_>> {
     Ok(imp(py, "main.client.script_panel")?.into_any())
@@ -74,7 +76,7 @@ pub fn sp_win_editors(py: Python<'_>) -> R<Vec<Vec<String>>> {
             break;
         }
     }
-    let local: String = imp(py, "os")?.getattr("environ")?.call_method1("get", ("LOCALAPPDATA", ""))?.extract()?;
+    let local: String = imp(py, "os")?.getattr("environ")?.dget2("LOCALAPPDATA", "")?.extract()?;
     let vs: String = imp(py, "os.path")?.call_method1("join", (local.as_str(), "Programs", "Microsoft VS Code", "Code.exe"))?.extract()?;
     if out.is_empty() && !local.is_empty() && imp(py, "os.path")?.call_method1("exists", (vs.as_str(),))?.is_truthy()? {
         out.push(vec![vs]);
@@ -231,28 +233,27 @@ impl ScriptPanel {
         Self::sa_keys(slf, hook(py, &root, Some(m("_on_key")?), Some(m("update")?))?)?;
         Ok(())
     }
-    fn _on_key(slf: &Bound<'_, Self>, key: &B<'_>) -> R<()> {
-        let s = slf.as_any();
+    pub(crate) fn _on_key(slf: &Bound<'_, Self>, key: &B<'_>) -> R<()> {
         if Self::ga_modal(slf)?.is_none() && key.eq("escape")? {
-            s.call_method0("close")?;
+            Self::close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         }
         Ok(())
     }
-    fn _open_scripts(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _open_scripts(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
-        s.call_method1("_open", (s.call_method0("scripts_dir")?,))?;
+        s.call_method1("_open", (Self::scripts_dir(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?,))?;
         Ok(())
     }
-    fn _open_readme(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _open_readme(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
-        s.call_method1("_open", (s.call_method0("readme")?,))?;
+        s.call_method1("_open", (Self::readme(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?,))?;
         Ok(())
     }
     #[getter]
     fn index<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        Self::ga_c(slf)?.getattr("index")?.call_method1("get", (Self::ga_cell(slf)?,))
+        Self::ga_c(slf)?.getattr("index")?.dget1(Self::ga_cell(slf)?)
     }
-    fn device<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
+    pub(crate) fn device<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
         let i = Self::index(slf)?;
         if i.is_none() {
@@ -260,7 +261,7 @@ impl ScriptPanel {
         }
         Self::ga_c(slf)?.getattr("devs")?.get_item(i)
     }
-    fn scripts_dir<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
+    pub(crate) fn scripts_dir<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
         let d = Self::ga_world(slf)?.getattr("dir")?.call_method1("__truediv__", ("scripts",))?;
         let k = PyDict::new_bound(py);
@@ -268,27 +269,27 @@ impl ScriptPanel {
         d.call_method("mkdir", (), Some(&k))?;
         Ok(d)
     }
-    fn readme<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
+    pub(crate) fn readme<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
         let txt = imp(py, "main.content")?.getattr("SCRIPT_README")?;
         let p = Self::scripts_dir(slf)?.call_method1("__truediv__", ("README.txt",))?;
-        if !p.call_method0("exists")?.is_truthy()? || !p.call_method("read_text", (), Some(&utf8(py)?))?.eq(&txt)? {
+        if !p.pexists()?.is_truthy()? || !p.call_method("read_text", (), Some(&utf8(py)?))?.eq(&txt)? {
             // 古い版の説明は書き直す
             p.call_method("write_text", (&txt,), Some(&utf8(py)?))?;
         }
         Ok(p)
     }
-    fn set_status(slf: &Bound<'_, Self>, msg: &B<'_>) -> R<()> {
+    pub(crate) fn set_status(slf: &Bound<'_, Self>, msg: &B<'_>) -> R<()> {
         let py = slf.py();
         Self::ga_status(slf)?.setattr("text", msg)?;
         Self::sa_status_time(slf, imp(py, "time")?.call_method0("time")?)?;
         Ok(())
     }
     #[pyo3(signature = (path, edit=false))]
-    fn _open(slf: &Bound<'_, Self>, path: &B<'_>, edit: bool) -> R<()> {
+    pub(crate) fn _open(slf: &Bound<'_, Self>, path: &B<'_>, edit: bool) -> R<()> {
         let py = slf.py();
         let r = if edit {
-            let ed = Self::ga_game(slf)?.getattr("cfg")?.call_method1("get", ("game", PyDict::new_bound(py)))?.call_method1("get", ("editor", ""))?;
+            let ed = Self::ga_game(slf)?.getattr("cfg")?.dget2("game", PyDict::new_bound(py))?.dget2("editor", "")?;
             let cmd = if ed.is_truthy()? { ed.str()?.to_string() } else { String::new() };
             sp(py)?.call_method1("open_in_editor", (path, cmd)).map(|_| ())
         } else {
@@ -303,7 +304,7 @@ impl ScriptPanel {
             Err(e) => Err(e),
         }
     }
-    fn _set_script(slf: &Bound<'_, Self>, name: &B<'_>) -> R<()> {
+    pub(crate) fn _set_script(slf: &Bound<'_, Self>, name: &B<'_>) -> R<()> {
         let py = slf.py();
         let d = Self::device(slf)?;
         if d.is_none() {
@@ -312,12 +313,12 @@ impl ScriptPanel {
         let st = d.get_item("state")?;
         st.set_item("script", name)?;
         for k in ["_env", "error", "error_line"] {
-            st.call_method1("pop", (k, py.None()))?;
+            st.dpop2(k, py.None())?;
         }
         Self::ga_world(slf)?.getattr("runner")?.call_method1("invalidate", (name,))?;
         Ok(())
     }
-    fn cycle_file(slf: &Bound<'_, Self>, step: i64) -> R<()> {
+    pub(crate) fn cycle_file(slf: &Bound<'_, Self>, step: i64) -> R<()> {
         let py = slf.py();
         let mut files: Vec<String> = vec![];
         for p in Self::scripts_dir(slf)?.call_method1("glob", ("*.py",))?.iter()? {
@@ -328,17 +329,17 @@ impl ScriptPanel {
             return Self::set_status(slf, &po(py, "scripts フォルダに .py がありません（新規ファイルで作れます）").into_bound(py));
         }
         let d = Self::device(slf)?;
-        let cur: String = if d.is_truthy()? { d.call_method1("get", ("state", PyDict::new_bound(py)))?.call_method1("get", ("script", ""))?.str()?.to_string() } else { String::new() };
+        let cur: String = if d.is_truthy()? { d.dget2("state", PyDict::new_bound(py))?.dget2("script", "")?.str()?.to_string() } else { String::new() };
         let i = files.iter().position(|f| *f == cur).map(|x| x as i64).unwrap_or(-1);
         let name = files[(i + step).rem_euclid(files.len() as i64) as usize].clone();
         Self::_set_script(slf, &name.clone().into_py(py).into_bound(py))?;
         Self::set_status(slf, &po(py, format!("{} をこのコンピューターに設定しました", name)).into_bound(py))
     }
-    fn new_file(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn new_file(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let d = Self::scripts_dir(slf)?;
         let mut k = 1;
-        while d.call_method1("__truediv__", (format!("script{}.py", k),))?.call_method0("exists")?.is_truthy()? {
+        while d.call_method1("__truediv__", (format!("script{}.py", k),))?.pexists()?.is_truthy()? {
             k += 1;
         }
         let name = format!("script{}.py", k);
@@ -346,10 +347,10 @@ impl ScriptPanel {
         Self::_set_script(slf, &name.clone().into_py(py).into_bound(py))?;
         Self::set_status(slf, &po(py, format!("{} を作って設定しました（エディタで開いて編集）", name)).into_bound(py))
     }
-    fn open_in_editor(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn open_in_editor(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let d = Self::device(slf)?;
-        let mut name = if d.is_truthy()? { d.call_method1("get", ("state", PyDict::new_bound(py)))?.call_method1("get", ("script", ""))? } else { po(py, "").into_bound(py) };
+        let mut name = if d.is_truthy()? { d.dget2("state", PyDict::new_bound(py))?.dget2("script", "")? } else { po(py, "").into_bound(py) };
         if !name.is_truthy()? {
             Self::new_file(slf)?;
             name = Self::device(slf)?.get_item("state")?.get_item("script")?;
@@ -359,19 +360,19 @@ impl ScriptPanel {
             Err(e) if e.is_instance_of::<pyo3::exceptions::PyValueError>(py) => return Self::set_status(slf, &e.value_bound(py).str()?.into_any()),
             Err(e) => return Err(e),
         };
-        if !p.call_method0("exists")?.is_truthy()? {
+        if !p.pexists()?.is_truthy()? {
             p.call_method("write_text", (sp(py)?.getattr("NEW_TEMPLATE")?,), Some(&utf8(py)?))?;
         }
         Self::_open(slf, &p, true)
     }
-    fn run(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn run(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let d = Self::device(slf)?;
         if d.is_none() {
             return Ok(());
         }
         let st = d.get_item("state")?;
-        let name = st.call_method1("get", ("script", ""))?;
+        let name = st.dget2("script", "")?;
         let r = (|| -> R<()> {
             let p = imp(py, "main.scripting")?.call_method1("script_path", (Self::ga_world(slf)?.getattr("dir")?, &name))?;
             let src = p.call_method("read_text", (), Some(&utf8(py)?))?;
@@ -392,12 +393,12 @@ impl ScriptPanel {
             return Err(e);
         }
         for k in ["_env", "error", "error_line"] {
-            st.call_method1("pop", (k, py.None()))?;
+            st.dpop2(k, py.None())?;
         }
         st.set_item("running", true)?;
         Self::set_status(slf, &po(py, format!("{} を実行しました", name.str()?)).into_bound(py))
     }
-    fn stop(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn stop(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let d = Self::device(slf)?;
         if d.is_truthy()? {
@@ -406,19 +407,18 @@ impl ScriptPanel {
         }
         Ok(())
     }
-    fn to_python(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn to_python(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let d = Self::device(slf)?;
-        if d.is_truthy()? && d.get_item("state")?.call_method1("pop", ("blocks", py.None()))?.is_truthy()? {
+        if d.is_truthy()? && d.get_item("state")?.dpop2("blocks", py.None())?.is_truthy()? {
             Self::set_status(slf, &po(py, "Python モードにしました（ブロックから作ったコードを、そのまま Python として使います）").into_bound(py))?;
         }
         Ok(())
     }
-    fn open_blocks(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn open_blocks(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let (game, c, i) = (Self::ga_game(slf)?, Self::ga_c(slf)?, Self::index(slf)?);
-        s.call_method0("close")?;
+        Self::close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         if i.is_none() {
             return Ok(());
         }
@@ -427,7 +427,7 @@ impl ScriptPanel {
         game.setattr("editor", imp(py, "main.client.block_editor")?.getattr("BlockEditor")?.call1((&game, c, i))?)?;
         Ok(())
     }
-    fn open_rename(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn open_rename(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let i = Self::index(slf)?;
@@ -439,13 +439,13 @@ impl ScriptPanel {
         imp(py, "main.client.device_ui")?.getattr("DevicePanel")?.call((Self::ga_game(slf)?, Self::ga_c(slf)?, i), Some(&k))?;
         Ok(())
     }
-    fn close(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn close(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)?;
         Self::ga_game(slf)?.call_method0("editor_closed")?;
         Ok(())
     }
-    fn update(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn update(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let d = Self::device(slf)?;
         let c = Self::ga_c(slf)?;
@@ -454,7 +454,7 @@ impl ScriptPanel {
             return Ok(());
         }
         let st = d.get_item("state")?;
-        let g = |k: &str| st.call_method1("get", (k,));
+        let g = |k: &str| st.dget1(k);
         let running = if g("running")?.is_truthy()? { "実行中" } else { "停止中" };
         let blocks = g("blocks")?.is_truthy()?;
         let mode = if blocks { "ブロック" } else { "Python" };
@@ -464,7 +464,7 @@ impl ScriptPanel {
         let cs = if cs.is_truthy()? { cs } else { PyDict::new_bound(py).into_any() };
         let fmt = py.import_bound("builtins")?.getattr("format")?;
         let f = |v: f64, spec: &str| -> R<String> { fmt.call1((v, spec))?.extract() };
-        let gv = |k: &str, d: f64| -> R<f64> { f64of(&cs.call_method1("get", (k, d))?) };
+        let gv = |k: &str, d: f64| -> R<f64> { f64of(&cs.dget2(k, d)?) };
         let script = g("script")?;
         let sname = if script.is_truthy()? { script.str()?.to_string() } else { String::new() };
         let mut info = vec![
@@ -479,7 +479,7 @@ impl ScriptPanel {
             info.push(format!("  {}", sp_wrap(&st.get_item("error")?, 56)?));
         }
         Self::ga_info(slf)?.setattr("text", info.join("\n").replace('<', "＜").replace('>', "＞"))?;
-        let logs = st.call_method1("get", ("_log", PyList::empty_bound(py)))?;
+        let logs = st.dget2("_log", PyList::empty_bound(py))?;
         let n = logs.len()?;
         let mut lines = vec![];
         for (k, t) in logs.iter()?.enumerate() {

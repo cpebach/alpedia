@@ -1,5 +1,6 @@
 //! ursina のまね：画面・マウス・時間・カメラなど
 
+use crate::game::PyDictOps;
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -284,7 +285,7 @@ impl InputHandler {
         for (m, ks) in [("control", ["left control", "right control"]), ("shift", ["left shift", "right shift"]), ("alt", ["left alt", "right alt"])] {
             let mut any = false;
             for k in ks {
-                if hk.call_method1("get", (k,))?.is_truthy()? {
+                if hk.dget1(k)?.is_truthy()? {
                     any = true;
                 }
             }

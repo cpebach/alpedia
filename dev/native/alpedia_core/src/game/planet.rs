@@ -1,6 +1,7 @@
 //! 惑星（main/planet.py の Planet、main/terrain_earth.py の EarthPlanet）。
 //! 地形の距離場そのものは lib.rs の PlanetShape。ここは惑星の値・鉱床・色・地球型の池と洞窟の生成。
 
+use crate::game::PyDictOps;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 
@@ -42,9 +43,9 @@ pub fn planet_fcross<'py>(py: Python<'py>, a: &Bound<'py, PyAny>, b: &Bound<'py,
 }
 
 fn noise_of<'py>(py: Python<'py>, p: &Bound<'py, PyAny>, seed: i64, octaves: i64) -> R<Bound<'py, PyAny>> {
-    let a = np(py)?.call_method1("asarray", (p, "float64"))?;
+    let a = crate::game::construct::as_f64(&p)?;
     let sh = shape_of(&a)?;
-    let q = np(py)?.call_method1("ascontiguousarray", (a.call_method1("reshape", (-1, 3))?,))?;
+    let q = crate::game::construct::contig(&a.call_method1("reshape", (-1, 3))?)?;
     let out = core(py)?.call_method1("noise", (q, seed, octaves))?;
     out.call_method1("reshape", (PyTuple::new_bound(py, &sh[..sh.len() - 1]),))
 }
@@ -67,7 +68,7 @@ pub fn planet_smoothstep<'py>(py: Python<'py>, a: f64, b: f64, x: &Bound<'py, Py
             return Ok(ss(a, b, v).into_py(py).into_bound(py));
         }
     }
-    let a_ = np(py)?.call_method1("asarray", (x, "float64"))?;
+    let a_ = crate::game::construct::as_f64(&x)?;
     let sh = shape_of(&a_)?;
     let v: Vec<f64> = fv(&a_)?.into_iter().map(|t| ss(a, b, t)).collect();
     arr(py, v, &sh)
@@ -80,7 +81,7 @@ pub fn planet_make<'py>(py: Python<'py>, pdef: &Bound<'py, PyAny>, position: &Bo
     -> R<Bound<'py, PyAny>> {
     let d = merged(py, pdef, overrides)?;
     let ov: PyObject = overrides.map(|o| o.clone().unbind()).unwrap_or_else(|| py.None());
-    if d.call_method1("get", ("terrain",))?.eq("earth")? {
+    if d.dget1("terrain")?.eq("earth")? {
         return imp(py, "main.terrain_earth")?.getattr("EarthPlanet")?.call1((pdef, position, ov));
     }
     imp(py, "main.planet")?.getattr("Planet")?.call1((pdef, position, ov))
@@ -95,6 +96,12 @@ fn merged<'py>(py: Python<'py>, pdef: &Bound<'py, PyAny>, overrides: Option<&Bou
         }
     }
     Ok(d)
+}
+
+/// Python の値として持っている物を Planet として型つきで見る（違う物ならエラー）
+#[inline]
+pub fn pla<'a, 'py>(o: &'a Bound<'py, PyAny>) -> PyResult<&'a Bound<'py, Planet>> {
+    Ok(o.downcast::<Planet>()?)
 }
 
 #[pyclass(module = "alpedia_core", subclass, dict)]
@@ -143,7 +150,7 @@ impl Planet {
         let amp = f("noise_amp")?;
         let lipschitz = match d.get_item("lipschitz")? { Some(v) => v.extract()?, None => lip };
         Ok(Planet {
-            name: d.call_method1("get", ("name", &id))?.unbind(),
+            name: d.dget2("name", &id)?.unbind(),
             id: id.unbind(),
             center: super::construct::a1(py, v3(position)?).unbind(),
             radius, gm: f("surface_gravity")? * radius.powf(2.0), amp, freq: f("noise_freq")?,
@@ -184,18 +191,18 @@ impl Planet {
         let py = slf.py();
         let seed = slf.borrow().seed;
         let mut out = vec![];
-        let deps = Self::defn(slf).call_method1("get", ("deposits", PyList::empty_bound(py)))?;
+        let deps = Self::defn(slf).dget2("deposits", PyList::empty_bound(py))?;
         for (k, dep) in deps.iter()?.enumerate() {
             let dep = dep?;
-            let g = |key: &str, dflt: f64| -> R<f64> { dep.call_method1("get", (key, dflt))?.extract() };
+            let g = |key: &str, dflt: f64| -> R<f64> { dep.dget2(key, dflt)?.extract() };
             let th = g("threshold", 0.6)?;
             let fr = g("freq", 40.0)?;
             let add_k = 13.0 * k as f64;
             let pts: Vec<V3> = dirs.iter().map(|d| [d[0] * fr + 17.0 + add_k, d[1] * fr + 17.0 + add_k, d[2] * fr + 17.0 + add_k]).collect();
-            let ds: i64 = dep.call_method1("get", ("seed", 50 + k as i64))?.call_method0("__int__")?.extract()?;
+            let ds: i64 = dep.dget2("seed", 50 + k as i64)?.call_method0("__int__")?.extract()?;
             let n = fv(&core(py)?.call_method1("noise", (rows3(py, &pts)?, seed + ds, 3))?)?;
             let mut w: Vec<f64> = n.iter().map(|x| ss(th, th + 0.035, *x)).collect();
-            let mh = dep.call_method1("get", ("min_height",))?;
+            let mh = dep.dget1("min_height")?;
             if !mh.is_none() {
                 let mh: f64 = mh.extract()?;
                 for (wi, hi) in w.iter_mut().zip(h) {
@@ -210,7 +217,7 @@ impl Planet {
         for (dep, w) in Self::deposit_weights(slf, dirs, h)? {
             if dep.contains("color")? {
                 let c = v3(&dep.get_item("color")?)?;
-                let st: f64 = dep.call_method1("get", ("strength", 0.85))?.extract()?;
+                let st: f64 = dep.dget2("strength", 0.85)?.extract()?;
                 for (q, cl) in col.iter_mut().enumerate() {
                     let wq = w[q] * st;
                     for a in 0..3 {
@@ -253,7 +260,7 @@ impl Planet {
         (b.radius, b.amp, b.freq, b.seed, None)
     }
     /// Rust の地形。掘削跡が増えていたら渡し直す
-    fn _nat<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn _nat<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
         let has = slf.borrow().nat.is_some();
         if !has {
@@ -270,15 +277,15 @@ impl Planet {
         let cr = slf.borrow().craters.clone_ref(py).into_bound(py);
         let n = cr.len()? as i64;
         if slf.borrow().nat_ncr != n {
-            let a = np(py)?.call_method1("asarray", (&cr, "float64"))?.call_method1("reshape", (-1, 4))?;
-            s.call_method1("set_craters", (np(py)?.call_method1("ascontiguousarray", (a,))?,))?;
+            let a = crate::game::construct::as_f64(&cr)?.call_method1("reshape", (-1, 4))?;
+            s.call_method1("set_craters", (crate::game::construct::contig(&a)?,))?;
             slf.borrow_mut().nat_ncr = n;
         }
         Ok(s)
     }
     /// 掘った穴の水：掘削跡が増えたら、どこまで水が満ちるかを計算し直し、今の水面を毎秒 1 m ずつ上げる。
     /// 読み込んだときの穴は、はじめから満ちた状態。水面が変わったら（0.25 秒ごとに）version を上げて描き直させる
-    fn update_water(slf: &Bound<'_, Self>, dt: f64) -> R<bool> {
+    pub(crate) fn update_water(slf: &Bound<'_, Self>, dt: f64) -> R<bool> {
         let py = slf.py();
         if !slf.getattr("has_water")?.is_truthy()? {
             return Ok(false);
@@ -326,7 +333,7 @@ impl Planet {
         }
         let fl = Self::floods_now(slf)?;
         let flat: Vec<f64> = fl.iter().flatten().copied().collect();
-        nat.call_method1("set_floods", (np(py)?.call_method1("ascontiguousarray", (super::construct::arr(py, flat, &[fl.len() * 5])?,))?,))?;
+        nat.call_method1("set_floods", (crate::game::construct::contig(&super::construct::arr(py, flat, &[fl.len() * 5])?)?,))?;
         let mut b = slf.borrow_mut();
         b.flood_acc += dt;
         let filling = b.flood_now.iter().zip(b.flood_target.iter()).any(|(a, t)| a.is_finite() && a < t);
@@ -347,14 +354,14 @@ impl Planet {
     }
 
     /// 単位方向 (N,3) における地表半径（ノイズを直接計算）
-    fn surface_radius_exact<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn surface_radius_exact<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         Self::_nat(slf)?.call_method1("surface_radius_exact", (rows3(slf.py(), &v3s(dirs)?)?,))
     }
     /// キューブマップ状のタイルにキャッシュした値（地表半径・水面半径）を双線形補間
-    fn _sample<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn _sample<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         Self::_nat(slf)?.call_method1("sample", (rows3(slf.py(), &v3s(dirs)?)?,))
     }
-    fn surface_radius<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn surface_radius<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let v: Vec<f64> = Self::sample_v(slf, &v3s(dirs)?)?.iter().map(|x| x[0]).collect();
         let n = v.len();
         arr(slf.py(), v, &[n])
@@ -370,7 +377,7 @@ impl Planet {
         Self::_nat(slf)?.call_method1("tile_values", (rows3(slf.py(), &v3s(dirs)?)?,))
     }
     /// 遠景用：半径と色
-    fn far_samples<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
+    pub(crate) fn far_samples<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
         let py = slf.py();
         let r = Self::surface_radius_exact(slf, dirs)?;
         let d = v3s(dirs)?;
@@ -380,7 +387,7 @@ impl Planet {
         Ok(PyTuple::new_bound(py, [r, rows3(py, &col)?]))
     }
     /// 近景の地表の色（頂点ごと）
-    fn surface_color<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>, r: &Bound<'py, PyAny>, normals: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn surface_color<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>, r: &Bound<'py, PyAny>, normals: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let _ = normals;
         let d = v3s(dirs)?;
         let rad = slf.borrow().radius;
@@ -402,12 +409,12 @@ impl Planet {
         rows3(slf.py(), &c)
     }
     /// 地中（掘った穴・洞窟の壁）の色を鉱床に合わせて変える。既定では何もしない
-    fn underground_tint<'py>(slf: &Bound<'py, Self>, local_pts: &Bound<'py, PyAny>, col: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn underground_tint<'py>(slf: &Bound<'py, Self>, local_pts: &Bound<'py, PyAny>, col: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let _ = (slf, local_pts);
         Ok(col.clone())
     }
     /// その場所を掘ったときに出る資源の ID
-    fn resource_at<'py>(slf: &Bound<'py, Self>, world_point: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn resource_at<'py>(slf: &Bound<'py, Self>, world_point: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
         let q = sub(v3(world_point)?, Self::ctr(slf)?);
         let r = norm(q).max(1e-9);
@@ -420,7 +427,7 @@ impl Planet {
             }
         }
         let _ = py;
-        Self::defn(slf).call_method1("get", ("dig_resource", "ore"))
+        Self::defn(slf).dget2("dig_resource", "ore")
     }
     /// 洞窟（くり抜き）までの距離（惑星ローカル座標）。洞窟の無い惑星は None
     #[pyo3(signature = (q, grad=false))]
@@ -429,7 +436,7 @@ impl Planet {
         Ok(slf.py().None().into_bound(slf.py()))
     }
     /// 世界座標 (N,3) の点の水深（水面からの深さ。水の外は負）
-    fn water_depth<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn water_depth<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let (d, r) = Self::dirs_of(&v3s(p)?, Self::ctr(slf)?);
         let s = Self::sample_v(slf, &d)?;
         let mut v: Vec<f64> = s.iter().zip(&r).map(|(s, r)| if s[1] > s[0] { s[1] - r } else { -1e9 }).collect();
@@ -443,11 +450,11 @@ impl Planet {
         arr(slf.py(), v, &[n])
     }
     /// 世界座標 (N,3) → 符号付き距離（負=地中）
-    fn sdf<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn sdf<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         Self::_nat(slf)?.call_method1("sdf", (rows3(slf.py(), &v3s(p)?)?,))
     }
     /// (地形の距離, 掘削跡込みの地形の距離, 洞窟の距離 or None)。描画用
-    fn sdf_parts<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
+    pub(crate) fn sdf_parts<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
         let py = slf.py();
         let c = Self::ctr(slf)?;
         let pv = v3s(p)?;
@@ -476,13 +483,13 @@ impl Planet {
     }
     /// 距離と勾配（法線）を同時に求める
     #[pyo3(signature = (p, eps=0.05))]
-    fn sdf_grad<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>, eps: f64) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn sdf_grad<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>, eps: f64) -> R<Bound<'py, PyAny>> {
         Self::_nat(slf)?.call_method1("sdf_grad", (rows3(slf.py(), &v3s(p)?)?, eps))
     }
-    fn normal<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn normal<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         slf.call_method1("sdf_grad", (p,))?.get_item(1)
     }
-    fn up<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn up<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let v = sub(v3(p)?, Self::ctr(slf)?);
         let l = norm(v).max(1e-9);
         Ok(super::construct::a1(slf.py(), [v[0] / l, v[1] / l, v[2] / l]))
@@ -498,7 +505,7 @@ impl Planet {
         }).collect();
         rows3(slf.py(), &out)
     }
-    fn dig(slf: &Bound<'_, Self>, world_point: &Bound<'_, PyAny>, radius: f64) -> R<()> {
+    pub(crate) fn dig(slf: &Bound<'_, Self>, world_point: &Bound<'_, PyAny>, radius: f64) -> R<()> {
         let l = sub(v3(world_point)?, Self::ctr(slf)?);
         let py = slf.py();
         slf.borrow().craters.bind(py).call_method1("append", (vec![l[0], l[1], l[2], radius],))?;
@@ -506,7 +513,7 @@ impl Planet {
         Ok(())
     }
     /// 球面行進で地表との交点 (t, 点) か None
-    fn raycast<'py>(slf: &Bound<'py, Self>, origin: &Bound<'py, PyAny>, direction: &Bound<'py, PyAny>, max_dist: f64) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn raycast<'py>(slf: &Bound<'py, Self>, origin: &Bound<'py, PyAny>, direction: &Bound<'py, PyAny>, max_dist: f64) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
         let lip = slf.getattr("lipschitz")?.extract::<f64>()?;
         let r = Self::_nat(slf)?.call_method1("raycast", (v3(origin)?.to_vec(), v3(direction)?.to_vec(), max_dist, lip))?;
@@ -516,7 +523,7 @@ impl Planet {
         Ok(PyTuple::new_bound(py, [r.get_item(0)?, np(py)?.call_method1("asarray", (r.get_item(1)?,))?]).into_any())
     }
     /// 水面との交点（目が水中にあるときは None）
-    fn water_raycast<'py>(slf: &Bound<'py, Self>, origin: &Bound<'py, PyAny>, direction: &Bound<'py, PyAny>, max_dist: f64) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn water_raycast<'py>(slf: &Bound<'py, Self>, origin: &Bound<'py, PyAny>, direction: &Bound<'py, PyAny>, max_dist: f64) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
         if !slf.getattr("has_water")?.is_truthy()? {
             return Ok(py.None().into_bound(py));
@@ -527,7 +534,7 @@ impl Planet {
         }
         Ok(PyTuple::new_bound(py, [r.get_item(0)?, np(py)?.call_method1("asarray", (r.get_item(1)?,))?]).into_any())
     }
-    fn to_dict<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyDict>> {
+    pub(crate) fn to_dict<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyDict>> {
         let py = slf.py();
         let d = PyDict::new_bound(py);
         d.set_item("def", Self::defn(slf).get_item("id")?)?;
@@ -946,8 +953,8 @@ impl EarthPlanet {
         -> R<PyClassInitializer<Self>> {
         let mut base = Planet::base(py, pdef, position, overrides, 0.45)?;
         let d = base.defn.bind(py).clone();
-        let g = |k: &str, dflt: f64| -> R<f64> { d.call_method1("get", (k, dflt))?.extract() };
-        let gi = |k: &str, dflt: i64| -> R<i64> { d.call_method1("get", (k, dflt))?.call_method0("__int__")?.extract() };
+        let g = |k: &str, dflt: f64| -> R<f64> { d.dget2(k, dflt)?.extract() };
+        let gi = |k: &str, dflt: i64| -> R<i64> { d.dget2(k, dflt)?.call_method0("__int__")?.extract() };
         let mut e = Earth {
             sea: g("sea_level", 0.0)?, mountain_h: g("mountain_height", 45.0)?, hill_h: g("hill_height", 4.0)?,
             flat_r: g("spawn_flat_radius", 38.0)?, spawn_h: g("spawn_height", 3.0)?, n_caves: gi("caves", 220)?, n_ponds: gi("ponds", 260)?,
@@ -1047,7 +1054,7 @@ impl EarthPlanet {
         let n = out.len();
         iarr(slf.py(), out, &[n])
     }
-    fn water_depth<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn water_depth<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let (d, r) = Planet::dirs_of(&v3s(p)?, Planet::ctr(&sup(slf))?);
         let s = Self::sample_v(slf, &d)?;
         let mut v: Vec<f64> = s.iter().zip(&r).map(|(s, r)| if s[1] > s[0] { s[1] - r } else { -1e9 }).collect();
@@ -1067,7 +1074,7 @@ impl EarthPlanet {
         let col = slf.borrow().pal(&fv(h)?, &fv(slope)?, w.as_deref());
         rows3(slf.py(), &col)
     }
-    fn surface_color<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>, r: &Bound<'py, PyAny>, normals: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn surface_color<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>, r: &Bound<'py, PyAny>, normals: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let d = v3s(dirs)?;
         let n = v3s(normals)?;
         let rad = sup(slf).borrow().radius;
@@ -1079,13 +1086,13 @@ impl EarthPlanet {
         rows3(slf.py(), &col)
     }
     fn _cave_res<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
-        Planet::defn(&sup(slf)).call_method1("get", ("cave_resource",))
+        Planet::defn(&sup(slf)).dget1("cave_resource")
     }
-    fn resource_at<'py>(slf: &Bound<'py, Self>, world_point: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn resource_at<'py>(slf: &Bound<'py, Self>, world_point: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let res = Self::_cave_res(slf)?;
         if res.is_truthy()? {
             let q = sub(v3(world_point)?, Planet::ctr(&sup(slf))?);
-            let lim: f64 = Planet::defn(&sup(slf)).call_method1("get", ("cave_resource_dist", 3.0))?.extract()?;
+            let lim: f64 = Planet::defn(&sup(slf)).dget2("cave_resource_dist", 3.0)?.extract()?;
             if Self::cave_d(slf, &[q])?[0] < lim {
                 return Ok(res);
             }
@@ -1093,18 +1100,18 @@ impl EarthPlanet {
         Planet::resource_at(&sup(slf), world_point)
     }
     /// 洞窟の壁のまわりに、鉱石の粒をまだらに見せる（掘るとその鉱石が出る範囲の目印）
-    fn underground_tint<'py>(slf: &Bound<'py, Self>, local_pts: &Bound<'py, PyAny>, col: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    pub(crate) fn underground_tint<'py>(slf: &Bound<'py, Self>, local_pts: &Bound<'py, PyAny>, col: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
         let res = Self::_cave_res(slf)?;
         let defn = Planet::defn(&sup(slf));
-        let c = defn.call_method1("get", ("cave_resource_color",))?;
+        let c = defn.dget1("cave_resource_color")?;
         let pts = v3s(local_pts)?;
         if !res.is_truthy()? || c.is_none() || pts.is_empty() {
             return Ok(col.clone());
         }
         let c = v3(&c)?;
         let d = Self::cave_d(slf, &pts)?;
-        let lim: f64 = defn.call_method1("get", ("cave_resource_dist", 3.0))?.extract()?;
+        let lim: f64 = defn.dget2("cave_resource_dist", 3.0)?.extract()?;
         let seed = &sup(slf).borrow().seed;
         let q: Vec<V3> = pts.iter().map(|p| [p[0] * 1.1 + 5.0, p[1] * 1.1 + 5.0, p[2] * 1.1 + 5.0]).collect();
         let nz = fv(&core(py)?.call_method1("noise", (rows3(py, &q)?, seed + 77, 2))?)?;
@@ -1117,7 +1124,7 @@ impl EarthPlanet {
         }).collect();
         rows3(py, &out)
     }
-    fn far_samples<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
+    pub(crate) fn far_samples<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
         let py = slf.py();
         let d = v3s(dirs)?;
         let rad = sup(slf).borrow().radius;

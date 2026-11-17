@@ -3,6 +3,8 @@
 //! キーのボタンを押してから、割り当てたいキーを押すと変わる（Esc でやめる）。ほかの操作と同じキーなら入れ替える。
 //! 設定は config/settings.json の controls に保存する。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::construct::{con, Construct};
 use pyo3::exceptions::PyException;
@@ -37,7 +39,7 @@ pub fn partial<'py>(f: &B<'py>, args: Vec<PyObject>) -> R<B<'py>> {
 fn log_exc(py: Python<'_>, logger: &str, e: &PyErr, msg: &str) -> R<()> {
     let k = PyDict::new_bound(py);
     k.set_item("exc_info", e.value_bound(py))?;
-    imp(py, "main.log")?.call_method1("get", (logger,))?.call_method("exception", (msg,), Some(&k))?;
+    imp(py, "main.log")?.dget1(logger)?.call_method("exception", (msg,), Some(&k))?;
     Ok(())
 }
 
@@ -153,7 +155,7 @@ impl KeysPanel {
             let x = -0.68 + col as f64 * 0.5;
             let y = 0.31 - row as f64 * 0.052;
             text.call((), Some(&kw(py, vec![("parent", r_()), ("text", label.unbind()), ("position", po(py, (x, y))), ("origin", po(py, (-0.5, 0))), ("scale", po(py, 0.7))])?))?;
-            let b = button.call((), Some(&kw(py, vec![("parent", r_()), ("text", key_name(py, &c.call_method1("get", (&aid, ""))?)?.unbind()),
+            let b = button.call((), Some(&kw(py, vec![("parent", r_()), ("text", key_name(py, &c.dget2(&aid, "")?)?.unbind()),
                 ("position", po(py, (x + 0.36, y))), ("scale", po(py, (0.13, 0.042))), ("color", rgb(0.22, 0.32, 0.45)?), ("text_size", po(py, 0.7))])?))?;
             b.setattr("on_click", partial(&s.getattr("_listen")?, vec![aid.clone().unbind()])?)?;
             btns.set_item(&aid, b)?;
@@ -174,7 +176,7 @@ impl KeysPanel {
         Self::sa_keys(slf, key_catcher(py, &root, s, "_key")?)?;
         Ok(())
     }
-    fn _listen(slf: &Bound<'_, Self>, aid: &B<'_>) -> R<()> {
+    pub(crate) fn _listen(slf: &Bound<'_, Self>, aid: &B<'_>) -> R<()> {
         let py = slf.py();
         Self::sa_waiting(slf, aid)?;
         let color = Self::ga_color(slf)?;
@@ -186,13 +188,12 @@ impl KeysPanel {
         Self::ga_status(slf)?.setattr("text", format!("「{}」に割り当てるキーを押してください", action_label(py, aid)?))?;
         Ok(())
     }
-    fn _key(slf: &Bound<'_, Self>, key: &str) -> R<()> {
+    pub(crate) fn _key(slf: &Bound<'_, Self>, key: &str) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let waiting = Self::ga_waiting(slf)?;
         if waiting.is_none() {
             if key == "escape" {
-                s.call_method0("close")?;
+                Self::close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
             }
             return Ok(());
         }
@@ -210,11 +211,11 @@ impl KeysPanel {
             return Ok(());
         }
         let c = Self::ga_cfg(slf)?.get_item("controls")?;
-        let old = c.call_method1("get", (&aid,))?;
+        let old = c.dget1(&aid)?;
         let mut other = py.None().into_bound(py);
         for a in kp(py)?.getattr("ACTIONS")?.iter()? {
             let a = a?.get_item(0)?;
-            if !a.eq(&aid)? && c.call_method1("get", (&a,))?.eq(key)? {
+            if !a.eq(&aid)? && c.dget1(&a)?.eq(key)? {
                 other = a;
                 break;
             }
@@ -225,29 +226,28 @@ impl KeysPanel {
             c.set_item(&other, &old)?;
             msg += &format!("（「{}」と入れ替え：{}）", action_label(py, &other)?, key_name(py, &old)?.str()?);
         }
-        s.call_method1("_save", (msg,))?;
+        Self::_save(slf, &IntoPy::<PyObject>::into_py(msg, slf.py()).extract::<String>(slf.py())?).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn _reset(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _reset(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let defaults = imp(py, "main.config")?.getattr("DEFAULTS")?.get_item("controls")?;
         let c = Self::ga_cfg(slf)?.get_item("controls")?;
         for a in kp(py)?.getattr("ACTIONS")?.iter()? {
             let aid = a?.get_item(0)?;
-            c.set_item(&aid, defaults.call_method1("get", (&aid, ""))?)?;
+            c.set_item(&aid, defaults.dget2(&aid, "")?)?;
         }
         Self::sa_waiting(slf, py.None())?;
-        s.call_method1("_save", ("初期値に戻しました",))?;
+        Self::_save(slf, "初期値に戻しました").map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn _save(slf: &Bound<'_, Self>, msg: &str) -> R<()> {
+    pub(crate) fn _save(slf: &Bound<'_, Self>, msg: &str) -> R<()> {
         let py = slf.py();
         let cfg = Self::ga_cfg(slf)?;
         let c = cfg.get_item("controls")?;
         for kv in Self::ga_btns(slf)?.call_method0("items")?.iter()? {
             let kv = kv?;
-            kv.get_item(1)?.setattr("text", key_name(py, &c.call_method1("get", (kv.get_item(0)?, ""))?)?)?;
+            kv.get_item(1)?.setattr("text", key_name(py, &c.dget2(kv.get_item(0)?, "")?)?)?;
         }
         match imp(py, "main.client.menu").and_then(|m| m.call_method1("save_config", (&cfg,))) {
             Ok(_) => Self::ga_status(slf)?.setattr("text", msg)?,
@@ -263,7 +263,7 @@ impl KeysPanel {
         }
         Ok(())
     }
-    fn close(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn close(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)?;
         let oc = Self::ga_on_close(slf)?;
@@ -368,7 +368,7 @@ pub fn dui_number_same_named(py: Python<'_>, c: &B<'_>, name: &B<'_>) -> R<i64> 
 
 fn replace_dev(x: &B<'_>, old: &B<'_>, new: &B<'_>, hit: &mut bool) -> R<()> {
     if let Ok(d) = x.downcast::<PyDict>() {
-        if d.call_method1("get", ("dev",))?.eq(old)? {
+        if d.dget1("dev")?.eq(old)? {
             d.set_item("dev", new)?;
             *hit = true;
         }
@@ -397,7 +397,7 @@ pub fn dui_update_programs(py: Python<'_>, world: &B<'_>, c: &B<'_>, old: &B<'_>
             continue;
         }
         let st = d.get_item("state")?;
-        let bn = st.call_method1("get", ("blocks",))?;
+        let bn = st.dget1("blocks")?;
         if !bn.is_truthy()? {
             continue;
         }
@@ -419,7 +419,7 @@ pub fn dui_update_programs(py: Python<'_>, world: &B<'_>, c: &B<'_>, old: &B<'_>
             k.set_item("encoding", "utf-8")?;
             pyf.call_method("write_text", (b.call_method1("to_python", (&prog, &bn))?,), Some(&k))?;
             world.getattr("runner")?.call_method1("invalidate", (pyf.getattr("name")?,))?;
-            st.call_method1("pop", ("_env", py.None()))?;
+            st.dpop2("_env", py.None())?;
             count += 1;
         }
     }
@@ -429,7 +429,7 @@ pub fn dui_update_programs(py: Python<'_>, world: &B<'_>, c: &B<'_>, old: &B<'_>
 /// 日本語が表示できる等幅フォント（入力欄用）
 #[pyfunction]
 pub fn dui_find_code_font<'py>(py: Python<'py>, cfg: &B<'py>) -> R<B<'py>> {
-    let custom = cfg.call_method1("get", ("graphics", PyDict::new_bound(py)))?.call_method1("get", ("code_font",))?;
+    let custom = cfg.dget2("graphics", PyDict::new_bound(py))?.dget1("code_font")?;
     let pathc = imp(py, "pathlib")?.getattr("Path")?;
     let mut cands: Vec<B<'_>> = vec![];
     if custom.is_truthy()? {
@@ -441,7 +441,7 @@ pub fn dui_find_code_font<'py>(py: Python<'py>, cfg: &B<'py>) -> R<B<'py>> {
     for f in cands {
         if f.is_truthy()? {
             let p = pathc.call1((&f,))?;
-            if p.call_method0("exists")?.is_truthy()? {
+            if p.pexists()?.is_truthy()? {
                 return Ok(p);
             }
         }
@@ -519,9 +519,9 @@ impl UDevicePanel {
         let d = Construct::g_devs(con(&construct)?)?.get_item(index)?;
         let dd = construct.getattr("reg")?.call_method1("device", (d.get_item("def")?,))?;
         let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
-        let ty = dd.call_method1("get", ("type",))?;
-        Self::sa_default_name(slf, dd.call_method1("get", ("name", d.get_item("def")?))?)?;
-        let type_name = dui(py)?.getattr("TYPE_NAMES")?.call_method1("get", (&ty, dd.call_method1("get", ("type", "機器"))?))?;
+        let ty = dd.dget1("type")?;
+        Self::sa_default_name(slf, dd.dget2("name", d.get_item("def")?)?)?;
+        let type_name = dui(py)?.getattr("TYPE_NAMES")?.dget2(&ty, dd.dget2("type", "機器")?)?;
         Self::sa_type_name(slf, &type_name)?;
         let root = entity.call((), Some(&kw(py, vec![("parent", camera.getattr("ui")?.unbind()), ("z", po(py, -0.5))])?))?;
         Self::sa_root(slf, &root)?;
@@ -585,23 +585,23 @@ impl UDevicePanel {
         btn("OK", (0.2, -0.33), s.getattr("ok")?, 0.16, Some(rgb(0.2, 0.5, 0.3)?), 0.8)?;
         btn("キャンセル", (0.38, -0.33), s.getattr("close")?, 0.16, Some(rgb(0.3, 0.3, 0.33)?), 0.8)?;
         Self::sa_keys(slf, hook(py, &root, Some(s.getattr("_on_key")?), Some(s.getattr("refresh")?))?)?;
-        s.call_method0("refresh")?;
+        Self::refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn _on_key(slf: &Bound<'_, Self>, key: &B<'_>) -> R<()> {
+    pub(crate) fn _on_key(slf: &Bound<'_, Self>, key: &B<'_>) -> R<()> {
         if key.eq("escape")? {
-            slf.as_any().call_method0("close")?;
+            Self::close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         }
         Ok(())
     }
     #[getter]
     fn index<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
-        Self::ga_c(slf)?.getattr("index")?.call_method1("get", (Self::ga_cell(slf)?,))
+        Self::ga_c(slf)?.getattr("index")?.dget1(Self::ga_cell(slf)?)
     }
-    fn text(slf: &Bound<'_, Self>) -> R<String> {
+    pub(crate) fn text(slf: &Bound<'_, Self>) -> R<String> {
         Ok(Self::ga_field(slf)?.getattr("text_field")?.getattr("text")?.call_method0("strip")?.extract()?)
     }
-    fn set_text(slf: &Bound<'_, Self>, s_: &str) -> R<()> {
+    pub(crate) fn set_text(slf: &Bound<'_, Self>, s_: &str) -> R<()> {
         let py = slf.py();
         let lim: usize = dui(py)?.getattr("NAME_LIMIT")?.extract()?;
         let field = Self::ga_field(slf)?;
@@ -614,12 +614,12 @@ impl UDevicePanel {
         field.setattr("active", true)?;
         Ok(())
     }
-    fn backspace(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn backspace(slf: &Bound<'_, Self>) -> R<()> {
         let mut t: String = Self::ga_field(slf)?.getattr("text_field")?.getattr("text")?.extract()?;
         t.pop();
         Self::set_text(slf, &t)
     }
-    fn number_all(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn number_all(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let i = Self::index(slf)?;
         if i.is_none() {
@@ -637,7 +637,7 @@ impl UDevicePanel {
         Self::ga_world(slf)?.call_method1("message", (msg,))?;
         Ok(())
     }
-    fn set_open(slf: &Bound<'_, Self>, v: f64) -> R<()> {
+    pub(crate) fn set_open(slf: &Bound<'_, Self>, v: f64) -> R<()> {
         let i = Self::index(slf)?;
         if i.is_none() {
             return Ok(());
@@ -649,7 +649,7 @@ impl UDevicePanel {
         }
         Ok(())
     }
-    fn refresh(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn refresh(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let i = Self::index(slf)?;
         let info = Self::ga_info(slf)?;
@@ -661,7 +661,7 @@ impl UDevicePanel {
         let d = Construct::g_devs(con(&c)?)?.get_item(&i)?;
         let vt = Self::ga_valve_text(slf)?;
         if !vt.is_none() {
-            let o: f64 = d.get_item("state")?.call_method1("get", ("open", 1.0))?.extract()?;
+            let o: f64 = d.get_item("state")?.dget2("open", 1.0)?.extract()?;
             let pct: String = py.import_bound("builtins")?.getattr("format")?.call1((o, ".0%"))?.extract()?;
             vt.setattr("text", format!("開き具合 {}{}", pct, if o <= 0.0 { "（閉）" } else { "" }))?;
         }
@@ -680,9 +680,8 @@ impl UDevicePanel {
         info.setattr("text", lines.join("\n").replace('<', "＜").replace('>', "＞"))?;
         Ok(())
     }
-    fn ok(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn ok(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let i = Self::index(slf)?;
         let name = Self::text(slf)?;
         if !i.is_none() && !name.is_empty() {
@@ -697,13 +696,13 @@ impl UDevicePanel {
                 }
                 Self::ga_world(slf)?.call_method1("message", (format!("名前を変更: {} → {}{}", old.str()?, name,
                     if n != 0 { format!("（ブロックプログラム {} 個も更新）", n) } else { String::new() }),))?;
-                imp(py, "main.log")?.call_method1("get", ("device_ui",))?.call_method1("info", ("機器の名前を変更: %s → %s", &old, &name))?;
+                imp(py, "main.log")?.dget1("device_ui")?.call_method1("info", ("機器の名前を変更: %s → %s", &old, &name))?;
             }
         }
-        s.call_method0("close")?;
+        Self::close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn close(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn close(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)?;
         let owner = Self::ga_owner(slf)?;

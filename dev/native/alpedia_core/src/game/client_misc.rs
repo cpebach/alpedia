@@ -1,6 +1,7 @@
 //! 画面側の小さな部品：MOD の画面側の口（addon_hooks.ClientAddon）、部品を中身ごと消す（ui_destroy）、
 //! サバイバルの目標（survival_ui）、アイテムバーとインベントリの中身（inventory）。
 
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -16,7 +17,7 @@ fn tb<T: IntoPy<PyObject>>(py: Python<'_>, x: T) -> B<'_> {
 }
 fn get<'py>(d: &B<'py>, k: &str, dflt: impl IntoPy<PyObject>) -> R<B<'py>> {
     let py = d.py();
-    d.call_method1("get", (k, dflt.into_py(py)))
+    d.dget2(k, dflt.into_py(py))
 }
 fn pf(v: &B<'_>, spec: &str) -> R<String> {
     v.py().import_bound("builtins")?.getattr("format")?.call1((v, spec))?.extract()
@@ -154,7 +155,24 @@ pub fn ui_destroy(py: Python<'_>, entity: &B<'_>, args: &Bound<'_, PyTuple>, kwa
 // ---------------------------------------------------------------- survival_ui
 /// サバイバルの画面：左上に目標（上から順に）
 #[pyclass(module = "main.client.survival_ui", extends = ClientAddon, subclass)]
-pub struct SurvivalClient {}
+pub struct SurvivalClient {
+    /// _t（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_t: Option<PyObject>,
+    /// bg（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_bg: Option<PyObject>,
+    /// game（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_game: Option<PyObject>,
+    /// pack（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_pack: Option<PyObject>,
+    /// root（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_root: Option<PyObject>,
+    /// text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_text: Option<PyObject>,
+    /// title（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_title: Option<PyObject>,
+    /// world（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_world: Option<PyObject>,
+}
 
 #[pymethods]
 impl SurvivalClient {
@@ -165,14 +183,13 @@ impl SurvivalClient {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> (Self, ClientAddon) {
-        (SurvivalClient {}, ClientAddon { a_game: None, a_world: None })
+        (SurvivalClient { a_t: None, a_bg: None, a_game: None, a_pack: None, a_root: None, a_text: None, a_title: None, a_world: None }, ClientAddon { a_game: None, a_world: None })
     }
     fn __init__(slf: &Bound<'_, Self>, game: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        s.setattr("game", game)?;
-        s.setattr("world", game.getattr("world")?)?;
-        s.setattr("pack", game.getattr("world")?.call_method1("addon", ("survival",))?)?;
+        Self::sa_game(slf, game)?;
+        Self::sa_world(slf, game.getattr("world")?)?;
+        Self::sa_pack(slf, game.getattr("world")?.call_method1("addon", ("survival",))?)?;
         let u = game.getattr("U")?;
         let (entity, text, color, window) = (u.get_item("Entity")?, u.get_item("Text")?, u.get_item("color")?, u.get_item("window")?);
         let kw = |pairs: Vec<(&str, PyObject)>| -> R<Bound<'_, PyDict>> {
@@ -184,27 +201,26 @@ impl SurvivalClient {
         };
         let pos = window.getattr("top_left")?.call_method1("__add__", ((0.012, -0.1),))?;
         let root = entity.call((), Some(&kw(vec![("parent", game.getattr("ui_root")?.unbind()), ("position", pos.unbind())])?))?;
-        s.setattr("root", &root)?;
-        s.setattr("bg", entity.call((), Some(&kw(vec![("parent", root.clone().unbind()), ("model", "quad".into_py(py)), ("origin", (-0.5, 0.5).into_py(py)),
+        Self::sa_root(slf, &root)?;
+        Self::sa_bg(slf, entity.call((), Some(&kw(vec![("parent", root.clone().unbind()), ("model", "quad".into_py(py)), ("origin", (-0.5, 0.5).into_py(py)),
             ("scale", (0.6, 0.1).into_py(py)), ("color", color.call_method1("rgba", (0.02, 0.05, 0.1, 0.62))?.unbind()), ("z", 0.02.into_py(py))])?))?)?;
-        s.setattr("title", text.call((), Some(&kw(vec![("parent", root.clone().unbind()), ("text", "サバイバルの目標".into_py(py)), ("position", (0.012, -0.012).into_py(py)),
+        Self::sa_title(slf, text.call((), Some(&kw(vec![("parent", root.clone().unbind()), ("text", "サバイバルの目標".into_py(py)), ("position", (0.012, -0.012).into_py(py)),
             ("origin", (-0.5, 0.5).into_py(py)), ("scale", 0.75.into_py(py)), ("color", color.call_method1("rgb", (0.6, 1.0, 0.6))?.unbind())])?))?)?;
-        s.setattr("text", text.call((), Some(&kw(vec![("parent", root.clone().unbind()), ("text", "".into_py(py)), ("position", (0.012, -0.043).into_py(py)),
+        Self::sa_text(slf, text.call((), Some(&kw(vec![("parent", root.clone().unbind()), ("text", "".into_py(py)), ("position", (0.012, -0.043).into_py(py)),
             ("origin", (-0.5, 0.5).into_py(py)), ("scale", 0.66.into_py(py)), ("line_height", 1.15.into_py(py))])?))?)?;
-        s.setattr("_t", 0.0)?;
+        Self::sa_t(slf, 0.0)?;
         Ok(())
     }
     fn update(slf: &Bound<'_, Self>, origin: &B<'_>, far: &B<'_>) -> R<()> {
         let _ = (origin, far);
         let py = slf.py();
-        let s = slf.as_any();
         let now: f64 = imp(py, "time")?.call_method0("time")?.extract()?;
-        let pack = s.getattr("pack")?;
-        if pack.is_none() || now - f64of(&s.getattr("_t")?)? < 0.5 {
+        let pack = Self::ga_pack(slf)?;
+        if pack.is_none() || now - f64of(&Self::ga_t(slf)?)? < 0.5 {
             return Ok(());
         }
-        s.setattr("_t", now)?;
-        let goals: Vec<B<'_>> = pack.call_method1("goals_state", (s.getattr("world")?,))?.iter()?.collect::<R<_>>()?;
+        Self::sa_t(slf, now)?;
+        let goals: Vec<B<'_>> = pack.call_method1("goals_state", (Self::ga_world(slf)?,))?.iter()?.collect::<R<_>>()?;
         let mut todo: Vec<B<'_>> = vec![];
         for g in &goals {
             if !g.get_item(2)?.is_truthy()? {
@@ -219,16 +235,16 @@ impl SurvivalClient {
         };
         lines.push(format!("（{}/{} 達成）", done_n, goals.len()));
         let txt = lines.join("\n");
-        let t = s.getattr("text")?;
+        let t = Self::ga_text(slf)?;
         if !t.getattr("text")?.eq(&txt)? {
             t.setattr("text", &txt)?;
         }
-        s.getattr("bg")?.setattr("scale", (0.6, 0.06 + lines.len() as f64 * 0.024))?;
+        Self::ga_bg(slf)?.setattr("scale", (0.6, 0.06 + lines.len() as f64 * 0.024))?;
         Ok(())
     }
     fn destroy(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        ui_destroy(py, &slf.as_any().getattr("root")?, &PyTuple::empty_bound(py), None)
+        ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)
     }
 }
 
@@ -323,7 +339,7 @@ pub fn inv_item_details<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>) -> R<
         let d = crate::game::registry::dev_dict(&reg, &id_)?;
         let mark = get(&d, "mark", py.None())?;
         let tkey = if mark.is_truthy()? { mark } else { d.get_item("type")? };
-        let tn = inv(py)?.getattr("TYPE_NAMES")?.call_method1("get", (tkey, d.get_item("type")?))?;
+        let tn = inv(py)?.getattr("TYPE_NAMES")?.dget2(tkey, d.get_item("type")?)?;
         lines.append(format!("機器: {}（{}）", d.get_item("name")?.str()?, tn.str()?))?;
         let power = get(&d, "power", py.None())?;
         let pw = if power.eq("none")? {
@@ -421,4 +437,42 @@ macro_rules! clientaddon_attr_fields {
 }
 clientaddon_attr_fields!(
     ga_game sa_game pga_game psa_game a_game "game", ga_world sa_world pga_world psa_world a_world "world"
+);
+
+// ---------------------------------------------------------------- SurvivalClient の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! survivalclient_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl SurvivalClient { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl SurvivalClient { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+survivalclient_attr_fields!(
+    ga_t sa_t pga_t psa_t a_t "_t", ga_bg sa_bg pga_bg psa_bg a_bg "bg", ga_game sa_game pga_game psa_game a_game "game", ga_pack sa_pack pga_pack psa_pack a_pack "pack", ga_root sa_root pga_root psa_root a_root "root", ga_text sa_text pga_text psa_text a_text "text", ga_title sa_title pga_title psa_title a_title "title", ga_world sa_world pga_world psa_world a_world "world"
 );

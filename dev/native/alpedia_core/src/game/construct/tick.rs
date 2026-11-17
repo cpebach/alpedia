@@ -1,5 +1,7 @@
 //! 構築物：1 ティックの中身（接触・物理コアとのやり取り）
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use super::*;
 
 #[pymethods]
@@ -68,7 +70,7 @@ impl Construct {
                     // その向きで最初に当たるブロック（空洞のまん中のセルも、まわりの壁に浮力を渡す。
                     // となりだけを見ていたときは、壁に触れていないセルの浮力が無くなっていた）
                     for k in 1..=64 {
-                        let v: i64 = index.call_method1("get", (tup3(py, [c[0] + du[0] * k, c[1] + du[1] * k, c[2] + du[2] * k]), -1))?.extract()?;
+                        let v: i64 = index.dget2(tup3(py, [c[0] + du[0] * k, c[1] + du[1] * k, c[2] + du[2] * k]), -1)?.extract()?;
                         if v >= 0 {
                             row[d] = v * 128 + k;          // ブロックの番号 × 128 ＋ 距離（セルの数）
                             break;
@@ -127,7 +129,7 @@ impl Construct {
                 }
             }
         }
-        let rs: f64 = pl.call_method1("surface_radius", (arr(py, up.to_vec(), &[1, 3])?,))?.get_item(0)?.extract()?;
+        let rs: f64 = Planet::surface_radius(pla(&pl)?, &IntoPy::<PyObject>::into_py(arr(py, up.to_vec(), &[1, 3])?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?.extract()?;
         let upa = a1(py, up);
         Self::cache_put(slf, |c| &mut c.ground, (pl, &upa, rs))?;
         Ok(PyTuple::new_bound(py, [upa.unbind(), rs.into_py(py)]))
@@ -137,7 +139,7 @@ impl Construct {
     #[pyo3(signature = (pl, collect=false))]
     pub(crate) fn _collide_planet<'py>(slf: &Bound<'py, Self>, pl: &Bound<'py, PyAny>, collect: bool) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
-        let nat = pl.call_method0("_nat")?;
+        let nat = Planet::_nat(pla(&pl)?).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;
         let k = Self::contact_cores(slf)?;
         let r = Self::sz(slf) * 0.5;
         let gr = Self::_ground_ref(slf, pl)?;
@@ -361,7 +363,7 @@ impl Construct {
     pub(crate) fn _rotor_angles(slf: &Bound<'_, Self>) -> R<Vec<f64>> {
         let mut out = vec![];
         for r in Self::g_rotors(slf)?.iter()? {
-            let a: f64 = r?.get_item("dev")?.get_item("state")?.call_method1("get", ("angle", 0.0))?.extract()?;
+            let a: f64 = r?.get_item("dev")?.get_item("state")?.dget2("angle", 0.0)?.extract()?;
             out.push(a.to_radians());
         }
         Ok(out)
@@ -450,7 +452,7 @@ impl Construct {
             }
             let c = bs.get_item(1)?;
             let cid = c.as_ptr() as usize;
-            let k = idx.call_method1("get", (cid,))?;
+            let k = idx.dget1(cid)?;
             let k: usize = if k.is_none() {
                 let k = lst.len()?;
                 idx.set_item(cid, k)?;

@@ -2,6 +2,8 @@
 //! 構築物：形が変わったら丸ごと、剛体の間は (R, x, v, w)、ブロックごとに動く間は頂点、止まったら最後の位置を1回だけ。
 //! 機器・資源・電力などの中身（メタ）は変わったときだけ。プログラムのファイルは変わったファイルだけ。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::player::{ply, Player};
 use crate::game::construct::{con, Construct};
@@ -22,7 +24,7 @@ fn f32a<'py>(o: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     o.call_method1("astype", (np(o.py())?.getattr("float32")?,))
 }
 fn f64a<'py>(o: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    np(o.py())?.call_method1("asarray", (o, "float64"))
+    crate::game::construct::as_f64(&o)
 }
 fn opt<'py>(o: &Bound<'py, PyAny>, k: &str) -> R<Option<Bound<'py, PyAny>>> {
     super::construct::opt(o, k)
@@ -58,12 +60,12 @@ impl ConsTracker {
             let id = Construct::g_id(con(&c)?)?;
             let ver = Construct::g_version(con(&c)?)?;
             let asleep = Construct::g_asleep(con(&c)?)?.is_truthy()?;
-            let mut s = sent.call_method1("get", (&id,))?;
+            let mut s = sent.dget1(&id)?;
             if s.is_none() || !s.get_item("ver")?.eq(&ver)? {
                 let e = PyDict::new_bound(py);
                 e.set_item("id", &id)?;
-                e.set_item("full", c.call_method0("to_dict")?)?;
-                e.set_item("spawn", c.call_method0("spawn_dict")?)?;
+                e.set_item("full", Construct::to_dict(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?;
+                e.set_item("spawn", Construct::spawn_dict(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?;
                 let ns = PyDict::new_bound(py);
                 ns.set_item("ver", &ver)?;
                 ns.set_item("sleep", py.None())?;
@@ -116,7 +118,7 @@ impl ConsTracker {
         }
         let gone = PyList::empty_bound(py);
         for cid in sent.keys() {
-            let c = cons.call_method1("get", (&cid,))?;
+            let c = cons.dget1(&cid)?;
             if c.is_none() || Construct::n(con(&c)?)? == 0 {
                 gone.append(cid)?;
             }
@@ -146,12 +148,12 @@ pub fn netsync_apply_construct<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, 
     let none = py.None().into_bound(py);
     let cid = e.get_item("id")?;
     let cons = World::g_constructs(wld(&world)?)?;
-    let c0 = cons.call_method1("get", (&cid,))?;
+    let c0 = cons.dget1(&cid)?;
     if !c0.is_none() {
         c0.setattr("_net_age", 0.0)?;
     }
     if e.contains("full")? {
-        let sp = e.call_method1("get", ("spawn",))?;
+        let sp = e.dget1("spawn")?;
         let sp = if sp.is_truthy()? { sp } else { PyDict::new_bound(py).into_any() };
         let c = imp(py, "main.construct")?.getattr("Construct")?.call_method1("from_dict", (World::g_registry(wld(&world)?)?, e.get_item("full")?, sp))?;
         if !c0.is_none() && Construct::g_anchor(con(&c)?)?.is_none() {
@@ -159,7 +161,7 @@ pub fn netsync_apply_construct<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, 
         }
         cons.set_item(&cid, &c)?;
         c.setattr("_net_age", 0.0)?;
-        if e.call_method1("get", ("sleep",))?.is_truthy()? {
+        if e.dget1("sleep")?.is_truthy()? {
             sleep_c(&c)?;
         }
         return Ok(c);
@@ -178,7 +180,7 @@ pub fn netsync_apply_construct<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, 
         sleep_c(&c)?;
     } else if e.contains("R")? {
         if e.contains("local")? || c.getattr("rb")?.is_none() || !Construct::g_mode(con(&c)?)?.eq("rails")? {
-            let loc = match e.call_method1("get", ("local",))? {
+            let loc = match e.dget1("local")? {
                 l if !l.is_none() => f64a(&l)?,
                 _ => {
                     // 届く前に作り直したとき（次の版で揃う）
@@ -201,7 +203,7 @@ pub fn netsync_apply_construct<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, 
         for k in ["R", "x", "v", "w"] {
             rb.set_item(k, f64a(&e.get_item(k)?)?)?;
         }
-        c.call_method0("_rails_sync")?;
+        Construct::_rails_sync(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
         Construct::s_asleep(con(&c)?, false)?;
     } else if e.contains("pos")? {
         let p = f64a(&e.get_item("pos")?)?;
@@ -268,7 +270,7 @@ pub fn netsync_advance(py: Python<'_>, world: &Bound<'_, PyAny>, dt: f64) -> R<(
                 let r0 = super::construct::m3(&rb.get_item("R")?)?;
                 rb.set_item("R", mat(py, &super::construct::matmul(&rot([w[0] / wn, w[1] / wn, w[2] / wn], wn * dt), &r0))?)?;
             }
-            c.call_method0("_rails_sync")?;
+            Construct::_rails_sync(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
         } else {
             let (p, v) = (fv(&Construct::g_pos(con(&c)?)?)?, fv(&Construct::g_vel(con(&c)?)?)?);
             let n = p.len() / 3;
@@ -373,7 +375,7 @@ impl MetaTracker {
             let m = netsync_jsonable(py, netsync_meta_of(py, &c)?.as_any())?;
             let key = netsync_dumps(py, &m)?;
             let id = Construct::g_id(con(&c)?)?;
-            if !sent.call_method1("get", (&id,))?.eq(&key)? {
+            if !sent.dget1(&id)?.eq(&key)? {
                 sent.set_item(&id, &key)?;
                 let e = PyDict::new_bound(py);
                 e.set_item("id", &id)?;
@@ -392,15 +394,15 @@ impl MetaTracker {
 #[pyfunction]
 #[pyo3(signature = (c, m, devices=true))]
 pub fn netsync_apply_meta(py: Python<'_>, c: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>, devices: bool) -> R<()> {
-    let g = |k: &str| m.call_method1("get", (k,));
-    Construct::s_name(con(&c)?, m.call_method1("get", ("name", Construct::g_name(con(&c)?)?))?)?;
+    let g = |k: &str| m.dget1(k);
+    Construct::s_name(con(&c)?, m.dget2("name", Construct::g_name(con(&c)?)?)?)?;
     let or_dict = |v: Bound<'_, PyAny>| -> R<PyObject> { Ok(if v.is_truthy()? { v.unbind() } else { PyDict::new_bound(py).into_any().unbind() }) };
     Construct::s_status(con(&c)?, or_dict(g("status")?)?)?;
     Construct::s_storage(con(&c)?, or_dict(g("storage")?)?)?;
     Construct::s_powered(con(&c)?, g("powered")?.is_truthy()?)?;
     Construct::s_anchor(con(&c)?, g("anchor")?)?;
     let cav = PyDict::new_bound(py);
-    for kv in m.call_method1("get", ("cav", PyList::empty_bound(py)))?.iter()? {
+    for kv in m.dget2("cav", PyList::empty_bound(py))?.iter()? {
         let kv = kv?;
         cav.set_item(PyTuple::new_bound(py, kv.get_item(0)?.iter()?.collect::<R<Vec<_>>>()?), kv.get_item(1)?)?;
     }
@@ -410,7 +412,7 @@ pub fn netsync_apply_meta(py: Python<'_>, c: &Bound<'_, PyAny>, m: &Bound<'_, Py
     }
     let devs = Construct::g_devs(con(&c)?)?;
     let n = devs.len()?;
-    for e in m.call_method1("get", ("devs", PyList::empty_bound(py)))?.iter()? {
+    for e in m.dget2("devs", PyList::empty_bound(py))?.iter()? {
         let e = e?;
         let i: usize = e.get_item(0)?.extract()?;
         if i >= n {
@@ -488,14 +490,14 @@ pub fn netsync_dev_base<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<
 /// ホスト：参加者が機器の画面で変えた分を当てる
 #[pyfunction]
 pub fn netsync_apply_dev_patch(py: Python<'_>, world: &Bound<'_, PyAny>, cid: &Bound<'_, PyAny>, patches: &Bound<'_, PyAny>) -> R<()> {
-    let c = World::g_constructs(wld(&world)?)?.call_method1("get", (cid,))?;
+    let c = World::g_constructs(wld(&world)?)?.dget1(cid)?;
     if c.is_none() {
         return Ok(());
     }
     let devs = Construct::g_devs(con(&c)?)?;
     for p in patches.iter()? {
         let p = p?;
-        let i = Construct::g_index(con(&c)?)?.call_method1("get", (PyTuple::new_bound(py, p.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?),))?;
+        let i = Construct::g_index(con(&c)?)?.dget1(PyTuple::new_bound(py, p.get_item("cell")?.iter()?.collect::<R<Vec<_>>>()?))?;
         if i.is_none() {
             continue;
         }
@@ -503,23 +505,23 @@ pub fn netsync_apply_dev_patch(py: Python<'_>, world: &Bound<'_, PyAny>, cid: &B
         if !d.is_truthy()? {
             continue;
         }
-        let nm = p.call_method1("get", ("name",))?;
+        let nm = p.dget1("name")?;
         if nm.is_truthy()? {
             d.set_item("name", nm)?;
         }
         let st = d.get_item("state")?;
-        let set = p.call_method1("get", ("set",))?;
+        let set = p.dget1("set")?;
         if set.is_truthy()? {
             st.call_method1("update", (&set,))?;
         }
-        let del = p.call_method1("get", ("del",))?;
+        let del = p.dget1("del")?;
         if del.is_truthy()? {
             for k in del.iter()? {
-                st.call_method1("pop", (k?, py.None()))?;
+                st.dpop2(k?, py.None())?;
             }
         }
         if set.is_truthy()? && ["running", "script", "blocks"].iter().any(|k| set.contains(*k).unwrap_or(false)) {
-            st.call_method1("pop", ("_env", py.None()))?;          // プログラムを変えた・実行し直した：最初から
+            st.dpop2("_env", py.None())?;          // プログラムを変えた・実行し直した：最初から
         }
     }
     Ok(())
@@ -558,12 +560,12 @@ impl FileSync {
     fn all<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
         let out = PyDict::new_bound(py);
         let d = self.dir.bind(py);
-        if d.call_method0("is_dir")?.is_truthy()? {
+        if d.pis_dir()?.is_truthy()? {
             let files = imp(py, "builtins")?.call_method1("sorted", (d.call_method0("iterdir")?,))?;
             for f in files.iter()? {
                 let f = f?;
                 let name: String = f.getattr("name")?.extract()?;
-                if f.call_method0("is_file")?.is_truthy()? && text_name(&name)
+                if f.pis_file()?.is_truthy()? && text_name(&name)
                     && f.call_method0("stat")?.getattr("st_size")?.extract::<i64>()? < 4_000_000 {
                     out.set_item(&name, f.call_method0("read_bytes")?)?;
                 }
@@ -582,14 +584,14 @@ impl FileSync {
     fn changes<'py>(&self, py: Python<'py>) -> R<Bound<'py, PyDict>> {
         let out = PyDict::new_bound(py);
         let d = self.dir.bind(py);
-        if !d.call_method0("is_dir")?.is_truthy()? {
+        if !d.pis_dir()?.is_truthy()? {
             return Ok(out);
         }
         let (stat, known) = (self.stat.bind(py), self.known.bind(py));
         for f in d.call_method0("iterdir")?.iter()? {
             let f = f?;
             let name: String = f.getattr("name")?.extract()?;
-            if !(f.call_method0("is_file")?.is_truthy()? && text_name(&name)) {
+            if !(f.pis_file()?.is_truthy()? && text_name(&name)) {
                 continue;
             }
             let st = match f.call_method0("stat") {
@@ -598,7 +600,7 @@ impl FileSync {
                 Err(e) => return Err(e),
             };
             let key = PyTuple::new_bound(py, [st.getattr("st_mtime_ns")?, st.getattr("st_size")?]);
-            if stat.call_method1("get", (&name,))?.eq(&key)? {
+            if stat.dget1(&name)?.eq(&key)? {
                 continue;
             }
             stat.set_item(&name, key)?;
@@ -608,7 +610,7 @@ impl FileSync {
                 Err(e) => return Err(e),
             };
             let h = sha1(py, &data)?;
-            if !known.call_method1("get", (&name,))?.eq(&h)? {
+            if !known.dget1(&name)?.eq(&h)? {
                 known.set_item(&name, h)?;
                 out.set_item(&name, data)?;
             }
@@ -643,7 +645,7 @@ pub fn netsync_pack_import<'py>(py: Python<'py>, data: &Bound<'py, PyAny>) -> R<
         vox.append(PyList::new_bound(py, [PyList::new_bound(py, v.get_item(0)?.iter()?.collect::<R<Vec<_>>>()?).into_any(), v.get_item(1)?, v.get_item(2)?]))?;
     }
     out.set_item("voxels", vox)?;
-    let l = data.call_method1("get", ("links",))?;
+    let l = data.dget1("links")?;
     if !l.is_none() {
         let ll = PyList::empty_bound(py);
         for k in l.iter()? {
@@ -666,7 +668,7 @@ pub fn netsync_unpack_import<'py>(py: Python<'py>, d: &Bound<'py, PyAny>) -> R<B
         vox.append((PyTuple::new_bound(py, v.get_item(0)?.iter()?.collect::<R<Vec<_>>>()?), v.get_item(1)?, v.get_item(2)?))?;
     }
     out.set_item("voxels", vox)?;
-    let l = d.call_method1("get", ("links",))?;
+    let l = d.dget1("links")?;
     if !l.is_none() {
         let s = pyo3::types::PySet::empty_bound(py)?;
         for k in l.iter()? {
@@ -712,8 +714,8 @@ pub fn netsync_player_public<'py>(py: Python<'py>, p: &Bound<'py, PyAny>, pid: &
 
 #[pyfunction]
 pub fn netsync_apply_player_public(py: Python<'_>, world: &Bound<'_, PyAny>, p: &Bound<'_, PyAny>, d: &Bound<'_, PyAny>) -> R<()> {
-    if !Player::g_defn(ply(&p)?)?.call_method1("get", ("id",))?.eq(d.get_item("def")?)? {
-        Player::s_defn(ply(&p)?, world.call_method1("player_def", (d.get_item("def")?,))?)?;
+    if !Player::g_defn(ply(&p)?)?.dget1("id")?.eq(d.get_item("def")?)? {
+        Player::s_defn(ply(&p)?, World::player_def(wld(&world)?, &IntoPy::<PyObject>::into_py(d.get_item("def")?, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?)?;
     }
     for (k, key) in [("pos", "pos"), ("up", "up"), ("vel", "vel"), ("ground_vel", "gv"), ("look_fwd", "fwd")] {
         p.setattr(k, f64a(&d.get_item(key)?)?)?;
@@ -721,17 +723,17 @@ pub fn netsync_apply_player_public(py: Python<'_>, world: &Bound<'_, PyAny>, p: 
     for (k, key) in [("on_ground", "og"), ("jetpack", "jp"), ("flying", "fl"), ("in_water", "wt"), ("pitch", "pitch"), ("name", "name"), ("pid", "pid")] {
         p.setattr(k, d.get_item(key)?)?;
     }
-    let s = d.call_method1("get", ("seat",))?;
+    let s = d.dget1("seat")?;
     Player::s_seated(ply(&p)?, if s.is_truthy()? {
         PyTuple::new_bound(py, [s.get_item(0)?, PyTuple::new_bound(py, s.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any()
     } else { py.None().into_bound(py) })?;
-    let em = d.call_method1("get", ("emote",))?;
+    let em = d.dget1("emote")?;
     let cur = match Player::g_emote(ply(&p)?) { Ok(e) => e, Err(_) => py.None().into_bound(py) };
     if !em.eq(&cur)? {
         Player::s_emote(ply(&p)?, &em)?;
         Player::s_emote_t0(ply(&p)?, imp(py, "time")?.call_method0("monotonic")?)?;
     }
-    let f = d.call_method1("get", ("face",))?;
+    let f = d.dget1("face")?;
     Player::s_face_dir(ply(&p)?, if f.is_none() { f } else { f64a(&f)? })?;
     let _ = PyBytes::new_bound(py, b"");
     Ok(())

@@ -3,6 +3,8 @@
 //! 値（位置・速度・所持品など）は Python から読み書きされるので、Python の値のまま持つ（属性）。
 //! 毎ティックの動き（重力・水・ジェットパック・歩く・地面や建物・ブロックとの当たり）は Rust で計算する。
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::prelude::*;
@@ -223,21 +225,21 @@ impl Player {
         let np = crate::game::imp(py, "numpy")?;
         let kw = PyDict::new_bound(py);
         kw.set_item("dtype", np.getattr("float64")?)?;
-        self.pos = to_fa(&np.getattr("asarray")?.call((d.call_method1("get", ("position", self.pos.bind(py)))?,), Some(&kw))?)?;
-        self.vel = to_fa(&np.getattr("asarray")?.call((d.call_method1("get", ("velocity", vec![0, 0, 0]))?,), Some(&kw))?)?;
+        self.pos = to_fa(&np.getattr("asarray")?.call((d.dget2("position", self.pos.bind(py))?,), Some(&kw))?)?;
+        self.vel = to_fa(&np.getattr("asarray")?.call((d.dget2("velocity", vec![0, 0, 0])?,), Some(&kw))?)?;
         let inv = PyDict::new_bound(py);
-        inv.update(d.call_method1("get", ("inventory", PyDict::new_bound(py)))?.downcast::<pyo3::types::PyMapping>()?)?;
+        inv.update(d.dget2("inventory", PyDict::new_bound(py))?.downcast::<pyo3::types::PyMapping>()?)?;
         self.inventory = inv.into_any().unbind();
-        let s = d.call_method1("get", ("seated",))?;
+        let s = d.dget1("seated")?;
         self.seated = if s.is_truthy()? {
             PyTuple::new_bound(py, [s.get_item(0)?, PyTuple::new_bound(py, s.get_item(1)?.iter()?.collect::<R<Vec<_>>>()?).into_any()]).into_any().unbind()
         } else {
             py.None()
         };
-        self.jetpack = d.call_method1("get", ("jetpack", false))?.is_truthy()?;
-        self.starter_given = d.call_method1("get", ("starter_given", false))?.is_truthy()?;
-        self.credits_given = d.call_method1("get", ("credits_given", false))?.is_truthy()?;
-        let hb = d.call_method1("get", ("hotbar",))?;
+        self.jetpack = d.dget2("jetpack", false)?.is_truthy()?;
+        self.starter_given = d.dget2("starter_given", false)?.is_truthy()?;
+        self.credits_given = d.dget2("credits_given", false)?.is_truthy()?;
+        let hb = d.dget1("hotbar")?;
         self.hotbar = if hb.is_truthy()? {
             let l = PyList::empty_bound(py);
             for x in hb.iter()? {
@@ -256,7 +258,7 @@ impl Player {
     }
 
     /// move: 地表に沿った希望速度（ワールド座標）、thrust_dir: ジェットパック方向
-    fn update(slf: &Bound<'_, Self>, world: &Bound<'_, PyAny>, dt: f64, r#move: &Bound<'_, PyAny>, jump: &Bound<'_, PyAny>,
+    pub(crate) fn update(slf: &Bound<'_, Self>, world: &Bound<'_, PyAny>, dt: f64, r#move: &Bound<'_, PyAny>, jump: &Bound<'_, PyAny>,
               thrust_dir: &Bound<'_, PyAny>) -> R<()> {
         let py = slf.py();
         let mv = v3(r#move)?;
@@ -270,9 +272,9 @@ impl Player {
         let mut pos = get("pos")?;
         let mut up = get("up")?;
         let pos_np = |p: V3| -> R<Bound<'_, PyAny>> { Ok(PyArray1::from_vec_bound(py, p.to_vec()).reshape([1, 3])?.into_any()) };
-        let pl = world.call_method1("nearest_planet", (arr(py, pos),))?;
+        let pl = World::nearest_planet(wld(&world)?, &IntoPy::<PyObject>::into_py(arr(py, pos), world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
         if !pl.is_none() {
-            let tu = v3(&pl.call_method1("up", (arr(py, pos),))?)?;
+            let tu = v3(&Planet::up(pla(&pl)?, &IntoPy::<PyObject>::into_py(arr(py, pos), pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?)?;
             up = add(up, mul(sub(tu, up), (dt * 5.0).min(1.0)));
             let l = norm(up);
             up = mul(up, 1.0 / l);
@@ -280,8 +282,8 @@ impl Player {
         }
         let seated = slf.try_borrow()?.seated.bind(py).clone();
         if seated.is_truthy()? {
-            let c = World::g_constructs(wld(&world)?)?.call_method1("get", (seated.get_item(0)?,))?;
-            let i = if c.is_truthy()? { Construct::g_index(con(&c)?)?.call_method1("get", (seated.get_item(1)?,))? } else { py.None().into_bound(py) };
+            let c = World::g_constructs(wld(&world)?)?.dget1(seated.get_item(0)?)?;
+            let i = if c.is_truthy()? { Construct::g_index(con(&c)?)?.dget1(seated.get_item(1)?)? } else { py.None().into_bound(py) };
             if i.is_none() {
                 slf.try_borrow_mut()?.seated = py.None();
             } else {
@@ -297,7 +299,7 @@ impl Player {
                         vv[a] += av[[8 * i + k, a]] / 8.0;
                     }
                 }
-                let fr = c.call_method0("voxel_frames")?.get_item(i)?;
+                let fr = Construct::voxel_frames(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.get_item(i)?;
                 let f1 = v3(&fr.get_item(1)?)?;
                 let size = con(&c)?.borrow().size;
                 set("pos", add(ctr, mul(f1, size * 0.5 + radius)))?;
@@ -307,18 +309,18 @@ impl Player {
             }
         }
         // ジェットパック（燃料などの決まりは MOD が決める。サバイバルでは手持ちの燃料が要る）
-        let jr = world.call_method1("jetpack", (slf, dt, thrust_dir))?;
+        let jr = World::jetpack(wld(&world)?, &IntoPy::<PyObject>::into_py(slf, world.py()).into_bound(world.py()), IntoPy::<PyObject>::into_py(dt, world.py()).extract::<f64>(world.py())?, &IntoPy::<PyObject>::into_py(thrust_dir, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
         let flying = jr.get_item(0)?.is_truthy()?;
         let td = v3(&jr.get_item(1)?)?;
         slf.try_borrow_mut()?.flying = flying;
         set("thrust", td)?;
-        let g = v3(&world.call_method1("gravity", (pos_np(pos)?,))?.get_item(0)?)?;
+        let g = v3(&World::gravity(wld(&world)?, &IntoPy::<PyObject>::into_py(pos_np(pos)?, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?.get_item(0)?)?;
         let mut vel = add(get("vel")?, mul(g, dt));
         // 水中：浮力と抵抗、泳ぐ
         let mut in_water = 0.0;
         let on_ground_prev = slf.try_borrow()?.on_ground;
         if !pl.is_none() && pl.getattr("has_water")?.is_truthy()? {
-            let wd = float_of(&pl.call_method1("water_depth", (pos_np(pos)?,))?.get_item(0)?)?;
+            let wd = float_of(&Planet::water_depth(pla(&pl)?, &IntoPy::<PyObject>::into_py(pos_np(pos)?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?)?;
             let frac = ((wd + radius) / (height * 0.8)).clamp(0.0, 1.0);
             in_water = frac;
             if frac > 0.0 {
@@ -336,7 +338,7 @@ impl Player {
         slf.try_borrow_mut()?.in_water = in_water;
         if !pl.is_none() && !on_ground_prev && in_water <= 0.0 {
             // 空気の抵抗（構築物と同じ大気：気圧に比例、高さとともに薄くなる）。人の Cd × 面積 ≒ 0.7 m²（終端速度 約 55 m/s）
-            let kpa = match pl.getattr("defn")?.call_method1("get", ("atmosphere_pressure", 101.3)) {
+            let kpa = match pl.getattr("defn")?.dget2("atmosphere_pressure", 101.3) {
                 Ok(v) if !v.is_none() => float_of(&v).unwrap_or(101.3),
                 _ => 101.3,
             };
@@ -397,7 +399,7 @@ impl Player {
             slf.try_borrow_mut()?.ext_ground = false;
             for off in [0.0, height - 2.0 * r] {
                 let center = add(pos, mul(up, off));
-                for it in world.call_method1("push_sphere", (arr(py, center), r))?.iter()? {
+                for it in World::push_sphere(wld(&world)?, &IntoPy::<PyObject>::into_py(arr(py, center), world.py()).into_bound(world.py()), IntoPy::<PyObject>::into_py(r, world.py()).extract::<f64>(world.py())?).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?.iter()? {
                     let it = it?;
                     let push = v3(&it.get_item(0)?)?;
                     let n = v3(&it.get_item(1)?)?;
@@ -430,7 +432,7 @@ impl Player {
                     let probe = add(add(pos, mul(up, h)), mul(m, 0.12));
                     let mut clear = true;
                     for off in [0.0, height - 2.0 * r] {
-                        for it in world.call_method1("push_sphere", (arr(py, add(probe, mul(up, off))), r * 0.98))?.iter()? {
+                        for it in World::push_sphere(wld(&world)?, &IntoPy::<PyObject>::into_py(arr(py, add(probe, mul(up, off))), world.py()).into_bound(world.py()), IntoPy::<PyObject>::into_py(r * 0.98, world.py()).extract::<f64>(world.py())?).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?.iter()? {
                             let n = v3(&it?.get_item(1)?)?;
                             if dot(n, up) < 0.5 || off > 0.0 {
                                 clear = false;
@@ -457,7 +459,7 @@ impl Player {
         let mass = slf.try_borrow()?.mass;
         for off in [0.0, height - 2.0 * r] {
             let center = add(pos, mul(up, off));
-            for it in world.call_method1("voxel_contacts", (arr(py, center), r))?.iter()? {
+            for it in World::voxel_contacts(wld(&world)?, &IntoPy::<PyObject>::into_py(arr(py, center), world.py()).into_bound(world.py()), IntoPy::<PyObject>::into_py(r, world.py()).extract::<f64>(world.py())?).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?.iter()? {
                 let it = it?;
                 let c = it.get_item(0)?;
                 let i: usize = it.get_item(1)?.extract()?;
@@ -483,7 +485,7 @@ impl Player {
                     ground_vel = vv;
                     slf.try_borrow_mut()?.stand = (con(&c)?.borrow().id.clone_ref(py), Construct::g_cells(con(&c)?)?.get_item(i)?).into_py(py);
                     // 体重を構築物に伝える
-                    let gn = norm(v3(&world.call_method1("gravity", (pos_np(center)?,))?.get_item(0)?)?);
+                    let gn = norm(v3(&World::gravity(wld(&world)?, &IntoPy::<PyObject>::into_py(pos_np(center)?, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?.get_item(0)?)?);
                     let f = Construct::g_force(con(&c)?)?;
                     let mut fa: numpy::PyReadwriteArray2<f64> = f.extract()?;
                     let mut a = fa.as_array_mut();

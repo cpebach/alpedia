@@ -4,6 +4,7 @@
 //! 素材はその色とテクスチャ、機器は機器の色に種類ごとのマーク（炎・タンクの帯・画面など）を重ねる（線や形は PIL で描く）。
 //! 画像は起動中だけメモリに置く（ファイルは作らない）。
 
+use crate::game::PyDictOps;
 use std::f64::consts::PI;
 
 use pyo3::exceptions::PyException;
@@ -414,15 +415,15 @@ pub fn icons_item_image<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>, size:
         let m = if m.is_truthy()? { m } else { PyDict::new_bound(py).into_any() };
         let alpha = if id_.eq("glass")? || id_.eq("water")? { 0.72 } else { 1.0 };
         let shiny = if ["steel", "aluminum", "glass", "titanium"].iter().any(|x| id_.eq(*x).unwrap_or(false)) { 0.5 } else { 0.18 };
-        let tex = texture_array(py, &m.call_method1("get", ("texture",))?)?;
-        icons_sphere(py, size, &m.call_method1("get", ("color", vec![0.7, 0.7, 0.7]))?, Some(&tex), alpha, shiny)?
+        let tex = texture_array(py, &m.dget1("texture")?)?;
+        icons_sphere(py, size, &m.dget2("color", vec![0.7, 0.7, 0.7])?, Some(&tex), alpha, shiny)?
     } else {
         let dd = crate::game::registry::dev_dict(&reg, &id_)?;
         let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
-        let tex = texture_array(py, &dd.call_method1("get", ("texture",))?)?;
-        let img = icons_sphere(py, size, &dd.call_method1("get", ("color", vec![0.6, 0.6, 0.6]))?, Some(&tex), 1.0, 0.3)?;
-        let mark = dd.call_method1("get", ("mark",))?;
-        let k = if mark.is_truthy()? { mark } else { dd.call_method1("get", ("type",))? };
+        let tex = texture_array(py, &dd.dget1("texture")?)?;
+        let img = icons_sphere(py, size, &dd.dget2("color", vec![0.6, 0.6, 0.6])?, Some(&tex), 1.0, 0.3)?;
+        let mark = dd.dget1("mark")?;
+        let k = if mark.is_truthy()? { mark } else { dd.dget1("type")? };
         icons_mark(py, &img, &k, (255, 255, 255, 230))?
     };
     cache.set_item(&key, &img)?;
@@ -443,7 +444,7 @@ pub fn icons_panda_texture<'py>(py: Python<'py>, img: &B<'py>, name: &str) -> R<
 pub fn icons_item_texture<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>, size: usize) -> R<B<'py>> {
     let key = PyTuple::new_bound(py, [item.clone(), tb(py, size)]);
     let cache = icons(py)?.getattr("_tex_cache")?;
-    let t = cache.call_method1("get", (&key,))?;
+    let t = cache.dget1(&key)?;
     if !t.is_none() {
         return Ok(t);
     }
@@ -457,7 +458,7 @@ pub fn icons_item_name<'py>(py: Python<'py>, reg: &B<'py>, item: &B<'py>) -> R<B
     let (kind, id_) = (item.get_item(0)?, item.get_item(1)?);
     let d = if kind.eq("material")? { crate::game::registry::mat_dict(&reg, &id_)? } else { crate::game::registry::dev_dict(&reg, &id_)? };
     let d = if d.is_truthy()? { d } else { PyDict::new_bound(py).into_any() };
-    d.call_method1("get", ("name", id_))
+    d.dget2("name", id_)
 }
 
 fn img_bytes(img: &B<'_>) -> R<(Vec<u8>, usize, usize)> {
@@ -718,7 +719,7 @@ pub fn icons_ui_image<'py>(py: Python<'py>, name: &str, size: usize, bg: C4, fg:
 pub fn icons_ui_texture<'py>(py: Python<'py>, name: &str, size: usize) -> R<B<'py>> {
     let cache = icons(py)?.getattr("_ui_cache")?;
     let key = (name, size);
-    let t = cache.call_method1("get", (key,))?;
+    let t = cache.dget1(key)?;
     if !t.is_none() {
         return Ok(t);
     }

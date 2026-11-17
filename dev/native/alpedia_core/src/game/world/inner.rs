@@ -6,7 +6,7 @@ use crate::game::construct::{con, Construct};
 impl World {
     pub(crate) fn wake_in(slf: &Bound<'_, Self>, woke: &[Bound<'_, PyAny>], dt: f64) -> R<()> {
         for c in woke {
-            c.call_method0("wake")?;
+            Construct::wake(con(&c)?, false).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
             c.setattr("_prev", Construct::g_pos(con(&c)?)?.call_method0("copy")?)?;
             Self::_prep_ext(slf, c, dt)?;
         }

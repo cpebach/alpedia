@@ -4,6 +4,7 @@
 //! リスト [(セル, 素材, 機器)] にする。あとから置いた物が前の物を上書きする。clear で消す。
 //! セルの辞書 v は MOD が直接読み書きするので Python の dict のまま持つ。
 
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::construct::{con, Construct};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -593,7 +594,7 @@ fn dev_def_is(d: &Bound<'_, PyAny>, names: &[&str]) -> R<bool> {
     if !d.is_truthy()? {
         return Ok(false);
     }
-    let def = d.call_method1("get", ("def",))?;
+    let def = d.dget1("def")?;
     for n in names {
         if def.eq(*n)? {
             return Ok(true);
@@ -608,7 +609,7 @@ fn root_cells_of(vox: &[Vox<'_>]) -> R<HashSet<Cell>> {
     let mut outs: Vec<(Cell, Cell)> = Vec::new();
     for v in vox {
         if dev_def_is(&v.dev, &["actuator", "piston", "hinge"])? {
-            let d = int_of(&v.dev.call_method1("get", ("dir", 2))?)?;
+            let d = int_of(&v.dev.dget2("dir", 2)?)?;
             let n = N6[d.rem_euclid(6) as usize];
             outs.retain(|x| x.0 != v.cell);
             outs.push((v.cell, (v.cell.0 + n.0, v.cell.1 + n.1, v.cell.2 + n.2)));
@@ -834,7 +835,7 @@ pub fn bk_light_devices<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, group: Opti
                     continue;
                 }
                 let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
-                if dd.is_truthy()? && dd.call_method1("get", ("type",))?.eq("light")? {
+                if dd.is_truthy()? && dd.dget1("type")?.eq("light")? {
                     ids.append(i)?;
                 }
             }
@@ -847,7 +848,7 @@ pub fn bk_light_devices<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, group: Opti
     for i in ids.iter()? {
         let d = devs.get_item(i?)?;
         let ok = match group {
-            Some(g) if !g.is_none() => d.get_item("state")?.call_method1("get", ("group",))?.eq(g)?,
+            Some(g) if !g.is_none() => d.get_item("state")?.dget1("group")?.eq(g)?,
             _ => true,
         };
         if ok {
@@ -866,7 +867,7 @@ pub fn bk_set_light_group(py: Python<'_>, world: &Bound<'_, PyAny>, group: &Boun
         let c = c?;
         for d in bk_light_devices(py, &c, Some(group))?.iter() {
             let st = d.get_item("state")?;
-            if st.call_method1("get", ("enabled", true))?.is_truthy()? != on {
+            if st.dget2("enabled", true)?.is_truthy()? != on {
                 st.set_item("enabled", on)?;
                 crate::game::construct::Construct::s_slow_dt(crate::game::construct::con(&c)?, 1.0)?;
                 n += 1;
@@ -887,7 +888,7 @@ fn foot_offset(py: Python<'_>, vox: &Bound<'_, PyAny>, rm: &[[f64; 3]; 3], size:
         let cl = super::construct::v3(&v.get_item(0)?)?;
         let d = v.get_item(2)?;
         all.push(cl);
-        let anc = d.is_truthy()? && d.call_method1("get", ("def",))?.eq("anchor")?;
+        let anc = d.is_truthy()? && d.dget1("def")?.eq("anchor")?;
         if !anc {
             body.push(cl);
         }
@@ -905,7 +906,7 @@ fn foot_offset(py: Python<'_>, vox: &Bound<'_, PyAny>, rm: &[[f64; 3]; 3], size:
 
 /// アンカー以外の頂点の行（持ち上げの判定用）
 fn non_anchor_rows(c: &Bound<'_, PyAny>) -> R<Vec<usize>> {
-    let anc: HashSet<i64> = super::construct::iv(&c.call_method0("anchor_index")?)?.into_iter().collect();
+    let anc: HashSet<i64> = super::construct::iv(&Construct::anchor_index(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?.into_iter().collect();
     let nv: usize = c.getattr("n_vert")?.extract()?;
     Ok((0..nv).filter(|r| !anc.contains(&((r / 8) as i64))).collect())
 }
@@ -962,7 +963,7 @@ pub fn bk_spawn<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bound<'py
             shift_pos(&c, up, 0.03 - dmin + 0.01)?;
         }
     }
-    world.call_method1("add_construct", (&c,))?;
+    World::add_construct(wld(&world)?, &IntoPy::<PyObject>::into_py(&c, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
     Ok(c)
 }
 
@@ -975,8 +976,8 @@ pub fn bk_ensure<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, key: &Bound<'p
     if !net.is_none() && match net.getattr("role") { Ok(r) => r.eq("client")?, Err(_) => false } {
         return Ok(made);
     }
-    let reg = World::g_settings(wld(&world)?)?.call_method1("setdefault", ("blocks", PyDict::new_bound(py)))?
-        .call_method1("setdefault", (key, PyDict::new_bound(py)))?;
+    let reg = World::g_settings(wld(&world)?)?.dsetdefault("blocks", PyDict::new_bound(py))?
+        .dsetdefault(key, PyDict::new_bound(py))?;
     for it in items.iter()? {
         let it = it?;
         let (role, make) = (it.get_item(0)?, it.get_item(1)?);
@@ -988,7 +989,7 @@ pub fn bk_ensure<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, key: &Bound<'p
             Err(e) if e.is_instance_of::<pyo3::exceptions::PyException>(py) => {
                 let kw = PyDict::new_bound(py);
                 kw.set_item("exc_info", e.value_bound(py))?;
-                super::imp(py, "main.log")?.call_method1("get", ("buildkit",))?
+                super::imp(py, "main.log")?.dget1("buildkit")?
                     .call_method("exception", ("建物を作れません: %s/%s", key, &role), Some(&kw))?;
                 continue;
             }
@@ -1030,8 +1031,7 @@ impl GroundFn {
                 continue;
             }
             let sel = |k: &str| -> R<Bound<'py, PyAny>> { sc.getattr(k)?.get_item(&col) };
-            let np = super::construct::np(py)?;
-            let c = |o: Bound<'py, PyAny>| np.call_method1("ascontiguousarray", (o, "float64"));
+            let c = |o: Bound<'py, PyAny>| crate::game::construct::cflt(&o);
             let r = super::imp(py, "alpedia_core")?.call_method1("box_sdf", (&pa, c(sel("C")?)?.call_method1("reshape", (-1, 3))?,
                 c(sel("A")?)?.call_method1("reshape", (-1, 3, 3))?, c(sel("E")?)?.call_method1("reshape", (-1, 3))?))?;
             let dd = super::construct::fv(&r.get_item(0)?)?;
@@ -1067,7 +1067,7 @@ pub fn bk_spawn_on_map<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bo
     let rm = super::construct::m3(&rmo)?;
     let size: f64 = match size {
         Some(s) if s.is_truthy()? => s.extract()?,
-        _ => World::g_settings(wld(&world)?)?.call_method1("get", ("voxel_size", 0.5))?.extract()?,
+        _ => World::g_settings(wld(&world)?)?.dget2("voxel_size", 0.5)?.extract()?,
     };
     let mut p = p0;
     if center {
@@ -1083,7 +1083,7 @@ pub fn bk_spawn_on_map<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bo
     };
     let mut c = mk(vox, p, &rm)?;
     let gh = Bound::new(py, bk_ground_fn(m.clone().unbind(), scenes)?)?;
-    let anc_n = super::construct::iv(&c.call_method0("anchor_index")?)?.len();
+    let anc_n = super::construct::iv(&Construct::anchor_index(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?.len();
     let rows = non_anchor_rows(&c)?;
     let up = [rm[0][1], rm[1][1], rm[2][1]];
     for _ in 0..(if sink { 0 } else { 8 }) {
@@ -1095,13 +1095,13 @@ pub fn bk_spawn_on_map<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bo
         shift_pos(&c, up, 0.03 - dmin + 0.01)?;
     }
     if center && !sink && anc_n > 0 {
-        let fit = c.call_method0("rigid_fit")?;
+        let fit = Construct::rigid_fit(con(&c)?, None).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
         let (rl, tl) = (fit.get_item(0)?, fit.get_item(1)?);
         let mut body = vec![];
         for v in vox.iter()? {
             let v = v?;
             let d = v.get_item(2)?;
-            if !(d.is_truthy()? && d.call_method1("get", ("def",))?.eq("anchor")?) {
+            if !(d.is_truthy()? && d.dget1("def")?.eq("anchor")?) {
                 body.push(super::construct::v3(&v.get_item(0)?)?);
             }
         }
@@ -1111,13 +1111,12 @@ pub fn bk_spawn_on_map<'py>(py: Python<'py>, world: &Bound<'py, PyAny>, vox: &Bo
             Some(f) if !f.eq("auto")? => f.clone().unbind(),
             _ => if wide.len() > 6 { "concrete".into_py(py) } else { py.None() },
         };
-        let np = super::construct::np(py)?;
-        let vox2 = bk_grounded(py, vox, np.call_method1("ascontiguousarray", (&rl, "float64"))?.extract()?,
-            np.call_method1("ascontiguousarray", (&tl, "float64"))?.call_method0("ravel")?.extract()?, size, gh.as_any(),
+        let vox2 = bk_grounded(py, vox, crate::game::construct::cflt(&rl)?.extract()?,
+            crate::game::construct::cflt(&tl)?.call_method0("ravel")?.extract()?, size, gh.as_any(),
             if fmat.is_none(py) { None } else { Some(fmat.bind(py)) }, 2)?;
         c = mk(&vox2, super::construct::v3(&tl)?, &super::construct::m3(&rl)?)?;
     }
-    world.call_method1("add_construct", (&c,))?;
+    World::add_construct(wld(&world)?, &IntoPy::<PyObject>::into_py(&c, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
     Ok(c)
 }
 

@@ -1,6 +1,8 @@
 //! 小さなモジュールの中身（main/extensions.py・tutorial.py・app.py・content.py・tutorial_rod.py・tutorial_drone.py・
 //! geom.py・winperf.py）。文章（README・ゲーム内のプログラム・看板）は Python 側の表のまま。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::construct::{con, Construct};
 use pyo3::prelude::*;
@@ -66,7 +68,7 @@ pub fn ext_reset(py: Python<'_>) -> R<()> {
 #[pyo3(signature = (behavior, methods=None, props=None))]
 pub fn ext_register_device(py: Python<'_>, behavior: &Bound<'_, PyAny>, methods: Option<&Bound<'_, PyAny>>, props: Option<&Bound<'_, PyAny>>) -> R<()> {
     for (t, v) in [(&DEV_METHODS, methods), (&DEV_PROPS, props)] {
-        let d = table(py, t).call_method1("setdefault", (behavior, PyDict::new_bound(py)))?;
+        let d = table(py, t).dsetdefault(behavior, PyDict::new_bound(py))?;
         if let Some(v) = v.filter(|v| !v.is_none()) {
             if v.is_truthy()? {
                 d.call_method1("update", (v,))?;
@@ -85,8 +87,8 @@ pub fn ext_behavior_of(py: Python<'_>, dd: &Bound<'_, PyAny>) -> R<PyObject> {
     if !dd.is_truthy()? {
         return Ok("?".into_py(py));
     }
-    if dd.call_method1("get", ("type",))?.eq("custom")? {
-        let b = dd.call_method1("get", ("behavior",))?;
+    if dd.dget1("type")?.eq("custom")? {
+        let b = dd.dget1("behavior")?;
         return Ok(if b.is_truthy()? { b.str()?.into_any().unbind() } else { "custom".into_py(py) });
     }
     Ok(dd.get_item("type")?.unbind())
@@ -102,10 +104,10 @@ pub fn tut_create_world<'py>(py: Python<'py>, name: &Bound<'py, PyAny>, mods: Op
                              planet: &str) -> R<Bound<'py, PyAny>> {
     let paths = imp(py, "main.paths")?;
     let modmeta = imp(py, "main.modmeta")?;
-    let lg = imp(py, "main.log")?.call_method1("get", ("newworld",))?;
+    let lg = imp(py, "main.log")?.dget1("newworld")?;
     let wmod = imp(py, "main.world")?;
     let wdir = paths.call_method1("world_dir", (name,))?;
-    if wdir.call_method0("exists")?.is_truthy()? {
+    if wdir.pexists()?.is_truthy()? {
         return Err(pyo3::exceptions::PyFileExistsError::new_err(format!("ワールド「{}」は既にあります", name.str()?)));
     }
     let ml = PyList::empty_bound(py);
@@ -141,35 +143,35 @@ pub fn tut_create_world<'py>(py: Python<'py>, name: &Bound<'py, PyAny>, mods: Op
     let cleanup = s.get_item("cleanup")?;
     if preset.is_truthy()? {
         lg.call_method1("info", ("MOD '%s' のワールドの形で作ります", &pre_id))?;
-        let pp = preset.call_method1("get", ("planets",))?;
+        let pp = preset.dget1("planets")?;
         if pp.is_instance_of::<PyList>() {
             s.set_item("planets", deep(&pp)?)?;
         } else {
-            let g = |k: &str, d: PyObject| -> R<Bound<'py, PyAny>> { preset.call_method1("get", (k, d)) };
+            let g = |k: &str, d: PyObject| -> R<Bound<'py, PyAny>> { preset.dget2(k, d) };
             let b = bodies(&g("main", "terra".into_py(py))?, &g("moon", true.into_py(py))?, &g("asteroids", true.into_py(py))?)?;
-            let mo = preset.call_method1("get", ("main_override",))?;
+            let mo = preset.dget1("main_override")?;
             if mo.is_instance_of::<PyDict>() {
                 b.get_item(0)?.set_item("override", py.get_type_bound::<PyDict>().call1((mo,))?)?;
             }
             s.set_item("planets", b)?;
         }
         for k in ["voxel_size", "gravity_scale"] {
-            patch.call_method1("pop", (k, py.None()))?;                 // 舞台はこの大きさで作ってある
+            patch.dpop2(k, py.None())?;                 // 舞台はこの大きさで作ってある
         }
-        let cl = patch.call_method1("pop", ("cleanup", py.None()))?;
-        let pset = preset.call_method1("get", ("settings", PyDict::new_bound(py)))?;
+        let cl = patch.dpop2("cleanup", py.None())?;
+        let pset = preset.dget2("settings", PyDict::new_bound(py))?;
         s.call_method1("update", (deep(&pset)?,))?;
-        let pset_cl = if pset.is_truthy()? { pset.call_method1("get", ("cleanup",))? } else { py.None().into_bound(py) };
+        let pset_cl = if pset.is_truthy()? { pset.dget1("cleanup")? } else { py.None().into_bound(py) };
         if cl.is_truthy()? && !pset_cl.is_truthy()? {
             s.get_item("cleanup")?.call_method1("update", (cl,))?;
         }
     } else if patch.contains("cleanup")? {
-        cleanup.call_method1("update", (patch.call_method1("pop", ("cleanup",))?,))?;
+        cleanup.call_method1("update", (patch.dpop1("cleanup")?,))?;
     }
     s.call_method1("update", (&patch,))?;
     let cl = PyDict::new_bound(py);
     cl.update(ds.get_item("cleanup")?.downcast::<PyDict>()?.as_mapping())?;
-    cl.update(s.call_method1("get", ("cleanup", PyDict::new_bound(py)))?.downcast::<PyDict>()?.as_mapping())?;
+    cl.update(s.dget2("cleanup", PyDict::new_bound(py))?.downcast::<PyDict>()?.as_mapping())?;
     s.set_item("cleanup", cl)?;
     write_text(&div(&wdir, "world.json")?, &dumps(py, &s)?)?;
     write_text(&div(&wdir, "constructs.json")?, "[]")?;
@@ -199,7 +201,7 @@ pub fn tut_is_story_world(py: Python<'_>, name: &Bound<'_, PyAny>) -> R<bool> {
         let p = div(&imp(py, "main.paths")?.call_method1("world_dir", (name,))?, "world.json")?;
         let t = p.call_method("read_text", (), Some(&[("encoding", "utf-8")].into_py_dict_bound(py)))?;
         let s = json(py)?.call_method1("loads", (t,))?;
-        Ok(s.call_method1("get", ("story",))?.is_instance_of::<PyDict>())
+        Ok(s.dget1("story")?.is_instance_of::<PyDict>())
     })();
     match r {
         Ok(v) => Ok(v),
@@ -219,7 +221,7 @@ pub fn app_create_empty_world<'py>(py: Python<'py>, name: &Bound<'py, PyAny>) ->
 #[pyo3(signature = (name, new=false))]
 pub fn app_prepare_world<'py>(py: Python<'py>, name: &Bound<'py, PyAny>, new: bool) -> R<Bound<'py, PyAny>> {
     let wdir = imp(py, "main.paths")?.call_method1("world_dir", (name,))?;
-    if !wdir.call_method0("exists")?.is_truthy()? {
+    if !wdir.pexists()?.is_truthy()? {
         let t = imp(py, "main.tutorial")?;
         let sc = t.getattr("SCENARIO_WORLD")?;
         if (name.eq("tutorial")? || name.eq(&sc)?) && !new {
@@ -264,7 +266,7 @@ pub fn app_main(py: Python<'_>, args: &Bound<'_, PyAny>) -> R<()> {
     let paths = imp(py, "main.paths")?;
     paths.call_method0("ensure_dirs")?;
     let cfg = imp(py, "main.config")?.call_method0("load")?;
-    let lg = imp(py, "main.log")?.call_method1("setup", (cfg.call_method1("get", ("log_level", "INFO"))?,))?;
+    let lg = imp(py, "main.log")?.call_method1("setup", (cfg.dget2("log_level", "INFO")?,))?;
     imp(py, "main.winperf")?.call_method1("boost", (&cfg,))?;
     app_check_core(py)?;
     let world = args.getattr("world")?;
@@ -282,7 +284,7 @@ pub fn app_main(py: Python<'_>, args: &Bound<'_, PyAny>) -> R<()> {
             let mut any = false;
             for d in paths.getattr("SAVES")?.call_method0("iterdir")?.iter()? {
                 let d = d?;
-                if d.call_method0("is_dir")?.is_truthy()? && div(&d, "world.json")?.call_method0("exists")?.is_truthy()? {
+                if d.pis_dir()?.is_truthy()? && div(&d, "world.json")?.pexists()?.is_truthy()? {
                     any = true;
                     break;
                 }
@@ -294,7 +296,7 @@ pub fn app_main(py: Python<'_>, args: &Bound<'_, PyAny>) -> R<()> {
         run_client.call1((&cfg, &world))?;
         return Ok(());
     }
-    let name = if world.is_truthy()? { world.clone() } else { cfg.get_item("game")?.call_method1("get", ("default_world", "scenario"))? };
+    let name = if world.is_truthy()? { world.clone() } else { cfg.get_item("game")?.dget2("default_world", "scenario")? };
     lg.call_method1("info", ("Alpedia 起動: ワールド '%s'（ヘッドレス）", &name))?;
     let w = (|| -> R<Bound<'_, PyAny>> {
         let wcls = app_prepare_world(py, &name, new)?;
@@ -314,8 +316,8 @@ pub fn app_main(py: Python<'_>, args: &Bound<'_, PyAny>) -> R<()> {
 
 #[pyfunction]
 pub fn app_run_headless(py: Python<'_>, world: &Bound<'_, PyAny>, cfg: &Bound<'_, PyAny>, steps: i64) -> R<()> {
-    let lg = imp(py, "main.log")?.call_method1("get", ("headless",))?;
-    let rate: f64 = cfg.get_item("physics")?.call_method1("get", ("tick_rate", 60))?.extract()?;
+    let lg = imp(py, "main.log")?.dget1("headless")?;
+    let rate: f64 = cfg.get_item("physics")?.dget2("tick_rate", 60)?.extract()?;
     let dt = 1.0 / rate;
     let t0 = std::time::Instant::now();
     for k in 0..steps {
@@ -333,8 +335,8 @@ pub fn app_run_headless(py: Python<'_>, world: &Bound<'_, PyAny>, cfg: &Bound<'_
     lg.call_method1("info", ("%d ステップ %.2f 秒（1ステップ %.1f ms）", steps, el, el / steps.max(1) as f64 * 1000.0))?;
     for c in World::g_constructs(wld(&world)?)?.call_method0("values")?.iter()? {
         let c = c?;
-        let v = super::construct::v3(&c.call_method0("velocity")?)?;
-        let com = super::construct::v3(&c.call_method0("center_of_mass")?)?;
+        let v = super::construct::v3(&Construct::velocity(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?;
+        let com = super::construct::v3(&Construct::center_of_mass(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?;
         let r1 = |x: f64| (x * 10.0).round_ties_even() / 10.0;
         lg.call_method1("info", ("  %s: ボクセル %d, 速度 %.2f m/s, 位置 %s", Construct::g_name(con(&c)?)?, Construct::n(con(&c)?)?.into_py(py).into_bound(py),
             super::construct::norm(v), vec![r1(com[0]), r1(com[1]), r1(com[2])]))?;
@@ -608,8 +610,8 @@ mod win {
 #[pyo3(signature = (cfg=None))]
 pub fn winperf_boost(py: Python<'_>, cfg: Option<&Bound<'_, PyAny>>) -> R<Vec<&'static str>> {
     if let Some(c) = cfg.filter(|c| !c.is_none()) {
-        let p = c.call_method1("get", ("performance", PyDict::new_bound(py)))?;
-        if !p.call_method1("get", ("windows_boost", true))?.is_truthy()? {
+        let p = c.dget2("performance", PyDict::new_bound(py))?;
+        if !p.dget2("windows_boost", true)?.is_truthy()? {
             return Ok(vec![]);
         }
     }
@@ -618,7 +620,7 @@ pub fn winperf_boost(py: Python<'_>, cfg: Option<&Bound<'_, PyAny>>) -> R<Vec<&'
     #[cfg(not(windows))]
     let done: Vec<&'static str> = vec![];
     if !done.is_empty() {
-        imp(py, "main.log")?.call_method1("get", ("winperf",))?.call_method1("info", ("Windows の設定: %s", done.join("・")))?;
+        imp(py, "main.log")?.dget1("winperf")?.call_method1("info", ("Windows の設定: %s", done.join("・")))?;
     }
     Ok(done)
 }

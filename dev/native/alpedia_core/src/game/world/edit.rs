@@ -1,5 +1,7 @@
 //! ワールド：ブロックを置く・消す・掘る・崩れる
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use super::*;
 use crate::game::construct::{con, Construct};
@@ -134,7 +136,7 @@ impl World {
                 Self::message(slf, "そこには既にボクセルがあります")?;
                 return Ok(false);
             }
-            let f = c.call_method0("voxel_frames")?.get_item(i)?;
+            let f = Construct::voxel_frames(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.get_item(i)?;
             Self::_hinge_side(slf, &dev, &f, look_dir)?;
             let fm = crate::game::construct::m3(&f)?;
             let (axis, sign) = (face / 2, if face % 2 == 0 { 1.0 } else { -1.0 });
@@ -154,8 +156,8 @@ impl World {
             if !Self::pay(slf, &Self::item_cost(slf, item)?)? {
                 return Ok(false);
             }
-            c.call_method1("add_voxel", (&ct, &mat, &dev, a3(py, &verts)?))?;
-            let ni = Construct::g_index(con(&c)?)?.call_method1("get", (&ct,))?;
+            Construct::add_voxel(con(&c)?, &IntoPy::<PyObject>::into_py(&ct, c.py()).into_bound(c.py()), &IntoPy::<PyObject>::into_py(&mat, c.py()).into_bound(c.py()), &IntoPy::<PyObject>::into_py(&dev, c.py()).into_bound(c.py()), &IntoPy::<PyObject>::into_py(a3(py, &verts)?, c.py()).into_bound(c.py())).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
+            let ni = Construct::g_index(con(&c)?)?.dget1(&ct)?;
             Self::_device_placed(slf, &c, if ni.is_none() { None } else { Some(ni.extract()?) })?;
             return Ok(true);
         }
@@ -170,7 +172,7 @@ impl World {
             let player = Self::g_player(slf)?;
             let pp = Player::g_pos(ply(&player)?)?;
             let pl = Self::nearest_planet(slf, &pp)?;
-            let up = if pl.is_truthy()? { v3(&pl.call_method1("up", (&pp,))?)? } else { [0.0, 1.0, 0.0] };
+            let up = if pl.is_truthy()? { v3(&Planet::up(pla(&pl)?, &IntoPy::<PyObject>::into_py(&pp, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?)? } else { [0.0, 1.0, 0.0] };
             let e = v3(&player.call_method0("eye")?)?;
             (up, [e[0] + look[0] * 3.0, e[1] + look[1] * 3.0, e[2] + look[2] * 3.0])
         };
@@ -210,9 +212,9 @@ impl World {
             return Ok(());
         }
         let d: i64 = getd(dev, "dir", 2)?.call_method0("__int__")?.extract()?;
-        let fr = crate::game::construct::np(py)?.call_method1("ascontiguousarray", (frame_rows, "float64"))?;
+        let fr = crate::game::construct::cflt(&frame_rows)?;
         let side = crate::game::actuator::act_side_toward(fr.extract()?, d, v3(look_dir)?)?;
-        dev.call_method1("setdefault", ("state", PyDict::new_bound(py)))?.set_item("hinge", side)?;
+        dev.dsetdefault("state", PyDict::new_bound(py))?.set_item("hinge", side)?;
         let names = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
         Self::message(slf, &format!("ヒンジ：+ の角度で {} 側へ倒れます（置くときに見ていた側。-90〜+90°。R で出力の向き）", names[side]))
     }
@@ -251,14 +253,14 @@ impl World {
                 Player::s_seated(ply(&p)?, py.None())?;
             }
         }
-        c.call_method1("remove_voxels", (vec![i],))?;
+        Construct::remove_voxels(con(&c)?, &IntoPy::<PyObject>::into_py(vec![i], c.py()).into_bound(c.py())).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
         let item: (&str, Bound<'_, PyAny>) = if dev.is_truthy()? { ("device", dev.get_item("def")?) } else { ("material", mat) };
         let item: PyObject = item.into_py(py);
         Self::refund(slf, &Self::item_cost(slf, item.bind(py))?)?;
         if Construct::n(con(&c)?)? == 0 {
             Self::g_constructs(slf)?.del_item(&cid)?;
         } else {
-            for part in c.call_method0("split")?.iter()? {
+            for part in Construct::split(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.iter()? {
                 Self::add_construct(slf, &part?)?;
             }
         }
@@ -279,11 +281,11 @@ impl World {
             return Ok(false);
         }
         let pl = hit.get_item("planet")?;
-        let res = pl.call_method1("resource_at", (hit.get_item("point")?,))?;      // 掘る前の場所で判定
+        let res = Planet::resource_at(pla(&pl)?, &IntoPy::<PyObject>::into_py(hit.get_item("point")?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;      // 掘る前の場所で判定
         if pl.hasattr("update_water")? {
-            pl.call_method1("update_water", (0.0,))?;    // 今までの穴の水を確かめておく（新しい穴は底から満ちる）
+            Planet::update_water(pla(&pl)?, 0.0).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;    // 今までの穴の水を確かめておく（新しい穴は底から満ちる）
         }
-        pl.call_method1("dig", (hit.get_item("point")?, radius))?;
+        Planet::dig(pla(&pl)?, &IntoPy::<PyObject>::into_py(hit.get_item("point")?, pl.py()).into_bound(pl.py()), IntoPy::<PyObject>::into_py(radius, pl.py()).extract::<f64>(pl.py())?).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;
         Self::_cave_in(slf, &pl, &hit.get_item("point")?, radius)?;
         for a in Self::addons_v(slf)? {
             a.call_method1("on_dig", (slf, hit, &res))?;
@@ -302,7 +304,7 @@ impl World {
             return Ok(());
         }
         let up = [c[0] / rc, c[1] / rc, c[2] / rc];
-        let surf: f64 = pl.call_method1("surface_radius_exact", (a1(py, up).call_method1("reshape", (1, 3))?,))?.get_item(0)?.extract()?;
+        let surf: f64 = Planet::surface_radius_exact(pla(&pl)?, &IntoPy::<PyObject>::into_py(a1(py, up).call_method1("reshape", (1, 3))?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?.extract()?;
         let roof = surf - (rc + radius);          // 穴の上の土の厚さ（負なら地表に開いている）
         let depth = surf - rc;                    // 穴の中心の深さ
         let roof_min = (radius * 1.2).clamp(1.0, 3.0);
@@ -340,7 +342,7 @@ impl World {
         }
         let flat: Vec<f64> = pts.iter().flatten().copied().collect();
         let n = pts.len();
-        let sd: Vec<f64> = pl.call_method1("sdf", (crate::game::construct::arr(py, flat, &[n, 3])?,))?.extract()?;
+        let sd: Vec<f64> = Planet::sdf(pla(&pl)?, &IntoPy::<PyObject>::into_py(crate::game::construct::arr(py, flat, &[n, 3])?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.extract()?;
         let solid: Vec<V3> = pts.iter().zip(sd.iter()).filter(|(_, d)| **d < -0.1).map(|(q, _)| *q).collect();
         if solid.len() < 2 {
             return Ok(());
@@ -351,7 +353,7 @@ impl World {
         loop {
             let h = rc + step * k;
             let q = [ctr[0] + up[0] * h, ctr[1] + up[1] * h, ctr[2] + up[2] * h];
-            pl.call_method1("dig", (a1(py, q), rr))?;
+            Planet::dig(pla(&pl)?, &IntoPy::<PyObject>::into_py(a1(py, q), pl.py()).into_bound(pl.py()), IntoPy::<PyObject>::into_py(rr, pl.py()).extract::<f64>(pl.py())?).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;
             if h - rr > top {
                 break;
             }

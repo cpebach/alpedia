@@ -1,5 +1,7 @@
 //! Rust の画面：機器の設定（P）（main/client_rs/screens_dev.py）。今までの画面の device_ui.DevicePanel・actuator_ui.ActuatorPanel と同じ中身。
 
+use crate::game::world::{wld, World};
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
@@ -43,79 +45,103 @@ fn dev_of<'py>(s: &Bound<'py, PyAny>, i: &Bound<'py, PyAny>) -> R<Bound<'py, PyA
 
 /// 機器の名前などの設定。on_close：閉じたあとに呼ぶ（アクチュエーターの設定から開いたとき）
 #[pyclass(module = "alpedia_core", extends = Screen, subclass)]
-pub struct DevicePanel {}
+pub struct DevicePanel {
+    /// _key（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_key: Option<PyObject>,
+    /// c（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_c: Option<PyObject>,
+    /// cell（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cell: Option<PyObject>,
+    /// default_name（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_default_name: Option<PyObject>,
+    /// dtype（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_dtype: Option<PyObject>,
+    /// info（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_info: Option<PyObject>,
+    /// name（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_name: Option<PyObject>,
+    /// on_close（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_on_close: Option<PyObject>,
+    /// start_name（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_start_name: Option<PyObject>,
+    /// type_name（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_type_name: Option<PyObject>,
+    /// v（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_v: Option<PyObject>,
+    /// valve_text（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_valve_text: Option<PyObject>,
+    /// w（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_w: Option<PyObject>,
+}
 
 #[pymethods]
 impl DevicePanel {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(py: Python<'_>, _a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> (Self, Screen) {
-        (DevicePanel {}, Screen::blank(py))
+        (DevicePanel { a_key: None, a_c: None, a_cell: None, a_default_name: None, a_dtype: None, a_info: None, a_name: None, a_on_close: None, a_start_name: None, a_type_name: None, a_v: None, a_valve_text: None, a_w: None }, Screen::blank(py))
     }
     #[pyo3(signature = (ui, viewer, c, index, on_close=None))]
     fn __init__(slf: &Bound<'_, Self>, ui: &Bound<'_, PyAny>, viewer: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, index: &Bound<'_, PyAny>,
                 on_close: Option<PyObject>) -> R<()> {
         let py = slf.py();
         Screen::init_base(slf.downcast::<Screen>()?, ui)?;
-        let s = slf.as_any();
-        s.setattr("v", viewer)?;
-        s.setattr("w", viewer.getattr("w")?)?;
-        s.setattr("c", c)?;
-        s.setattr("cell", Construct::g_cells(con(&c)?)?.get_item(index)?)?;
-        s.setattr("on_close", on_close.unwrap_or_else(|| py.None()))?;
+        Self::sa_v(slf, viewer)?;
+        Self::sa_w(slf, viewer.getattr("w")?)?;
+        Self::sa_c(slf, c)?;
+        Self::sa_cell(slf, Construct::g_cells(con(&c)?)?.get_item(index)?)?;
+        Self::sa_on_close(slf, on_close.unwrap_or_else(|| py.None()))?;
         let d = Construct::g_devs(con(&c)?)?.get_item(index)?;
         let mut dd = c.getattr("reg")?.call_method1("device", (d.get_item("def")?,))?;
         if !dd.is_truthy()? {
             dd = PyDict::new_bound(py).into_any();
         }
-        let ty = dd.call_method1("get", ("type",))?;
-        s.setattr("dtype", &ty)?;
-        s.setattr("default_name", dd.call_method1("get", ("name", d.get_item("def")?))?)?;
-        s.setattr("type_name", dui(py)?.getattr("TYPE_NAMES")?.call_method1("get", (&ty, dd.call_method1("get", ("type", "機器"))?))?)?;
-        s.setattr("start_name", d.get_item("name")?)?;
+        let ty = dd.dget1("type")?;
+        Self::sa_dtype(slf, &ty)?;
+        Self::sa_default_name(slf, dd.dget2("name", d.get_item("def")?)?)?;
+        Self::sa_type_name(slf, dui(py)?.getattr("TYPE_NAMES")?.dget2(&ty, dd.dget2("type", "機器")?)?)?;
+        Self::sa_start_name(slf, d.get_item("name")?)?;
         Ok(())
     }
     #[getter]
     fn index<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
-        let s = slf.as_any();
-        a(s, "c")?.getattr("index")?.call_method1("get", (a(s, "cell")?,))
+        Self::ga_c(slf)?.getattr("index")?.dget1(Self::ga_cell(slf)?)
     }
     fn _noop(&self) {}
-    fn _name_default(slf: &Bound<'_, Self>) -> R<()> {
-        let s = slf.as_any();
-        a(s, "name")?.call_method1("set", (a(s, "default_name")?,))?;
+    pub(crate) fn _name_default(slf: &Bound<'_, Self>) -> R<()> {
+        Self::ga_name(slf)?.call_method1("set", (Self::ga_default_name(slf)?,))?;
         Ok(())
     }
-    fn _name_back(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _name_back(slf: &Bound<'_, Self>) -> R<()> {
         let f = a(slf.as_any(), "name")?;
         let mut v: String = f.getattr("value")?.extract()?;
         v.pop();
         f.call_method1("set", (v,))?;
         Ok(())
     }
-    fn build(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn build(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         s.call_method0("clear")?;
         btn(s, "", 0.0, 0.0, 3.0, 2.0, a(s, "_noop")?.unbind(), (0.0, 0.0, 0.0, 0.55), 0.022, None, None)?;
         s.call_method1("panel", (-0.55, 0.4, 0.55, -0.4))?;
-        txt(s, format!("{} の設定", a(s, "type_name")?.str()?), 0.0, 0.37, 0.035, WHITE, (0.5, 0.0))?;
+        txt(s, format!("{} の設定", Self::ga_type_name(slf)?.str()?), 0.0, 0.37, 0.035, WHITE, (0.5, 0.0))?;
         txt(s, "名前", -0.5, 0.265, 0.0225, WHITE, (0.0, 0.0))?;
         let du = dui(py)?;
-        let name = s.call_method1("field", (-0.26, 0.25, 0.62, 0.05, a(s, "start_name")?, du.getattr("NAME_LIMIT")?, a(s, "ok")?))?;
-        s.setattr("name", &name)?;
+        let name = s.call_method1("field", (-0.26, 0.25, 0.62, 0.05, Self::ga_start_name(slf)?, du.getattr("NAME_LIMIT")?, a(s, "ok")?))?;
+        Self::sa_name(slf, &name)?;
         b(s, "既定の名前", -0.27, 0.16, a(s, "_name_default")?.unbind(), 0.17, BLUE, 0.0175)?;
         b(s, "1文字消す", -0.09, 0.16, a(s, "_name_back")?.unbind(), 0.17, BLUE, 0.0175)?;
         b(s, "全部消す", 0.09, 0.16, partial(&name.getattr("set")?, vec!["".into_py(py)], None)?, 0.17, BLUE, 0.0175)?;
         b(s, "同名に番号を振る", 0.29, 0.16, a(s, "number_all")?.unbind(), 0.2, (0.6, 0.45, 0.15, 1.0), 0.0175)?;
-        s.setattr("info", txt(s, "", -0.5, 0.09, 0.018, GREY, (0.0, 0.0))?)?;
+        Self::sa_info(slf, txt(s, "", -0.5, 0.09, 0.018, GREY, (0.0, 0.0))?)?;
         txt(s, "同じ名前の機器は、コンピューターからまとめて動きます。\n\
                 名前を分けると、ブロックの機器選択や api.device(\"名前\") で個別に制御できます。\n\
                 （名前はキーボードで入力します。日本語の入力もできます）", -0.5, -0.09, 0.0155, GREY, (0.0, 0.0))?;
-        s.setattr("valve_text", py.None())?;
-        let dt = a(s, "dtype")?;
+        Self::sa_valve_text(slf, py.None())?;
+        let dt = Self::ga_dtype(slf)?;
         if dt.eq("valve")? {
-            s.setattr("valve_text", txt(s, "", -0.5, -0.23, 0.02, WHITE, (0.0, 0.0))?)?;
+            Self::sa_valve_text(slf, txt(s, "", -0.5, -0.23, 0.02, WHITE, (0.0, 0.0))?)?;
             for (k, v) in [0.0, 0.1, 0.25, 0.5, 0.75, 1.0].iter().enumerate() {
                 b(s, &pff(py, *v, ".0%")?, -0.18 + k as f64 * 0.1, -0.245, me(s, "set_open", vec![v.into_py(py)])?, 0.085, BLUE, 0.0175)?;
             }
@@ -125,10 +151,10 @@ impl DevicePanel {
         }
         b(s, "OK", 0.2, -0.33, a(s, "ok")?.unbind(), 0.16, (0.2, 0.5, 0.3, 1.0), 0.02)?;
         b(s, "キャンセル", 0.38, -0.33, a(s, "close")?.unbind(), 0.16, (0.3, 0.3, 0.33, 1.0), 0.02)?;
-        s.setattr("_key", py.None())?;
+        Self::sa_key(slf, py.None())?;
         Ok(())
     }
-    fn number_all(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn number_all(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let i = a(s, "index")?;
@@ -136,16 +162,16 @@ impl DevicePanel {
             return Ok(());
         }
         let d = dev_of(s, &i)?;
-        let nv: String = a(s, "name")?.getattr("value")?.call_method0("strip")?.extract()?;
+        let nv: String = Self::ga_name(slf)?.getattr("value")?.call_method0("strip")?.extract()?;
         let name: Bound<'_, PyAny> = if nv.is_empty() { d.get_item("name")? } else { PyString::new_bound(py, &nv).into_any() };
         d.set_item("name", &name)?;
-        let n = dui(py)?.call_method1("number_same_named", (a(s, "c")?, &name))?;
-        a(s, "name")?.call_method1("set", (dev_of(s, &i)?.get_item("name")?,))?;
+        let n = dui(py)?.call_method1("number_same_named", (Self::ga_c(slf)?, &name))?;
+        Self::ga_name(slf)?.call_method1("set", (dev_of(s, &i)?.get_item("name")?,))?;
         let msg = if n.is_truthy()? { format!("「{}」{} 個に番号を付けました", name.str()?, n.str()?) } else { format!("「{}」という名前の機器は1つだけです", name.str()?) };
-        a(s, "w")?.call_method1("message", (msg,))?;
+        Self::ga_w(slf)?.call_method1("message", (msg,))?;
         Ok(())
     }
-    fn set_open(slf: &Bound<'_, Self>, v: f64) -> R<()> {
+    pub(crate) fn set_open(slf: &Bound<'_, Self>, v: f64) -> R<()> {
         let s = slf.as_any();
         let i = a(s, "index")?;
         if i.is_none() {
@@ -158,30 +184,30 @@ impl DevicePanel {
         }
         Ok(())
     }
-    fn update(slf: &Bound<'_, Self>, _dt: f64) -> R<()> {
+    pub(crate) fn update(slf: &Bound<'_, Self>, _dt: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let i = a(s, "index")?;
-        let info = a(s, "info")?;
+        let info = Self::ga_info(slf)?;
         if i.is_none() {
             info.call_method1("set", ("機器が見つかりません", 0.018, GREY))?;
             return Ok(());
         }
         let d = dev_of(s, &i)?;
-        let vt = a(s, "valve_text")?;
+        let vt = Self::ga_valve_text(slf)?;
         if !vt.is_none() {
-            let o: f64 = d.get_item("state")?.call_method1("get", ("open", 1.0))?.extract()?;
+            let o: f64 = d.get_item("state")?.dget2("open", 1.0)?.extract()?;
             vt.call_method1("set", (format!("開き具合 {}{}", pff(py, o, ".0%")?, if o <= 0.0 { "（閉）" } else { "" }), 0.02))?;
         }
-        let name: String = a(s, "name")?.getattr("value")?.call_method0("strip")?.extract()?;
-        let c = a(s, "c")?;
+        let name: String = Self::ga_name(slf)?.getattr("value")?.call_method0("strip")?.extract()?;
+        let c = Self::ga_c(slf)?;
         let mut dup = 0;
         for k in dui(py)?.call_method1("same_named", (&c, &name))?.iter()? {
             if !k?.eq(&i)? {
                 dup += 1;
             }
         }
-        let mut lines = vec![format!("構築物: {}　種類: {}（{}）", c.getattr("name")?.str()?, a(s, "type_name")?.str()?, d.get_item("def")?.str()?)];
+        let mut lines = vec![format!("構築物: {}　種類: {}（{}）", c.getattr("name")?.str()?, Self::ga_type_name(slf)?.str()?, d.get_item("def")?.str()?)];
         if name.is_empty() {
             lines.push("名前が空です".into());
         } else if dup > 0 {
@@ -193,36 +219,36 @@ impl DevicePanel {
         info.call_method1("set", (lines.join("\n"), 0.018, GREY))?;
         Ok(())
     }
-    fn ok(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn ok(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let i = a(s, "index")?;
-        let name: String = a(s, "name")?.getattr("value")?.call_method0("strip")?.extract()?;
+        let name: String = Self::ga_name(slf)?.getattr("value")?.call_method0("strip")?.extract()?;
         if !i.is_none() && !name.is_empty() {
             let d = dev_of(s, &i)?;
             let old = d.get_item("name")?;
             d.set_item("name", &name)?;
             if !old.eq(&name)? {
-                let c = a(s, "c")?;
+                let c = Self::ga_c(slf)?;
                 let du = dui(py)?;
                 let mut n = 0i64;
                 if !du.call_method1("same_named", (&c, &old))?.is_truthy()? {
-                    n = du.call_method1("update_programs", (a(s, "w")?, &c, &old, &name))?.extract()?;
+                    n = du.call_method1("update_programs", (Self::ga_w(slf)?, &c, &old, &name))?.extract()?;
                 }
-                a(s, "w")?.call_method1("message", (format!("名前を変更: {} → {}{}", old.str()?, name,
+                Self::ga_w(slf)?.call_method1("message", (format!("名前を変更: {} → {}{}", old.str()?, name,
                     if n != 0 { format!("（ブロックプログラム {} 個も更新）", n) } else { String::new() }),))?;
             }
         }
-        s.call_method0("close")?;
+        Self::close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn on_key(slf: &Bound<'_, Self>, key: &str) -> R<bool> {
+    pub(crate) fn on_key(slf: &Bound<'_, Self>, key: &str) -> R<bool> {
         if key == "escape" {
-            slf.call_method0("close")?;
+            Self::close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         }
         Ok(true)
     }
-    fn close(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn close(slf: &Bound<'_, Self>) -> R<()> {
         Screen::close(slf.downcast::<Screen>()?)?;
         let oc = a(slf.as_any(), "on_close")?;
         if !oc.is_none() {
@@ -283,23 +309,41 @@ fn fmt(py: Python<'_>, spec: &str, unit: &str) -> R<PyObject> {
 
 /// アクチュエーター・ピストン・ヒンジの動作設定
 #[pyclass(module = "alpedia_core", extends = Screen, subclass)]
-pub struct ActuatorPanel {}
+pub struct ActuatorPanel {
+    /// actions（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_actions: Option<PyObject>,
+    /// c（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_c: Option<PyObject>,
+    /// cell（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_cell: Option<PyObject>,
+    /// hinge（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_hinge: Option<PyObject>,
+    /// preset（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_preset: Option<PyObject>,
+    /// status（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_status: Option<PyObject>,
+    /// v（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_v: Option<PyObject>,
+    /// w（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_w: Option<PyObject>,
+    /// ui（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_ui: Option<PyObject>,
+}
 
 #[pymethods]
 impl ActuatorPanel {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     fn new(py: Python<'_>, _a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> (Self, Screen) {
-        (ActuatorPanel {}, Screen::blank(py))
+        (ActuatorPanel { a_ui: None, a_actions: None, a_c: None, a_cell: None, a_hinge: None, a_preset: None, a_status: None, a_v: None, a_w: None }, Screen::blank(py))
     }
     fn __init__(slf: &Bound<'_, Self>, ui: &Bound<'_, PyAny>, viewer: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, index: &Bound<'_, PyAny>) -> R<()> {
         let py = slf.py();
         Screen::init_base(slf.downcast::<Screen>()?, ui)?;
-        let s = slf.as_any();
-        s.setattr("v", viewer)?;
-        s.setattr("w", viewer.getattr("w")?)?;
-        s.setattr("c", c)?;
-        s.setattr("cell", Construct::g_cells(con(&c)?)?.get_item(index)?)?;
+        Self::sa_v(slf, viewer)?;
+        Self::sa_w(slf, viewer.getattr("w")?)?;
+        Self::sa_c(slf, c)?;
+        Self::sa_cell(slf, Construct::g_cells(con(&c)?)?.get_item(index)?)?;
         let d = Construct::g_devs(con(&c)?)?.get_item(index)?;
         let st = d.get_item("state")?;
         let reg = c.getattr("reg")?;
@@ -311,41 +355,39 @@ impl ActuatorPanel {
         }
         let ac = act(py)?;
         ac.call_method1("init_state", (&st, dd.get_item("params")?))?;
-        let mut p0 = st.call_method1("get", ("preset",))?;
+        let mut p0 = st.dget1("preset")?;
         if !p0.is_truthy()? {
             p0 = ac.call_method1("default_preset", (&d, &reg))?;
         }
         let mut p = PyDict::new_bound(py).into_any();
         p.call_method1("update", (p0,))?;
         let actions = ac.call_method1("actions_for", (&d, &reg))?;
-        s.setattr("actions", &actions)?;
-        if !actions.contains(p.call_method1("get", ("action",))?)? {
+        Self::sa_actions(slf, &actions)?;
+        if !actions.contains(p.dget1("action")?)? {
             p = ac.call_method1("default_preset", (&d, &reg))?;
         }
-        s.setattr("hinge", ac.call_method1("is_hinge_dev", (&d, &reg))?)?;
+        Self::sa_hinge(slf, ac.call_method1("is_hinge_dev", (&d, &reg))?)?;
         let pr = PyDict::new_bound(py);
-        pr.set_item("action", p.call_method1("get", ("action", "rotate"))?)?;
-        pr.set_item("amount", p.call_method1("get", ("amount", 90.0))?)?;
-        pr.set_item("speed", p.call_method1("get", ("speed", 90.0))?)?;
-        s.setattr("preset", pr)?;
-        s.call_method0("_fix_values")?;
+        pr.set_item("action", p.dget2("action", "rotate")?)?;
+        pr.set_item("amount", p.dget2("amount", 90.0)?)?;
+        pr.set_item("speed", p.dget2("speed", 90.0)?)?;
+        Self::sa_preset(slf, pr)?;
+        Self::_fix_values(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
     #[getter]
     fn index<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
-        let s = slf.as_any();
-        a(s, "c")?.getattr("index")?.call_method1("get", (a(s, "cell")?,))
+        Self::ga_c(slf)?.getattr("index")?.dget1(Self::ga_cell(slf)?)
     }
     fn _noop(&self) {}
-    fn _fix_values(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _fix_values(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
-        let p = a(s, "preset")?;
+        let p = Self::ga_preset(slf)?;
         let au = aui(py)?;
         let near = au.getattr("_nearest")?;
         let ac = act(py)?;
         let act_ = p.get_item("action")?;
-        let hinge = a(s, "hinge")?.is_truthy()?;
+        let hinge = Self::ga_hinge(slf)?.is_truthy()?;
         if act_.eq("rotate")? {
             let am = if hinge { ac.getattr("HINGE_AMOUNTS")? } else { au.getattr("ROT_AMOUNTS")? };
             p.set_item("amount", near.call1((am, p.get_item("amount")?, 90.0))?)?;
@@ -359,7 +401,7 @@ impl ActuatorPanel {
         }
         Ok(())
     }
-    fn build(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn build(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         s.call_method0("clear")?;
@@ -370,11 +412,11 @@ impl ActuatorPanel {
         let name = if d.is_truthy()? { d.get_item("name")?.str()?.to_string() } else { "アクチュエーター".into() };
         txt(s, format!("{} の動作設定", name), -0.1, 0.35, 0.032, WHITE, (0.5, 0.5))?;
         s.call_method1("button", ("名前を変更", 0.36, 0.35, 0.26, 0.055, a(s, "open_rename")?, (0.6, 0.45, 0.15, 1.0), 0.02))?;
-        s.setattr("status", txt(s, "", -0.46, 0.27, 0.0188, GREY, (0.0, 0.0))?)?;
+        Self::sa_status(slf, txt(s, "", -0.46, 0.27, 0.0188, GREY, (0.0, 0.0))?)?;
         let y = 0.12;
-        let p = a(s, "preset")?;
+        let p = Self::ga_preset(slf)?;
         let act_ = p.get_item("action")?;
-        let hinge = a(s, "hinge")?.is_truthy()?;
+        let hinge = Self::ga_hinge(slf)?.is_truthy()?;
         let ac = act(py)?;
         let au = aui(py)?;
         let names = PyDict::new_bound(py);
@@ -383,7 +425,7 @@ impl ActuatorPanel {
             names.set_item("rotate", "曲げる")?;
         }
         let nf = Py::new(py, Fmt { names: names.into_any().unbind(), spec: String::new(), unit: String::new() })?.into_any();
-        Self::_row(slf, "動作", y, &a(s, "actions")?, &act_, nf, a(s, "_set_action")?.unbind())?;
+        Self::_row(slf, "動作", y, &Self::ga_actions(slf)?, &act_, nf, a(s, "_set_action")?.unbind())?;
         let setter = |k: &str| -> R<PyObject> { partial(&p.getattr("__setitem__")?, vec![k.into_py(py)], None) };
         if act_.eq("rotate")? {
             let am = if hinge { ac.getattr("HINGE_AMOUNTS")? } else { au.getattr("ROT_AMOUNTS")? };
@@ -420,7 +462,7 @@ impl ActuatorPanel {
         s.call_method1("button", ("キャンセル", 0.3, -0.3, 0.26, 0.055, a(s, "close")?, (0.3, 0.3, 0.33, 1.0), 0.02))?;
         Ok(())
     }
-    fn _row(slf: &Bound<'_, Self>, label: &str, y: f64, values: &Bound<'_, PyAny>, current: &Bound<'_, PyAny>, fmt: PyObject, on_change: PyObject) -> R<()> {
+    pub(crate) fn _row(slf: &Bound<'_, Self>, label: &str, y: f64, values: &Bound<'_, PyAny>, current: &Bound<'_, PyAny>, fmt: PyObject, on_change: PyObject) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let vals = PyList::new_bound(py, values.iter()?.collect::<R<Vec<_>>>()?);
@@ -432,7 +474,7 @@ impl ActuatorPanel {
         s.call_method1("button", ("▶", 0.36, y, 0.05, 0.05, partial(&step, vec![1i64.into_py(py)], None)?, BLUE))?;
         Ok(())
     }
-    fn _set_action(slf: &Bound<'_, Self>, v: &Bound<'_, PyAny>) -> R<()> {
+    pub(crate) fn _set_action(slf: &Bound<'_, Self>, v: &Bound<'_, PyAny>) -> R<()> {
         let p = a(slf.as_any(), "preset")?;
         p.set_item("action", v)?;
         if v.eq("rotate")? {
@@ -442,74 +484,74 @@ impl ActuatorPanel {
             p.set_item("amount", 1.0)?;
             p.set_item("speed", 0.5)?;
         }
-        slf.call_method0("build")?;
+        Self::build(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn _store(slf: &Bound<'_, Self>) -> R<bool> {
+    pub(crate) fn _store(slf: &Bound<'_, Self>) -> R<bool> {
         let s = slf.as_any();
         let i = a(s, "index")?;
         if i.is_none() {
             return Ok(false);
         }
         let d = PyDict::new_bound(s.py());
-        d.call_method1("update", (a(s, "preset")?,))?;
+        d.call_method1("update", (Self::ga_preset(slf)?,))?;
         dev_of(s, &i)?.get_item("state")?.set_item("preset", d)?;
         Ok(true)
     }
-    fn save_close(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn save_close(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        if s.call_method0("_store")?.is_truthy()? {
-            let t = act(py)?.call_method1("preset_text", (dev_of(s, &a(s, "index")?)?.get_item("state")?, a(s, "hinge")?))?;
-            a(s, "w")?.call_method1("message", (format!("動作を設定: {}（E で実行）", t.str()?),))?;
+        if Self::_store(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?.is_truthy()? {
+            let t = act(py)?.call_method1("preset_text", (dev_of(s, &a(s, "index")?)?.get_item("state")?, Self::ga_hinge(slf)?))?;
+            Self::ga_w(slf)?.call_method1("message", (format!("動作を設定: {}（E で実行）", t.str()?),))?;
         }
-        s.call_method0("close")?;
+        Self::close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn run_now(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn run_now(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
-        if s.call_method0("_store")?.is_truthy()? {
-            let w = a(s, "w")?;
+        if Self::_store(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?.is_truthy()? {
+            let w = Self::ga_w(slf)?;
             let net = w.getattr("net").unwrap_or_else(|_| py.None().into_bound(py));
             if !net.is_none() && net.getattr("role")?.eq("client")? {
-                net.call_method1("actuator_run", (a(s, "c")?, a(s, "index")?))?;
+                net.call_method1("actuator_run", (Self::ga_c(slf)?, a(s, "index")?))?;
             } else {
-                w.call_method1("message", (act(py)?.call_method1("execute_preset", (&w, a(s, "c")?, a(s, "index")?))?,))?;
+                World::message(wld(&w)?, &IntoPy::<PyObject>::into_py(act(py)?.call_method1("execute_preset", (&w, Self::ga_c(slf)?, a(s, "index")?))?, w.py()).extract::<String>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             }
         }
-        s.call_method0("close")?;
+        Self::close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn open_rename(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn open_rename(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let i = a(s, "index")?;
         if !i.is_none() {
             let k = PyDict::new_bound(py);
             k.set_item("on_close", a(s, "build")?)?;
-            a(s, "ui")?.call_method("open", (py.get_type_bound::<DevicePanel>(), a(s, "v")?, a(s, "c")?, i), Some(&k))?;
+            Self::ga_ui(slf)?.call_method("open", (py.get_type_bound::<DevicePanel>(), Self::ga_v(slf)?, Self::ga_c(slf)?, i), Some(&k))?;
         }
         Ok(())
     }
-    fn on_key(slf: &Bound<'_, Self>, key: &str) -> R<bool> {
+    pub(crate) fn on_key(slf: &Bound<'_, Self>, key: &str) -> R<bool> {
         if key == "escape" {
-            slf.call_method0("save_close")?;
+            Self::save_close(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         } else if key == "enter" {
-            slf.call_method0("run_now")?;
+            Self::run_now(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         }
         Ok(true)
     }
-    fn update(slf: &Bound<'_, Self>, _dt: f64) -> R<()> {
+    pub(crate) fn update(slf: &Bound<'_, Self>, _dt: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let i = a(s, "index")?;
-        let status = a(s, "status")?;
+        let status = Self::ga_status(slf)?;
         if i.is_none() {
             status.call_method1("set", ("アクチュエーターが失われました", 0.0188, GREY))?;
             return Ok(());
         }
-        let c = a(s, "c")?;
+        let c = Self::ga_c(slf)?;
         let dev = dev_of(s, &i)?;
         let st = dev.get_item("state")?;
         let cs = c.getattr("status")?;
@@ -517,7 +559,7 @@ impl ActuatorPanel {
         let att = if ac.call_method1("is_attached", (&c, &i))?.is_truthy()? { "あり" } else { "なし" };
         let moving = if ac.call_method1("busy", (&st,))?.is_truthy()? { "動作中" } else { "停止" };
         let m = ac.call_method1("motion", (&dev, c.getattr("reg")?))?;
-        let g = |k: &str, spec: &str| -> R<String> { pf(&st.call_method1("get", (k, 0))?, spec) };
+        let g = |k: &str, spec: &str| -> R<String> { pf(&st.dget2(k, 0)?, spec) };
         let val = if m.eq("piston")? {
             format!("伸び {} ブロック   ", g("ext", ".2f")?)
         } else if m.eq("both")? {
@@ -525,14 +567,93 @@ impl ActuatorPanel {
         } else {
             format!("角度 {}°   ", g("angle", ".0f")?)
         };
-        let stored: f64 = if cs.is_truthy()? { cs.call_method1("get", ("stored", 0))?.extract()? } else { 0.0 };
+        let stored: f64 = if cs.is_truthy()? { cs.dget2("stored", 0)?.extract()? } else { 0.0 };
         status.call_method1("set", (format!("{}出力面の結合 {}   {}\n電力 {} MJ（動かすには電力が必要）", val, att, moving, pff(py, stored / 1e6, ".2f")?),
             0.0188, GREY))?;
         Ok(())
     }
-    fn close(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn close(slf: &Bound<'_, Self>) -> R<()> {
         Screen::close(slf.downcast::<Screen>()?)?;
         a(slf.as_any(), "v")?.call_method0("screen_closed")?;
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------- DevicePanel の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! devicepanel_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl DevicePanel { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl DevicePanel { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+devicepanel_attr_fields!(
+    ga_key sa_key pga_key psa_key a_key "_key", ga_c sa_c pga_c psa_c a_c "c", ga_cell sa_cell pga_cell psa_cell a_cell "cell", ga_default_name sa_default_name pga_default_name psa_default_name a_default_name "default_name", ga_dtype sa_dtype pga_dtype psa_dtype a_dtype "dtype", ga_info sa_info pga_info psa_info a_info "info", ga_name sa_name pga_name psa_name a_name "name", ga_on_close sa_on_close pga_on_close psa_on_close a_on_close "on_close", ga_start_name sa_start_name pga_start_name psa_start_name a_start_name "start_name", ga_type_name sa_type_name pga_type_name psa_type_name a_type_name "type_name", ga_v sa_v pga_v psa_v a_v "v", ga_valve_text sa_valve_text pga_valve_text psa_valve_text a_valve_text "valve_text", ga_w sa_w pga_w psa_w a_w "w"
+);
+
+// ---------------------------------------------------------------- ActuatorPanel の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! actuatorpanel_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl ActuatorPanel { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl ActuatorPanel { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+actuatorpanel_attr_fields!(
+    ga_actions sa_actions pga_actions psa_actions a_actions "actions", ga_c sa_c pga_c psa_c a_c "c", ga_cell sa_cell pga_cell psa_cell a_cell "cell", ga_hinge sa_hinge pga_hinge psa_hinge a_hinge "hinge", ga_preset sa_preset pga_preset psa_preset a_preset "preset", ga_status sa_status pga_status psa_status a_status "status", ga_v sa_v pga_v psa_v a_v "v", ga_w sa_w pga_w psa_w a_w "w"
+);
+actuatorpanel_attr_fields!(
+    ga_ui sa_ui pga_ui psa_ui a_ui "ui"
+);

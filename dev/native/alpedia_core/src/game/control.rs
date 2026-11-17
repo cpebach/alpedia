@@ -5,6 +5,8 @@
 //! - 書き込みは決まった項目だけ（WRITABLE）。値は検査してから入れる
 //! - 機器は番号（構築物の中のブロックの番号）で指す。番号は毎ティック devices() で取り直す
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use numpy::{PyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
@@ -105,12 +107,12 @@ impl Port {
                 0 <= k && k < n
             };
             let fit = if use_part {
-                c.call_method1("rigid_fit", (c.call_method1("part_of", (f,))?,))?
+                Construct::rigid_fit(con(&c)?, Some(&IntoPy::<PyObject>::into_py(c.call_method1("part_of", (f,))?, c.py()).into_bound(c.py()))).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?
             } else {
-                c.call_method0("rigid_fit")?
+                Construct::rigid_fit(con(&c)?, None).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?
             };
             let rr = fit.get_item(0)?;
-            self.pose_cache = (c.call_method0("center_of_mass")?, rr, c.call_method0("velocity")?, c.call_method0("angular_velocity")?).into_py(py);
+            self.pose_cache = (Construct::center_of_mass(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?, rr, Construct::velocity(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?, Construct::angular_velocity(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?).into_py(py);
         }
         Ok(self.pose_cache.clone_ref(py))
     }
@@ -172,7 +174,7 @@ impl Port {
         if pl.is_none() {
             return Ok(PyArray1::from_vec_bound(py, vec![0.0, 1.0, 0.0]).into_any().unbind());
         }
-        Ok(pl.call_method1("up", (p,))?.unbind())
+        Ok(Planet::up(pla(&pl)?, &IntoPy::<PyObject>::into_py(p, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.unbind())
     }
 
     fn altitude(&mut self, py: Python<'_>) -> R<f64> {
@@ -182,7 +184,7 @@ impl Port {
         }
         let p = self.pose(py)?.into_bound(py).get_item(0)?;
         let q = p.call_method1("__getitem__", (py.None(),))?;
-        float_of(&pl.call_method1("sdf", (q,))?.get_item(0)?)
+        float_of(&Planet::sdf(pla(&pl)?, &IntoPy::<PyObject>::into_py(q, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?)
     }
 
     /// 重心の場所の重力加速度（すべての天体の分を足したもの）[3] m/s²
@@ -198,7 +200,7 @@ impl Port {
         if pl.is_none() {
             return Ok(None);
         }
-        let k = float_of(&self.w.bind(py).getattr("settings")?.call_method1("get", ("gravity_scale", 1.0))?)?;
+        let k = float_of(&self.w.bind(py).getattr("settings")?.dget2("gravity_scale", 1.0)?)?;
         let gm = float_of(&pl.getattr("gm")?)?;
         let rad = float_of(&pl.getattr("radius")?)?;
         let d = PyDict::new_bound(py);
@@ -251,7 +253,7 @@ impl Port {
 
     #[pyo3(signature = (i, key, default=None))]
     fn device_get<'py>(&self, py: Python<'py>, i: i64, key: &Bound<'py, PyAny>, default: Option<PyObject>) -> R<PyObject> {
-        let v = self.dev(py, i)?.get_item("state")?.call_method1("get", (key, default.unwrap_or_else(|| py.None())))?;
+        let v = self.dev(py, i)?.get_item("state")?.dget2(key, default.unwrap_or_else(|| py.None()))?;
         if let Ok(d) = v.downcast::<PyDict>() {
             return Ok(d.copy()?.into_any().unbind());
         }
@@ -276,7 +278,7 @@ impl Port {
             }
         }
         let st = d.get_item("state")?;
-        let lit = st.call_method1("get", ("lit",))?.is_truthy()?;
+        let lit = st.dget1("lit")?.is_truthy()?;
         if key == "throttle" {
             if v.extract::<f64>(py)? > 0.0 && !lit {
                 st.set_item("ignite", true)?;
@@ -295,7 +297,7 @@ impl Port {
 
     /// MOD の機器（type custom）の state["data"]（そのまま。MOD が書き換えてよい）
     fn custom_data<'py>(&self, py: Python<'py>, i: i64) -> R<Bound<'py, PyAny>> {
-        self.dev(py, i)?.get_item("state")?.call_method1("setdefault", ("data", PyDict::new_bound(py)))
+        self.dev(py, i)?.get_item("state")?.dsetdefault("data", PyDict::new_bound(py))
     }
 
     #[getter]
@@ -335,7 +337,7 @@ impl Port {
     fn set_display(&self, py: Python<'_>, i: i64, payload: &Bound<'_, PyAny>) -> R<()> {
         let st = self.dev(py, i)?.get_item("state")?;
         if payload.is_none() {
-            st.call_method1("pop", ("display", py.None()))?;
+            st.dpop2("display", py.None())?;
         } else {
             st.set_item("display", payload)?;
         }

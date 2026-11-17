@@ -52,6 +52,107 @@ pub mod shape_tables;
 use pyo3::prelude::*;
 
 /// モジュールを読み込む（builtins.__import__ を通さない。ゲーム内スクリプトの実行中は __import__ が制限されているため）
+/// dict の get・pop・setdefault を、dict なら Python のメソッドを通さずに（型つきの PyDict の読み書きで）する（C-01）。
+/// dict でない物（MOD の自前の入れ物など）は、今までどおり Python のメソッドを呼ぶ
+pub trait PyDictOps<'py> {
+    fn dget1(&self, k: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>>;
+    fn dget2(&self, k: impl IntoPy<PyObject>, d: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>>;
+    fn dpop1(&self, k: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>>;
+    fn dpop2(&self, k: impl IntoPy<PyObject>, d: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>>;
+    fn dsetdefault(&self, k: impl IntoPy<PyObject>, d: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>>;
+}
+
+impl<'py> PyDictOps<'py> for Bound<'py, PyAny> {
+    fn dget1(&self, k: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>> {
+        let py = self.py();
+        match self.downcast::<pyo3::types::PyDict>() {
+            Ok(d) => Ok(d.get_item(k.into_py(py))?.unwrap_or_else(|| py.None().into_bound(py))),
+            Err(_) => self.call_method1("get", (k.into_py(py),)),
+        }
+    }
+    fn dget2(&self, k: impl IntoPy<PyObject>, dflt: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>> {
+        let py = self.py();
+        match self.downcast::<pyo3::types::PyDict>() {
+            Ok(d) => Ok(match d.get_item(k.into_py(py))? {
+                Some(v) => v,
+                None => dflt.into_py(py).into_bound(py),
+            }),
+            Err(_) => self.call_method1("get", (k.into_py(py), dflt.into_py(py))),
+        }
+    }
+    fn dpop1(&self, k: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>> {
+        let py = self.py();
+        let k = k.into_py(py);
+        match self.downcast::<pyo3::types::PyDict>() {
+            Ok(d) => match d.get_item(&k)? {
+                Some(v) => {
+                    d.del_item(&k)?;
+                    Ok(v)
+                }
+                None => Err(pyo3::exceptions::PyKeyError::new_err(k)),
+            },
+            Err(_) => self.call_method1("pop", (k,)),
+        }
+    }
+    fn dpop2(&self, k: impl IntoPy<PyObject>, dflt: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>> {
+        let py = self.py();
+        let k = k.into_py(py);
+        match self.downcast::<pyo3::types::PyDict>() {
+            Ok(d) => match d.get_item(&k)? {
+                Some(v) => {
+                    d.del_item(&k)?;
+                    Ok(v)
+                }
+                None => Ok(dflt.into_py(py).into_bound(py)),
+            },
+            Err(_) => self.call_method1("pop", (k, dflt.into_py(py))),
+        }
+    }
+    fn dsetdefault(&self, k: impl IntoPy<PyObject>, dflt: impl IntoPy<PyObject>) -> PyResult<Bound<'py, PyAny>> {
+        let py = self.py();
+        let k = k.into_py(py);
+        match self.downcast::<pyo3::types::PyDict>() {
+            Ok(d) => match d.get_item(&k)? {
+                Some(v) => Ok(v),
+                None => {
+                    let v = dflt.into_py(py).into_bound(py);
+                    d.set_item(&k, &v)?;
+                    Ok(v)
+                }
+            },
+            Err(_) => self.call_method1("setdefault", (k, dflt.into_py(py))),
+        }
+    }
+}
+
+/// pathlib.Path の exists・is_dir・is_file を Rust の std::fs で（C-01）。Path・str でない物は今までどおり Python のメソッドを呼ぶ
+pub trait PyPathOps<'py> {
+    fn pexists(&self) -> PyResult<Bound<'py, PyAny>>;
+    fn pis_dir(&self) -> PyResult<Bound<'py, PyAny>>;
+    fn pis_file(&self) -> PyResult<Bound<'py, PyAny>>;
+}
+
+impl<'py> PyPathOps<'py> for Bound<'py, PyAny> {
+    fn pexists(&self) -> PyResult<Bound<'py, PyAny>> {
+        match self.extract::<std::path::PathBuf>() {
+            Ok(p) => Ok(pyo3::types::PyBool::new_bound(self.py(), p.exists()).to_owned().into_any()),
+            Err(_) => self.pexists(),
+        }
+    }
+    fn pis_dir(&self) -> PyResult<Bound<'py, PyAny>> {
+        match self.extract::<std::path::PathBuf>() {
+            Ok(p) => Ok(pyo3::types::PyBool::new_bound(self.py(), p.is_dir()).to_owned().into_any()),
+            Err(_) => self.pis_dir(),
+        }
+    }
+    fn pis_file(&self) -> PyResult<Bound<'py, PyAny>> {
+        match self.extract::<std::path::PathBuf>() {
+            Ok(p) => Ok(pyo3::types::PyBool::new_bound(self.py(), p.is_file()).to_owned().into_any()),
+            Err(_) => self.pis_file(),
+        }
+    }
+}
+
 pub fn imp<'py>(py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyModule>> {
     let n = std::ffi::CString::new(name).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     unsafe {

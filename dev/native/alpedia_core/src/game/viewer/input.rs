@@ -1,5 +1,6 @@
 //! 画面：視線・入力・クリック・画面を開く・キー
 
+use crate::game::world::{wld, World};
 use crate::game::player::{ply, Player};
 use crate::game::construct::{con, Construct};
 use super::*;
@@ -88,7 +89,7 @@ impl Viewer {
                     let m = ga(&sh, "mouse")?;
                     let (mx, my) = (ga(&m, "x")?, ga(&m, "y")?);
                     let pass = !a.is_truthy()? || sh.call_method1("_hit", (&mx, &my))?.is_truthy()?
-                        || ga(&game, "touch_hud")?.call_method1("over_ui", (&mx, &my))?.is_truthy()? || s.call_method0("_touch_mode")?.is_truthy()?;
+                        || ga(&game, "touch_hud")?.call_method1("over_ui", (&mx, &my))?.is_truthy()? || Self::_touch_mode(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?.is_truthy()?;
                     if pass {
                         sh.call_method1("event", (&view, &kind_o, &a, &b, &n))?; // ボタンは指と同じ（ursina のまねの mouse.left）
                         continue;
@@ -126,11 +127,11 @@ impl Viewer {
                 dx += f64of(&a)?;
                 dy += f64of(&b)?;
             } else if kind == "button" && a.is_truthy()? && !Self::ga_grabbed(slf)?.is_truthy()? {
-                if !s.call_method0("_touch_mode")?.is_truthy()? {
+                if !Self::_touch_mode(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?.is_truthy()? {
                     s.call_method1("set_grab", (true,))?;
                 }
             } else if kind == "button" && a.is_truthy()? {
-                s.call_method1("_click", (&n,))?;
+                Self::_click(slf, IntoPy::<PyObject>::into_py(&n, slf.py()).extract::<i64>(slf.py())?).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
             } else if kind == "wheel" && a.is_truthy()? {
                 let sel: i64 = Self::ga_sel(slf)?.extract()?;
                 Self::sa_sel(slf, (sel + if f64of(&a)? > 0.0 { -1 } else { 1 }).rem_euclid(9))?;
@@ -166,10 +167,10 @@ impl Viewer {
         let kind = hit.get_item("kind")?;
         if button == 0 {
             if kind.eq("voxel")? {
-                if !w.call_method1("remove", (&hit,))?.is(&tb(py, false)) {
+                if !World::remove(wld(&w)?, &IntoPy::<PyObject>::into_py(&hit, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?.is(&tb(py, false)) {
                     s.call_method1("sfx", ("break",))?;
                 }
-            } else if (kind.eq("terrain")? || kind.eq("water")?) && !w.call_method1("dig", (&hit,))?.is(&tb(py, false)) {
+            } else if (kind.eq("terrain")? || kind.eq("water")?) && !World::dig(wld(&w)?, &IntoPy::<PyObject>::into_py(&hit, w.py()).into_bound(w.py()), 0.8).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?.is(&tb(py, false)) {
                 s.call_method1("sfx", ("dig",))?;
             }
         } else if button == 1 {
@@ -183,11 +184,11 @@ impl Viewer {
         let w = Self::ga_w(slf)?;
         let item = ga(&ga(&w, "player")?, "hotbar")?.get_item(Self::ga_sel(slf)?)?;
         if item.is_none() {
-            w.call_method1("message", ("アイテムバーのこの枠は空です",))?;
+            World::message(wld(&w)?, "アイテムバーのこの枠は空です").map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             return Ok(());
         }
         let look = Self::look_vectors(slf)?.get_item(3)?;
-        let ok = w.call_method1("place", (hit, &item, Self::ga_dir_index(slf)?, look))?;
+        let ok = World::place(wld(&w)?, &IntoPy::<PyObject>::into_py(hit, w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(&item, w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(Self::ga_dir_index(slf)?, w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(look, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         let name = if !ok.is(&tb(py, false)) { if item.get_item(0)?.eq("device")? { "device" } else { "place" } } else { "error" };
         s.call_method1("sfx", (name,))?;
         Ok(())
@@ -216,7 +217,7 @@ impl Viewer {
         let h = Self::ga_hit(slf)?;
         let ok = h.is_truthy()? && h.get_item("kind")?.eq("voxel")? && h.get_item("construct")?.getattr("devs")?.get_item(h.get_item("index")?)?.is_truthy()?;
         if !ok {
-            w.call_method1("message", ("機器を見ながら P を押すと設定を開けます",))?;
+            World::message(wld(&w)?, "機器を見ながら P を押すと設定を開けます").map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             return Ok(());
         }
         let (c, i) = (h.get_item("construct")?, h.get_item("index")?);
@@ -299,14 +300,14 @@ impl Viewer {
         let (o, d) = (r.get_item(0)?, r.get_item(1)?);
         let eye = v3(&p.call_method0("eye")?)?;
         let reach = f64of(&get(&ga(&p, "defn")?, "reach", 8.0)?)? + norm(sub(v3(&o)?, eye));
-        let hit = w.call_method1("raycast", (&o, &d, reach))?;
+        let hit = World::raycast(wld(&w)?, &IntoPy::<PyObject>::into_py(&o, w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(&d, w.py()).into_bound(w.py()), IntoPy::<PyObject>::into_py(reach, w.py()).extract::<f64>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         let f = tb(py, false);
         if kind == "hold" {
             if hit.is_truthy()? && hit.get_item("kind")?.eq("voxel")? {
-                if !w.call_method1("remove", (&hit,))?.is(&f) {
+                if !World::remove(wld(&w)?, &IntoPy::<PyObject>::into_py(&hit, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?.is(&f) {
                     s.call_method1("sfx", ("break",))?;
                 }
-            } else if hit.is_truthy()? && (hit.get_item("kind")?.eq("terrain")? || hit.get_item("kind")?.eq("water")?) && !w.call_method1("dig", (&hit,))?.is(&f) {
+            } else if hit.is_truthy()? && (hit.get_item("kind")?.eq("terrain")? || hit.get_item("kind")?.eq("water")?) && !World::dig(wld(&w)?, &IntoPy::<PyObject>::into_py(&hit, w.py()).into_bound(w.py()), 0.8).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?.is(&f) {
                 s.call_method1("sfx", ("dig",))?;
             }
             return Ok(());
@@ -332,14 +333,14 @@ impl Viewer {
             if e.is_instance_of::<pyo3::exceptions::PyOSError>(py) {
                 log_exc(py, &e, "LAN に公開できません", vec![])?;
                 let port = get(&get(&cfg, "multiplayer", PyDict::new_bound(py))?, "port", py.None())?;
-                w.call_method1("message", (format!("LAN に公開できません（ポート {} が使えない？）: {}", port.str()?, e.value_bound(py).str()?),))?;
+                World::message(wld(&w)?, &format!("LAN に公開できません（ポート {} が使えない？）: {}", port.str()?, e.value_bound(py).str()?)).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                 return Ok(());
             }
             return Err(e);
         }
         let a = w.getattr("net")?.call_method0("addresses")?.get_item(pyo3::types::PySlice::new_bound(py, 0, 2, 1))?;
         let j = PyString::new_bound(py, "  ").call_method1("join", (a,))?;
-        w.call_method1("message", (format!("LAN に公開しました: {}（参加する人はメニューの「マルチプレイ」から）", j.str()?),))?;
+        World::message(wld(&w)?, &format!("LAN に公開しました: {}（参加する人はメニューの「マルチプレイ」から）", j.str()?)).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         Ok(())
     }
     pub(crate) fn screen_closed(slf: &Bound<'_, Self>) -> R<()> {
@@ -366,18 +367,18 @@ impl Viewer {
             let kk = keymap(k);
             let in_seat = seat_keys.contains(kk)?;
             if in_seat || kk == "x" {
-                w.call_method1("key_pressed", (kk,))?;
+                World::key_pressed(wld(&w)?, &IntoPy::<PyObject>::into_py(kk, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             }
             if ci("interact")? {
-                w.call_method1("interact", (py.None(),))?;
+                World::interact(wld(&w)?, &IntoPy::<PyObject>::into_py(py.None(), w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
                 s.call_method1("sfx", ("seat",))?;
             } else if ck("third_person", "v")? {
                 let t = Self::ga_third_person(slf)?.is_truthy()?;
                 Self::sa_third_person(slf, !t)?;
             } else if ck("save", "f5")? {
-                w.call_method0("save")?;
+                World::save(wld(&w)?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
             } else if ck("export", "f9")? {
-                s.call_method0("export_obj")?;
+                Self::export_obj(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
             } else if !in_seat {
                 let f = acall(py, "on_key", vec![kk.into_py(py)])?;
                 Self::_each_addon(slf, &f, true)?; // MOD のキー（座っている間も使えるもの）
@@ -408,16 +409,16 @@ impl Viewer {
             s.call_method1("_place", (py.None(),))?;
         }
         if k == "escape" {
-            s.call_method1("open_screen", ("pause",))?;
+            Self::open_screen(slf, "pause").map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         } else if ck("inventory", "i")? {
-            s.call_method1("open_screen", ("inventory",))?;
+            Self::open_screen(slf, "inventory").map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         } else if ck("edit_script", "p")? {
-            s.call_method0("open_editor")?;
+            Self::open_editor(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         } else if ck("jetpack", "f")? {
             let j = ga(&p, "jetpack")?.is_truthy()?;
             Player::s_jetpack(ply(&p)?, !j)?;
         } else if ck("save", "f5")? {
-            w.call_method0("save")?;
+            World::save(wld(&w)?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         } else if ck("third_person", "v")? {
             let t = Self::ga_third_person(slf)?.is_truthy()?;
             Self::sa_third_person(slf, !t)?;
@@ -434,7 +435,7 @@ impl Viewer {
         } else if ck("camera_mode", "c")? {
             Self::ga_game(slf)?.call_method0("enter_camera")?;
         } else if ck("export", "f9")? {
-            s.call_method0("export_obj")?;
+            Self::export_obj(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         } else if ck("import", "f8")? {
             Self::ga_game(slf)?.call_method0("open_import")?;
         } else if !(ci("forward")? || ci("back")? || ci("left")? || ci("right")? || ci("jump")?) {

@@ -1,5 +1,6 @@
 //! ワールド：物理の中身（並べて動かす・ぶつかり・眠り・遠くの物）
 
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use super::*;
 use crate::game::construct::{con, Construct};
@@ -240,7 +241,7 @@ impl World {
         let items = PyList::empty_bound(py);
         for c in &cons {
             c.call_method1("_contig", ("pos", "vel"))?;
-            items.append((c.call_method0("native_proxy")?, Construct::g_pos(con(&c)?)?, Construct::g_vel(con(&c)?)?, Construct::g_mode(con(&c)?)?.eq("rigid")?))?;
+            items.append((Construct::native_proxy(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?, Construct::g_pos(con(&c)?)?, Construct::g_vel(con(&c)?)?, Construct::g_mode(con(&c)?)?.eq("rigid")?))?;
         }
         let r = core.call_method1("contacts", (items, na))?;
         for ((c, t), w) in cons.iter().zip(r.get_item(1)?.iter()?).zip(r.get_item(2)?.iter()?) {
@@ -269,14 +270,14 @@ impl World {
                 Construct::s_far_time(con(&c)?, 0.0)?;
                 continue;
             }
-            let far = Self::player_distance(slf, &c.call_method0("center_of_mass")?)? > dist;
+            let far = Self::player_distance(slf, &Construct::center_of_mass(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)? > dist;
             if far && !Construct::g_powered(con(&c)?)?.is_truthy()? && c.getattr("n_vert")?.extract::<i64>()? <= maxv {
                 let ft: f64 = Construct::g_far_time(con(&c)?)?.extract::<f64>()? + elapsed;
                 Construct::s_far_time(con(&c)?, ft)?;
                 if ft >= secs {
                     constructs.del_item(&cid)?;
                     log(py)?.call_method1("info", ("自動削除: %s（頂点 %d, 距離 %.0f m）", Construct::g_name(con(&c)?)?, c.getattr("n_vert")?,
-                        Self::player_distance(slf, &c.call_method0("center_of_mass")?)?))?;
+                        Self::player_distance(slf, &Construct::center_of_mass(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?))?;
                 }
             } else {
                 Construct::s_far_time(con(&c)?, 0.0)?;
@@ -332,13 +333,13 @@ impl World {
         let at = Self::bnd_at(slf, &b.get_item(1)?)?;
         let (c_o, rr_o, r0_o) = (b.get_item(2)?, b.get_item(3)?, b.get_item(4)?);
         for c in moved {
-            let k = at.call_method1("get", (c.as_ptr() as usize,))?;
+            let k = at.dget1(c.as_ptr() as usize)?;
             if k.is_none() || Construct::n(con(&c)?)? == 0 {
                 Self::cache_put(slf, |c| &mut c.bnd, py.None())?;
                 return Ok(());
             }
             let k: usize = k.extract()?;
-            let bb = c.call_method0("bounds")?;
+            let bb = Construct::bounds(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
             let ctr = v3(&bb.get_item(0)?)?;
             let r: f64 = bb.get_item(1)?.extract()?;
             let sz: f64 = Construct::g_size(con(&c)?)?.extract()?;
@@ -407,7 +408,7 @@ impl World {
         let mut ac = vec![];
         let mut ar = vec![];
         for c in &cons {
-            let b = c.call_method0("bounds")?;
+            let b = Construct::bounds(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
             ac.push(v3(&b.get_item(0)?)?);
             let vmax = fv(&Construct::g_vel(con(&c)?)?)?.iter().map(|x| x.abs()).fold(f64::NEG_INFINITY, f64::max);
             ar.push(b.get_item(1)?.extract::<f64>()? + vmax * dt * 2.0 + Construct::g_size(con(&c)?)?.extract::<f64>()? * 2.0);
@@ -417,7 +418,7 @@ impl World {
         let mut ix = vec![];
         let mut all = true;
         for c in &sleeping {
-            let k = at.call_method1("get", (c.as_ptr() as usize,))?;
+            let k = at.dget1(c.as_ptr() as usize)?;
             if k.is_none() {
                 all = false;
                 break;
@@ -428,7 +429,7 @@ impl World {
             let mut bc = vec![];
             let mut br = vec![];
             for c in &sleeping {
-                let b = c.call_method0("bounds")?;
+                let b = Construct::bounds(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
                 bc.push(v3(&b.get_item(0)?)?);
                 br.push(b.get_item(1)?.extract::<f64>()?);
             }

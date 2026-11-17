@@ -1,6 +1,9 @@
 //! ワールド（main/world.py の World）：読み込み・保存・シミュレーションの1ティック・編集操作。
 //! 決まった属性は Rust の欄、それ以外（registry・settings・player など）は __dict__（MOD・画面からも同じ名前で読める）。
 
+use crate::game::PyPathOps;
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use pyo3::exceptions::{PyAttributeError, PyFileNotFoundError};
 use pyo3::prelude::*;
@@ -17,7 +20,7 @@ pub fn world_step_prof() -> Vec<(String, f64)> {
 }
 
 fn log<'py>(py: Python<'py>) -> R<Bound<'py, PyAny>> {
-    imp(py, "main.log")?.call_method1("get", ("world",))
+    imp(py, "main.log")?.dget1("world")
 }
 fn wmod(py: Python<'_>) -> R<Bound<'_, PyModule>> {
     imp(py, "main.world")
@@ -29,13 +32,13 @@ fn deep<'py>(o: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     imp(o.py(), "copy")?.call_method1("deepcopy", (o,))
 }
 fn getd<'py>(d: &Bound<'py, PyAny>, k: &str, dflt: impl IntoPy<PyObject>) -> R<Bound<'py, PyAny>> {
-    d.call_method1("get", (k, dflt))
+    d.dget2(k, dflt)
 }
 fn fget(d: &Bound<'_, PyAny>, k: &str, dflt: f64) -> R<f64> {
-    d.call_method1("get", (k, dflt))?.extract()
+    d.dget2(k, dflt)?.extract()
 }
 fn phys<'py>(cfg: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    cfg.call_method1("get", ("physics", PyDict::new_bound(cfg.py())))
+    cfg.dget2("physics", PyDict::new_bound(cfg.py()))
 }
 /// 配列の中身を 0 に（その場で）
 fn zero_inplace(o: &Bound<'_, PyAny>) -> R<()> {
@@ -79,7 +82,7 @@ pub fn world_default_bodies<'py>(py: Python<'py>, main: &str, moon: bool, astero
 #[pyfunction]
 pub fn world_read_json<'py>(path: &Bound<'py, PyAny>, default: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let py = path.py();
-    if !path.call_method0("exists")?.is_truthy()? {
+    if !path.pexists()?.is_truthy()? {
         return Ok(default.clone());
     }
     let res = path.call_method("read_text", (), Some(&[("encoding", "utf-8")].into_py_dict_bound(py)))
@@ -152,7 +155,7 @@ pub fn world_missing_references(reg: &Bound<'_, PyAny>, settings: &Bound<'_, PyA
     for pd in getd(settings, "planets", PyList::empty_bound(py))?.iter()? {
         let pd = pd?;
         let def = getd(&pd, "def", py.None())?;
-        if reg.call_method1("get", ("planets", &def))?.is_none() {
+        if reg.dget2("planets", &def)?.is_none() {
             out.push(format!("惑星 '{}' の定義がありません{hint}", def.str()?));
         }
     }
@@ -413,11 +416,11 @@ impl World {
     }
 
     // ------------------------------------------------------------------ 読み込み・保存
-    fn load<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, Self>> {
+    pub(crate) fn load<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, Self>> {
         let py = slf.py();
         let dir = Self::g_dir(slf)?;
         let lg = log(py)?;
-        if !dir.call_method0("exists")?.is_truthy()? {
+        if !dir.pexists()?.is_truthy()? {
             return Err(PyFileNotFoundError::new_err(format!("ワールド '{}' がありません: {}", Self::g_name(slf)?.str()?, dir.str()?)));
         }
         let div = |k: &str| -> R<Bound<'_, PyAny>> { dir.call_method1("__truediv__", (k,)) };
@@ -508,7 +511,7 @@ impl World {
         let mk = imp(py, "main.planet")?.getattr("make_planet")?;
         for pd in settings.get_item("planets")?.unwrap().iter()? {
             let pd = pd?;
-            let base = reg.call_method1("get", ("planets", pd.get_item("def")?))?;
+            let base = reg.dget2("planets", pd.get_item("def")?)?;
             let ov = getd(&pd, "override", py.None())?;
             let p = mk.call1((base, getd(&pd, "position", vec![0, 0, 0])?, &ov))?;
             let cr = PyList::empty_bound(py);
@@ -550,7 +553,7 @@ impl World {
         let cands = [getd(&pjd, "def", py.None())?, getd(settings.as_any(), "player", py.None())?, PyString::new_bound(py, "default").into_any()];
         let mut pick = PyString::new_bound(py, "default").into_any();
         for d in cands {
-            if d.is_truthy()? && !reg.call_method1("get", ("players", &d))?.is_none() {
+            if d.is_truthy()? && !reg.dget2("players", &d)?.is_none() {
                 pick = d;
                 break;
             }
@@ -567,7 +570,7 @@ impl World {
         for a in Self::addons_v(slf)? {
             a.call_method1("on_load", (slf,))?;
         }
-        if settings.call_method1("pop", ("starter_sample", py.None()))?.is_truthy()? {
+        if settings.dpop2("starter_sample", py.None())?.is_truthy()? {
             Self::_place_starter_sample(slf)?;
         }
         Self::_refresh_script_readme(slf)?;
@@ -585,14 +588,14 @@ impl World {
     }
 
     /// scripts/README.txt を今の版の説明に合わせる（古いワールドに古い説明が残らないように）
-    fn _refresh_script_readme(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _refresh_script_readme(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let text = imp(py, "main.content")?.getattr("SCRIPT_README")?;
         let p = Self::g_dir(slf)?.call_method1("__truediv__", ("scripts",))?.call_method1("__truediv__", ("README.txt",))?;
         let enc = [("encoding", "utf-8")].into_py_dict_bound(py);
         let r: R<()> = (|| {
-            if p.getattr("parent")?.call_method0("is_dir")?.is_truthy()?
-                && (!p.call_method0("exists")?.is_truthy()? || !p.call_method("read_text", (), Some(&enc))?.eq(&text)?) {
+            if p.getattr("parent")?.pis_dir()?.is_truthy()?
+                && (!p.pexists()?.is_truthy()? || !p.call_method("read_text", (), Some(&enc))?.eq(&text)?) {
                 p.call_method("write_text", (&text,), Some(&enc))?;
             }
             Ok(())
@@ -607,18 +610,18 @@ impl World {
     }
 
     /// 新しく始めたクリエイティブ：出現地点のそばに見本の「はじめのロケット」を置く
-    fn _place_starter_sample(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _place_starter_sample(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let bp = imp(py, "main.paths")?.getattr("SAUCE")?.call_method1("__truediv__", ("blueprints",))?
             .call_method1("__truediv__", ("starter_rocket.alp.json",))?;
-        if !bp.call_method0("exists")?.is_truthy()? {
+        if !bp.pexists()?.is_truthy()? {
             return Ok(());
         }
         let r: R<()> = (|| {
             let data = imp(py, "main.objio")?.call_method1("import_construct", (Self::g_registry(slf)?, &bp))?;
             let ppos = v3(&Self::g_player(slf)?.getattr("pos")?)?;
             let pl = Self::nearest_planet(slf, &a1(py, ppos))?;
-            let up = if pl.is_none() { [0.0, 1.0, 0.0] } else { v3(&pl.call_method1("up", (a1(py, ppos),))?)? };
+            let up = if pl.is_none() { [0.0, 1.0, 0.0] } else { v3(&Planet::up(pla(&pl)?, &IntoPy::<PyObject>::into_py(a1(py, ppos), pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?)? };
             let mut side = cross(up, [0.0, 0.0, 1.0]);
             if norm(side) < 1e-6 {
                 side = cross(up, [1.0, 0.0, 0.0]);
@@ -627,7 +630,7 @@ impl World {
             side = [side[0] / l, side[1] / l, side[2] / l];
             let mut pos = [ppos[0] + side[0] * 4.0, ppos[1] + side[1] * 4.0, ppos[2] + side[2] * 4.0 + 3.0];
             if !pl.is_none() {
-                let d: f64 = pl.call_method1("sdf", (arr(py, pos.to_vec(), &[1, 3])?,))?.get_item(0)?.extract()?;
+                let d: f64 = Planet::sdf(pla(&pl)?, &IntoPy::<PyObject>::into_py(arr(py, pos.to_vec(), &[1, 3])?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?.extract()?;
                 for k in 0..3 {
                     pos[k] = pos[k] - up[k] * d + up[k] * 0.3;
                 }

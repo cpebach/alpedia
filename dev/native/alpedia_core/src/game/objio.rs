@@ -2,6 +2,8 @@
 //! 出力：<名前>.obj（形）・<名前>.mtl（色）・<名前>.alp.json（素材の対応・ボクセルと機器の完全なデータ）。
 //! 読み込み：.alp.json に "voxels" があればそのまま、無ければ OBJ をボクセル化して素材を割り当てる。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
@@ -11,7 +13,7 @@ use super::construct::{fv, iv, v3s, R};
 use super::imp;
 
 fn log(py: Python<'_>) -> R<Bound<'_, PyAny>> {
-    imp(py, "main.log")?.call_method1("get", ("obj",))
+    imp(py, "main.log")?.dget1("obj")
 }
 fn div<'py>(p: &Bound<'py, PyAny>, s: impl IntoPy<PyObject>) -> R<Bound<'py, PyAny>> {
     p.call_method1("__truediv__", (s,))
@@ -27,13 +29,13 @@ fn write_text(p: &Bound<'_, PyAny>, s: &str) -> R<()> {
     Ok(())
 }
 fn exists(p: &Bound<'_, PyAny>) -> R<bool> {
-    p.call_method0("exists")?.is_truthy()
+    p.pexists()?.is_truthy()
 }
 fn path<'py>(py: Python<'py>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     imp(py, "pathlib")?.getattr("Path")?.call1((p,))
 }
 fn getd<'py>(d: &Bound<'py, PyAny>, k: &str, dflt: impl IntoPy<PyObject>) -> R<Bound<'py, PyAny>> {
-    d.call_method1("get", (k, dflt))
+    d.dget2(k, dflt)
 }
 fn safe_name(f: &str) -> bool {
     !f.is_empty() && !f.contains('/') && !f.contains('\\') && !f.contains("..")
@@ -51,7 +53,7 @@ pub fn objio_script_files(devs: &Bound<'_, PyAny>) -> R<Vec<String>> {
         }
         let st = getd(&d, "state", PyDict::new_bound(py))?;
         for k in ["script", "blocks"] {
-            let f = st.call_method1("get", (k,))?;
+            let f = st.dget1(k)?;
             if let Ok(s) = f.downcast::<PyString>() {
                 let s = s.to_string();
                 if safe_name(&s) {
@@ -72,7 +74,7 @@ fn py_fmt(x: f64, prec: usize) -> String {
 pub fn objio_export_construct<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, out_dir: &Bound<'py, PyAny>, name: &str,
                                    scripts_dir: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
     out_dir.call_method("mkdir", (), Some(&[("parents", true), ("exist_ok", true)].into_py_dict_bound(py)))?;
-    let fit = c.call_method0("rigid_fit")?;
+    let fit = Construct::rigid_fit(con(&c)?, None).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
     let rm = super::construct::m3(&fit.get_item(0)?)?;
     let t = super::construct::v3(&fit.get_item(1)?)?;
     let mesh = super::shape::shape_build_mesh(py, c, None)?;
@@ -210,10 +212,9 @@ pub fn objio_voxelize<'py>(py: Python<'py>, verts: &Bound<'py, PyAny>, tris: &Bo
         return Err(pyo3::exceptions::PyValueError::new_err(format!("大きすぎます（[{}, {}, {}] セル）。voxel_size か scale を調整してください",
             n[0], n[1], n[2])));
     }
-    let np = super::construct::np(py)?;
-    let t = np.call_method1("ascontiguousarray", (tris, "int64"))?.call_method1("reshape", (-1, 3))?;
+    let t = crate::game::construct::cint(&tris)?.call_method1("reshape", (-1, 3))?;
     let r = imp(py, "alpedia_core")?.call_method1("voxelize", (super::construct::a3(py, &v)?, t, size, n.clone()))?;
-    let mats: Vec<Bound<'py, PyAny>> = tri_mat.iter()?.map(|m| mapping.call_method1("get", (m?, default_material))).collect::<R<_>>()?;
+    let mats: Vec<Bound<'py, PyAny>> = tri_mat.iter()?.map(|m| mapping.dget2(m?, default_material)).collect::<R<_>>()?;
     let cells = iv(&r.get_item(0)?)?;
     let ti = iv(&r.get_item(1)?)?;
     for (c, t) in cells.chunks_exact(3).zip(ti) {
@@ -318,7 +319,7 @@ fn mapping_of<'py>(registry: &Bound<'py, PyAny>, meta: &Bound<'py, PyAny>) -> R<
     let py = registry.py();
     let m = PyDict::new_bound(py);
     for (k, v) in getd(meta, "materials", PyDict::new_bound(py))?.downcast::<PyDict>()?.iter() {
-        if registry.call_method1("get", ("materials", &v))?.is_truthy()? {
+        if registry.dget2("materials", &v)?.is_truthy()? {
             m.set_item(k, v)?;
         }
     }
@@ -344,10 +345,10 @@ pub fn objio_import_construct<'py>(py: Python<'py>, registry: &Bound<'py, PyAny>
         for v in mv.iter()? {
             let v = v?;
             let m3 = v.get_item(3)?;
-            let mat = if registry.call_method1("get", ("materials", &m3))?.is_truthy()? { m3 } else { getd(&meta, "default_material", "steel")? };
+            let mat = if registry.dget2("materials", &m3)?.is_truthy()? { m3 } else { getd(&meta, "default_material", "steel")? };
             let mut dev = if v.len()? > 4 { v.get_item(4)? } else { py.None().into_bound(py) };
-            if dev.is_truthy()? && !crate::game::registry::dev_dict(&registry, &dev.call_method1("get", ("def",))?)?.is_truthy()? {
-                lg.call_method1("warning", ("未知の機器 %s を素材ボクセルに置き換えます", dev.call_method1("get", ("def",))?))?;
+            if dev.is_truthy()? && !crate::game::registry::dev_dict(&registry, &dev.dget1("def")?)?.is_truthy()? {
+                lg.call_method1("warning", ("未知の機器 %s を素材ボクセルに置き換えます", dev.dget1("def")?))?;
                 dev = py.None().into_bound(py);
             }
             devs.append(&dev)?;
@@ -402,7 +403,7 @@ pub fn objio_import_construct<'py>(py: Python<'py>, registry: &Bound<'py, PyAny>
         Some(d) if d.is_truthy()? => d.clone(),
         _ => getd(&meta, "default_material", "steel")?,
     };
-    if !registry.call_method1("get", ("materials", &default))?.is_truthy()? {
+    if !registry.dget2("materials", &default)?.is_truthy()? {
         default = PyString::new_bound(py, "steel").into_any();
     }
     let vox = objio_voxelize(py, &verts, &tris, &tri_mat, size, mapping.as_any(), &default, max_cells)?;
@@ -427,7 +428,7 @@ pub fn objio_blueprint_dirs<'py>(py: Python<'py>, mods: Option<&Bound<'py, PyAny
         for m in ms.iter()? {
             let m = m?;
             let d = div(&div(&paths.getattr("MODS")?, &m)?, "blueprints")?;
-            if d.call_method0("is_dir")?.is_truthy()? {
+            if d.pis_dir()?.is_truthy()? {
                 out.append((format!("設計図（{}）", modmeta.call_method1("name_of", (&m,))?.str()?), d))?;
             }
         }
@@ -484,7 +485,7 @@ pub fn objio_list_sources<'py>(py: Python<'py>, world_dir: &Bound<'py, PyAny>, s
         ds = sorted.iter()?.collect::<R<_>>()?;
         for wd in ds {
             let n: String = wd.getattr("name")?.extract()?;
-            if wd.call_method0("is_dir")?.is_truthy()? && !n.starts_with('.') && !wd.call_method0("resolve")?.eq(&wr)? {
+            if wd.pis_dir()?.is_truthy()? && !n.starts_with('.') && !wd.call_method0("resolve")?.eq(&wr)? {
                 for p in scan(py, &div(&wd, "exports")?)? {
                     out.append((format!("{n} の exports"), p))?;
                 }

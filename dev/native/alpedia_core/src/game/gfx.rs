@@ -1,6 +1,8 @@
 //! 描画の下まわり（main/client/gfx.py）：Rust の画面（alpedia_view.View）のノード・メッシュ・テクスチャ・文字。
 //! RsNode は Panda3D の NodePath のうち、描画で使う分だけをまねる（親子・行列・表示・テクスチャ・半透明など）。
 
+use crate::game::PyPathOps;
+use crate::game::PyDictOps;
 use std::sync::Mutex;
 
 use pyo3::prelude::*;
@@ -477,7 +479,7 @@ impl RsDynamicMesh {
             return Err(pyo3::exceptions::PyValueError::new_err("頂点数が変わる時は tris が必要です"));
         }
         let t: PyObject = match tris {
-            Some(t) => np.call_method1("ascontiguousarray", (t, "int64"))?.call_method1("reshape", (-1, 3))?.unbind(),
+            Some(t) => crate::game::construct::cint(&t)?.call_method1("reshape", (-1, 3))?.unbind(),
             None => py.None(),
         };
         view(py)?.call_method1("mesh_set", (mid, v.call_method1("reshape", (-1, 12))?, t))?;
@@ -510,7 +512,7 @@ pub fn gfx_font(py: Python<'_>, path: Option<&Bound<'_, PyAny>>) -> R<bool> {
     }
     let pathcls = imp(py, "pathlib")?.getattr("Path")?;
     for f in cands {
-        if f.is_truthy()? && pathcls.call1((&f,))?.call_method0("exists")?.is_truthy()? {
+        if f.is_truthy()? && pathcls.call1((&f,))?.pexists()?.is_truthy()? {
             if view(py)?.call_method1("font_load", (f.str()?, 0, 40.0)).is_ok() {
                 *FONT_OK.lock().unwrap() = Some(true);
                 return Ok(true);
@@ -689,15 +691,15 @@ impl RsDisplayView {
     fn set(slf: &Bound<'_, Self>, disp: &Bound<'_, PyAny>, voxel_size: f64) -> R<()> {
         let py = slf.py();
         let tup = |o: Bound<'_, PyAny>| -> R<Bound<'_, PyTuple>> { Ok(PyTuple::new_bound(py, o.iter()?.collect::<R<Vec<_>>>()?)) };
-        let width = disp.call_method1("get", ("width",))?;
-        let key = PyTuple::new_bound(py, [disp.get_item("text")?, width.clone(), tup(disp.call_method1("get", ("color", PyTuple::empty_bound(py)))?)?.into_any(),
-            tup(disp.call_method1("get", ("background", PyTuple::empty_bound(py)))?)?.into_any(), voxel_size.into_py(py).into_bound(py)]);
+        let width = disp.dget1("width")?;
+        let key = PyTuple::new_bound(py, [disp.get_item("text")?, width.clone(), tup(disp.dget2("color", PyTuple::empty_bound(py))?)?.into_any(),
+            tup(disp.dget2("background", PyTuple::empty_bound(py))?)?.into_any(), voxel_size.into_py(py).into_bound(py)]);
         if key.eq(slf.borrow().key.bind(py))? {
             return Ok(());
         }
         slf.borrow_mut().key = key.into_any().unbind();
-        let col = rgba4(&disp.call_method1("get", ("color", vec![1, 1, 1]))?)?;
-        let bgc = rgba4(&disp.call_method1("get", ("background", vec![0.04, 0.05, 0.08, 0.92]))?)?;
+        let col = rgba4(&disp.dget2("color", vec![1, 1, 1])?)?;
+        let bgc = rgba4(&disp.dget2("background", vec![0.04, 0.05, 0.08, 0.92])?)?;
         let txt = slf.borrow().txt.clone_ref(py).into_bound(py);
         let (tw, th): (f64, f64) = txt.call_method1("set", (disp.get_item("text")?, 1.0, (col[0], col[1], col[2], 1.0)))?.extract()?;
         let (tw, th) = (tw.max(1e-6), th.max(1e-6));

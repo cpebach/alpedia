@@ -1,5 +1,6 @@
 //! ブロックエディター：プログラムを描く
 
+use crate::game::PyDictOps;
 use super::*;
 
 #[pymethods]
@@ -72,8 +73,8 @@ impl BlockEditor {
                 continue;
             }
             let t = getd(&node, "type")?;
-            let dflt = dict(py, vec![("label", node.call_method1("get", ("type", "?"))?.unbind()), ("cat", po(py, "control"))])?;
-            let spec = stm.call_method1("get", (&t, dflt))?;
+            let dflt = dict(py, vec![("label", node.dget2("type", "?")?.unbind()), ("cat", po(py, "control"))])?;
+            let spec = stm.dget2(&t, dflt)?;
             let crgb = tup3(&cat_color.get_item(spec.get_item("cat")?)?)?;
             let c = if selected {
                 rgb(s, ((crgb.0 * 1.25).min(1.0), (crgb.1 * 1.25).min(1.0), (crgb.2 * 1.25).min(1.0)))?
@@ -133,7 +134,7 @@ impl BlockEditor {
         let py = slf.py();
         let s = slf.as_any();
         let base = kind.split(':').next().unwrap_or("");
-        let val = owner.call_method1("get", (key,))?;
+        let val = owner.dget1(key)?;
         let (h, ts, z) = metrics(depth);
         let sel = Self::_is_sel(slf, owner, key)?;
         if ["var", "vvar", "dev", "key", "choice"].contains(&base) {
@@ -176,7 +177,7 @@ impl BlockEditor {
         let plain = t.is_none() || matches!(ts_.as_deref(), Some("num") | Some("text") | Some("bool"));
         if plain || depth >= 5 {
             // 値（数値・文字・はい/いいえ）：白い入力欄。深すぎる入れ子はまとめて表示
-            let txt = if ts_.as_deref() != Some("text") { ss(&b.call_method1("summary", (node,))?)? } else { ss(&node.call_method1("get", ("v", ""))?)? };
+            let txt = if ts_.as_deref() != Some("text") { ss(&b.call_method1("summary", (node,))?)? } else { ss(&node.dget2("v", "")?)? };
             let c: Vec<char> = txt.chars().collect();
             let txt = if c.len() > 30 { c[..29].iter().collect::<String>() + "…" } else { txt };
             let tw = label(s, if txt.is_empty() { " " } else { &txt }, x + 0.008, y, z - 0.003, ts, true)?;

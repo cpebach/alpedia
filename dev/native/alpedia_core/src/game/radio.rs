@@ -6,6 +6,7 @@
 //! - 送れる情報は数値・文字・True/False/None と、それらのリスト・辞書（JSON にできるもの）。大きさの上限あり
 //! - 同じ構築物から送った情報は、その構築物では受け取らない（自分の声は聞こえない）
 
+use crate::game::PyDictOps;
 use crate::game::construct::{con, Construct};
 use std::collections::{HashMap, VecDeque};
 
@@ -40,16 +41,16 @@ pub fn antenna(c: &Bound<'_, PyAny>) -> PyResult<Option<(f64, [f64; 3])>> {
         if !dd.is_truthy()? {
             continue;
         }
-        let t = dd.call_method1("get", ("type",))?;
+        let t = dd.dget1("type")?;
         if !t.eq("antenna")? {
             continue;
         }
         let st = d.get_item("state")?;
-        if !st.call_method1("get", ("enabled", true))?.is_truthy()? || !st.call_method1("get", ("active", false))?.is_truthy()? {
+        if !st.dget2("enabled", true)?.is_truthy()? || !st.dget2("active", false)?.is_truthy()? {
             continue;
         }
-        let params = dd.call_method1("get", ("params", PyDict::new_bound(c.py())))?;
-        let rng: f64 = crate::game::imp(c.py(), "builtins")?.getattr("float")?.call1((params.call_method1("get", ("range", 3000.0))?,))?.extract()?;
+        let params = dd.dget2("params", PyDict::new_bound(c.py()))?;
+        let rng: f64 = crate::game::imp(c.py(), "builtins")?.getattr("float")?.call1((params.dget2("range", 3000.0)?,))?.extract()?;
         if best.map_or(true, |b| rng > b.0) {
             best = Some((rng, i));
         }
@@ -276,8 +277,8 @@ impl RadioBus {
     fn receive<'py>(&mut self, py: Python<'py>, c: &Bound<'py, PyAny>, comp_state: &Bound<'py, PyDict>, channel: &Bound<'py, PyAny>)
         -> PyResult<Bound<'py, PyList>> {
         let ch = channel_name(channel)?;
-        let seen = comp_state.call_method1("setdefault", ("_radio_seen", PyDict::new_bound(py)))?;
-        let last: i64 = seen.call_method1("get", (&ch, 0))?.extract()?;
+        let seen = comp_state.dsetdefault("_radio_seen", PyDict::new_bound(py))?;
+        let last: i64 = seen.dget2(&ch, 0)?.extract()?;
         let vis = self.visible(py, c, channel)?;
         let t = self.now(py)?;
         let out = PyList::empty_bound(py);
@@ -292,7 +293,7 @@ impl RadioBus {
                 d.set_item("time", m.time)?;
                 d.set_item("age", t - m.time)?;
                 out.append(d)?;
-                let prev: i64 = seen.call_method1("get", (&ch, 0))?.extract()?;
+                let prev: i64 = seen.dget2(&ch, 0)?.extract()?;
                 seen.set_item(&ch, prev.max(m.seq))?;
             }
         }

@@ -1,5 +1,6 @@
 //! 構築物：数・重心・速さ・形・ボクセルの場所などを調べる
 
+use crate::game::PyDictOps;
 use super::*;
 
 #[pymethods]
@@ -183,7 +184,7 @@ impl Construct {
         }
         let devs = Self::g_devs(slf)?;
         for i in cache.get_item(2)?.iter()? {
-            if devs.get_item(i?)?.get_item("state")?.call_method1("get", ("running",))?.is_truthy()? {
+            if devs.get_item(i?)?.get_item("state")?.dget1("running")?.is_truthy()? {
                 return Ok(false);
             }
         }
@@ -248,7 +249,7 @@ impl Construct {
                 let src = if d.is_truthy()? { crate::game::registry::dev_dict(&reg, &d.get_item("def")?)? } else { crate::game::registry::mat_dict(&reg, &m)? };
                 let src = if src.is_truthy()? { src } else { PyDict::new_bound(py).into_any() };
                 cols.push(v3(&dget(&src, "color", &grey)?)?);
-                let dd = if d.is_truthy()? { d.call_method1("get", ("def",))?.repr()?.to_string() } else { "None".into() };
+                let dd = if d.is_truthy()? { d.dget1("def")?.repr()?.to_string() } else { "None".into() };
                 mid.push((m.repr()?.to_string(), dd));
             }
             let key_of = |c: &[i64; 3]| [c[0].div_euclid(lc), c[1].div_euclid(lc), c[2].div_euclid(lc)];

@@ -6,6 +6,8 @@
 //!   パネルを隠す（画面を1回タップ・クリックか H で戻る）、元に戻す、終わる
 //! - 遊びは止めない（ほかの人・機械は動き続ける）。自分は動かない
 
+use crate::game::world::{wld, World};
+use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -20,7 +22,7 @@ type B<'py> = Bound<'py, PyAny>;
 type V3 = [f64; 3];
 
 fn lg(py: Python<'_>) -> R<B<'_>> {
-    imp(py, "main.log")?.call_method1("get", ("camera",))
+    imp(py, "main.log")?.dget1("camera")
 }
 fn v3(o: &B<'_>) -> R<V3> {
     Ok([f64of(&o.get_item(0)?)?, f64of(&o.get_item(1)?)?, f64of(&o.get_item(2)?)?])
@@ -159,7 +161,6 @@ impl CameraMode {
     }
     fn __init__(slf: &Bound<'_, Self>, game: &B<'_>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         Self::sa_game(slf, game)?;
         let u = game.getattr("U")?;
         Self::sa_U(slf, &u)?;
@@ -192,12 +193,12 @@ impl CameraMode {
         Player::s_emote(ply(&p)?, py.None())?;
         game.getattr("ui_root")?.setattr("enabled", false)?;
         game.call_method1("set_mouse_capture", (false,))?;
-        s.call_method0("_build")?;
-        s.call_method0("_apply_face")?;
+        Self::_build(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
+        Self::_apply_face(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         lg(py)?.call_method1("info", ("カメラモード開始",))?;
         Ok(())
     }
-    fn _build(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _build(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let ur = ursina(py)?;
@@ -260,10 +261,10 @@ impl CameraMode {
         Self::sa_hint(slf, text.call((), Some(&kw(py, vec![("parent", root.clone().unbind()), ("text", po(py, "画面をタップ（クリック）するとパネルが出ます")), ("origin", po(py, (0, 0))),
             ("position", po(py, (0, -0.45))), ("scale", po(py, 0.7)), ("color", color.call_method1("rgba", (1, 1, 1, 0.0))?.unbind()), ("enabled", po(py, false))])?))?)?;
         Self::sa_hint_t(slf, 0.0)?;
-        s.call_method0("_refresh")?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn _refresh(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _refresh(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let r = Self::ga_rows(slf)?;
@@ -280,22 +281,20 @@ impl CameraMode {
         Ok(())
     }
     // --- 操作 ---
-    fn toggle_ui(slf: &Bound<'_, Self>) -> R<()> {
-        let s = slf.as_any();
+    pub(crate) fn toggle_ui(slf: &Bound<'_, Self>) -> R<()> {
         let on = !Self::ga_ui_on(slf)?.is_truthy()?;
         Self::sa_ui_on(slf, on)?;
         Self::ga_game(slf)?.getattr("ui_root")?.setattr("enabled", on)?;
-        s.call_method0("_refresh")?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn toggle_frame(slf: &Bound<'_, Self>) -> R<()> {
-        let s = slf.as_any();
+    pub(crate) fn toggle_frame(slf: &Bound<'_, Self>) -> R<()> {
         let on = !Self::ga_frame_on(slf)?.is_truthy()?;
         Self::sa_frame_on(slf, on)?;
-        s.call_method0("_refresh")?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn step_emote(slf: &Bound<'_, Self>, d: i64) -> R<()> {
+    pub(crate) fn step_emote(slf: &Bound<'_, Self>, d: i64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let n = Self::ga_emotes(slf)?.len()? as i64;
@@ -304,17 +303,17 @@ impl CameraMode {
         let p = Self::local(s)?;
         Player::s_emote(ply(&p)?, if i == 0 { py.None() } else { Self::ga_emotes(slf)?.get_item(i)?.unbind() })?;
         Player::s_emote_t0(ply(&p)?, imp(py, "time")?.call_method0("monotonic")?)?;
-        s.call_method0("_refresh")?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn turn_body(slf: &Bound<'_, Self>, d: f64) -> R<()> {
+    pub(crate) fn turn_body(slf: &Bound<'_, Self>, d: f64) -> R<()> {
         let s = slf.as_any();
         Self::sa_body_yaw(slf, pymod(fg(s, "body_yaw")? + d * 30f64.to_radians(), 2.0 * std::f64::consts::PI))?;
-        s.call_method0("_apply_face")?;
-        s.call_method0("_refresh")?;
+        Self::_apply_face(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn _apply_face(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _apply_face(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let p = Self::local(s)?;
@@ -325,34 +324,34 @@ impl CameraMode {
         Player::s_face_dir(ply(&p)?, np3(py, mv(rot(up, -fg(s, "body_yaw")?), f)))?;
         Ok(())
     }
-    fn zoom(slf: &Bound<'_, Self>, k: f64) -> R<()> {
+    pub(crate) fn zoom(slf: &Bound<'_, Self>, k: f64) -> R<()> {
         let s = slf.as_any();
         Self::sa_dist(slf, (fg(s, "dist")? * k).clamp(0.6, 60.0))?;
-        s.call_method0("_refresh")?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn lift(slf: &Bound<'_, Self>, d: f64) -> R<()> {
+    pub(crate) fn lift(slf: &Bound<'_, Self>, d: f64) -> R<()> {
         let s = slf.as_any();
         Self::sa_height(slf, (fg(s, "height")? + d * 0.1).clamp(-0.2, 1.6))?;
-        s.call_method0("_refresh")?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn set_fov(slf: &Bound<'_, Self>, d: f64) -> R<()> {
+    pub(crate) fn set_fov(slf: &Bound<'_, Self>, d: f64) -> R<()> {
         let s = slf.as_any();
         let f = (fg(s, "fov")? + d).clamp(15.0, 120.0);
         Self::sa_fov(slf, f)?;
         Self::ga_U(slf)?.get_item("camera")?.setattr("fov", f)?;
-        s.call_method0("_refresh")?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn set_roll(slf: &Bound<'_, Self>, d: f64) -> R<()> {
+    pub(crate) fn set_roll(slf: &Bound<'_, Self>, d: f64) -> R<()> {
         let s = slf.as_any();
         let lim = 45f64.to_radians();
         Self::sa_roll(slf, (fg(s, "roll")? + d * 5f64.to_radians()).clamp(-lim, lim))?;
-        s.call_method0("_refresh")?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
-    fn hide_panel(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn hide_panel(slf: &Bound<'_, Self>) -> R<()> {
         Self::sa_panel_on(slf, false)?;
         Self::ga_panel(slf)?.setattr("enabled", false)?;
         let h = Self::ga_hint(slf)?;
@@ -361,14 +360,14 @@ impl CameraMode {
         h.setattr("color", Self::ga_U(slf)?.get_item("color")?.call_method1("rgba", (1, 1, 1, 0.85))?)?;
         Ok(())
     }
-    fn show_panel(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn show_panel(slf: &Bound<'_, Self>) -> R<()> {
         Self::sa_panel_on(slf, true)?;
         Self::ga_panel(slf)?.setattr("enabled", true)?;
         Self::ga_hint(slf)?.setattr("enabled", false)?;
         Ok(())
     }
     /// パネルを隠して1コマ描いてから、画面を photos/<ワールド>_<日時>.png に保存する
-    fn take_photo(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn take_photo(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         if Self::ga_shooting(slf).map(|x| x.is_truthy().unwrap_or(false)).unwrap_or(false) {
@@ -383,7 +382,7 @@ impl CameraMode {
         ursina(py)?.getattr("invoke")?.call((partial(&s.getattr("_shoot")?, vec![po(py, was)])?,), Some(&k))?;
         Ok(())
     }
-    fn _shoot(slf: &Bound<'_, Self>, was: bool) -> R<()> {
+    pub(crate) fn _shoot(slf: &Bound<'_, Self>, was: bool) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let r = (|| -> R<()> {
@@ -397,7 +396,7 @@ impl CameraMode {
             let name = format!("{}_{}.png", world.getattr("name")?.str()?, ts);
             let path = d.call_method1("__truediv__", (&name,))?;
             imp(py, "main.client.gfx")?.getattr("VIEW")?.call_method1("screenshot", (path.str()?,))?; // この後に描く1コマを保存する
-            world.call_method1("message", (format!("写真を保存しました：photos/{}", name),))?;
+            World::message(wld(&world)?, &format!("写真を保存しました：photos/{}", name)).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
             for a in Self::ga_game(slf)?.getattr("addons")?.iter()? {
                 let a = a?;
                 if let Err(e) = a.call_method1("on_photo", (&path,)) {
@@ -425,17 +424,15 @@ impl CameraMode {
         ursina(py)?.getattr("invoke")?.call((partial(&s.getattr("_restore")?, vec![po(py, was)])?,), Some(&k))?; // 保存する1コマを描いてからパネルを戻す
         res
     }
-    fn _restore(slf: &Bound<'_, Self>, was: bool) -> R<()> {
-        let s = slf.as_any();
+    pub(crate) fn _restore(slf: &Bound<'_, Self>, was: bool) -> R<()> {
         Self::sa_shooting(slf, false)?;
         if was {
-            s.call_method0("show_panel")?;
+            Self::show_panel(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         }
         Ok(())
     }
-    fn reset(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn reset(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         Self::sa_yaw(slf, std::f64::consts::PI)?;
         Self::sa_pitch(slf, 0.12)?;
         Self::sa_dist(slf, 3.2)?;
@@ -445,18 +442,18 @@ impl CameraMode {
         let f0 = Self::ga_fov0(slf)?;
         Self::sa_fov(slf, &f0)?;
         Self::ga_U(slf)?.get_item("camera")?.setattr("fov", f0)?;
-        s.call_method0("_refresh")?;
+        Self::_refresh(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         Ok(())
     }
     /// カメラモード中のキー。使ったら True
-    fn on_key(slf: &Bound<'_, Self>, key: &str) -> R<bool> {
+    pub(crate) fn on_key(slf: &Bound<'_, Self>, key: &str) -> R<bool> {
         let s = slf.as_any();
         let pon = Self::ga_panel_on(slf)?.is_truthy()?;
         match key {
             // 終わるのは Esc・「カメラモードを終わる」だけ（C をもう一度押しても終わらない）
             "escape" => {
                 if !pon {
-                    s.call_method0("show_panel")?;
+                    Self::show_panel(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
                 } else {
                     Self::ga_game(slf)?.call_method0("exit_camera")?;
                 }
@@ -465,20 +462,20 @@ impl CameraMode {
                 s.call_method0(if !pon { "show_panel" } else { "hide_panel" })?;
             }
             "p" => {
-                s.call_method0("take_photo")?;
+                Self::take_photo(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
             }
             "scroll up" => {
-                s.call_method1("zoom", (0.9,))?;
+                Self::zoom(slf, 0.9).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
             }
             "scroll down" => {
-                s.call_method1("zoom", (1.0 / 0.9,))?;
+                Self::zoom(slf, IntoPy::<PyObject>::into_py(1.0 / 0.9, slf.py()).extract::<f64>(slf.py())?).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
             }
             _ => {}
         }
         Ok(true) // ほかのキーはゲームの操作に回さない（移動はカメラの方で読む）
     }
     // --- 毎フレーム ---
-    fn update(slf: &Bound<'_, Self>, dt: f64, held: &B<'_>, vkeys: &B<'_>, stick: &B<'_>) -> R<()> {
+    pub(crate) fn update(slf: &Bound<'_, Self>, dt: f64, held: &B<'_>, vkeys: &B<'_>, stick: &B<'_>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let c = Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?;
@@ -490,7 +487,7 @@ impl CameraMode {
                 Self::ga_hint(slf)?.setattr("enabled", false)?;
             }
         }
-        s.call_method0("_pointers")?;
+        Self::_pointers(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         // 注目点を動かす（WASD・スティック）
         let p = Self::local(s)?;
         let up = Self::upn(&p)?;
@@ -498,7 +495,7 @@ impl CameraMode {
         let (cf, cr) = (v3(&ax.get_item(0)?)?, v3(&ax.get_item(1)?)?);
         let h = |k: &str| -> R<f64> {
             let key = c.get_item(k)?;
-            Ok(if held.get_item(&key)?.is_truthy()? || vkeys.call_method1("get", (&key,))?.is_truthy()? { 1.0 } else { 0.0 })
+            Ok(if held.get_item(&key)?.is_truthy()? || vkeys.dget1(&key)?.is_truthy()? { 1.0 } else { 0.0 })
         };
         let (s0, s1) = (f64of(&stick.get_item(0)?)?, f64of(&stick.get_item(1)?)?);
         let a = h("forward")? - h("back")? + s1;
@@ -522,7 +519,7 @@ impl CameraMode {
         Ok(())
     }
     /// カメラの前（地面に沿って）と右
-    fn _cam_axes<'py>(slf: &Bound<'py, Self>, up: &B<'py>) -> R<Bound<'py, PyTuple>> {
+    pub(crate) fn _cam_axes<'py>(slf: &Bound<'py, Self>, up: &B<'py>) -> R<Bound<'py, PyTuple>> {
         let py = slf.py();
         let s = slf.as_any();
         let u = v3(up)?;
@@ -531,7 +528,7 @@ impl CameraMode {
         Ok(PyTuple::new_bound(py, [np3(py, f), np3(py, right)])) // 画面の奥・右（カメラは注目点の -f 側から f の向きに見る）
     }
     /// ドラッグで回る・2本指で距離・タップでパネルを出す（パネルの上から始めた指は使わない）
-    fn _pointers(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _pointers(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let pts = Self::ga_game(slf)?.getattr("touch_hud")?.getattr("ptr")?.call_method0("current")?;
@@ -546,9 +543,9 @@ impl CameraMode {
         let keys: Vec<B<'_>> = own.iter()?.collect::<R<_>>()?;
         for pid in keys {
             if !pts.contains(&pid)? {
-                let o = own.call_method1("pop", (&pid,))?;
+                let o = own.dpop1(&pid)?;
                 if o.is_truthy()? && !Self::ga_panel_on(slf)?.is_truthy()? && now()? - f64of(&o.get_item("t0")?)? < 0.35 && f64of(&o.get_item("moved")?)? < 0.015 {
-                    s.call_method0("show_panel")?; // 画面を1回タップ：パネルを出す
+                    Self::show_panel(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?; // 画面を1回タップ：パネルを出す
                 }
             }
         }
@@ -556,7 +553,7 @@ impl CameraMode {
             let kv = kv?;
             let (pid, xy) = (kv.get_item(0)?, kv.get_item(1)?);
             let (x, y) = (f64of(&xy.get_item(0)?)?, f64of(&xy.get_item(1)?)?);
-            let o = own.call_method1("get", (&pid, false))?;
+            let o = own.dget2(&pid, false)?;
             if o.is(&false.into_py(py).into_bound(py)) || (o.is_instance_of::<pyo3::types::PyBool>() && !o.is_truthy()?) {
                 if over_panel {
                     own.set_item(&pid, py.None())?;
@@ -581,9 +578,9 @@ impl CameraMode {
             if live.len() >= 2 {
                 let (a, b) = (live[0].get_item("last")?, live[1].get_item("last")?);
                 let d = (f64of(&a.get_item(0)?)? - f64of(&b.get_item(0)?)?).hypot(f64of(&a.get_item(1)?)? - f64of(&b.get_item(1)?)?);
-                let pd = o.call_method1("get", ("pinch",))?;
+                let pd = o.dget1("pinch")?;
                 if pd.is_truthy()? {
-                    s.call_method1("zoom", (f64of(&pd)? / d.max(1e-3),))?;
+                    Self::zoom(slf, IntoPy::<PyObject>::into_py(f64of(&pd)? / d.max(1e-3), slf.py()).extract::<f64>(slf.py())?).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
                 }
                 o.set_item("pinch", d)?;
             } else {
@@ -594,7 +591,7 @@ impl CameraMode {
         Ok(())
     }
     /// (カメラの位置, 視線, 上, 右) をワールドで
-    fn camera<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyTuple>> {
+    pub(crate) fn camera<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyTuple>> {
         let py = slf.py();
         let s = slf.as_any();
         let p = Self::local(s)?;
@@ -614,7 +611,7 @@ impl CameraMode {
         let cu = mv(rot(look, fg(s, "roll")?), cu);
         Ok(PyTuple::new_bound(py, [np3(py, pos), np3(py, look), np3(py, cu), np3(py, right)]))
     }
-    fn destroy(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn destroy(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)?;

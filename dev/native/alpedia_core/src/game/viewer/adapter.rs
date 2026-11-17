@@ -241,7 +241,7 @@ impl GameAdapter {
                 if !root.is_none() {
                     shim(py)?.call_method1("destroy", (root,))?;
                 }
-                s.call_method0("editor_closed")?;
+                Self::editor_closed(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
                 Self::ga_world(slf)?.call_method1("message", (format!("⚠ 画面を開けませんでした: {}", e.value_bound(py).str()?),))?;
             }
             Err(e) => return Err(e),

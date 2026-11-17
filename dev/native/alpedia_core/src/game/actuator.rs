@@ -8,6 +8,8 @@
 //! - 分離   : 出力面の結合を切り離す（先の部分は別の構築物になる）
 //! - 結合   : 出力面の先にあるブロック（別の構築物でも可）とつなぐ
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::construct::{con, Construct};
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2};
@@ -81,7 +83,7 @@ fn float_of(v: &Bound<'_, PyAny>) -> R<f64> {
 }
 
 fn sget<'py>(st: &Bound<'py, PyAny>, k: &str, default: impl IntoPy<PyObject>) -> R<Bound<'py, PyAny>> {
-    st.call_method1("get", (k, default.into_py(st.py())))
+    st.dget2(k, default.into_py(st.py()))
 }
 
 /// アクチュエーターの種類："rotor" / "piston" / "hinge" / "both"
@@ -95,16 +97,16 @@ pub fn motion(dev: &Bound<'_, PyAny>, reg: Option<&Bound<'_, PyAny>>) -> R<&'sta
         _ => py.None().into_bound(py),
     };
     let ddd = if dd.is_truthy()? { dd.clone() } else { PyDict::new_bound(py).into_any() };
-    let p = ddd.call_method1("get", ("params",))?;
+    let p = ddd.dget1("params")?;
     let p = if p.is_truthy()? { p } else { PyDict::new_bound(py).into_any() };
-    let m = p.call_method1("get", ("motion",))?;
+    let m = p.dget1("motion")?;
     for k in ["rotor", "piston", "hinge", "both"] {
         if m.eq(k)? {
             return Ok(k);
         }
     }
-    let def = dev.call_method1("get", ("def",))?;
-    if p.call_method1("get", ("hinge",))?.is_truthy()? || def.eq("hinge")? {
+    let def = dev.dget1("def")?;
+    if p.dget1("hinge")?.is_truthy()? || def.eq("hinge")? {
         return Ok("hinge");
     }
     if def.eq("piston")? {
@@ -169,19 +171,19 @@ pub fn act_default_preset<'py>(py: Python<'py>, dev: &Bound<'py, PyAny>, reg: Op
 /// 古いセーブの「アクチュエーター」：押し出しを使っていたものはピストンにする
 #[pyfunction]
 pub fn act_migrate_device<'py>(py: Python<'py>, dev: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    if !dev.is_truthy()? || !dev.call_method1("get", ("def",))?.eq("actuator")? {
+    if !dev.is_truthy()? || !dev.dget1("def")?.eq("actuator")? {
         return Ok(dev.clone());
     }
-    let st = dev.call_method1("get", ("state",))?;
+    let st = dev.dget1("state")?;
     let st = if st.is_truthy()? { st } else { PyDict::new_bound(py).into_any() };
-    let pre = st.call_method1("get", ("preset",))?;
+    let pre = st.dget1("preset")?;
     let pre = if pre.is_truthy()? { pre } else { PyDict::new_bound(py).into_any() };
     let num = |k: &str| -> R<f64> {
         let v = sget(&st, k, 0)?;
         let v = if v.is_truthy()? { v } else { 0i64.into_py(py).into_bound(py) };
         float_of(&v)
     };
-    let act = pre.call_method1("get", ("action",))?;
+    let act = pre.dget1("action")?;
     if num("ext")?.abs() > 1e-6 || num("ext_target")?.abs() > 1e-6 || act.eq("extend")? || act.eq("retract")? {
         let d = PyDict::new_bound(py);
         d.update(dev.downcast::<pyo3::types::PyMapping>()?)?;
@@ -239,7 +241,7 @@ pub fn is_hinge_dev(dev: &Bound<'_, PyAny>, reg: Option<&Bound<'_, PyAny>>) -> R
     if !dev.is_truthy()? {
         return Ok(false);
     }
-    if dev.call_method1("get", ("def",))?.eq("hinge")? {
+    if dev.dget1("def")?.eq("hinge")? {
         return Ok(true);
     }
     let Some(reg) = reg.filter(|r| !r.is_none()) else { return Ok(false) };
@@ -247,11 +249,11 @@ pub fn is_hinge_dev(dev: &Bound<'_, PyAny>, reg: Option<&Bound<'_, PyAny>>) -> R
     if !dd.is_truthy()? {
         return Ok(false);
     }
-    let p = dd.call_method1("get", ("params",))?;
+    let p = dd.dget1("params")?;
     if !p.is_truthy()? {
         return Ok(false);
     }
-    p.call_method1("get", ("hinge",))?.is_truthy()
+    p.dget1("hinge")?.is_truthy()
 }
 
 fn dev_dir(dev: &Bound<'_, PyAny>) -> R<i64> {
@@ -346,7 +348,7 @@ pub fn act_is_actuator(c: &Bound<'_, PyAny>, i: usize) -> R<bool> {
     if !dd.is_truthy()? {
         return Ok(false);
     }
-    dd.call_method1("get", ("type",))?.eq("actuator")
+    dd.dget1("type")?.eq("actuator")
 }
 
 pub fn stroke(c: &Bound<'_, PyAny>, i: usize) -> R<f64> {
@@ -453,7 +455,7 @@ pub fn act_cmd_detach(c: &Bound<'_, PyAny>, i: usize) -> R<bool> {
     let extras = Construct::g_extras(con(&c)?)?;
     let mut found = links.contains(&key)? || extras.contains(&key)?;
     links.call_method1("discard", (&key,))?;
-    extras.call_method1("pop", (&key, py.None()))?;
+    extras.dpop2(&key, py.None())?;
     // 出力面の頂点につながる追加結合も外す
     let d = dev_of(c, i)?.get_item("dir")?.extract::<i64>()?.rem_euclid(6) as usize;
     let face: Vec<i64> = joint_pairs(d).iter().map(|p| p[0] as i64).collect();
@@ -486,7 +488,7 @@ pub fn act_cmd_detach(c: &Bound<'_, PyAny>, i: usize) -> R<bool> {
         }
     }
     if found {
-        c.call_method0("rebuild")?;
+        Construct::rebuild(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
     }
     Ok(found)
 }
@@ -551,7 +553,7 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// 出力面とその先のブロックの、軸まわりのねじれ角（度）
 pub fn measure_twist(c: &Bound<'_, PyAny>, i: usize) -> R<Option<f64>> {
     let oc = output_cell(c, i)?;
-    let j = Construct::g_index(con(&c)?)?.call_method1("get", (oc,))?;
+    let j = Construct::g_index(con(&c)?)?.dget1(oc)?;
     if j.is_none() {
         return Ok(None);
     }
@@ -610,7 +612,7 @@ pub fn act_sync_angle(c: &Bound<'_, PyAny>, i: usize) -> R<()> {
 #[pyo3(signature = (c, i, world=None))]
 pub fn act_output_angle(c: &Bound<'_, PyAny>, i: usize, world: Option<&Bound<'_, PyAny>>) -> R<f64> {
     let py = c.py();
-    let j = Construct::g_index(con(&c)?)?.call_method1("get", (output_cell(c, i)?,))?;
+    let j = Construct::g_index(con(&c)?)?.dget1(output_cell(c, i)?)?;
     if j.is_none() || !is_attached(c, i)? {
         return Ok(0.0);
     }
@@ -620,7 +622,7 @@ pub fn act_output_angle(c: &Bound<'_, PyAny>, i: usize, world: Option<&Bound<'_,
     }
     let j: usize = j.extract()?;
     let (ctr, n, _) = face_info(c, i)?;
-    let fr: numpy::PyReadonlyArray3<f64> = c.call_method0("voxel_frames")?.extract()?;
+    let fr: numpy::PyReadonlyArray3<f64> = Construct::voxel_frames(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.extract()?;
     let fa = fr.as_array();
     let axis = d.get_item("dir")?.extract::<i64>()?.rem_euclid(6) / 2;
     let row = if axis == 1 { 2 } else { 1 };
@@ -628,15 +630,15 @@ pub fn act_output_angle(c: &Bound<'_, PyAny>, i: usize, world: Option<&Bound<'_,
     let ctr_py = PyArray1::from_vec_bound(py, ctr.to_vec());
     let mut up = [0.0, 1.0, 0.0];
     if let Some(w) = world.filter(|w| !w.is_none()) {
-        let pl = w.call_method1("nearest_planet", (&ctr_py,))?;
+        let pl = World::nearest_planet(wld(&w)?, &IntoPy::<PyObject>::into_py(&ctr_py, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         if !pl.is_none() {
-            let u: Vec<f64> = pl.call_method1("up", (&ctr_py,))?.extract()?;
+            let u: Vec<f64> = Planet::up(pla(&pl)?, &IntoPy::<PyObject>::into_py(&ctr_py, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.extract()?;
             up = [u[0], u[1], u[2]];
         }
     }
     let mut wv = up;
     if dot(n, up).abs() > 0.7 {
-        let fit = c.call_method0("rigid_fit")?;
+        let fit = Construct::rigid_fit(con(&c)?, None).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
         let rm: numpy::PyReadonlyArray2<f64> = fit.get_item(0)?.extract()?;
         let a = rm.as_array();
         wv = [a[[0, 2]], a[[1, 2]], a[[2, 2]]];
@@ -668,7 +670,7 @@ pub fn act_execute_preset(world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, i: usi
     let dev = dev_of(c, i)?;
     let reg = Construct::g_reg(con(&c)?)?;
     let st = dev.get_item("state")?;
-    let mut p = st.call_method1("get", ("preset",))?;
+    let mut p = st.dget1("preset")?;
     if !p.is_truthy()? {
         p = default_preset(py, &dev, Some(&reg))?.into_any();
     }
@@ -680,7 +682,7 @@ pub fn act_execute_preset(world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, i: usi
     }
     let name = dev.get_item("name")?.str()?.to_string();
     let hinge = is_hinge_dev(&dev, Some(&reg))?;
-    let speed = p.call_method1("get", ("speed",))?;
+    let speed = p.dget1("speed")?;
     let speed_opt = if speed.is_none() { None } else { Some(&speed) };
     match a.as_str() {
         "none" => Ok(format!("{name}: 設定の動作は「なし」です（コンピューターのプログラムで動かします）")),
@@ -716,7 +718,7 @@ pub fn act_execute_preset(world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, i: usi
             Ok(format!("{name}: {} ブロック引き込み", fmt(&pget(&p, "amount", 1.0)?, ".2f")?))
         }
         "detach" => {
-            let ok = world.call_method1("actuator_detach", (c, i))?.is_truthy()?;
+            let ok = World::actuator_detach(wld(&world)?, &IntoPy::<PyObject>::into_py(c, world.py()).into_bound(world.py()), IntoPy::<PyObject>::into_py(i, world.py()).extract::<usize>(world.py())?).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?.is_truthy()?;
             Ok(format!("{name}: {}", if ok { "分離しました" } else { "結合しているものがありません" }))
         }
         "attach" => {
@@ -731,7 +733,7 @@ pub fn act_execute_preset(world: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>, i: usi
 #[pyfunction]
 #[pyo3(signature = (st, hinge=false))]
 pub fn act_preset_text(py: Python<'_>, st: &Bound<'_, PyAny>, hinge: bool) -> R<String> {
-    let mut p = st.call_method1("get", ("preset",))?;
+    let mut p = st.dget1("preset")?;
     if !p.is_truthy()? {
         let d = PyDict::new_bound(py);
         d.set_item("action", "rotate")?;
@@ -766,15 +768,15 @@ pub fn act_step(c: &Bound<'_, PyAny>, i: usize, dd: &Bound<'_, PyAny>, dt: f64, 
     let mut powered = powered;
     let mut moving = false;
     const LOCKED: &str = "両側ともアンカーで固定されていて動かせません";
-    if powered && c.getattr("anchored")?.is_truthy()? && c.call_method1("actuator_locked", (i,))?.is_truthy()? {
+    if powered && c.getattr("anchored")?.is_truthy()? && Construct::actuator_locked(con(&c)?, IntoPy::<PyObject>::into_py(i, c.py()).extract::<usize>(c.py())?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.is_truthy()? {
         st.set_item("angle_target", st.get_item("angle")?)?;
         st.set_item("ext_target", st.get_item("ext")?)?;
-        if !st.call_method1("get", ("error",))?.is_truthy()? {
+        if !st.dget1("error")?.is_truthy()? {
             st.set_item("error", LOCKED)?;
         }
         powered = false;
-    } else if st.call_method1("get", ("error",))?.eq(LOCKED)? {
-        st.call_method1("pop", ("error", py.None()))?;
+    } else if st.dget1("error")?.eq(LOCKED)? {
+        st.dpop2("error", py.None())?;
     }
     let f = |k: &str| -> R<f64> { float_of(&st.get_item(k)?) };
     if powered {
@@ -813,18 +815,18 @@ pub fn act_step(c: &Bound<'_, PyAny>, i: usize, dd: &Bound<'_, PyAny>, dt: f64, 
 #[pyfunction]
 pub fn act_merge_map<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, other: &Bound<'py, PyAny>) -> R<(Bound<'py, PyDict>, Bound<'py, PyDict>)> {
     use super::construct::{cell_of, iarr, m3, mat, mean8, mul_r, sub, v3, v3s, DIRS};
-    let fit = c.call_method0("rigid_fit")?;
+    let fit = Construct::rigid_fit(con(&c)?, None).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
     let rm = m3(&fit.get_item(0)?)?;
     let t = v3(&fit.get_item(1)?)?;
     let csize: f64 = Construct::g_size(con(&c)?)?.extract()?;
     let osize: f64 = other.getattr("size")?.extract()?;
-    let cen = v3s(&other.call_method0("voxel_centers")?)?;
+    let cen = v3s(&Construct::voxel_centers(con(&other)?).map(|v| IntoPy::<PyObject>::into_py(v, other.py()).into_bound(other.py()))?)?;
     let local: Vec<[f64; 3]> = cen.iter().map(|p| { let l = mul_r(sub(*p, t), &rm); [l[0] / csize - 0.5, l[1] / csize - 0.5, l[2] / csize - 0.5] }).collect();
     let rnd: Vec<[f64; 3]> = local.iter().map(|l| [l[0].round_ties_even(), l[1].round_ties_even(), l[2].round_ties_even()]).collect();
     let ocells: Vec<Bound<'py, PyAny>> = Construct::g_cells(con(&other)?)?.iter()?.collect::<R<_>>()?;
     let dmax = local.iter().zip(&rnd).flat_map(|(a, b)| (0..3).map(move |k| (a[k] - b[k]).abs())).fold(0.0f64, f64::max);
     if (osize - csize).abs() < 1e-6 && dmax < 0.2 {
-        let fr: Vec<f64> = super::construct::fv(&other.call_method0("voxel_frames")?)?;
+        let fr: Vec<f64> = super::construct::fv(&Construct::voxel_frames(con(&other)?).map(|v| IntoPy::<PyObject>::into_py(v, other.py()).into_bound(other.py()))?)?;
         let n = cen.len();
         let mut mm = vec![[[0.0; 3]; 3]; n];
         for q in 0..n {
@@ -920,7 +922,7 @@ pub fn act_cmd_attach(py: Python<'_>, world: &Bound<'_, PyAny>, c: &Bound<'_, Py
         if Construct::n(con(&other)?)? == 0 {
             continue;
         }
-        let cen = v3s(&other.call_method0("voxel_centers")?)?;
+        let cen = v3s(&Construct::voxel_centers(con(&other)?).map(|v| IntoPy::<PyObject>::into_py(v, other.py()).into_bound(other.py()))?)?;
         let mut dist: Vec<f64> = cen.iter().map(|p| norm(sub(*p, want))).collect();
         if other.is(c) {
             dist[i] = f64::INFINITY;
@@ -943,7 +945,7 @@ pub fn act_cmd_attach(py: Python<'_>, world: &Bound<'_, PyAny>, c: &Bound<'_, Py
     let target = if !other.is(c) {
         let (cell_map, xform) = act_merge_map(py, c, &other)?;
         let t = cell_map.get_item(Construct::g_cells(con(&other)?)?.get_item(k)?)?.unwrap();
-        world.call_method1("merge_constructs", (c, &other, &cell_map, &xform))?;
+        World::merge_constructs(wld(&world)?, &IntoPy::<PyObject>::into_py(c, world.py()).into_bound(world.py()), &IntoPy::<PyObject>::into_py(&other, world.py()).into_bound(world.py()), &IntoPy::<PyObject>::into_py(&cell_map, world.py()).into_bound(world.py()), Some(&IntoPy::<PyObject>::into_py(&xform, world.py()).into_bound(world.py()))).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
         t
     } else {
         Construct::g_cells(con(&c)?)?.get_item(k)?
@@ -980,7 +982,7 @@ pub fn act_cmd_attach(py: Python<'_>, world: &Bound<'_, PyAny>, c: &Bound<'_, Py
         }
         Construct::g_extras(con(&c)?)?.set_item(key, lst)?;
     }
-    c.call_method0("rebuild")?;
+    Construct::rebuild(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
     if adj {
         act_sync_angle(c, i)?;
     }
@@ -997,8 +999,8 @@ pub fn act_cmd_retract(py: Python<'_>, c: &Bound<'_, PyAny>, i: usize, amount: f
 /// 置くとき：出力の軸に垂直な4つの向きのうち、見ている向き look にいちばん近いもの（その側へ曲がる）。配列でなくてもよい
 #[pyfunction]
 #[pyo3(name = "act_side_toward_any")]
-pub fn act_side_toward_any(py: Python<'_>, frame_rows: &Bound<'_, PyAny>, d: i64, look: &Bound<'_, PyAny>) -> R<usize> {
-    let a = super::construct::np(py)?.call_method1("ascontiguousarray", (frame_rows, "float64"))?.call_method1("reshape", (3, 3))?;
+pub fn act_side_toward_any(_py: Python<'_>, frame_rows: &Bound<'_, PyAny>, d: i64, look: &Bound<'_, PyAny>) -> R<usize> {
+    let a = crate::game::construct::cflt(&frame_rows)?.call_method1("reshape", (3, 3))?;
     act_side_toward(a.extract()?, d, super::construct::v3(look)?)
 }
 

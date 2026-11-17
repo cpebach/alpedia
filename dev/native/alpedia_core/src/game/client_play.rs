@@ -1,6 +1,9 @@
 //! 遊ぶ画面で共通に使う物（main/client/game.py）：フォントの候補探し・ほかの人の体（色の箱）・機器の状態の言葉。
 //! 手の操作（main/client/play.py）：狙っている物の説明・置く場所の枠・三人称のカメラ・近くの触れる物。
 
+use crate::game::PyPathOps;
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::player::{ply, Player};
 use crate::game::construct::{con, Construct};
@@ -22,7 +25,7 @@ fn none(py: Python<'_>) -> B<'_> {
 }
 fn get<'py>(d: &B<'py>, k: &str, dflt: impl IntoPy<PyObject>) -> R<B<'py>> {
     let py = d.py();
-    d.call_method1("get", (k, dflt.into_py(py)))
+    d.dget2(k, dflt.into_py(py))
 }
 fn or_dict<'py>(o: B<'py>) -> R<B<'py>> {
     let py = o.py();
@@ -77,7 +80,7 @@ pub fn game_find_font<'py>(py: Python<'py>, cfg: &B<'py>) -> R<B<'py>> {
     for f in cands {
         if f.is_truthy()? {
             let p = pathc.call1((&f,))?;
-            if p.call_method0("exists")?.is_truthy()? {
+            if p.pexists()?.is_truthy()? {
                 return Ok(p);
             }
         }
@@ -258,7 +261,7 @@ pub fn play_aim<'py>(py: Python<'py>, w: &B<'py>, h: &B<'py>, look_vectors: &B<'
     if kind.eq("voxel")? {
         let (c, i) = (h.get_item("construct")?, h.get_item("index")?);
         let ii: i64 = i.extract()?;
-        let f = c.call_method0("voxel_frames")?.get_item(&i)?;
+        let f = Construct::voxel_frames(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.get_item(&i)?;
         let ctr = vox_center(&c, ii)?;
         let size = c.getattr("size")?;
         let sz = f64of(&size)?;
@@ -350,7 +353,7 @@ pub fn play_aim<'py>(py: Python<'py>, w: &B<'py>, h: &B<'py>, look_vectors: &B<'
         } else if creative {
             format!("{} の地面（左クリックで掘る）", pl.getattr("name")?.str()?)
         } else {
-            let res = World::g_registry(wld(&w)?)?.call_method1("res_name", (pl.call_method1("resource_at", (h.get_item("point")?,))?,))?;
+            let res = World::g_registry(wld(&w)?)?.call_method1("res_name", (Planet::resource_at(pla(&pl)?, &IntoPy::<PyObject>::into_py(h.get_item("point")?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?,))?;
             format!("{} の地面：{}（左クリックで掘る）", pl.getattr("name")?.str()?, res.str()?)
         };
         out.set_item("text", text)?;
@@ -395,7 +398,7 @@ pub fn play_camera_clip<'py>(py: Python<'py>, w: &B<'py>, eye: &B<'py>, offset: 
     let full = || -> R<B<'py>> { eye.call_method1("__add__", (offset,)) };
     let (mut start, mut left) = (e, n);
     for _ in 0..4 {
-        let h = match w.call_method1("raycast", (np3(py, start), np3(py, d), left)) {
+        let h = match World::raycast(wld(&w)?, &IntoPy::<PyObject>::into_py(np3(py, start), w.py()).into_bound(w.py()), &IntoPy::<PyObject>::into_py(np3(py, d), w.py()).into_bound(w.py()), IntoPy::<PyObject>::into_py(left, w.py()).extract::<f64>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py())) {
             Ok(h) => h,
             Err(err) if is_exc(py, &err) => return full(),
             Err(err) => return Err(err),
@@ -428,7 +431,7 @@ pub fn play_seat_follow<'py>(py: Python<'py>, w: &B<'py>, addons: &B<'py>) -> R<
     if !seated.is_truthy()? {
         return Ok(none(py));
     }
-    let c = World::g_constructs(wld(&w)?)?.call_method1("get", (seated.get_item(0)?,))?;
+    let c = World::g_constructs(wld(&w)?)?.dget1(seated.get_item(0)?)?;
     if c.is_none() {
         return Ok(none(py));
     }
@@ -480,7 +483,7 @@ pub fn play_nearby_targets<'py>(py: Python<'py>, w: &B<'py>, addons: &B<'py>, ra
             "操作"
         })
     };
-    for c in w.call_method1("constructs_near", (&eye_o, radius))?.iter()? {
+    for c in World::constructs_near(wld(&w)?, &IntoPy::<PyObject>::into_py(&eye_o, w.py()).into_bound(w.py()), IntoPy::<PyObject>::into_py(radius, w.py()).extract::<f64>(w.py())?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?.iter()? {
         let c = c?;
         if !Construct::n(con(&c)?)?.into_py(py).into_bound(py).is_truthy()? || !c.getattr("has_devices")?.is_truthy()? {
             continue;

@@ -183,7 +183,7 @@ impl DecalView {
         let c = Self::ga_c(slf)?;
         let devs = Construct::g_devs(con(&c)?)?;
         let mut out = vec![];
-        for i in c.call_method1("dev_ids", ("computer",))?.iter()? {
+        for i in Construct::dev_ids(con(&c)?, Some(&IntoPy::<PyObject>::into_py("computer", c.py()).into_bound(c.py()))).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.iter()? {
             let i = i?;
             let disp = or_dict(get(&devs.get_item(&i)?.get_item("state")?, "display", py.None())?)?;
             if get(&disp, "text", py.None())?.is_truthy()? {
@@ -202,7 +202,7 @@ impl DecalView {
             let sig = Self::_display_sig(slf)?;
             if ver_diff || !sig.eq(gd(s, "_sig", none(py)))? {
                 Self::sa_sig(slf, &sig)?;
-                s.call_method0("_rebuild")?;
+                Self::_rebuild(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
             }
         }
         if Self::ga_items(slf)?.is_none() {
@@ -210,7 +210,7 @@ impl DecalView {
         }
         // 遠くの構築物では記号を出さない（外側の球で大まかに、近ければブロックごとに）
         let md = f64of(&Self::ga_max_dist(slf)?)?;
-        let bnd = c.call_method0("bounds")?;
+        let bnd = Construct::bounds(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
         let ctr = v3(&bnd.get_item(0)?)?;
         let rad = f64of(&bnd.get_item(1)?)?;
         let cp = v3(cam_pos)?;

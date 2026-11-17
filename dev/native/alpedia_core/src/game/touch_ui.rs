@@ -8,6 +8,7 @@
 //! 指（タッチ）は画面（Rust）が届ける指の出来事を、指が無ければマウスの左ボタン（1本の指）を使う。
 //! キーボード・マウスで遊ぶときは、Alt を押している間カーソルが出るので、ボタンをクリックできる。
 
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use crate::game::player::{ply, Player};
 use crate::game::construct::{con, Construct};
@@ -32,7 +33,7 @@ pub const MOVE_TOL: f64 = 0.012; // これより動いたら、なぞる（視�
 pub const REPEAT: f64 = 0.22; // 長押しのくり返しの間隔
 
 fn lg(py: Python<'_>) -> R<B<'_>> {
-    imp(py, "main.log")?.call_method1("get", ("touch",))
+    imp(py, "main.log")?.dget1("touch")
 }
 fn mono(py: Python<'_>) -> R<f64> {
     imp(py, "time")?.call_method0("monotonic")?.extract()
@@ -89,7 +90,7 @@ pub fn key_name<'py>(py: Python<'py>, k: &B<'py>) -> R<B<'py>> {
     if let Ok(s) = k.downcast::<PyString>() {
         return Ok(po(py, key_name_s(&s.to_string())).into_bound(py));
     }
-    imp(py, "main.client.touch_ui")?.getattr("KEY_NAMES")?.call_method1("get", (k, k.call_method0("upper")?))
+    imp(py, "main.client.touch_ui")?.getattr("KEY_NAMES")?.dget2(k, k.call_method0("upper")?)
 }
 fn seat_label(k: &str) -> Option<&'static str> {
     match k {
@@ -124,7 +125,7 @@ impl TPointers {
     fn feed(&mut self, py: Python<'_>, kind: &str, x: PyObject, y: PyObject, n: PyObject) -> R<()> {
         let t = self.touches.bind(py);
         if kind == "touch:end" {
-            t.call_method1("pop", (n, py.None()))?;
+            t.dpop2(n, py.None())?;
         } else {
             t.set_item(n, (x, y))?;
         }
@@ -299,7 +300,7 @@ impl Pill {
         self.y = y;
         let root = self.root.bind(py);
         root.setattr("position", (x, y, 0))?;
-        let ic = target.call_method1("get", ("icon", "interact"))?;
+        let ic = target.dget2("icon", "interact")?;
         self.icon.bind(py).setattr("texture", imp(py, "main.client.icons")?.call_method1("ui_texture", (ic,))?)?;
         let fmt = py.import_bound("builtins")?.getattr("format")?;
         let mut txt: String = fmt.call1((target.get_item("label")?,))?.extract()?;
@@ -310,7 +311,7 @@ impl Pill {
         if !t.getattr("text")?.eq(&txt)? {
             t.setattr("text", &txt)?;
         }
-        let on = target.call_method1("get", ("settings",))?.is_truthy()?;
+        let on = target.dget1("settings")?.is_truthy()?;
         self.gear_bg.bind(py).setattr("enabled", on)?;
         self.gear.bind(py).setattr("enabled", on)?;
         root.setattr("enabled", true)?;
@@ -352,7 +353,7 @@ impl TouchTap {
         match self.kind {
             0 => {
                 let c = g.getattr("cfg")?.get_item("controls")?;
-                g.call_method1("input", (c.call_method1("get", (self.k.bind(py), self.k.bind(py)))?,))?;
+                g.call_method1("input", (c.dget2(self.k.bind(py), self.k.bind(py))?,))?;
             }
             1 => {
                 g.call_method1("input", (self.k.bind(py),))?;
@@ -494,17 +495,17 @@ impl TouchHUD {
     // ------------------------------------------------------------------
     #[getter]
     fn touch_mode(slf: &Bound<'_, Self>) -> R<bool> {
-        Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?.call_method1("get", ("touch", false))?.is_truthy()
+        Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?.dget2("touch", false)?.is_truthy()
     }
-    fn key_hint(slf: &Bound<'_, Self>, action: &B<'_>) -> R<PyObject> {
+    pub(crate) fn key_hint(slf: &Bound<'_, Self>, action: &B<'_>) -> R<PyObject> {
         let py = slf.py();
         if Self::touch_mode(slf)? {
             return Ok(po(py, ""));
         }
-        let k = Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?.call_method1("get", (action, ""))?;
+        let k = Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?.dget2(action, "")?;
         Ok(key_name(py, &k)?.unbind())
     }
-    fn over_ui(slf: &Bound<'_, Self>, x: f64, y: f64) -> R<bool> {
+    pub(crate) fn over_ui(slf: &Bound<'_, Self>, x: f64, y: f64) -> R<bool> {
         let py = slf.py();
         for b in Self::_all_btns(slf)? {
             if b.borrow().hit(x, y) {
@@ -518,7 +519,7 @@ impl TouchHUD {
         }
         Ok(Self::touch_mode(slf)? && Self::_in_stick_zone(slf, x, y)?)
     }
-    fn mouse_over_ui(slf: &Bound<'_, Self>) -> R<bool> {
+    pub(crate) fn mouse_over_ui(slf: &Bound<'_, Self>) -> R<bool> {
         let py = slf.py();
         let r = (|| -> R<bool> {
             let m = Self::ga_ptr(slf)?.call_method0("mouse")?;
@@ -530,7 +531,7 @@ impl TouchHUD {
             Err(e) => Err(e),
         }
     }
-    fn _all_btns<'py>(slf: &Bound<'py, Self>) -> R<Vec<Bound<'py, Btn>>> {
+    pub(crate) fn _all_btns<'py>(slf: &Bound<'py, Self>) -> R<Vec<Bound<'py, Btn>>> {
         let mut out = vec![];
         for b in Self::ga_top(slf)?.iter()? {
             out.push(b?.downcast_into::<Btn>()?);
@@ -543,13 +544,13 @@ impl TouchHUD {
         }
         Ok(out)
     }
-    fn _in_stick_zone(slf: &Bound<'_, Self>, x: f64, y: f64) -> R<bool> {
+    pub(crate) fn _in_stick_zone(slf: &Bound<'_, Self>, x: f64, y: f64) -> R<bool> {
         let w = win(slf.as_any())?;
         Ok(x < wx(&w, "left", "x")? + 0.62 && y < 0.05)
     }
 
     // ------------------------------------------------------------------
-    fn layout(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn layout(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let g = Self::ga_game(slf)?;
@@ -558,7 +559,7 @@ impl TouchHUD {
         let (right, top) = (wx(&wn, "right", "x")?, wx(&wn, "top", "y")?);
         let player = w.getattr("player")?;
         let seated = !Player::g_seated(ply(&player)?)?.is_none();
-        let city = w.call_method1("addon", ("city",))?;
+        let city = World::addon(wld(&w)?, "city").map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         let has_city = !city.is_none() && city.getattr("enabled").map(|e| e.is_truthy()).unwrap_or(Ok(false))?;
         let net = w.getattr("net")?;
         if !net.is_none() {
@@ -604,7 +605,7 @@ impl TouchHUD {
         let flying = jet || f64of(&Player::g_in_water(ply(&player)?)?)? > 0.3;
         let h = g.getattr("hit")?;
         let aim_use = touch && h.is_truthy()? && g.call_method1("_usable", (&h,))?.is_truthy()?; // キーボードでは E・P があるので出さない
-        let aim_set = touch && h.is_truthy()? && h.call_method1("get", ("kind",))?.eq("voxel")?
+        let aim_set = touch && h.is_truthy()? && h.dget1("kind")?.eq("voxel")?
             && h.get_item("construct")?.getattr("devs")?.get_item(h.get_item("index")?)?.is_truthy()?;
         let ns = !seated;
         let lay: [(&str, f64, f64, bool); 10] = [
@@ -649,7 +650,7 @@ impl TouchHUD {
         Self::_layout_seat(slf, seated, bx, by)
     }
     /// 操縦席：機器に割り当てたキーのボタン（押している間 そのキーを押したことになる）。
-    fn _layout_seat(slf: &Bound<'_, Self>, seated: bool, bx: f64, by: f64) -> R<()> {
+    pub(crate) fn _layout_seat(slf: &Bound<'_, Self>, seated: bool, bx: f64, by: f64) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let mut want: Vec<(String, Vec<String>)> = vec![];
@@ -667,7 +668,7 @@ impl TouchHUD {
         }
         if seated {
             let w = Self::ga_game(slf)?.getattr("world")?;
-            let c = World::g_constructs(wld(&w)?)?.call_method1("get", (w.getattr("player")?.getattr("seated")?.get_item(0)?,))?;
+            let c = World::g_constructs(wld(&w)?)?.dget1(w.getattr("player")?.getattr("seated")?.get_item(0)?)?;
             if !c.is_none() {
                 let reg = c.getattr("reg")?;
                 for d in Construct::g_devs(con(&c)?)?.iter()? {
@@ -677,13 +678,13 @@ impl TouchHUD {
                     }
                     let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
                     let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
-                    let pr = dd.call_method1("get", ("params",))?;
+                    let pr = dd.dget1("params")?;
                     let pr = if pr.is_truthy()? { pr } else { PyDict::new_bound(py).into_any() };
-                    let mut k = pr.call_method1("get", ("key",))?;
-                    if dd.call_method1("get", ("type",))?.eq("actuator")? {
-                        let pre = d.get_item("state")?.call_method1("get", ("preset",))?;
+                    let mut k = pr.dget1("key")?;
+                    if dd.dget1("type")?.eq("actuator")? {
+                        let pre = d.get_item("state")?.dget1("preset")?;
                         let pre = if pre.is_truthy()? { pre } else { PyDict::new_bound(py).into_any() };
-                        if pre.call_method1("get", ("action",))?.eq("none")? {
+                        if pre.dget1("action")?.eq("none")? {
                             k = py.None().into_bound(py); // 動作「なし」のアクチュエーターはキーで動かさない
                         }
                     }
@@ -703,7 +704,7 @@ impl TouchHUD {
         let old: Vec<String> = sb.keys().iter().map(|k| k.extract()).collect::<R<_>>()?;
         for k in old {
             if !want.iter().any(|(kk, _)| *kk == k) {
-                let b = sb.call_method1("pop", (&k,))?;
+                let b = sb.dpop1(&k)?;
                 super::client_misc::ui_destroy(py, &b.getattr("root")?, &PyTuple::empty_bound(py), None)?;
             }
         }
@@ -745,7 +746,7 @@ impl TouchHUD {
         Ok(())
     }
     /// 構築物のコンピューターのプログラムが読んでいるキー（ブロックの「キー □」・Python の "x" in api.input など）。
-    fn _program_keys(slf: &Bound<'_, Self>, c: &B<'_>) -> R<Vec<String>> {
+    pub(crate) fn _program_keys(slf: &Bound<'_, Self>, c: &B<'_>) -> R<Vec<String>> {
         let py = slf.py();
         let w = Self::ga_game(slf)?.getattr("world")?;
         let mut out: Vec<String> = vec![];
@@ -765,12 +766,12 @@ impl TouchHUD {
             }
             let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
             let dd = if dd.is_truthy()? { dd } else { PyDict::new_bound(py).into_any() };
-            if !dd.call_method1("get", ("type",))?.eq("computer")? {
+            if !dd.dget1("type")?.eq("computer")? {
                 continue;
             }
-            let st = d.call_method1("get", ("state", PyDict::new_bound(py)))?;
-            let bl = st.call_method1("get", ("blocks",))?;
-            let name = if bl.is_truthy()? { bl } else { st.call_method1("get", ("script",))? };
+            let st = d.dget2("state", PyDict::new_bound(py))?;
+            let bl = st.dget1("blocks")?;
+            let name = if bl.is_truthy()? { bl } else { st.dget1("script")? };
             if !name.is_truthy()? {
                 continue;
             }
@@ -781,7 +782,7 @@ impl TouchHUD {
                 Err(e) => return Err(e),
             };
             let ps = path.str()?;
-            let got = cache.call_method1("get", (&ps,))?;
+            let got = cache.dget1(&ps)?;
             let got = if got.is_none() || !got.get_item(0)?.eq(&mt)? {
                 let keys = PyList::empty_bound(py);
                 let r = (|| -> R<()> {
@@ -791,8 +792,8 @@ impl TouchHUD {
                     if name.call_method1("endswith", (".json",))?.is_truthy()? {
                         fn walk(x: &B<'_>, keys: &Bound<'_, PyList>) -> R<()> {
                             if let Ok(d) = x.downcast::<PyDict>() {
-                                let t = d.call_method1("get", ("type",))?;
-                                let kk = d.call_method1("get", ("key",))?;
+                                let t = d.dget1("type")?;
+                                let kk = d.dget1("key")?;
                                 if (t.eq("on_key")? || t.eq("on_key_down")? || t.eq("key")?) && kk.is_instance_of::<PyString>() {
                                     keys.append(d.get_item("key")?)?;
                                 }
@@ -836,7 +837,7 @@ impl TouchHUD {
     }
 
     // ------------------------------------------------------------------
-    fn update(slf: &Bound<'_, Self>, _dt: &B<'_>) -> R<()> {
+    pub(crate) fn update(slf: &Bound<'_, Self>, _dt: &B<'_>) -> R<()> {
         let py = slf.py();
         let g = Self::ga_game(slf)?;
         let active = g.getattr("editor")?.is_none() && !g.getattr("paused")?.is_truthy()?;
@@ -860,7 +861,7 @@ impl TouchHUD {
         Self::_pointers(slf)?;
         Self::_draw_stick(slf)
     }
-    fn _layout_pills(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _layout_pills(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let s = slf.as_any();
         let x = wx(&win(s)?, "right", "x")? - 0.26;
@@ -873,8 +874,8 @@ impl TouchHUD {
             let p = p?.downcast_into::<Pill>()?;
             if k < n {
                 let t = targets.get_item(k)?;
-                let hint = if k == 0 || t.call_method1("get", ("kind",))?.eq("p")? {
-                    if t.call_method1("get", ("kind", "e"))?.eq("e")? { &key } else { &pkey }
+                let hint = if k == 0 || t.dget1("kind")?.eq("p")? {
+                    if t.dget2("kind", "e")?.eq("e")? { &key } else { &pkey }
                 } else {
                     &empty
                 };
@@ -885,7 +886,7 @@ impl TouchHUD {
         }
         Ok(())
     }
-    fn _pointers(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _pointers(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let g = Self::ga_game(slf)?;
         let pts = Self::ga_ptr(slf)?.call_method0("current")?;
@@ -894,7 +895,7 @@ impl TouchHUD {
         // 離した指
         let gone: Vec<B<'_>> = own.keys().iter().filter(|p| !pts.contains(p).unwrap_or(false)).collect();
         for pid in gone {
-            let o = own.call_method1("pop", (&pid,))?;
+            let o = own.dpop1(&pid)?;
             Self::_release(slf, &pid, &o, &pts)?;
         }
         for it in pts.call_method0("items")?.iter()? {
@@ -958,7 +959,7 @@ impl TouchHUD {
         g.setattr("vkeys", Self::ga_vkeys(slf)?)?;
         Ok(())
     }
-    fn _grab<'py>(slf: &Bound<'py, Self>, _pid: &B<'py>, x: f64, y: f64, touch: bool) -> R<B<'py>> {
+    pub(crate) fn _grab<'py>(slf: &Bound<'py, Self>, _pid: &B<'py>, x: f64, y: f64, touch: bool) -> R<B<'py>> {
         let py = slf.py();
         let s = slf.as_any();
         for b in Self::_all_btns(slf)? {
@@ -968,7 +969,7 @@ impl TouchHUD {
                 if b.borrow().kind == "hold" {
                     let bk = b.borrow().key.clone_ref(py).into_bound(py);
                     let g = Self::ga_game(slf)?;
-                    let k = g.getattr("cfg")?.get_item("controls")?.call_method1("get", (&bk, &bk))?;
+                    let k = g.getattr("cfg")?.get_item("controls")?.dget2(&bk, &bk)?;
                     Self::ga_vkeys(slf)?.set_item(&k, 1)?;
                     if b.borrow().press_key {
                         g.call_method1("input", (&k,))?;
@@ -1001,18 +1002,18 @@ impl TouchHUD {
         }
         Ok(PyList::new_bound(py, [po(py, "none")]).into_any())
     }
-    fn _tap(slf: &Bound<'_, Self>, b: &B<'_>) -> R<()> {
+    pub(crate) fn _tap(slf: &Bound<'_, Self>, b: &B<'_>) -> R<()> {
         let py = slf.py();
         let r = b.getattr("on_tap")?.call0().map(|_| ());
         guard(py, &Self::ga_game(slf)?, r, "ボタン %s の操作でエラー", vec![b.getattr("id")?.unbind()])
     }
-    fn _world_touch(slf: &Bound<'_, Self>, kind: &str, x: f64, y: f64) -> R<()> {
+    pub(crate) fn _world_touch(slf: &Bound<'_, Self>, kind: &str, x: f64, y: f64) -> R<()> {
         let py = slf.py();
         let g = Self::ga_game(slf)?;
         let r = g.call_method1("touch_action", (kind, x, y)).map(|_| ());
         guard(py, &g, r, "タッチの操作でエラー", vec![])
     }
-    fn _release(slf: &Bound<'_, Self>, _pid: &B<'_>, o: &B<'_>, _pts: &B<'_>) -> R<()> {
+    pub(crate) fn _release(slf: &Bound<'_, Self>, _pid: &B<'_>, o: &B<'_>, _pts: &B<'_>) -> R<()> {
         let py = slf.py();
         let kind: String = o.get_item(0)?.extract()?;
         if kind == "btn" {
@@ -1021,7 +1022,7 @@ impl TouchHUD {
             b.borrow_mut().pressed = false;
             let bk = b.borrow().key.clone_ref(py).into_bound(py);
             if b.borrow().kind == "hold" {
-                let k = Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?.call_method1("get", (&bk, &bk))?;
+                let k = Self::ga_game(slf)?.getattr("cfg")?.get_item("controls")?.dget2(&bk, &bk)?;
                 let mut other = false;
                 for x in Self::ga_own(slf)?.call_method0("values")?.iter()? {
                     let x = x?;
@@ -1034,7 +1035,7 @@ impl TouchHUD {
                     }
                 }
                 if !other {
-                    Self::ga_vkeys(slf)?.call_method1("pop", (k, py.None()))?;
+                    Self::ga_vkeys(slf)?.dpop2(k, py.None())?;
                 }
             } else if !b.borrow().on_tap.is_none(py) && !(b.borrow().kind == "repeat" && o.get_item(4)?.is_truthy()?) {
                 Self::_tap(slf, b.as_any())?; // 長押しでくり返したあとは、離したときにはもうしない
@@ -1053,7 +1054,7 @@ impl TouchHUD {
         }
         Ok(())
     }
-    fn _release_all(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _release_all(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         let own = Self::ga_own(slf)?;
         for o in own.call_method0("values")?.iter()? {
@@ -1072,14 +1073,14 @@ impl TouchHUD {
         Self::ga_game(slf)?.setattr("vkeys", Self::ga_vkeys(slf)?)?;
         Ok(())
     }
-    fn take_look<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
+    pub(crate) fn take_look<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
         let py = slf.py();
         let l = Self::ga_look(slf)?;
         let d = l.call_method0("copy")?;
         l.set_item(imp(py, "builtins")?.getattr("slice")?.call1((py.None(),))?, 0)?;
         Ok(d)
     }
-    fn _draw_stick(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn _draw_stick(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
         let on = Self::touch_mode(slf)?;
         Self::ga_stick_bg(slf)?.setattr("enabled", on)?;
@@ -1105,7 +1106,7 @@ impl TouchHUD {
         Self::ga_stick_knob(slf)?.setattr("position", (hx + s0 * STICK_R * 0.7, hy + s1 * STICK_R * 0.7, 0))?;
         Ok(())
     }
-    fn destroy(slf: &Bound<'_, Self>) -> R<()> {
+    pub(crate) fn destroy(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
         super::client_misc::ui_destroy(py, &Self::ga_root(slf)?, &PyTuple::empty_bound(py), None)
     }

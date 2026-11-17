@@ -1,5 +1,7 @@
 //! ブロックエディター：右の部品の一覧（パレット）
 
+use crate::game::world::{wld, World};
+use crate::game::PyDictOps;
 use super::*;
 
 #[pymethods]
@@ -67,7 +69,7 @@ impl BlockEditor {
         }
         let b = bm(py)?;
         let world = Self::ga_world(slf)?;
-        let allowed = world.call_method0("block_categories")?; // シナリオでは章ごとに出す種類を絞る
+        let allowed = World::block_categories(wld(&world)?).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?; // シナリオでは章ごとに出す種類を絞る
         let mut cats: Vec<B<'_>> = vec![];
         for c in b.getattr("CATEGORIES")?.iter()? {
             let c = c?;
@@ -99,7 +101,7 @@ impl BlockEditor {
         for it in b.getattr("STATEMENTS")?.call_method0("items")?.iter()? {
             let it = it?;
             let (kind, spec) = (it.get_item(0)?, it.get_item(1)?);
-            if !spec.get_item("cat")?.eq(&cat)? || getd(&spec, "hidden")?.is_truthy()? || !world.call_method1("block_allowed", (&kind,))?.is_truthy()? {
+            if !spec.get_item("cat")?.eq(&cat)? || getd(&spec, "hidden")?.is_truthy()? || !World::block_allowed(wld(&world)?, &IntoPy::<PyObject>::into_py(&kind, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?.is_truthy()? {
                 continue;
             }
             let mut label = String::new();
@@ -150,7 +152,7 @@ impl BlockEditor {
                 let mut ok = true;
                 for f in b.getattr("_MENU_FIELDS")?.iter()? {
                     let f = f?;
-                    if want_node.contains(&f)? && !n.call_method1("get", (&f,))?.eq(want_node.call_method1("get", (&f,))?)? {
+                    if want_node.contains(&f)? && !n.dget1(&f)?.eq(want_node.dget1(&f)?)? {
                         ok = false;
                         break;
                     }
@@ -227,7 +229,7 @@ impl BlockEditor {
             for i in 0..n_ {
                 let n = lst.get_item(i)?;
                 rows.append(row(py, "block", depth, Some(lst), Some(i as i64), Some(&n), None)?)?;
-                let spec = stm.call_method1("get", (getd(&n, "type")?, PyDict::new_bound(py)))?;
+                let spec = stm.dget2(getd(&n, "type")?, PyDict::new_bound(py))?;
                 if getd(&spec, "body")?.is_truthy()? {
                     body(py, rows, stm, &n.get_item("body")?, depth + 1, &n)?;
                     if getd(&spec, "orelse")?.is_truthy()? {

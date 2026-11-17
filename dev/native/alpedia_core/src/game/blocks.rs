@@ -5,6 +5,7 @@
 //!   文 :  {"type": "if", "cond": 式, "body": [文...], "else": [文...]}
 //!   式 :  {"type": "num", "v": 1.0} / {"type": "op", "op": "+", "a": 式, "b": 式} など
 
+use crate::game::PyDictOps;
 use pyo3::exceptions::{PyOverflowError, PyStopIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PyInt, PyList, PyString};
@@ -63,7 +64,7 @@ fn qs(py: Python<'_>, s: &str) -> R<String> {
 fn table_pick(py: Python<'_>, name: &str, key: Option<Bound<'_, PyAny>>, idx: usize, default: &str) -> R<String> {
     let t = tbl(py, name)?;
     let k = key.unwrap_or_else(|| py.None().into_bound(py));
-    match t.call_method1("get", (k,))? {
+    match t.dget1(k)? {
         v if v.is_none() => Ok(default.into()),
         v => Ok(v.get_item(idx)?.str()?.to_string()),
     }
@@ -72,7 +73,7 @@ fn table_pick(py: Python<'_>, name: &str, key: Option<Bound<'_, PyAny>>, idx: us
 fn map_get(py: Python<'_>, name: &str, key: Option<Bound<'_, PyAny>>, default: &str) -> R<String> {
     let t = tbl(py, name)?;
     let k = key.unwrap_or_else(|| py.None().into_bound(py));
-    let v = t.call_method1("get", (k, default))?;
+    let v = t.dget2(k, default)?;
     Ok(v.str()?.to_string())
 }
 
@@ -270,19 +271,19 @@ pub fn blocks_expr_children(node: &Bound<'_, PyAny>) -> R<Vec<(&'static str, &'s
 }
 
 fn stmt_spec<'py>(py: Python<'py>, t: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    let s = tbl(py, "STATEMENTS")?.call_method1("get", (t, PyDict::new_bound(py)))?;
+    let s = tbl(py, "STATEMENTS")?.dget2(t, PyDict::new_bound(py))?;
     Ok(s)
 }
 
 fn spec_flag(spec: &Bound<'_, PyAny>, k: &str) -> R<bool> {
-    spec.call_method1("get", (k,))?.is_truthy()
+    spec.dget1(k)?.is_truthy()
 }
 
 /// 入力欄の種類（無ければ num）
 pub fn slot_kind(py: Python<'_>, stmt_type: &Bound<'_, PyAny>, slot: &Bound<'_, PyAny>) -> R<String> {
     let spec = tbl(py, "STATEMENTS")?.get_item(stmt_type)?;
-    let slots = spec.call_method1("get", ("slots", PyDict::new_bound(py)))?;
-    Ok(slots.call_method1("get", (slot, "num"))?.str()?.to_string())
+    let slots = spec.dget2("slots", PyDict::new_bound(py))?;
+    Ok(slots.dget2(slot, "num")?.str()?.to_string())
 }
 
 #[pyfunction]
@@ -299,7 +300,7 @@ pub fn blocks_new_stmt<'py>(py: Python<'py>, kind: &Bound<'py, PyAny>) -> R<Boun
     let spec = tbl(py, "STATEMENTS")?.get_item(kind)?;
     let node = PyDict::new_bound(py);
     node.set_item("type", kind)?;
-    let defs = tbl(py, "STMT_DEFAULTS")?.call_method1("get", (kind, PyDict::new_bound(py)))?;
+    let defs = tbl(py, "STMT_DEFAULTS")?.dget2(kind, PyDict::new_bound(py))?;
     node.update(deep_copy(&defs)?.downcast::<pyo3::types::PyMapping>()?)?;
     if spec_flag(&spec, "hat")? || spec_flag(&spec, "body")? {
         node.set_item("body", PyList::empty_bound(py))?;
@@ -317,7 +318,7 @@ const MENU_FIELDS: [&str; 5] = ["op", "fn", "frame", "axis", "prop"];
 
 fn slot_keys(py: Python<'_>, stmt_type: &Bound<'_, PyAny>) -> R<Vec<String>> {
     let spec = stmt_spec(py, stmt_type)?;
-    let label = spec.call_method1("get", ("label", ""))?.str()?.to_string();
+    let label = spec.dget2("label", "")?.str()?.to_string();
     Ok(label_parts(&label)?.into_iter().filter(|(k, _)| *k == "slot").map(|(_, s)| s).collect())
 }
 
@@ -382,7 +383,7 @@ fn hint_expr<'py>(py: Python<'py>, owner: &Bound<'py, PyAny>, key: &str, kind: &
 }
 
 fn setdefault_list<'py>(py: Python<'py>, d: &Bound<'py, PyAny>, key: &str) -> R<Bound<'py, PyAny>> {
-    d.call_method1("setdefault", (key, PyList::empty_bound(py)))
+    d.dsetdefault(key, PyList::empty_bound(py))
 }
 
 fn hint_stmt<'py>(py: Python<'py>, cn: &Bound<'py, PyAny>, sn: &Bound<'py, PyAny>) -> R<Option<Bound<'py, PyDict>>> {
@@ -390,8 +391,8 @@ fn hint_stmt<'py>(py: Python<'py>, cn: &Bound<'py, PyAny>, sn: &Bound<'py, PyAny
     for key in slot_keys(py, &st)? {
         let k = PyString::new_bound(py, &key);
         let kind = slot_kind(py, &st, k.as_any())?;
-        let cur = cn.call_method1("get", (&key,))?;
-        let sol = sn.call_method1("get", (&key,))?;
+        let cur = cn.dget1(&key)?;
+        let sol = sn.dget1(&key)?;
         if let Some(h) = hint_expr(py, cn, &key, &kind, &cur, &sol)? {
             return Ok(Some(h));
         }
@@ -399,13 +400,13 @@ fn hint_stmt<'py>(py: Python<'py>, cn: &Bound<'py, PyAny>, sn: &Bound<'py, PyAny
     let spec = stmt_spec(py, &st)?;
     if spec_flag(&spec, "body")? || spec_flag(&spec, "hat")? {
         let cl = setdefault_list(py, cn, "body")?;
-        let sl = sn.call_method1("get", ("body", PyList::empty_bound(py)))?;
+        let sl = sn.dget2("body", PyList::empty_bound(py))?;
         if let Some(h) = hint_list(py, &cl, &sl, cn)? {
             return Ok(Some(h));
         }
         if spec_flag(&spec, "orelse")? {
             let cl = setdefault_list(py, cn, "else")?;
-            let sl = sn.call_method1("get", ("else", PyList::empty_bound(py)))?;
+            let sl = sn.dget2("else", PyList::empty_bound(py))?;
             return hint_list(py, &cl, &sl, cn);
         }
     }
@@ -421,7 +422,7 @@ fn hint_list<'py>(py: Python<'py>, cl: &Bound<'py, PyAny>, sl: &Bound<'py, PyAny
     let n = cl.len()?;
     for (k, sn) in sl.iter()?.enumerate() {
         let sn = sn?;
-        if k >= n || !cl.get_item(k)?.call_method1("get", ("type",))?.eq(sn.call_method1("get", ("type",))?)? {
+        if k >= n || !cl.get_item(k)?.dget1("type")?.eq(sn.dget1("type")?)? {
             return Ok(Some(insert_hint(py, cl, k, owner.clone().unbind(), &sn)?));
         }
         if let Some(h) = hint_stmt(py, &cl.get_item(k)?, &sn)? {
@@ -442,13 +443,13 @@ fn dumps_sorted(py: Python<'_>, v: &Bound<'_, PyAny>) -> R<String> {
 pub fn blocks_find_hint<'py>(py: Python<'py>, cur: &Bound<'py, PyAny>, sol: &Bound<'py, PyAny>) -> R<Option<Bound<'py, PyDict>>> {
     let scripts = setdefault_list(py, cur, "scripts")?;
     let mut used: Vec<usize> = Vec::new();
-    for s in sol.call_method1("get", ("scripts", PyList::empty_bound(py)))?.iter()? {
+    for s in sol.dget2("scripts", PyList::empty_bound(py))?.iter()? {
         let s = s?;
-        let stype = s.call_method1("get", ("type",))?;
+        let stype = s.dget1("type")?;
         let n = scripts.len()?;
         let mut cands = Vec::new();
         for k in 0..n {
-            if !used.contains(&k) && scripts.get_item(k)?.call_method1("get", ("type",))?.eq(&stype)? {
+            if !used.contains(&k) && scripts.get_item(k)?.dget1("type")?.eq(&stype)? {
                 cands.push(k);
             }
         }
@@ -458,7 +459,7 @@ pub fn blocks_find_hint<'py>(py: Python<'py>, cur: &Bound<'py, PyAny>, sol: &Bou
             let c = scripts.get_item(k)?;
             let mut all = true;
             for key in &keys {
-                if dumps_sorted(py, &c.call_method1("get", (key,))?)? != dumps_sorted(py, &s.call_method1("get", (key,))?)? {
+                if dumps_sorted(py, &c.dget1(key)?)? != dumps_sorted(py, &s.dget1(key)?)? {
                     all = false;
                     break;
                 }
@@ -489,7 +490,7 @@ pub fn blocks_hint_text(py: Python<'_>, h: &Bound<'_, PyAny>) -> R<String> {
     if kind == "insert" {
         let t = h.get_item("type")?;
         let spec = stmt_spec(py, &t)?;
-        let lab = spec.call_method1("get", ("label", &t))?.str()?.to_string();
+        let lab = spec.dget2("label", &t)?.str()?.to_string();
         let label: String = label_parts(&lab)?.into_iter().map(|(k, s)| if k == "slot" { "□".to_string() } else { s }).collect();
         return Ok(format!("ヒント：光っているブロック「{label}」を、光っている所に置こう"));
     }
@@ -498,11 +499,11 @@ pub fn blocks_hint_text(py: Python<'_>, h: &Bound<'_, PyAny>) -> R<String> {
                           summary(py, &h.get_item("node")?)?));
     }
     let v = h.get_item("value")?;
-    let ty = h.call_method1("get", ("type",))?;
+    let ty = h.dget1("type")?;
     if ty.eq("num")? {
         return Ok(format!("ヒント：光っている欄の数を {} にしよう（欄を2回押すと入力できる）", fmt_num(&v)?));
     }
-    if h.call_method1("get", ("menu",))?.is_truthy()? {
+    if h.dget1("menu")?.is_truthy()? {
         let shown = if v.eq("and")? { "かつ".to_string() } else if v.eq("or")? { "または".to_string() } else { v.str()?.to_string() };
         return Ok(format!("ヒント：光っている ▼ を押して「{shown}」を選ぼう"));
     }
@@ -618,18 +619,18 @@ fn indent(lines: Vec<String>) -> Vec<String> {
 pub fn gen_stmt(py: Python<'_>, node: &Bound<'_, PyAny>) -> R<Vec<String>> {
     let tobj = get_or_none(py, node, "type")?;
     let t = tobj.downcast::<PyString>().map(|s| s.to_string()).unwrap_or_default();
-    let spec = tbl(py, "STATEMENTS")?.call_method1("get", (&tobj,))?;
+    let spec = tbl(py, "STATEMENTS")?.dget1(&tobj)?;
     let spec = if spec.is_truthy()? { spec } else { PyDict::new_bound(py).into_any() };
     let g = |k: &str, kind: &str| -> R<String> { gen_expr(py, &get_or_none(py, node, k)?, kind) };
     let gn = |k: &str| -> R<String> { g(k, "num") };
-    let code = spec.call_method1("get", ("code",))?;
+    let code = spec.dget1("code")?;
     if code.is_truthy()? {
         // MOD が足したブロック（register_ext）
         let vals = PyDict::new_bound(py);
-        let slots = spec.call_method1("get", ("slots", PyDict::new_bound(py)))?;
+        let slots = spec.dget2("slots", PyDict::new_bound(py))?;
         for it in slots.call_method0("items")?.iter()? {
             let (sname, kind): (Bound<'_, PyAny>, String) = it?.extract()?;
-            let v = node.call_method1("get", (&sname,))?;
+            let v = node.dget1(&sname)?;
             if kind.starts_with("dev:") || kind.starts_with("choice:") || ["var", "vvar", "key"].contains(&kind.as_str()) {
                 let x = if v.is_none() { PyString::new_bound(py, "*").into_any() } else { v };
                 vals.set_item(&sname, q(&x)?)?;
@@ -650,16 +651,16 @@ pub fn gen_stmt(py: Python<'_>, node: &Bound<'_, PyAny>) -> R<Vec<String>> {
         "wait" | "wait_until" => vec!["pass  # 待つブロックは、イベントのすぐ下（または「くり返す」の中）で使います".into()],
         "if" | "if_else" => {
             let mut out = vec![format!("if {}:", g("cond", "bool")?)];
-            out.extend(indent(gen_body(py, &node.call_method1("get", ("body", PyList::empty_bound(py)))?)?));
+            out.extend(indent(gen_body(py, &node.dget2("body", PyList::empty_bound(py))?)?));
             if t == "if_else" {
                 out.push("else:".into());
-                out.extend(indent(gen_body(py, &node.call_method1("get", ("else", PyList::empty_bound(py)))?)?));
+                out.extend(indent(gen_body(py, &node.dget2("else", PyList::empty_bound(py))?)?));
             }
             out
         }
         "repeat" => {
             let mut out = vec![format!("for _i in range(max(0, int({}))):", gn("n")?)];
-            out.extend(indent(gen_body(py, &node.call_method1("get", ("body", PyList::empty_bound(py)))?)?));
+            out.extend(indent(gen_body(py, &node.dget2("body", PyList::empty_bound(py))?)?));
             out
         }
         "reset_timer" => vec!["m['_timer'] = api.time".into()],
@@ -695,7 +696,7 @@ pub fn gen_stmt(py: Python<'_>, node: &Bound<'_, PyAny>) -> R<Vec<String>> {
         "set_vvar" => vec![format!("v[{}] = {}", qs(py, &gsd(node, "var", "向き")?)?, g("value", "vec")?)],
         "show_vec" => {
             let colors = tbl(py, "ARROW_COLORS")?;
-            let rgb = colors.call_method1("get", (get_or_none(py, node, "color")?, colors.get_item("黄")?))?;
+            let rgb = colors.dget2(get_or_none(py, node, "color")?, colors.get_item("黄")?)?;
             vec![format!("api.show_arrow({}, color={}, scale={})", g("value", "vec")?, rgb.repr()?, gn("scale")?)]
         }
         _ => vec![format!("pass  # 未対応のブロック {}", tobj.str()?)],
@@ -732,11 +733,11 @@ pub fn has_wait(body: &Bound<'_, PyAny>) -> R<bool> {
     }
     for n in body.iter()? {
         let n = n?;
-        let t = n.call_method1("get", ("type",))?;
+        let t = n.dget1("type")?;
         if t.eq("wait")? || t.eq("wait_until")? {
             return Ok(true);
         }
-        if t.eq("repeat")? && has_wait(&n.call_method1("get", ("body",))?)? {
+        if t.eq("repeat")? && has_wait(&n.dget1("body")?)? {
             return Ok(true);
         }
     }
@@ -769,18 +770,18 @@ fn flatten(py: Python<'_>, body: &Bound<'_, PyAny>, ops: &mut Vec<Op>) -> R<()> 
     if !body.is_none() && body.is_truthy()? {
         for n in body.iter()? {
             let n = n?;
-            let t = n.call_method1("get", ("type",))?;
+            let t = n.dget1("type")?;
             if t.eq("wait")? {
                 flush(&mut buf, ops)?;
-                ops.push(Op::Wait(gen_expr(py, &n.call_method1("get", ("n",))?, "num")?));
+                ops.push(Op::Wait(gen_expr(py, &n.dget1("n")?, "num")?));
             } else if t.eq("wait_until")? {
                 flush(&mut buf, ops)?;
-                ops.push(Op::Until(gen_expr(py, &n.call_method1("get", ("cond",))?, "bool")?));
-            } else if t.eq("repeat")? && has_wait(&n.call_method1("get", ("body",))?)? {
+                ops.push(Op::Until(gen_expr(py, &n.dget1("cond")?, "bool")?));
+            } else if t.eq("repeat")? && has_wait(&n.dget1("body")?)? {
                 flush(&mut buf, ops)?;
                 let k = ops.len();
-                ops.push(Op::Loop(gen_expr(py, &n.call_method1("get", ("n",))?, "num")?, k));
-                flatten(py, &n.call_method1("get", ("body",))?, ops)?;
+                ops.push(Op::Loop(gen_expr(py, &n.dget1("n")?, "num")?, k));
+                flatten(py, &n.dget1("body")?, ops)?;
                 ops.push(Op::End(k));
             } else {
                 buf.push(n);
@@ -841,12 +842,12 @@ pub fn blocks_gen_sequence(py: Python<'_>, body: &Bound<'_, PyAny>, k: usize, re
 }
 
 fn label_format(py: Python<'_>, spec: &Bound<'_, PyAny>, t: &Bound<'_, PyAny>, s: &Bound<'_, PyAny>) -> R<String> {
-    let label = spec.call_method1("get", ("label", t))?;
+    let label = spec.dget2("label", t)?;
     let kw = PyDict::new_bound(py);
-    let slots = spec.call_method1("get", ("slots", PyDict::new_bound(py)))?;
+    let slots = spec.dget2("slots", PyDict::new_bound(py))?;
     for k2 in slots.iter()? {
         let k2 = k2?;
-        kw.set_item(&k2, summary(py, &s.call_method1("get", (&k2,))?)?)?;
+        kw.set_item(&k2, summary(py, &s.dget1(&k2)?)?)?;
     }
     Ok(label.call_method("format", (), Some(&kw))?.str()?.to_string())
 }
@@ -866,22 +867,22 @@ pub fn blocks_to_python(py: Python<'_>, prog: &Bound<'_, PyAny>, src_name: &str)
               "    prev = set(m.get('_keys', []))", "    m['_keys'] = sorted(keys)"] {
         lines.push(l.into());
     }
-    let scripts: Vec<Bound<'_, PyAny>> = prog.call_method1("get", ("scripts", PyList::empty_bound(py)))?.iter()?.collect::<R<_>>()?;
+    let scripts: Vec<Bound<'_, PyAny>> = prog.dget2("scripts", PyList::empty_bound(py))?.iter()?.collect::<R<_>>()?;
     // 起動したとき（on_start）を先に（並べ替えは安定）
     let mut order: Vec<(usize, Bound<'_, PyAny>)> = Vec::new();
     for s in &scripts {
-        let o = if s.call_method1("get", ("type",))?.eq("on_start")? { 0 } else { 1 };
+        let o = if s.dget1("type")?.eq("on_start")? { 0 } else { 1 };
         order.push((o, s.clone()));
     }
     order.sort_by_key(|x| x.0);
     for (k, (_, s)) in order.iter().enumerate() {
-        let tobj = s.call_method1("get", ("type",))?;
+        let tobj = s.dget1("type")?;
         let t = tobj.downcast::<PyString>().map(|x| x.to_string()).unwrap_or_default();
-        let spec = tbl(py, "STATEMENTS")?.call_method1("get", (&tobj, PyDict::new_bound(py)))?;
+        let spec = tbl(py, "STATEMENTS")?.dget2(&tobj, PyDict::new_bound(py))?;
         lines.push(format!("    # --- {} ---", label_format(py, &spec, &tobj, s)?));
-        let body_obj = s.call_method1("get", ("body", PyList::empty_bound(py)))?;
+        let body_obj = s.dget2("body", PyList::empty_bound(py))?;
         let body = gen_body(py, &body_obj)?;
-        let sbody = s.call_method1("get", ("body",))?;
+        let sbody = s.dget1("body")?;
         if has_wait(&sbody)? {
             let (seq, n) = gen_sequence(py, &sbody, k, t == "on_tick")?;
             let sk = qs(py, &format!("_sq{k}"))?;
@@ -898,7 +899,7 @@ pub fn blocks_to_python(py: Python<'_>, prog: &Bound<'_, PyAny>, src_name: &str)
                     trig = format!("{key} in keys and {key} not in prev");
                 } else {
                     flag = qs(py, &format!("_w{k}"))?;
-                    lines.push(format!("    _c = {}", gen_expr(py, &s.call_method1("get", ("cond",))?, "bool")?));
+                    lines.push(format!("    _c = {}", gen_expr(py, &s.dget1("cond")?, "bool")?));
                     trig = format!("_c and not m.get({flag})");
                 }
                 lines.push(format!("    if {sk} not in m:"));
@@ -930,7 +931,7 @@ pub fn blocks_to_python(py: Python<'_>, prog: &Bound<'_, PyAny>, src_name: &str)
             }
             "on_when" => {
                 let flag = qs(py, &format!("_w{k}"))?;
-                lines.push(format!("    _c = {}", gen_expr(py, &s.call_method1("get", ("cond",))?, "bool")?));
+                lines.push(format!("    _c = {}", gen_expr(py, &s.dget1("cond")?, "bool")?));
                 lines.push(format!("    if _c and not m.get({flag}):"));
                 lines.extend(indent(indent(body)));
                 lines.push(format!("    m[{flag}] = bool(_c)"));
@@ -962,7 +963,7 @@ pub fn blocks_load<'py>(py: Python<'py>, path: &Bound<'py, PyAny>) -> R<Bound<'p
     let kw = pyo3::types::IntoPyDict::into_py_dict_bound([("encoding", "utf-8")], py);
     let t = path.call_method("read_text", (), Some(&kw))?;
     let data = crate::game::imp(py, "json")?.call_method1("loads", (t,))?;
-    if !data.call_method1("get", ("format",))?.eq(FORMAT)? {
+    if !data.dget1("format")?.eq(FORMAT)? {
         return Err(PyValueError::new_err("ブロックプログラムの形式ではありません"));
     }
     Ok(data)
@@ -1045,7 +1046,7 @@ pub fn blocks_register_ext(py: Python<'_>, statements: Option<&Bound<'_, PyAny>>
     if some(statements)? {
         let st = b.getattr("STATEMENTS")?;
         for (kind, spec) in statements.unwrap().downcast::<PyDict>()?.iter() {
-            let c = spec.call_method1("get", ("cat",))?;
+            let c = spec.dget1("cat")?;
             let spec = if merge.contains(&c)? {
                 let d = PyDict::new_bound(py);
                 d.update(spec.downcast::<PyDict>()?.as_mapping())?;

@@ -399,13 +399,17 @@ pub struct UI {
     stack: Py<PyList>,
     #[pyo3(get, set)]
     mouse: (f64, f64),
+    /// focused（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_focused: Option<PyObject>,
+    /// layer（入れていなければ None。そのとき Python からは属性が無いのと同じ）
+    pub a_layer: Option<PyObject>,
 }
 
 #[pymethods]
 impl UI {
     #[new]
     fn new(py: Python<'_>, view: PyObject) -> Self {
-        UI { view, stack: PyList::empty_bound(py).unbind(), mouse: (0.0, 0.0) }
+        UI { a_focused: None, a_layer: None, view, stack: PyList::empty_bound(py).unbind(), mouse: (0.0, 0.0) }
     }
     #[getter]
     fn top(&self, py: Python<'_>) -> R<PyObject> {
@@ -419,7 +423,7 @@ impl UI {
         v.extend(a.iter().map(|x| x.unbind()));
         let s = scr_cls.call(PyTuple::new_bound(py, v), k)?;
         let stack = slf.borrow().stack.clone_ref(py);
-        s.setattr("layer", stack.bind(py).len())?;
+        Self::sa_layer(slf, stack.bind(py).len())?;
         stack.bind(py).append(&s)?;
         s.call_method0("build")?;
         Ok(s)
@@ -459,7 +463,7 @@ impl UI {
         }
         if let Some(k) = kind.strip_prefix("key:") {
             if a.is_truthy()? {
-                let f = s.getattr("focused")?;
+                let f = Self::ga_focused(slf)?;
                 let used = !f.is_none() && (f.call_method1("key", (k,))?.is_truthy()? || k.chars().count() == 1 || k == "space");
                 if !used {
                     s.call_method1("on_key", (k,))?;
@@ -468,7 +472,7 @@ impl UI {
             return Ok(true);
         }
         if let Some(t) = kind.strip_prefix("text:") {
-            let f = s.getattr("focused")?;
+            let f = Self::ga_focused(slf)?;
             if !f.is_none() {
                 f.call_method1("type", (t,))?;
             } else {
@@ -479,3 +483,41 @@ impl UI {
         Ok(kind == "wheel" || kind == "mouse")
     }
 }
+
+// ---------------------------------------------------------------- UI の欄の読み書き（C-01。前は __dict__）
+// 入れていない欄を読むと、前と同じく AttributeError（getattr(x, 名前, 既定値) も前と同じに動く）
+macro_rules! ui_attr_fields {
+    ($($g:ident $s:ident $pg:ident $ps:ident $f:ident $name:literal),* $(,)?) => {
+        #[allow(dead_code, non_snake_case)]
+        impl UI { $(
+            #[inline]
+            pub fn $g<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+                match &slf.try_borrow()?.$f {
+                    Some(v) => Ok(v.bind(slf.py()).clone()),
+                    None => Err(pyo3::exceptions::PyAttributeError::new_err($name)),
+                }
+            }
+            #[inline]
+            pub fn $s(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> PyResult<()> {
+                let v = v.into_py(slf.py());
+                slf.try_borrow_mut()?.$f = Some(v);
+                Ok(())
+            }
+        )* }
+        #[pymethods]
+        #[allow(non_snake_case)]
+        impl UI { $(
+            #[getter($name)]
+            fn $pg(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+                Ok(Self::$g(slf)?.unbind())
+            }
+            #[setter($name)]
+            fn $ps(&mut self, v: PyObject) {
+                self.$f = Some(v);
+            }
+        )* }
+    };
+}
+ui_attr_fields!(
+    ga_focused sa_focused pga_focused psa_focused a_focused "focused", ga_layer sa_layer pga_layer psa_layer a_layer "layer"
+);

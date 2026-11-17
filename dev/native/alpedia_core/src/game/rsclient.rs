@@ -4,6 +4,8 @@
 //!   python run.py --view rust            メニューから
 //!   python run.py --view rust --world 名前   メニューを飛ばして
 
+use crate::game::world::{wld, World};
+use crate::game::PyDictOps;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
@@ -12,7 +14,7 @@ use super::imp;
 type R<T> = PyResult<T>;
 
 fn log(py: Python<'_>) -> R<Bound<'_, PyAny>> {
-    imp(py, "main.log")?.call_method1("get", ("client_rs",))
+    imp(py, "main.log")?.dget1("client_rs")
 }
 fn log_exc(py: Python<'_>, e: &PyErr, msg: &str, args: impl IntoPy<Py<pyo3::types::PyTuple>>) -> R<()> {
     let a: Py<pyo3::types::PyTuple> = args.into_py(py);
@@ -57,15 +59,15 @@ impl RsClient {
     fn new(py: Python<'_>, cfg: &Bound<'_, PyAny>) -> R<Self> {
         let u = imp(py, "main.client_rs.ursina_shim")?.call_method0("install")?;
         let empty = PyDict::new_bound(py);
-        let win = cfg.call_method1("get", ("window", &empty))?;
+        let win = cfg.dget2("window", &empty)?;
         let gfx = imp(py, "main.client.gfx")?;
-        let view = gfx.call_method1("start", (win.call_method1("get", ("width", 1280))?, win.call_method1("get", ("height", 720))?, "Alpedia",
-            win.call_method1("get", ("vsync", true))?))?;
-        gfx.call_method1("font", (cfg.call_method1("get", ("graphics", &empty))?.call_method1("get", ("font",))?,))?;
+        let view = gfx.call_method1("start", (win.dget2("width", 1280)?, win.dget2("height", 720)?, "Alpedia",
+            win.dget2("vsync", true)?))?;
+        gfx.call_method1("font", (cfg.dget2("graphics", &empty)?.dget1("font")?,))?;
         let ico = imp(py, "main.paths")?.getattr("SAUCE")?.call_method1("__truediv__", ("textures",))?.call_method1("__truediv__", ("alpedia.ico",))?;
         view.call_method1("set_icon", (ico.str()?,))?;
-        imp(py, "main.client.sound")?.call_method1("get", (cfg,))?;
-        if win.call_method1("get", ("fullscreen", false))?.is_truthy()? {
+        imp(py, "main.client.sound")?.dget1(cfg)?;
+        if win.dget2("fullscreen", false)?.is_truthy()? {
             view.call_method1("set_fullscreen", (true,))?;
         }
         Ok(RsClient { u: u.unbind(), cfg: cfg.clone().unbind(), view: view.unbind(), menu: py.None(), viewer: py.None(), joining: py.None(), running: true })
@@ -132,9 +134,9 @@ impl RsClient {
         let py = slf.py();
         let menu = g!(slf, menu);
         // 合言葉（マルチプレイの画面で入れた物。ホストが合言葉を決めているときに使う）
-        let mp = g!(slf, cfg).call_method1("get", ("multiplayer", pyo3::types::PyDict::new_bound(py)))?;
+        let mp = g!(slf, cfg).dget2("multiplayer", pyo3::types::PyDict::new_bound(py))?;
         let kw = pyo3::types::PyDict::new_bound(py);
-        kw.set_item("password", mp.call_method1("get", ("password", ""))?)?;
+        kw.set_item("password", mp.dget2("password", "")?)?;
         let j = imp(py, "main.netclient")?.getattr("Joiner")?.call((host, port, name), Some(&kw))?;
         let cancel = Py::new(py, JoinCancel { j: j.clone().unbind(), menu: menu.clone().unbind() })?;
         menu.call_method1("show_joining", (&j, cancel))?;
@@ -170,7 +172,7 @@ impl RsClient {
         let r = (|| -> R<()> {
             let k = PyDict::new_bound(py);
             k.set_item("directory", info.get_item("dir")?)?;
-            let res = imp(py, "main.world")?.getattr("World")?.call((info.get_item("world")?, g!(slf, cfg)), Some(&k)).and_then(|w| w.call_method0("load"));
+            let res = imp(py, "main.world")?.getattr("World")?.call((info.get_item("world")?, g!(slf, cfg)), Some(&k)).and_then(|w| World::load(wld(&w)?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py())));
             let world = match res {
                 Ok(w) => w,
                 Err(e) => {
@@ -215,7 +217,7 @@ impl RsClient {
         let net = w.getattr("net").unwrap_or_else(|_| py.None().into_bound(py));
         let client = !net.is_none() && net.getattr("role")?.eq("client")?;
         if save && !client {
-            if let Err(e) = w.call_method0("save") {
+            if let Err(e) = World::save(wld(&w)?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py())) {
                 if !e.is_instance_of::<pyo3::exceptions::PyException>(py) {
                     return Err(e);
                 }

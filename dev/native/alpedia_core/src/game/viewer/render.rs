@@ -1,5 +1,8 @@
 //! 画面：描く・終わり・動かす（run）
 
+use crate::game::world::{wld, World};
+use crate::game::construct::{con, Construct};
+use crate::game::PyDictOps;
 use super::*;
 
 #[pymethods]
@@ -14,7 +17,7 @@ impl Viewer {
         let vk: Vec<B<'_>> = views.iter()?.collect::<R<_>>()?;
         for cid in vk {
             if !cons.contains(&cid)? {
-                views.call_method1("pop", (&cid,))?.call_method0("remove")?;
+                views.dpop1(&cid)?.call_method0("remove")?;
             }
         }
         let loaded = Self::ga_loaded(slf)?;
@@ -35,7 +38,7 @@ impl Viewer {
         let a3 = v3(&an)?;
         let d0 = sub(a3, o);
         Self::ga_static_root(slf)?.call_method1("setPos", (d0[0], d0[1], d0[2]))?;
-        let ba = w.call_method0("_bounds_arrays")?;
+        let ba = World::_bounds_arrays(wld(&w)?).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         let cs: Vec<B<'_>> = ba.get_item(0)?.iter()?.collect::<R<_>>()?;
         let cc = ba.get_item(1)?;
         let rr = ba.get_item(3)?;
@@ -68,10 +71,10 @@ impl Viewer {
         scene_prof(0, &mut pt);
         for (c, dist) in cs.iter().zip(dists.iter()) {
             let cid = ga(c, "id")?;
-            if !cons.call_method1("get", (&cid,))?.is(c) {
+            if !cons.dget1(&cid)?.is(c) {
                 continue;
             }
-            let mut v = views.call_method1("get", (&cid,))?;
+            let mut v = views.dget1(&cid)?;
             if *dist > far {
                 if !v.is_none() {
                     v.call_method1("set_visible", (false,))?;
@@ -82,7 +85,7 @@ impl Viewer {
             let near = load <= 0.0 || seated || *dist < load || (loaded.contains(&cid)? && *dist < load * 1.1);
             if !near {
                 if !v.is_none() {
-                    views.call_method1("pop", (&cid,))?.call_method0("remove")?;
+                    views.dpop1(&cid)?.call_method0("remove")?;
                     c.setattr("_mesh_cache", py.None())?;
                 }
                 loaded.call_method1("discard", (&cid,))?;
@@ -103,9 +106,9 @@ impl Viewer {
             }
             loaded.call_method1("add", (&cid,))?;
             v.call_method1("set_visible", (true,))?;
-            let tf = c.call_method0("render_transform")?;
+            let tf = Construct::render_transform(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
             let static_ = !tf.is_none() && !seated && (ga(c, "is_static")?.is_truthy()? || ga(c, "asleep")?.is_truthy()?)
-                && !c.call_method1("dev_ids", ("thruster",))?.is_truthy()?;
+                && !Construct::dev_ids(con(&c)?, Some(&IntoPy::<PyObject>::into_py("thruster", c.py()).into_bound(c.py()))).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.is_truthy()?;
             let key = if static_ { PyTuple::new_bound(py, [ga(c, "version")?, tf.get_item(2)?, anchor_ver.clone()]).into_any() } else { none(py) };
             let vd = ga(&v, "__dict__")?;
             if key.is_none() || !get(&vd, "_static_key", py.None())?.eq(&key)? {
@@ -139,7 +142,7 @@ impl Viewer {
         Self::ga_lights(slf)?.call_method1("update", (lc, origin, f64of(&ga(&w, "time")?)?))?;
         scene_prof(3, &mut pt);
         let ppos = ga(&player, "pos")?;
-        let npl = w.call_method1("nearest_planet", (&ppos,))?;
+        let npl = World::nearest_planet(wld(&w)?, &IntoPy::<PyObject>::into_py(&ppos, w.py()).into_bound(w.py())).map(|v| IntoPy::<PyObject>::into_py(v, w.py()).into_bound(w.py()))?;
         let carve = Self::ga_carve(slf)?;
         carve.call_method1("update", (&npl, &ppos, origin))?;
         let patch = Self::ga_patch(slf)?;
@@ -219,14 +222,13 @@ impl Viewer {
     }
     pub(crate) fn run(slf: &Bound<'_, Self>) -> R<()> {
         let py = slf.py();
-        let s = slf.as_any();
         let t = imp(py, "time")?;
         let mut last: f64 = t.call_method0("perf_counter")?.extract()?;
         while !Self::ga_quit(slf)?.is_truthy()? {
             let now: f64 = t.call_method0("perf_counter")?.extract()?;
             let dt = (now - last).min(0.1);
             last = now;
-            s.call_method1("frame", (dt,))?;
+            Self::frame(slf, IntoPy::<PyObject>::into_py(dt, slf.py()).extract::<f64>(slf.py())?).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
         }
         Self::ga_w(slf)?.call_method0("save")?;
         Ok(())

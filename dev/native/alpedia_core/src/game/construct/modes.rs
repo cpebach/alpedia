@@ -1,5 +1,7 @@
 //! 構築物：動き方の切り替え（剛体・関節・レール・乗り物の枠）
 
+use crate::game::planet::{pla, Planet};
+use crate::game::PyDictOps;
 use crate::game::world::{wld, World};
 use super::*;
 
@@ -86,9 +88,9 @@ impl Construct {
         if Self::n(slf)? == 0 || slf.borrow().asleep {
             return Ok(());
         }
-        let phys = World::g_cfg(wld(&world)?)?.call_method1("get", ("physics", PyDict::new_bound(py)))?;
+        let phys = World::g_cfg(wld(&world)?)?.dget2("physics", PyDict::new_bound(py))?;
         // 完全剛体モードでも soft_ok の構築物（物語の見せ場の落石・木箱など）は、曲がる・ちぎれる
-        let mut full = World::g_settings(wld(&world)?)?.call_method1("get", ("full_rigid", false))?.is_truthy()?
+        let mut full = World::g_settings(wld(&world)?)?.dget2("full_rigid", false)?.is_truthy()?
             && !Self::t_soft_ok(slf)?;
         if Self::anchored_b(slf)? {          // アンカーで固定：柔らかいブロックのモードでも剛体（＋関節）として扱う
             full = true;
@@ -103,8 +105,8 @@ impl Construct {
         }
         let c = |k: &str| -> R<f64> { slf.get_type().getattr(k)?.extract() };
         let acc = Self::body_acceleration(slf)?;
-        let pg = |k: &str, d: bool| -> R<bool> { phys.call_method1("get", (k, d))?.is_truthy() };
-        let rails_d: f64 = phys.call_method1("get", ("rails_distance", 400.0))?.extract()?;
+        let pg = |k: &str, d: bool| -> R<bool> { phys.dget2(k, d)?.is_truthy() };
+        let rails_d: f64 = phys.dget2("rails_distance", 400.0)?.extract()?;
         if Self::mode_is(slf, &["rigid", "rails"]) {
             let mut out = slf.borrow().want_soft || acc > c("RIGID_ACC_OUT")? || !Self::_rigid_allowed(slf)?;
             if !out && Self::mode_is(slf, &["rigid"]) {
@@ -163,14 +165,14 @@ impl Construct {
                     if d.is_truthy()? {
                         all.append(i)?;
                         let t = dev_type(&reg, &d)?.into_py(py);
-                        by.call_method1("setdefault", (t, PyList::empty_bound(py)))?.call_method1("append", (i,))?;
+                        by.dsetdefault(t, PyList::empty_bound(py))?.call_method1("append", (i,))?;
                     }
                 }
                 Self::cache_put(slf, |c| &mut c.devid, (key, &by))?;
                 by.into_any()
             }
         };
-        by.call_method1("get", (kind.map(|k| k.clone().unbind()).unwrap_or_else(|| py.None()), PyTuple::empty_bound(py)))
+        by.dget2(kind.map(|k| k.clone().unbind()).unwrap_or_else(|| py.None()), PyTuple::empty_bound(py))
     }
     /// アクチュエーター（ヒンジなども）の番号（形が変わったときだけ数え直す）
     pub(crate) fn actuator_indices<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
@@ -230,8 +232,8 @@ impl Construct {
             }
             return Ok(());
         }
-        let rails_d: f64 = phys.call_method1("get", ("rails_distance", 400.0))?.extract()?;
-        if Self::mode_is(slf, &["rigid"]) && phys.call_method1("get", ("rails_enabled", true))?.is_truthy()? {
+        let rails_d: f64 = phys.dget2("rails_distance", 400.0)?.extract()?;
+        if Self::mode_is(slf, &["rigid"]) && phys.dget2("rails_enabled", true)?.is_truthy()? {
             if Self::_rails_ok(slf, world, rails_d)? {
                 Self::enter_rails(slf)?;
             }
@@ -300,7 +302,7 @@ impl Construct {
                 let mut nb = sub(mean8(&face), mean8(&pos[8 * i..8 * i + 8]));
                 let l = norm(nb).max(1e-9);
                 nb = [nb[0] / l, nb[1] / l, nb[2] / l];
-                let e0: f64 = d.get_item("state")?.call_method1("get", ("ext", 0.0))?.extract()?;
+                let e0: f64 = d.get_item("state")?.dget2("ext", 0.0)?.extract()?;
                 exts.append((i, iarr(py, rows, &[4])?, a1(py, nb), e0))?;
             }
         }
@@ -329,7 +331,7 @@ impl Construct {
             }
             cv.extend((8 * ri..8 * ri + 8).map(|x| x as i64));
             let dv = r.get_item("dev")?;
-            applied.push(dv.get_item("state")?.call_method1("get", ("angle", 0.0))?.extract::<f64>()?);
+            applied.push(dv.get_item("state")?.dget2("angle", 0.0)?.extract::<f64>()?);
             match crate::game::actuator::act_hinge_of(&dv, Some(&reg))? {
                 Some((p, q)) => hk.extend([p as i64, q as i64]),
                 None => hk.extend([-1, -1]),
@@ -402,17 +404,17 @@ impl Construct {
         let py = slf.py();
         let rb = Self::rb(slf)?;
         let x = match &rb { None => Self::center_of_mass(slf)?, Some(r) => r.borrow(py).x.bind(py).clone().into_any() };
-        if world.call_method1("player_distance", (&x,))?.extract::<f64>()? < dist {
+        if World::player_distance(wld(&world)?, &IntoPy::<PyObject>::into_py(&x, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?.extract::<f64>()? < dist {
             return Ok(false);
         }
         if fv(&Self::g_force(slf)?)?.iter().any(|v| *v != 0.0) {
             return Ok(false);
         }
         // 地面の近くでは当たり判定が必要なのでレールに乗せない
-        let pl = world.call_method1("nearest_planet", (&x,))?;
+        let pl = World::nearest_planet(wld(&world)?, &IntoPy::<PyObject>::into_py(&x, world.py()).into_bound(world.py())).map(|v| IntoPy::<PyObject>::into_py(v, world.py()).into_bound(world.py()))?;
         if !pl.is_none() {
             let xv = v3(&x)?;
-            let alt: f64 = pl.call_method1("sdf", (arr(py, xv.to_vec(), &[1, 3])?,))?.get_item(0)?.extract()?;
+            let alt: f64 = Planet::sdf(pla(&pl)?, &IntoPy::<PyObject>::into_py(arr(py, xv.to_vec(), &[1, 3])?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?.extract()?;
             let ext: f64 = match &rb { None => 10.0, Some(r) => r.borrow(py).ext };
             if alt < ext + 15.0 {
                 return Ok(false);
