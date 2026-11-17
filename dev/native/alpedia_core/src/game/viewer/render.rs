@@ -107,7 +107,8 @@ impl Viewer {
             loaded.call_method1("add", (&cid,))?;
             v.call_method1("set_visible", (true,))?;
             let tf = Construct::render_transform(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
-            let static_ = !tf.is_none() && !seated && (ga(c, "is_static")?.is_truthy()? || ga(c, "asleep")?.is_truthy()?)
+            // 公転する惑星と一緒に動いている物は毎フレーム置き直す（L-08）
+            let static_ = !tf.is_none() && !seated && con(&c)?.borrow().frame < 0 && (ga(c, "is_static")?.is_truthy()? || ga(c, "asleep")?.is_truthy()?)
                 && !Construct::dev_ids(con(&c)?, Some(&IntoPy::<PyObject>::into_py("thruster", c.py()).into_bound(c.py()))).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.is_truthy()?;
             let key = if static_ { PyTuple::new_bound(py, [ga(c, "version")?, tf.get_item(2)?, anchor_ver.clone()]).into_any() } else { none(py) };
             let vd = ga(&v, "__dict__")?;

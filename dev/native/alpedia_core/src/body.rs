@@ -27,6 +27,23 @@ pub struct PlanetCtx {
     /// 地表の空気の密度（kg/m³。大気が無ければ 0）と、密度が 1/e になる高さ（m）
     pub air: f64,
     pub air_h: f64,
+    /// 公転（L-08）：影響圏の半径（公転しなければ 0）と、惑星の加速度
+    pub soi: f64,
+    pub acc: [f64; 3],
+}
+
+/// 点 p がどの公転する惑星の影響圏にあるか（いちばん小さい影響圏。無ければ None）。その中の物は惑星と一緒に運ぶ
+pub fn frame_of(planets: &[PlanetCtx], p: [f64; 3]) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (i, pl) in planets.iter().enumerate() {
+        if pl.soi > 0.0 {
+            let q = [p[0] - pl.center[0], p[1] - pl.center[1], p[2] - pl.center[2]];
+            if dot(q, q) < pl.soi * pl.soi && best.map_or(true, |b| pl.soi < planets[b].soi) {
+                best = Some(i);
+            }
+        }
+    }
+    best
 }
 
 impl PlanetCtx {
@@ -127,7 +144,9 @@ pub fn gravity(planets: &[PlanetCtx], p: [f64; 3], scale: f64) -> [f64; 3] {
             g[a] += q[a] * s;
         }
     }
-    [g[0] * scale, g[1] * scale, g[2] * scale]
+    // 公転する惑星の影響圏の中では、物は惑星と一緒に運ばれる（惑星に止まった座標で計算する）ので、惑星の加速度を引く
+    let off = match frame_of(planets, p) { Some(i) => planets[i].acc, None => [0.0; 3] };
+    [g[0] * scale - off[0], g[1] * scale - off[1], g[2] * scale - off[2]]
 }
 
 /// 構築物が惑星の近くにあるか（construct._near_planet）

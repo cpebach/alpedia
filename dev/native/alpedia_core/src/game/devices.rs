@@ -424,6 +424,7 @@ fn native_plan<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net: &Bound<'py, PyA
         e.set_item("max_flow", pg("max_flow", 6.0)?)?;
         let key = p.dget1("key")?;
         e.set_item("key", if key.is_truthy()? { key.unbind() } else { py.None() })?;
+        e.set_item("air_breathing", p.dget2("air_breathing", false)?.is_truthy()?)?;
         e.set_item("rate", pg("rate", 1.0)?)?;
         e.set_item("target_kpa", pg("target_kpa", 101.3)?)?;
         if is_proc {
@@ -499,7 +500,6 @@ fn native_plan<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net: &Bound<'py, PyA
 #[pyfunction]
 #[pyo3(signature = (c, dt, input_keys=None, seated=false, ambient_kpa=0.0))]
 pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Option<&Bound<'_, PyAny>>, seated: bool, ambient_kpa: f64) -> R<()> {
-    let _ = ambient_kpa;
     let net = ensure_net(py, c)?;
     let force = Construct::g_force(con(&c)?)?;
     force.call_method1("fill", (0.0,))?;
@@ -582,7 +582,8 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
             keys.append(x?.str()?)?;
         }
     }
-    let res = plan.call_method1("update", (states, dt, keys, seated, Construct::g_pos(con(&c)?)?, mass, Construct::g_force(con(&c)?)?, &cav_arr))?;
+    // ambient_kpa：その場の空気の密度（地表を 1。ジェット用。A-01）
+    let res = plan.call_method1("update", (states, dt, keys, seated, Construct::g_pos(con(&c)?)?, mass, Construct::g_force(con(&c)?)?, &cav_arr, ambient_kpa))?;
     let production: f64 = res.get_item(0)?.extract()?;
     let stored: f64 = res.get_item(2)?.extract()?;
     let ratio: f64 = res.get_item(4)?.extract()?;
@@ -605,6 +606,23 @@ pub fn dev_update(py: Python<'_>, c: &Bound<'_, PyAny>, dt: f64, input_keys: Opt
     if let Some((_, acts)) = by_type.iter().find(|x| x.0 == "actuator") {
         for (i, _, dd) in acts {
             crate::game::actuator::act_step(c, *i, dd, dt, powered.contains(i), ratio)?;
+        }
+    }
+    // タンクの中身の重さ（A-01）：使った・入れた分が全体の重さの 2% を超えたら、頂点の質量を計算し直す
+    if let Some((_, tanks)) = by_type.iter().find(|x| x.0 == "tank") {
+        let cc = con(&c)?;
+        let reg = Construct::g_reg(cc)?;
+        let mut m = 0.0;
+        for (_, d, _) in tanks {
+            if let Ok(Some(st)) = d.get_item("state").map(|s| s.downcast_into::<PyDict>().ok()) {
+                if let Some(cont) = st.get_item("contents")? {
+                    m += Construct::contents_mass(&reg, &cont)?;
+                }
+            }
+        }
+        let (r, tot) = { let b = cc.borrow(); (b.mass_ref, b.mass_total) };
+        if (m - r).abs() > (tot * 0.02).max(1.0) {
+            Construct::refresh_mass(cc)?;
         }
     }
     Ok(())

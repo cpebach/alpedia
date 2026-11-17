@@ -29,7 +29,7 @@ class AmatsuAddon(SceneryHost, Addon):
             (world.planets[0] if world.planets else None)
         if main is None:
             return
-        s = city.build(main.center)
+        s = city.build(main.center, main.radius)
         self.scenes = [s]
         self.points = dict(s.points)
         self.deck = s.deck

@@ -93,6 +93,23 @@ pub struct Earth {
     pub cell: f64,
     pub cave_index: HashMap<i64, (usize, usize)>,
     pub cave_cap: Vec<usize>,
+    /// 出現地点のそばの山脈（シナリオ用）：出現地点からの距離と幅（m）。幅 0 なら無し
+    pub range_dist: f64,
+    pub range_w: f64,
+    /// その山脈の高さ（m。0 なら mountain_h）
+    pub range_h: f64,
+}
+
+/// 気候の軸（北極の向き）。出現地点（+Y）が温帯になるように傾けてある
+const POLE: [f64; 3] = [0.6265, 0.7770, 0.0610];
+
+/// 段々（台地）：x を steps 段に分け、段の間を急にする
+#[inline]
+fn terrace(x: f64, steps: f64) -> f64 {
+    let y = x * steps;
+    let f = y.floor();
+    let r = y - f;
+    (f + smoothstep(0.35, 0.65, r)) / steps
 }
 
 pub struct Shape {
@@ -119,23 +136,65 @@ impl Shape {
         dot(d, r).clamp(-1.0, 1.0).acos() * self.radius
     }
 
-    /// 池を除いた地表の高さ（地球型）
+    /// 方向 d を、波長 w（m）のノイズの座標に（地形の大きさを惑星の大きさによらず m で決める。A-02）
+    #[inline]
+    fn pm(&self, d: [f64; 3], w: f64, off: f64) -> [f64; 3] {
+        affine(d, self.radius / w, off)
+    }
+
+    /// 気候：(気温, 湿り気)。気温は赤道で 1・極で約 -0.15、高い所ほど低い（mountain_h の 0.9 倍の高さで 1 下がる）。湿り気 0〜1
+    pub fn climate(&self, e: &Earth, d: [f64; 3], h: f64) -> (f64, f64) {
+        let sd = self.seed;
+        let lat = dot(d, POLE).abs().clamp(0.0, 1.0).asin() / std::f64::consts::FRAC_PI_2;
+        let tn = fbm(self.pm(d, 9000.0, 61.0), sd + 11, 3) - 0.5;
+        let lapse = (e.mountain_h * 0.9).max(50.0);
+        let temp = 1.0 - 1.15 * lat.powf(1.3) + tn * 0.45 - (h - e.sea).max(0.0) / lapse;
+        let mn = fbm(self.pm(d, 12000.0, 17.0), sd + 12, 4);
+        let mut moist = ((mn - 0.5) * 2.4 + 0.5).clamp(0.0, 1.0);
+        // 出現地点のまわり（6 km）は草原・森になるように湿らせる
+        let e_sp = (-(self.ang(d, [0.0, 1.0, 0.0]) / 6000.0).powi(2)).exp();
+        moist = moist * (1.0 - e_sp) + moist.max(0.55) * e_sp;
+        (temp, moist)
+    }
+
+    /// 乾いた暑い土地の度合い（砂漠 1・サバンナ 0.5 くらい）
+    #[inline]
+    fn aridity(t: f64, m: f64) -> f64 {
+        smoothstep(0.45, 0.75, t) * smoothstep(0.5, 0.2, m)
+    }
+
+    /// 池を除いた地表の高さ（地球型）。A-02：大陸・丘・山脈・台地（メサ）・砂丘。大きさは m で決める
     pub fn height0(&self, e: &Earth, d: [f64; 3]) -> f64 {
         let sd = self.seed;
-        let mut cont = (fbm(affine(d, 1.3, 11.0), sd, 4) - 0.545) / 0.1;
+        // 大陸（波長 30 km）。出現地点（+Y）のまわり 3 km は陸
+        let mut cont = (fbm(self.pm(d, 30000.0, 11.0), sd, 5) - 0.5) / 0.09;
         let a_sp = self.ang(d, [0.0, 1.0, 0.0]);
-        let e_sp = (-(a_sp / 300.0).powi(2)).exp();
+        let e_sp = (-(a_sp / 8000.0).powi(2)).exp();
         cont = cont * (1.0 - e_sp) + (cont.max(1.2) + 0.3) * e_sp;
-        let base = if cont > 0.0 { cont * 6.0 } else { cont * 12.0 };
-        let hills = (fbm(affine(d, 9.0, 5.0), sd + 1, 3) - 0.5) * 2.5 * e.hill_h;
-        let ridge = ridged(affine(d, 3.2, 3.0), sd + 2, 4);
-        let rough = ridged(affine(d, 11.0, 7.0), sd + 4, 3) * 0.6 + ridged(affine(d, 27.0, 1.0), sd + 5, 2) * 0.4;
-        let mut rng = smoothstep(0.52, 0.66, fbm(affine(d, 1.6, 40.0), sd + 3, 3)) * smoothstep(0.2, 1.2, cont);
-        let mdir = [0.0, (170.0 / self.radius).cos(), -(170.0 / self.radius).sin()];
-        let am = self.ang(d, mdir);
-        rng = rng.max((-(am / 70.0).powi(2)).exp());
-        let mtn = rng * (ridge * 0.55 + 0.45) * (0.65 + 0.35 * rough);
-        let h = base + hills + mtn * e.mountain_h * 1.1;
+        let base = if cont > 0.0 { (cont * 18.0).min(45.0) } else { (cont * 90.0).max(-400.0) };
+        let land = smoothstep(-0.05, 0.4, cont);
+        let (tt, mm) = self.climate(e, d, base);
+        let arid = Self::aridity(tt, mm);
+        // 丘（波長 700 m と 180 m）。湿った森・草原はなだらか、乾いた所は起伏が大きい
+        let hills = ((fbm(self.pm(d, 700.0, 5.0), sd + 1, 4) - 0.5) * 2.5 + (fbm(self.pm(d, 180.0, 13.0), sd + 8, 2) - 0.5) * 0.6)
+            * e.hill_h * (0.6 + 0.8 * arid);
+        // 山脈（尾根の波長 7 km、山の帯 18 km）
+        let ridge = ridged(self.pm(d, 7000.0, 3.0), sd + 2, 5);
+        let rough = ridged(self.pm(d, 1500.0, 7.0), sd + 4, 3) * 0.6 + ridged(self.pm(d, 400.0, 1.0), sd + 5, 2) * 0.4;
+        let mask = smoothstep(0.5, 0.66, fbm(self.pm(d, 18000.0, 40.0), sd + 3, 3)) * smoothstep(0.2, 1.2, cont);
+        let shape = (ridge * 0.55 + 0.45) * (0.65 + 0.35 * rough);
+        let mut mtn_h = mask * shape * e.mountain_h * 1.1;
+        if e.range_w > 0.0 {
+            let mdir = [0.0, (e.range_dist / self.radius).cos(), -(e.range_dist / self.radius).sin()];
+            let rh = if e.range_h > 0.0 { e.range_h } else { e.mountain_h };
+            mtn_h = mtn_h.max((-(self.ang(d, mdir) / e.range_w).powi(2)).exp() * shape * rh * 1.1);
+        }
+        // 台地（メサ）：乾いた土地で段々の台（高さ 90 m まで）
+        let mesa_n = smoothstep(0.52, 0.72, fbm(self.pm(d, 2500.0, 23.0), sd + 6, 3));
+        let mesa = terrace(mesa_n, 3.0) * 90.0 * arid * land;
+        // 砂丘（砂漠だけ。波長 140 m、高さ 8 m）
+        let dune = ridged(self.pm(d, 140.0, 9.0), sd + 7, 2) * 8.0 * smoothstep(0.5, 0.9, arid) * land;
+        let h = base + hills + mtn_h + mesa + dune;
         let w = 1.0 - smoothstep(e.flat_r, e.flat_r * 1.9, a_sp);
         h * (1.0 - w) + (e.spawn_h + hills * 0.15) * w
     }

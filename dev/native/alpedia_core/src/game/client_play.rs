@@ -353,7 +353,7 @@ pub fn play_aim<'py>(py: Python<'py>, w: &B<'py>, h: &B<'py>, look_vectors: &B<'
         } else if creative {
             format!("{} の地面（左クリックで掘る）", pl.getattr("name")?.str()?)
         } else {
-            let res = World::g_registry(wld(&w)?)?.call_method1("res_name", (Planet::resource_at(pla(&pl)?, &IntoPy::<PyObject>::into_py(h.get_item("point")?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?,))?;
+            let res = World::g_registry(wld(&w)?)?.call_method1("res_name", (pl.call_method1("resource_at", (h.get_item("point")?,))?,))?;
             format!("{} の地面：{}（左クリックで掘る）", pl.getattr("name")?.str()?, res.str()?)
         };
         out.set_item("text", text)?;

@@ -85,6 +85,8 @@ fn planet(r: f64, gm: f64, air: f64) -> PlanetCtx {
         has_water: false,
         air,
         air_h: (r * 0.25).max(30.0),
+        soi: 0.0,
+        acc: [0.0; 3],
     }
 }
 

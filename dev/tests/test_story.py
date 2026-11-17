@@ -111,6 +111,13 @@ class StoryCase(unittest.TestCase):
             self.run_for(1.0, dt)
             if self.ch() != cid:
                 return True
+        c = self.s.con("ship")
+        extra = ""
+        if cid == "launch" and c is not None:
+            rel = c.center_of_mass() - self.s.points["pad"]
+            u = self.s.points["pad_up"]
+            extra = f" 発着場から 高さ {float(rel @ u):.2f} 横 {float(np.linalg.norm(rel - u * float(rel @ u))):.2f} 速さ {float(np.linalg.norm(c.velocity())):.2f} 飛行 {self.s.st.get('moonflight', {}).get('t')} {self.s.st.get('moonflight', {}).get('done')} 段階 {self.s._ship_var('段階')} {c.mode}"
+        print(f"章 {cid} が終わらない：目標 {self.s.st['goals']}{extra}", flush=True)
         return False
 
     # --- テスト -------------------------------------------------------------
@@ -192,7 +199,7 @@ class StoryCase(unittest.TestCase):
         self.assertEqual(self.ch(), "power")
         # 第2章：バルブ → 背中合わせの推進機2つに点火（発電）→ 古い端末（ミカガの声）
         pc = s.con("power")
-        thr = [i for i, d in enumerate(pc.devs) if d and d["def"] == "thruster"]
+        thr = [i for i, d in enumerate(pc.devs) if d and d["def"] in ("thruster", "jet")]
         w.interact({"kind": "voxel", "construct": pc, "index": thr[0], "face": 2})
         self.run_for(0.3)
         self.assertFalse(pc.devs[thr[0]]["state"]["lit"], "バルブが閉じていると点火できない")
@@ -310,7 +317,9 @@ class StoryCase(unittest.TestCase):
         self.sit("ship")
         self.run_for(8.0, 1 / 30)
         ship = s.con("ship")
-        self.assertIn(ship.n_vox, (n_ship, len(sites.ship_voxels(boosters=False))), "発進で給油口を切り離す")
+        # ブースターは燃料を使いきると切り離す（燃料に重さ・本当の燃費。A-01）：留め具は本体に残る
+        self.assertIn(ship.n_vox, (n_ship, len(sites.ship_voxels(boosters=False)),
+                                   len(sites.ship_voxels(boosters=False)) + len(sites.BOOSTER_CLAMPS)), "発進で給油口を切り離す")
         self.assertFalse(s.port_attached())
         self.assertGreater(float(ship.velocity() @ s.terra.up(ship.center_of_mass())), 3.0, "上がっていく")
         cart = [c for c in w.constructs.values() if any(d and d["def"] == "fuel_pump" for d in c.devs)]

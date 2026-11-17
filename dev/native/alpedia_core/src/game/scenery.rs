@@ -360,6 +360,40 @@ impl Scenery {
         Ok(slf)
     }
 
+    /// 地図の惑星が公転で動いた分だけ、箱・中心・目印を動かす（L-08。ワールドの公転の処理から毎ティック呼ぶ）
+    pub(crate) fn follow(slf: &Bound<'_, Self>) -> R<()> {
+        let py = slf.py();
+        let mp = slf.borrow().map.clone_ref(py).into_bound(py);
+        let pl = match mp.downcast::<Map>() { Ok(m) => m.borrow().pl.clone_ref(py).into_bound(py), Err(_) => return Ok(()) };
+        if pl.is_none() || !slf.hasattr("C")? {
+            return Ok(());
+        }
+        let pc = v3(&pl.getattr("center")?)?;
+        let prev = match slf.getattr("_pc") { Ok(v) if !v.is_none() => v3(&v)?, _ => { slf.setattr("_pc", arr(py, pc))?; return Ok(()); } };
+        let d = sub(pc, prev);
+        if d == [0.0; 3] {
+            return Ok(());
+        }
+        slf.setattr("_pc", arr(py, pc))?;
+        let np = crate::game::imp(py, "numpy")?;
+        let dv = arr(py, d);
+        slf.setattr("C", slf.getattr("C")?.call_method1("__add__", (&dv,))?)?;
+        slf.setattr("center", slf.getattr("center")?.call_method1("__add__", (&dv,))?)?;
+        let pts = slf.borrow().points.clone_ref(py).into_bound(py);
+        for (k, v) in pts.iter() {
+            let a = np.getattr("asarray")?.call1((&v, "float64"))?;
+            if a.getattr("shape")?.extract::<Vec<usize>>()? == vec![3] {
+                // その場で足す（ほかの所が同じ配列を持っていても一緒に動くように）
+                if !crate::game::construct::with_rw(&a, |s| for i in 0..3 { s[i] += d[i]; })? {
+                    pts.set_item(k, a.call_method1("__add__", (&dv,))?)?;
+                } else if !a.is(&v) {
+                    pts.set_item(k, a)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 動かない物（当たり判定の持ち主として）
     fn is_moving(&self) -> bool {
         false

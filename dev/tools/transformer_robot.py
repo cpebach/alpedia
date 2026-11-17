@@ -47,9 +47,9 @@ def voxels():
 
     # --- 足（y=0：かかと・つま先に推進機）・足首（y=1：バルブとタンク）・脚（y=2..3） ---
     for x, side in ((1, "左"), (3, "右")):
-        put((x, 0, 0), "aluminum", dev("thruster", f"推進機 後{side}"))
+        put((x, 0, 0), "aluminum", dev("jet", f"推進機 後{side}"))
         put((x, 0, 1))
-        put((x, 0, 2), "aluminum", dev("thruster", f"推進機 前{side}"))
+        put((x, 0, 2), "aluminum", dev("jet", f"推進機 前{side}"))
         put((x, 1, 0), "aluminum", valve(f"バルブ 後{side}"))
         put((x, 1, 1), "aluminum", tank())
         put((x, 1, 2), "aluminum", valve(f"バルブ 前{side}"))
@@ -67,9 +67,9 @@ def voxels():
     # 腰のポッド：胴の下の段の左右のヒンジ（出力は外向き。+ の角度で下へ倒れる）の先に推進機
     # （人型では内向きに押す＝横へ動く。重心に近い高さ）
     put((0, 5, 1), "aluminum", dev("hinge", "左腰", LEFT, hinge=DOWN, preset=PROG))
-    put((-1, 5, 1), "aluminum", dev("thruster", "推進機 腰左", RIGHT), "hip_l")
+    put((-1, 5, 1), "aluminum", dev("jet", "推進機 腰左", RIGHT), "hip_l")
     put((4, 5, 1), "aluminum", dev("hinge", "右腰", RIGHT, hinge=DOWN, preset=PROG))
-    put((5, 5, 1), "aluminum", dev("thruster", "推進機 腰右", LEFT), "hip_r")
+    put((5, 5, 1), "aluminum", dev("jet", "推進機 腰右", LEFT), "hip_r")
     # --- 胴（y=5..9、x=1..3、z=0..2）。胸の中に操縦席、前はハッチ ---
     hatch = {(x, y, 2) for x in (1, 2, 3) for y in (6, 7)}
     special = {(1, 5, 1): ("aluminum", valve("バルブ 腰左")),           # 胴の下の段：腰のポッドのバルブとタンク
@@ -113,8 +113,8 @@ def voxels():
     put((2, 5, -2), "aluminum", tank(), "back")
     put((1, 5, -2), "aluminum", valve("バルブ 背左"), "back")
     put((3, 5, -2), "aluminum", valve("バルブ 背右"), "back")
-    put((0, 5, -2), "aluminum", dev("thruster", "推進機 背左", FWD), "back")
-    put((4, 5, -2), "aluminum", dev("thruster", "推進機 背右", FWD), "back")
+    put((0, 5, -2), "aluminum", dev("jet", "推進機 背左", FWD), "back")
+    put((4, 5, -2), "aluminum", dev("jet", "推進機 背右", FWD), "back")
     return V
 
 

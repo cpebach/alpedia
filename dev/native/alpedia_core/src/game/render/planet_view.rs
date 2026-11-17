@@ -30,6 +30,11 @@ pub struct PlanetView {
     pub a_tris: Option<PyObject>,
     /// verts（入れていなければ None。そのとき Python からは属性が無いのと同じ）
     pub a_verts: Option<PyObject>,
+    /// 距離で細かさを変える遠景（A-01）
+    pub lod: Option<Box<super::planet_lod::Lod>>,
+    /// 草・木（A-02。定義に "vegetation": true の惑星だけ）：(草のメッシュ, 木のメッシュ)
+    pub veg: Option<Box<super::vegetation::Veg>>,
+    pub veg_mesh: Option<(PyObject, PyObject)>,
 }
 
 #[pymethods]
@@ -43,236 +48,91 @@ impl PlanetView {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     pub(crate) fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        PlanetView { a_CUT: None, a_base: None, a_cut: None, a_dirs: None, a_frame_key: None, a_mesh: None, a_p: None, a_pos: None, a_root: None, a_tris: None, a_verts: None }
+        PlanetView { a_CUT: None, a_base: None, a_cut: None, a_dirs: None, a_frame_key: None, a_mesh: None, a_p: None, a_pos: None, a_root: None, a_tris: None, a_verts: None, lod: None, veg: None, veg_mesh: None }
     }
     #[pyo3(signature = (parent, loader, planet, n=48))]
     pub(crate) fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>, loader: &B<'_>, planet: &B<'_>, n: usize) -> R<()> {
-        let _ = loader;
+        let _ = (loader, n);
         let py = slf.py();
-        let n = if planet.getattr("has_water")?.is_truthy()? { 96 } else { n }; // 山や海岸線が見えるように細かく
         Self::sa_p(slf, planet)?;
         let root = parent.call_method1("attachNewNode", (format!("planet_{}", planet.getattr("id")?.str()?),))?;
         Self::sa_root(slf, &root)?;
         let mesh = dmesh(py, &root, "far")?;
         Self::sa_mesh(slf, &mesh)?;
-        let step = 2.0 / n as f64;
-        let g: Vec<f64> = (0..=n).map(|i| if i == n { 1.0 } else { i as f64 * step + -1.0 }).collect();
-        let m1 = n + 1;
-        let mut dirs: Vec<f64> = Vec::with_capacity(6 * m1 * m1 * 3);
-        let mut tris: Vec<i64> = vec![];
-        for face in 0..6usize {
-            let (major, neg) = (face / 2, face % 2);
-            let off = (face * m1 * m1) as i64;
-            for a in 0..m1 {
-                for b in 0..m1 {
-                    let mut d = [0.0; 3];
-                    d[major] = if neg == 1 { -1.0 } else { 1.0 };
-                    d[(major + 1) % 3] = g[a];
-                    d[(major + 2) % 3] = g[b];
-                    let nn = rnorm(&d);
-                    dirs.extend_from_slice(&[d[0] / nn, d[1] / nn, d[2] / nn]);
-                }
-            }
-            for a in 0..n {
-                for b in 0..n {
-                    let i = (a * m1 + b) as i64;
-                    let nn = n as i64;
-                    tris.extend_from_slice(&[i + off, i + nn + 1 + off, i + nn + 2 + off, i + off, i + nn + 2 + off, i + 1 + off]);
-                }
-            }
-        }
-        let nv = dirs.len() / 3;
-        let dirs_o = f64_2(py, dirs.clone(), 3)?;
-        let fs = Planet::far_samples(pla(&planet)?, &IntoPy::<PyObject>::into_py(&dirs_o, planet.py()).into_bound(planet.py())).map(|v| IntoPy::<PyObject>::into_py(v, planet.py()).into_bound(planet.py()))?;
-        let r = a1(&fs.get_item(0)?)?;
-        let col = a2(&fs.get_item(1)?, 3)?;
-        let mut pos = vec![0.0; nv * 3];
-        for i in 0..nv {
-            let rr = r[i] - 0.6;
-            for k in 0..3 {
-                pos[i * 3 + k] = dirs[i * 3 + k] * rr;
-            }
-        }
-        let pos_o = f64_2(py, pos.clone(), 3)?;
-        let tris_o = i64_2(py, tris.clone(), 3)?;
-        let nrm = a2(&imp(py, "main.shape")?.call_method1("vertex_normals", (&pos_o, &tris_o))?, 3)?;
-        let s_ = sun(py)?;
-        let amb = ambient(py)?;
-        let mut base = vec![0f32; nv * 12];
-        let mut normals = vec![0.0f64; nv * 3];
-        for i in 0..nv {
-            let dv = [dirs[i * 3], dirs[i * 3 + 1], dirs[i * 3 + 2]];
-            let mut nv3 = nrm.r3(i);
-            let e = nv3[0] * dv[0] + nv3[1] * dv[1] + nv3[2] * dv[2];
-            let sg = (e + 1e-9).signum() * if e + 1e-9 == 0.0 { 0.0 } else { 1.0 };
-            nv3 = [nv3[0] * sg, nv3[1] * sg, nv3[2] * sg];
-            let e2 = nv3[0] * dv[0] + nv3[1] * dv[1] + nv3[2] * dv[2];
-            if e2 <= 0.2 {
-                nv3 = dv;
-            }
-            normals[i * 3..i * 3 + 3].copy_from_slice(&nv3);
-            let sh = shade_rs(s_, amb, nv3, col.r3(i));
-            let rr = &mut base[i * 12..i * 12 + 12];
-            for k in 0..3 {
-                rr[k] = pos[i * 3 + k] as f32;
-                rr[3 + k] = nv3[k] as f32;
-                rr[6 + k] = sh[k] as f32;
-            }
-            rr[9] = 1.0;
-        }
-        let base_o = f32_2(py, base, 12)?;
-        Self::sa_base(slf, &base_o)?;
-        Self::sa_tris(slf, &tris_o)?;
-        Self::sa_dirs(slf, &dirs_o)?;
-        Self::sa_pos(slf, &pos_o)?;
-        Self::sa_cut(slf, py.None())?;
         Self::sa_frame_key(slf, py.None())?;
-        let mut e = 0.0f64;
-        for t in tris.chunks(3) {
-            let (a, c) = (t[0] as usize, t[2] as usize);
-            let d = [pos[a * 3] - pos[c * 3], pos[a * 3 + 1] - pos[c * 3 + 1], pos[a * 3 + 2] - pos[c * 3 + 2]];
-            e = e.max(rnorm(&d));
+        let radius = f64of(&planet.getattr("radius")?)?;
+        slf.borrow_mut().lod = Some(Box::new(super::planet_lod::Lod::new(radius)));
+        // 草・木
+        if get(&planet.getattr("defn")?, "vegetation", false.into_py(py))?.is_truthy()? {
+            let path = imp(py, "main.paths")?.getattr("TEXTURES")?.call_method1("__truediv__", ("plants.png",))?.str()?;
+            let tex = rmod(py)?.call_method1("load_texture", (py.None(), path))?;
+            let mk = |name: &str| -> R<PyObject> {
+                let m = dmesh(py, &root, name)?;
+                let n = m.getattr("np")?;
+                n.call_method1("setTwoSided", (true,))?;
+                if tex.is_truthy()? {
+                    n.call_method1("setTexture", (&tex, 1))?;
+                }
+                if let Ok(mid) = m.getattr("mid") {
+                    let _ = crate::game::gfx::view(py)?.call_method1("mesh_cutoff", (mid, 0.5));
+                }
+                Ok(m.unbind())
+            };
+            let (g, t) = (mk("grass")?, mk("trees")?);
+            let mut b = slf.borrow_mut();
+            b.veg = Some(Box::default());
+            b.veg_mesh = Some((g, t));
         }
-        // プレイヤーのまわりは詳細な地表があるので、遠景の球をくり抜く（洞窟や穴を覆わないように）
-        Self::sa_CUT(slf, (46.0 - e).max(0.0))?;
-        mesh.call_method1("set", (&base_o, &tris_o))?;
-        let _ = normals;
+        // 最初は遠くから見た形（いちばん粗い区画）
+        let far = [0.0, 0.0, radius * 1e3];
+        Self::_lod_update(slf, far, None)?;
         Ok(())
-    }
-    /// 詳細な地表（TerrainPatch）の真下にある遠景の頂点を深く沈めた頂点データ。
-    /// 沈めるのは、その頂点につながる三角形が全部詳細な地表の範囲に収まる頂点だけ（範囲の外に段差やすき間を作らない）
-    pub(crate) fn _sunk<'py>(slf: &Bound<'py, Self>, frame: &B<'py>) -> R<B<'py>> {
-        let py = slf.py();
-        let s = slf.as_any();
-        let base = Self::ga_base(slf)?;
-        if frame.is_none() {
-            return Ok(base);
-        }
-        let (up, t1, t2, r0, half) = (v3(&frame.get_item(0)?)?, v3(&frame.get_item(1)?)?, v3(&frame.get_item(2)?)?, f64of(&frame.get_item(3)?)?, f64of(&frame.get_item(4)?)?);
-        let q_o = Self::ga_pos(slf)?;
-        let c = matvec(py, &q_o, up)?;
-        let qa = matvec(py, &q_o, t1)?;
-        let qb = matvec(py, &q_o, t2)?;
-        let nv = c.len();
-        let mut inside = vec![false; nv];
-        let mut any = false;
-        for i in 0..nv {
-            let a = qa[i] * r0 / c[i];
-            let b = qb[i] * r0 / c[i];
-            inside[i] = c[i] > 0.0 && a.abs() < half && b.abs() < half;
-            any |= inside[i];
-        }
-        if !any {
-            return Ok(base);
-        }
-        let (tris, nt) = i2(&Self::ga_tris(slf)?, 3)?;
-        let mut bad = vec![false; nv];
-        for t in 0..nt {
-            let tr = &tris[3 * t..3 * t + 3];
-            if !(inside[tr[0] as usize] && inside[tr[1] as usize] && inside[tr[2] as usize]) {
-                for &v in tr {
-                    bad[v as usize] = true;
-                }
-            }
-        }
-        let sink: Vec<bool> = (0..nv).map(|i| inside[i] && !bad[i]).collect();
-        if !sink.iter().any(|x| *x) {
-            return Ok(base);
-        }
-        let q = a2(&q_o, 3)?;
-        let dirs = a2(&Self::ga_dirs(slf)?, 3)?;
-        let sk = f64of(&s.getattr("SINK")?)?;
-        let v = base.call_method0("copy")?;
-        let mut vv: Vec<f32> = {
-            let r: numpy::PyReadonlyArray2<f32> = crate::game::construct::contig(&v)?.extract()?;
-            r.as_slice()?.to_vec()
-        };
-        for i in 0..nv {
-            if sink[i] {
-                for k in 0..3 {
-                    vv[i * 12 + k] = (q.d[i * 3 + k] - dirs.d[i * 3 + k] * sk) as f32;
-                }
-            }
-        }
-        f32_2(py, vv, 12)
     }
     /// patch_frame：この惑星の詳細な地表の範囲 (上, 接線1, 接線2, 半径, 半幅) か None
     #[pyo3(signature = (origin, player_pos=None, patch_frame=None))]
     pub(crate) fn update(slf: &Bound<'_, Self>, origin: &B<'_>, player_pos: Option<&B<'_>>, patch_frame: Option<&B<'_>>) -> R<()> {
-        let py = slf.py();
-        let s = slf.as_any();
         let p = Self::ga_p(slf)?;
         let ctr = v3(&p.getattr("center")?)?;
         let o = v3(origin)?;
         Self::ga_root(slf)?.call_method1("setPos", (ctr[0] - o[0], ctr[1] - o[1], ctr[2] - o[2]))?;
-        let pf = patch_frame.filter(|x| !x.is_none());
-        let fkey = match pf {
-            None => none(py),
-            Some(f) => {
-                let mut v: Vec<f64> = vec![];
-                v.extend(v3(&f.get_item(0)?)?);
-                v.extend(v3(&f.get_item(1)?)?);
-                v.push(f64of(&f.get_item(3)?)?);
-                v.push(f64of(&f.get_item(4)?)?);
-                // np.round(x, 6)：x×10⁶ を偶数への丸め → ÷10⁶
-                let r: Vec<PyObject> = v.iter().map(|x| ((x * 1e6).round_ties_even() / 1e6).into_py(py)).collect();
-                PyTuple::new_bound(py, r).into_any()
-            }
+        let cam = match player_pos.filter(|x| !x.is_none()) { Some(pp) => v3(pp)?, None => o };
+        let cam = [cam[0] - ctr[0], cam[1] - ctr[1], cam[2] - ctr[2]];
+        let frame = match patch_frame.filter(|x| !x.is_none()) {
+            None => None,
+            Some(f) => Some((v3(&f.get_item(0)?)?, v3(&f.get_item(1)?)?, v3(&f.get_item(2)?)?, f64of(&f.get_item(3)?)?, f64of(&f.get_item(4)?)?)),
         };
-        if !fkey.eq(Self::ga_frame_key(slf)?)? {
-            Self::sa_frame_key(slf, &fkey)?;
-            Self::sa_verts(slf, Self::_sunk(slf, &pf.cloned().unwrap_or_else(|| none(py)))?)?;
-            Self::sa_cut(slf, "redo")?;
-        }
-        let radius = f64of(&p.getattr("radius")?)?;
-        let mut cut: Option<[f64; 3]> = None;
-        if let Some(pp) = player_pos.filter(|x| !x.is_none()) {
-            let pv = v3(pp)?;
-            let rel = [pv[0] - ctr[0], pv[1] - ctr[1], pv[2] - ctr[2]];
-            let rn = npnorm(py, rel)?;
-            if rn - radius < 250.0 {
-                let d = rn.max(1e-9);
-                cut = Some([rel[0] / d, rel[1] / d, rel[2] / d]);
-            }
-        }
-        let cur = Self::ga_cut(slf)?;
-        if cut.is_none() && cur.is_none() {
-            return Ok(());
-        }
-        let redo = cur.is_instance_of::<pyo3::types::PyString>();
-        if !redo {
-            if let Some(cv) = cut {
-                if !cur.is_none() {
-                    let cc = v3(&cur)?;
-                    if npnorm(py, [cv[0] - cc[0], cv[1] - cc[1], cv[2] - cc[2]])? * radius < 4.0 {
-                        return Ok(());
-                    }
+        Self::_lod_update(slf, cam, frame)?;
+        Self::_veg_update(slf, cam)
+    }
+}
+
+impl PlanetView {
+    fn _veg_update(slf: &Bound<'_, Self>, cam: [f64; 3]) -> R<()> {
+        let py = slf.py();
+        let p = Self::ga_p(slf)?;
+        let mut veg = match slf.borrow_mut().veg.take() { Some(v) => v, None => return Ok(()) };
+        let res = veg.update(&p, cam);
+        slf.borrow_mut().veg = Some(veg);
+        let (g, t) = res?;
+        let meshes = slf.borrow().veg_mesh.as_ref().map(|(a, b)| (a.clone_ref(py), b.clone_ref(py)));
+        if let Some((gm, tm)) = meshes {
+            for (data, m) in [(g, gm), (t, tm)] {
+                if let Some((v, tr)) = data {
+                    m.bind(py).call_method1("set", (f32_2(py, v, 12)?, i64_2(py, tr, 3)?))?;
                 }
             }
         }
-        Self::sa_cut(slf, match cut { Some(c) => np3(py, c), None => none(py) })?;
-        let tris_o = Self::ga_tris(slf)?;
-        let tris_out = if let Some(cv) = cut {
-            let dirs = a2(&Self::ga_dirs(slf)?, 3)?;
-            let cutr = f64of(&Self::ga_CUT(slf)?)?;
-            let near: Vec<bool> = (0..dirs.n).map(|i| {
-                let d = dirs.r3(i);
-                rnorm(&[d[0] - cv[0], d[1] - cv[1], d[2] - cv[2]]) * radius < cutr
-            }).collect();
-            let (tris, nt) = i2(&tris_o, 3)?;
-            let mut keep = Vec::with_capacity(tris.len());
-            for t in 0..nt {
-                let tr = &tris[3 * t..3 * t + 3];
-                if !(near[tr[0] as usize] || near[tr[1] as usize] || near[tr[2] as usize]) {
-                    keep.extend_from_slice(tr);
-                }
-            }
-            i64_2(py, keep, 3)?
-        } else {
-            tris_o
-        };
-        let verts = gd(s, "verts", Self::ga_base(slf)?);
-        Self::ga_mesh(slf)?.call_method1("set", (verts, tris_out))?;
+        Ok(())
+    }
+    fn _lod_update(slf: &Bound<'_, Self>, cam: [f64; 3], frame: Option<([f64; 3], [f64; 3], [f64; 3], f64, f64)>) -> R<()> {
+        let py = slf.py();
+        let p = Self::ga_p(slf)?;
+        let mut lod = match slf.borrow_mut().lod.take() { Some(l) => l, None => return Ok(()) };
+        let res = lod.update(&p, cam, frame);
+        slf.borrow_mut().lod = Some(lod);
+        if let Some((v, t)) = res? {
+            Self::ga_mesh(slf)?.call_method1("set", (f32_2(py, v, 12)?, i64_2(py, t, 3)?))?;
+        }
         Ok(())
     }
 }
@@ -368,13 +228,17 @@ impl TerrainPatch {
         let anchor = Self::ga_anchor(slf)?;
         let need = !Self::ga_planet(slf)?.is(planet) || anchor.is_none() || !Self::ga_version(slf)?.eq(planet.getattr("version")?)?
             || !cv.eq(Self::ga_carve_version(slf)?)? || {
+                // anchor・center は惑星ローカル（惑星が公転で動いても描き直さない。L-08）
                 let a = v3(&anchor)?;
-                npnorm(py, [pp[0] - a[0], pp[1] - a[1], pp[2] - a[2]])? > f64of(&Self::ga_step(slf)?)? * f64of(&Self::ga_cells(slf)?)? * 0.25
+                let pc = v3(&planet.getattr("center")?)?;
+                npnorm(py, [pp[0] - pc[0] - a[0], pp[1] - pc[1] - a[1], pp[2] - pc[2] - a[2]])? > f64of(&Self::ga_step(slf)?)? * f64of(&Self::ga_cells(slf)?)? * 0.25
             };
         if need {
             s.call_method1("_build", (planet, player_pos, carve.cloned().unwrap_or_else(|| none(py))))?;
         }
-        let c = v3(&Self::ga_center(slf)?)?;
+        let cl = v3(&Self::ga_center(slf)?)?;
+        let pc = v3(&planet.getattr("center")?)?;
+        let c = [cl[0] + pc[0], cl[1] + pc[1], cl[2] + pc[2]];
         let o = v3(origin)?;
         root.call_method1("setPos", (c[0] - o[0], c[1] - o[1], c[2] - o[2]))?;
         Ok(())
@@ -466,9 +330,10 @@ impl TerrainPatch {
             }
         }
         let pos: Vec<f64> = (0..nv * 3).map(|j| center[j % 3] + d[j] * r[j / 3]).collect();
-        Self::sa_anchor(slf, player_pos.call_method0("copy")?)?;
+        let ppv = v3(player_pos)?;
+        Self::sa_anchor(slf, np3(py, [ppv[0] - center[0], ppv[1] - center[1], ppv[2] - center[2]]))?;
         let cen = [center[0] + up[0] * r0, center[1] + up[1] * r0, center[2] + up[2] * r0];
-        Self::sa_center(slf, np3(py, cen))?;
+        Self::sa_center(slf, np3(py, [cen[0] - center[0], cen[1] - center[1], cen[2] - center[2]]))?;
         let rel: Vec<f64> = (0..nv * 3).map(|j| pos[j] - cen[j % 3]).collect();
         // np.gradient（中は中心差分、端は片側差分）
         let at = |a: usize, b: usize, k: usize| rel[(a * m + b) * 3 + k];
@@ -502,7 +367,7 @@ impl TerrainPatch {
             }
         }
         let nrm_o = f64_2(py, nrm.clone(), 3)?;
-        let mut col = a2(&Planet::surface_color(pla(&pl)?, &IntoPy::<PyObject>::into_py(&d_o, pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(f64_1(py, r_nat.clone()), pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(&nrm_o, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?, 3)?;
+        let mut col = a2(&pl.call_method1("surface_color", (&d_o, f64_1(py, r_nat.clone()), &nrm_o,))?, 3)?;
         // 掘った所は土の色に
         if has_craters && !use_carve {
             let dirt = [0.45, 0.33, 0.22];

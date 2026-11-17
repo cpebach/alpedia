@@ -12,6 +12,8 @@ import hashlib
 
 import numpy as np
 
+from . import blockify
+
 from main import log
 from main.geom import box_sdf, ray_boxes
 
@@ -25,6 +27,7 @@ PRE = ["ネオ", "メガ", "ハイパー", "ニュー", "サイバー"]
 
 DAMAGE_SPEED = 7.0       # この速さ (m/s) 以上でぶつかると建物が壊れた見た目に
 DESTROY_SPEED = 18.0     # この速さ以上（または壊れた建物にもう一度強く当たる）で消える
+MAX_SURF = 40             # 1つの惑星の地表の街の数の上限（大きな惑星でも。A-01）
 STATION_DENSITY = 40.0   # ステーションの質量 = 箱の体積 × これ (kg/m³)
 
 
@@ -485,7 +488,9 @@ def build_surface_city(city, planet, center_dir, rng, radius, scale=1.0):
             nc = NEON[rng.integers(len(NEON))]
             city.add(mid, fr, (0.9, 0.35, np.linalg.norm(c2 - a) / 2), (0.15, 0.15, 0.2), None, True, b1, "walk")
             city.add(mid + fr[1] * 0.4, fr, (0.95, 0.05, np.linalg.norm(c2 - a) / 2), nc, nc, False, b1, "neon")
+    blockify.extract(city)          # ビル・店や住宅の壁はブロックの構築物に（A-03）
     city.finish()
+    city.radius = max(city.radius, blockify.extent(city) + 1.0)
 
 
 def build_station(city, rng, scale=1.0):
@@ -580,14 +585,19 @@ class CityManager:
         spawn = w._default_spawn()
         used_names = set()
         for pi, pl in enumerate(w.planets):
-            seed = (pl.id, pl.seed, round(pl.radius), round(float(pl.center[0])), round(float(pl.center[2])))
+            c0 = getattr(pl, "center0", pl.center)           # 公転する惑星は基準の時刻の中心（今の位置で街が変わらないように）
+            seed = (pl.id, pl.seed, round(pl.radius), round(float(c0[0])), round(float(c0[2])))
             rng = _rng("cities", *seed)
-            if pl.radius >= 300:
+            if pl.radius >= 3000:
                 spacing, rad, n_orbit = 520.0, (40.0, 70.0), 3
-            elif pl.radius >= 100:
+            elif pl.radius >= 1000:
                 spacing, rad, n_orbit = 300.0, (25.0, 40.0), 1
             else:
                 spacing, rad, n_orbit = None, None, 0
+            if spacing is not None:
+                # 大きな惑星でも街は MAX_SURF か所まで（間隔を広げる）。空気の無い月などはその半分
+                air = float(pl.defn.get("atmosphere_pressure", 101.3) or 0.0) > 0
+                spacing = max(spacing, float(np.sqrt(4 * np.pi * pl.radius ** 2 / (MAX_SURF if air else MAX_SURF // 4))))
             n_surf = 1 if spacing is None else max(2, int(round(4 * np.pi * pl.radius ** 2 / spacing ** 2)))
             # 地表：ほぼ等間隔（フィボナッチ球面）の候補地。作れない場所なら、まわりの別の場所を何か所か試す
             k = np.arange(n_surf) + 0.5
@@ -626,14 +636,18 @@ class CityManager:
                 c.region = self._region(c, pl)
                 c.home = pi
                 self.cities.append(c)
+            # 街のほかの集落（村・畑・港・鉱山・工業地帯・住宅地。A-03）
+            from . import settlements
+            self.cities += settlements.generate(self, pl, pi, seed, spawn, used_names, _ground, _rng, City)
             # 軌道上
             for oi in range(n_orbit):
                 orng = _rng("station", *seed, oi)
                 c = City(f"{pl.id}{pi}-o{oi}", "軌道都市" + self._name(orng, used_names), "orbit", pl)
                 c.homes, c.npcs = [], []
-                build_station(c, orng, 1.0 if pl.radius >= 300 else 0.6)
+                build_station(c, orng, 1.0 if pl.radius >= 3000 else 0.6)
                 c.region = "orbit"
-                alt = pl.radius * orng.uniform(0.45, 0.8) if pl.radius >= 300 else pl.radius * orng.uniform(0.6, 0.9)
+                # 空気の外（大気の 1/e の高さ＝半径の 1/4 の 2.5 倍より上）
+                alt = pl.radius * orng.uniform(0.65, 0.9) if pl.radius >= 3000 else pl.radius * orng.uniform(0.6, 0.9)
                 rr = pl.bound + alt
                 n = orng.normal(size=3)
                 n /= np.linalg.norm(n)
@@ -649,7 +663,7 @@ class CityManager:
     @staticmethod
     def _region(c, pl):
         """地域：辺境（月・小惑星）／海辺（桟橋がある）／火山（硫黄の採れる高い山）／平地。"""
-        if pl.radius < 300:
+        if pl.radius < 3000 or float(pl.defn.get("atmosphere_pressure", 101.3) or 0.0) <= 0.0:     # 空気の無い月・小惑星
             return "frontier"
         if any(pier for _, pier in getattr(c, "cells", {}).values()):
             return "coast"
@@ -705,7 +719,7 @@ class CityManager:
         n = 0
         drop = set()
         for c in constructs:
-            if not c.n_vox:
+            if not c.n_vox or str(c.id).startswith("blk-"):      # 街の建物のブロック（A-03）
                 continue
             P = c.voxel_centers()
             for city, C, A, E, idx in self.boxes_for(P.min(0), P.max(0), 1.0):
@@ -836,6 +850,13 @@ class CityManager:
     def step(self, dt, anchored):
         w = self.world
         for c in self.cities:
+            if getattr(c.host, "orbiting", False):
+                # 公転する惑星の上・影響圏の中の街：惑星と一緒に動く（L-08。速度は惑星に対する速度のまま）
+                hc = np.array(c.host.center, float)
+                prev = getattr(c, "_hc", None)
+                if prev is not None and (c.kind == "surface" or np.linalg.norm(c.x - hc) < c.host.soi):
+                    c.x = c.x + (hc - prev)
+                c._hc = hc
             if c.kind != "orbit":
                 c.force[:] = 0
                 c.torque[:] = 0

@@ -22,21 +22,33 @@ def dev(def_id, name, d=UP, **state):
 
 
 def rocket():
-    """1列のロケット：下から 推進機・バルブ・タンク・タンク・バッテリー・操縦席。足は4枚のアルミのひれ。
-    座って Space で点火、バルブの開き具合（P）で推力を変える。"""
+    """2段式のロケット（A-01：燃料に重さがあり、1段ではやっと低い軌道に届くかどうか）。
+    第1段：推進機4つ・バルブ4つ・タンク27。第2段：切り離し・推進機1つ・バルブ（閉）・タンク9・バッテリー・操縦席。
+    座って Space で点火。第1段の燃料が切れたら G で切り離し、P で第2段のバルブを開ける"""
     V = []
-    col = [("thruster", "推進機"), ("valve", "バルブ"), ("tank", "燃料タンク"), ("tank", "燃料タンク"),
-           ("battery", "バッテリー")]
-    for y, (d, n) in enumerate(col):
-        st = {"contents": {"fuel": 800.0}} if d == "tank" else ({"open": 0.75} if d == "valve" else {})
-        V.append([1, y, 1, "steel", dev(d, n, **st)])
-    V.append([1, len(col), 1, "steel", dev("seat", "操縦席", FWD)])
-    for x, z in ((0, 1), (2, 1), (1, 0), (1, 2)):           # ひれ（下の2段）
-        V.append([x, 0, z, "aluminum", None])
+    for x, z in ((0, 0), (2, 0), (0, 2), (2, 2)):
+        V.append([x, 0, z, "steel", dev("thruster", "第1段の推進機")])
+        V.append([x, 1, z, "steel", dev("valve", "第1段のバルブ", open=1.0)])
+    for x, z in ((1, 0), (0, 1), (1, 1), (2, 1), (1, 2)):
         V.append([x, 1, z, "aluminum", None])
-    return ("starter_rocket", "はじめのロケット",
-            "推進機・バルブ・燃料タンク・バッテリー・操縦席だけの小さなロケット。座って Space で点火、"
-            "バルブ（P）で推力を変える。止めるときはバルブを閉じる", V)
+    for y in range(2, 5):
+        for x in range(3):
+            for z in range(3):
+                V.append([x, y, z, "aluminum", dev("tank", "第1段の燃料タンク", contents={"fuel": 800.0})])
+    V.append([1, 5, 1, "aluminum", dev("decoupler", "切り離し", 3)])          # 下（第1段）との結合を外す
+    V.append([1, 6, 1, "steel", dev("thruster", "第2段の推進機")])
+    V.append([1, 7, 1, "steel", dev("valve", "第2段のバルブ", open=0.0)])
+    for x in range(3):
+        for z in range(3):
+            if (x, z) != (1, 1):
+                V.append([x, 6, z, "aluminum", None])
+                V.append([x, 7, z, "aluminum", None])
+            V.append([x, 8, z, "aluminum", dev("tank", "第2段の燃料タンク", contents={"fuel": 800.0})])
+    V.append([1, 9, 1, "steel", dev("battery", "バッテリー")])
+    V.append([1, 10, 1, "steel", dev("seat", "操縦席", FWD)])
+    return ("starter_rocket", "はじめのロケット（2段式）",
+            "2段式のロケット。座って Space で点火（第2段のバルブは閉じてある）。第1段の燃料が切れたら G で切り離し、"
+            "P で第2段のバルブを開ける。燃料には重さがあるので、1段だけでは軌道に届かない", V)
 
 
 def factory():
@@ -149,7 +161,7 @@ def ferry():
                 put(x, y, z, "wood")                      # 船べり（中は空気の空洞）
     # 推進機（後ろの壁）・バルブ・燃料タンク（船体の中）。左右と後退で別々につなぐ（となりどうしにしない）
     for x, side, d, nm in ((2, "左", 4, "推進機 左"), (9, "右", 4, "推進機 右"), (6, "後退", 5, "推進機 後退")):
-        put(x, 1, 0, "steel", dev("thruster", nm, d))
+        put(x, 1, 0, "steel", dev("jet", nm, d))           # 空気を吸うジェット（A-01）
         put(x, 1, 1, "steel", dev("valve", f"バルブ {side}", open=0.0))
         put(x, 1, 2, "steel", dev("tank", f"燃料タンク {side}", contents={"fuel": 800.0}))
         put(x, 1, 3, "steel", dev("tank", f"燃料タンク {side}", contents={"fuel": 800.0}))

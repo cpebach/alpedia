@@ -281,7 +281,7 @@ impl World {
             return Ok(false);
         }
         let pl = hit.get_item("planet")?;
-        let res = Planet::resource_at(pla(&pl)?, &IntoPy::<PyObject>::into_py(hit.get_item("point")?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;      // 掘る前の場所で判定
+        let res = pl.call_method1("resource_at", (hit.get_item("point")?,))?;      // 掘る前の場所で判定
         if pl.hasattr("update_water")? {
             Planet::update_water(pla(&pl)?, 0.0).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?;    // 今までの穴の水を確かめておく（新しい穴は底から満ちる）
         }

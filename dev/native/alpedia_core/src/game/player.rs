@@ -61,6 +61,9 @@ pub struct Player {
     pub pos: FA,
     #[pyo3(get, set)]
     pub vel: FA,
+    /// どの公転する惑星と一緒に動いているか（-1 は無し、-2 はまだ決めていない。L-08）
+    #[pyo3(get, set)]
+    pub frame: i64,
     #[pyo3(get, set)]
     pub up: FA,
     #[pyo3(get, set)]
@@ -143,6 +146,7 @@ impl Player {
             defn: pdef,
             pos: fa(py, v3(pos)?.to_vec(), &[3])?,
             vel: z()?,
+            frame: -2,
             up: fa(py, vec![0.0, 1.0, 0.0], &[3])?,
             on_ground: false,
             ground_vel: z()?,
@@ -320,7 +324,7 @@ impl Player {
         let mut in_water = 0.0;
         let on_ground_prev = slf.try_borrow()?.on_ground;
         if !pl.is_none() && pl.getattr("has_water")?.is_truthy()? {
-            let wd = float_of(&Planet::water_depth(pla(&pl)?, &IntoPy::<PyObject>::into_py(pos_np(pos)?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?.get_item(0)?)?;
+            let wd = float_of(&pl.call_method1("water_depth", (pos_np(pos)?,))?.get_item(0)?)?;
             let frac = ((wd + radius) / (height * 0.8)).clamp(0.0, 1.0);
             in_water = frac;
             if frac > 0.0 {

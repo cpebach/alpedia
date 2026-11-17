@@ -523,6 +523,7 @@ impl World {
             planets.append(p)?;
         }
         Self::s_planets(slf, &planets)?;
+        Self::setup_orbits(slf, &settings.get_item("planets")?.unwrap())?;
         let spawn = world_read_json(&div("spawn.json")?, PyDict::new_bound(py).as_any())?;
         for cd in cons.iter()? {
             for m in savefmt.call_method1("check_construct", (cd?,))?.iter()? {
@@ -663,6 +664,8 @@ mod query;
 mod edit;
 mod interact;
 mod inner;
+mod orbit;
+mod decouple;
 
 // ---------------------------------------------------------------- 欄の読み書き（C-01）
 // g_欄：値（Python の値として）、s_欄：入れる（型を確かめる）

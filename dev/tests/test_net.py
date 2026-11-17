@@ -46,7 +46,7 @@ class NetCase(unittest.TestCase):
     def make_host(self, mods):
         d = paths.world_dir("h")
         (d / "scripts").mkdir(parents=True, exist_ok=True)
-        s = dict(DEFAULT_SETTINGS, name="h", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
+        s = dict(DEFAULT_SETTINGS, name="h", format=3, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
         (d / "world.json").write_text(json.dumps(s), "utf-8")
         (d / "mods.json").write_text(json.dumps({"enabled": mods}), "utf-8")
         (d / "scripts" / "a.py").write_text("def tick(api):\n    pass\n", "utf-8")
@@ -174,8 +174,8 @@ class NetCase(unittest.TestCase):
         orbit = [c for c in hc.cities.cities if c.kind == "orbit"]
         if orbit:
             o = orbit[0]
-            # 動くステーションも同じ所（通信の 1〜2 フレームの遅れの分だけはずれてよい：軌道の速さ 60 m/s ほど × 1/60 秒）
-            self.assertLess(np.linalg.norm(cc.cities.by_id[o.id].x - o.x), 2.5)
+            # 動くステーションも同じ所（通信の 1〜2 フレームの遅れの分だけはずれてよい：軌道の速さ × 2/60 秒）
+            self.assertLess(np.linalg.norm(cc.cities.by_id[o.id].x - o.x), float(np.linalg.norm(o.v)) * 2 / 60 + 1.0)
         rp = w.remote[self.client.pid]
         city = cc.cities.cities[0]
         before = rp.inventory.get("credits", 0.0)

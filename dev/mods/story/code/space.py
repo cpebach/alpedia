@@ -114,7 +114,7 @@ def robot_voxels(body="hull_white", trim="hull_blue", pilot=True, running=False)
     for x in range(3):
         for z in range(5):
             if (x, z) in corners:
-                V.append(((x, 0, z), "steel", {"def": "maneuver_thruster", "dir": 2, "name": "推進機"}))
+                V.append(((x, 0, z), "steel", {"def": "small_jet", "dir": 2, "name": "推進機"}))
             else:
                 V.append(((x, 0, z), trim, None))
     for (x, z), nm in corners.items():

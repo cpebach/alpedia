@@ -560,8 +560,8 @@ def power_voxels():
           ((1, 1, 0), "steel", {"def": "valve", "dir": 0, "name": "バルブ", "state": {"open": 0.0, "set": 0.15}}),
           ((2, 1, 0), "steel", {"def": "pipe", "dir": 0}),
           ((3, 1, 0), "steel", {"def": "pipe", "dir": 0}),
-          ((3, 1, 1), "steel", {"def": "thruster", "dir": 4, "name": "発電用の推進機"}),
-          ((3, 1, -1), "steel", {"def": "thruster", "dir": 5, "name": "発電用の推進機"}),
+          ((3, 1, 1), "steel", {"def": "jet", "dir": 4, "name": "発電用の推進機"}),
+          ((3, 1, -1), "steel", {"def": "jet", "dir": 5, "name": "発電用の推進機"}),
           ((5, 1, 0), "steel", {"def": "battery", "dir": 2, "name": "基地のバッテリー", "state": {"charge": 4.0e5}}),
           ((5, 2, 0), "steel", {"def": "computer", "dir": 5, "name": "電源の表示",
                                 "state": {"script": "power.py", "running": True}})]
@@ -588,7 +588,7 @@ def bike_voxels():
     for x in range(3):
         for z in range(5):
             if (x, z) in corners:
-                V.append(((x, 0, z), "steel", {"def": "thruster", "dir": 2, "name": "推進機"}))
+                V.append(((x, 0, z), "steel", {"def": "jet", "dir": 2, "name": "推進機"}))      # 空気を吸うジェット（A-01）
             else:
                 V.append(((x, 0, z), "hull_blue", None))
     names = {(0, 0): "後左", (2, 0): "後右", (0, 4): "前左", (2, 4): "前右"}     # 前 = +Z、右 = +X

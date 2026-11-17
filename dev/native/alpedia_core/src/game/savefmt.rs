@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 
 /// 2: クリエイティブ／サバイバル・街の ON/OFF を world.json ではなく MOD（mods.json）で決める
-pub const FORMAT: i64 = 2;
+pub const FORMAT: i64 = 3;
 
 #[derive(Clone, Copy, PartialEq)]
 enum T {
@@ -19,6 +19,8 @@ enum T {
     Dict,
     List,
     ListOrNone,
+    /// dict か false（惑星の公転）
+    DictOrFalse,
 }
 
 impl T {
@@ -32,6 +34,7 @@ impl T {
             T::Dict => v.is_instance_of::<PyDict>(),
             T::List => v.is_instance_of::<PyList>(),
             T::ListOrNone => v.is_instance_of::<PyList>() || v.is_none(),
+            T::DictOrFalse => v.is_instance_of::<PyDict>() || (v.is_instance_of::<PyBool>() && !v.is_truthy().unwrap_or(true)),
         }
     }
     fn numeric(self) -> bool {
@@ -43,10 +46,13 @@ const WORLD: &[(&str, T)] = &[
     ("format", T::Int), ("name", T::Str), ("voxel_size", T::Num), ("gravity_scale", T::Num), ("cleanup", T::Dict),
     ("player", T::Str), ("planets", T::List), ("time", T::Num), ("full_rigid", T::Bool), ("tutorial", T::Bool),
     ("starter_sample", T::Bool), ("mode", T::Str),
+    // buildkit.ensure が MOD ごとに作った建物の ID（C-05）
+    ("blocks", T::Dict),
 ];
 const CLEANUP: &[(&str, T)] = &[("enabled", T::Bool), ("distance", T::Num), ("seconds", T::Num), ("max_vertices", T::Int),
                                 ("check_interval", T::Num)];
-const PLANET: &[(&str, T)] = &[("def", T::Str), ("position", T::List), ("craters", T::List), ("override", T::Dict)];
+const PLANET: &[(&str, T)] = &[("def", T::Str), ("position", T::List), ("craters", T::List), ("override", T::Dict),
+                               ("orbit", T::DictOrFalse)];
 const CONSTRUCT_REQUIRED: &[(&str, T)] = &[("id", T::Str), ("name", T::Str), ("voxel_size", T::Num), ("voxels", T::List)];
 const CONSTRUCT_OPTIONAL: &[(&str, T)] = &[("links", T::List), ("extras", T::List), ("storage", T::Dict), ("cavity_air", T::List),
                                            ("vertices", T::List), ("rest", T::List), ("anchor", T::Str), ("soft_ok", T::Bool)];
@@ -115,6 +121,24 @@ pub fn savefmt_upgrade_world<'py>(py: Python<'py>, settings: &Bound<'py, PyDict>
         for k in LEGACY_WORLD_KEYS {
             if s.contains(*k)? {
                 s.del_item(*k)?;
+            }
+        }
+        s.set_item("format", FORMAT)?;
+        changed = true;
+    }
+    if fmt < 3 {
+        // 形式 3（A-01）：惑星が大きくなった（主な惑星の半径 600 m → 20 km）。重ならないように、月・小惑星の位置を広げる
+        let k: f64 = crate::game::imp(py, "main.world")?.getattr("LEGACY_SCALE")?.extract()?;
+        if let Some(pls) = s.get_item("planets")? {
+            for (i, pd) in pls.iter()?.enumerate() {
+                let pd = pd?;
+                if i == 0 {
+                    continue;
+                }
+                if let Ok(pos) = pd.get_item("position") {
+                    let v: Vec<f64> = pos.extract()?;
+                    pd.set_item("position", v.iter().map(|x| x * k).collect::<Vec<f64>>())?;
+                }
             }
         }
         s.set_item("format", FORMAT)?;

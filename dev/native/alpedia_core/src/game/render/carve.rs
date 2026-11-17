@@ -225,7 +225,7 @@ impl CarveView {
         let vn: Vec<f64> = (0..nv).map(|i| rnorm(&verts[i * 3..i * 3 + 3])).collect();
         let dirs: Vec<f64> = (0..nv * 3).map(|j| verts[j] / vn[j / 3]).collect();
         let radii: Vec<f64> = (0..nv).map(|i| vn[i] + depth[i]).collect();
-        let top = a2(&Planet::surface_color(pla(&pl)?, &IntoPy::<PyObject>::into_py(f64_2(py, dirs, 3)?, pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(f64_1(py, radii), pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(&nrm_o, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?, 3)?;
+        let top = a2(&pl.call_method1("surface_color", (f64_2(py, dirs, 3)?, f64_1(py, radii), &nrm_o,))?, 3)?;
         let dirt = [0.42, 0.34, 0.26];
         let stone = [0.44, 0.42, 0.4];
         let mut col = vec![0.0f64; nv * 3];
@@ -237,7 +237,7 @@ impl CarveView {
                 col[i * 3 + c] = top.d[i * 3 + c] * (1.0 - k) + under * k;
             }
         }
-        let col = a2(&Planet::underground_tint(pla(&pl)?, &IntoPy::<PyObject>::into_py(f64_2(py, verts.clone(), 3)?, pl.py()).into_bound(pl.py()), &IntoPy::<PyObject>::into_py(f64_2(py, col, 3)?, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?, 3)?;
+        let col = a2(&pl.call_method1("underground_tint", (f64_2(py, verts.clone(), 3)?, f64_2(py, col, 3)?,))?, 3)?;
         // 地中は日が当たらないので、向きによる陰影を弱めて少し暗くする（真っ暗にはしない）
         let s_ = sun(py)?;
         let amb = ambient(py)?;
@@ -317,12 +317,14 @@ impl CarveView {
             Self::sa_anchor(slf, py.None())?;
         }
         let anchor = Self::ga_anchor(slf)?;
+        // anchor は惑星ローカル（惑星が公転で動いても選び直さない。L-08）
+        let pc = v3(&pl.getattr("center")?)?;
         let moved = anchor.is_none() || {
             let a = v3(&anchor)?;
-            npnorm(py, [pp[0] - a[0], pp[1] - a[1], pp[2] - a[2]])? > 6.0
+            npnorm(py, [pp[0] - pc[0] - a[0], pp[1] - pc[1] - a[1], pp[2] - pc[2] - a[2]])? > 6.0
         };
         if moved {
-            Self::sa_anchor(slf, player_pos.call_method0("copy")?)?;
+            Self::sa_anchor(slf, np(py)?.call_method1("array", (vec![pp[0] - pc[0], pp[1] - pc[1], pp[2] - pc[2]],))?)?;
             let want = Self::_wanted(slf, pl, player_pos)?;
             let cache = Self::ga_cache(slf)?;
             let c0 = v3(&pl.getattr("center")?)?;

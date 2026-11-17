@@ -74,6 +74,8 @@ pub struct Dev {
     pub inputs: Vec<(String, f64)>,  // proc_inputs
     pub outputs: Vec<String>,        // proc_outputs
     pub rate: f64,                   // 通気口
+    /// 空気を吸う推進機（ジェット。A-01）：推力は空気の密度（地表 1）に比例し、真空では点かない
+    pub air_breathing: bool,
     pub target_kpa: f64,
     pub cavity: Option<usize>,       // 通気口のとなりの空洞
 }
@@ -465,7 +467,7 @@ pub struct Result_ {
 #[allow(clippy::too_many_arguments)]
 pub fn update(
     p: &Plan, st: &[Bound<'_, PyDict>], dt: f64, keys: &HashSet<String>, seated: bool, pos: &[f64], mass: &[f64],
-    force: &mut [f64], cav_air: &mut [f64],
+    force: &mut [f64], cav_air: &mut [f64], air: f64,
 ) -> PyResult<Result_> {
     let mut notes: Vec<String> = Vec::new();
     let mut note = |s: String| {
@@ -534,13 +536,14 @@ pub fn update(
             burning.push((k, d.fuel_rate * dt));
         }
     }
-    // 同じバルブの先にいくつも推進機があるときは、バルブを通る量を欲しい量に比べて分ける
+    // バルブの開き具合は「推力の割合」：開き 0.4 なら、その先の推進機は 0.4 の推力（燃料の量は推進機ごとに違ってよい。
+    // ジェットとロケットで同じバルブが使える。A-01）。同じバルブの先にいくつも推進機があるときは、開き具合を台数で分ける
     let mut through: HashMap<usize, f64> = HashMap::new();
     let mut vss: Vec<Vec<usize>> = Vec::with_capacity(burning.len());
-    for &(k, need) in &burning {
+    for &(k, _) in &burning {
         let vs = flow.valves_to(st, p.devs[k].vox, &p.devs[k].fuel)?;
         for &v in &vs {
-            *through.entry(v).or_insert(0.0) += need;
+            *through.entry(v).or_insert(0.0) += 1.0;
         }
         vss.push(vs);
     }
@@ -548,9 +551,19 @@ pub fn update(
     for (q, &(k, need)) in burning.iter().enumerate() {
         let d = &p.devs[k];
         let s = &st[k];
-        let mut quota = need;
+        let mut frac_max = 1.0f64;
         for v in &vss[q] {
-            quota = quota.min(rem0.get(v).copied().unwrap_or(0.0) * need / through[v].max(1e-12));
+            let mf = p.at.get(v).map(|&kv| p.devs[kv].max_flow).unwrap_or(6.0).max(1e-12);
+            let open_left = rem0.get(v).copied().unwrap_or(0.0) / (mf * dt.max(1e-12));
+            frac_max = frac_max.min(open_left / through[v].max(1.0));
+        }
+        let quota = need * frac_max.clamp(0.0, 1.0);
+        if d.air_breathing && air < 0.02 {
+            // ジェットは空気が無いと燃えない
+            sb(s, "lit", false)?;
+            s.set_item("error", "空気がありません")?;
+            note(format!("{}: 空気がありません", d.name));
+            continue;
         }
         let got = if quota > 0.0 { flow.pull(st, d.vox, &d.fuel, quota, true, true, false)? } else { 0.0 };
         let frac = if need > 0.0 { got / need } else { 0.0 };
@@ -559,7 +572,9 @@ pub fn update(
             continue;
         }
         let ax = world_axis(pos, d.vox, d.dir);
-        point_forces.push((d.vox, [ax[0] * d.thrust * frac, ax[1] * d.thrust * frac, ax[2] * d.thrust * frac]));
+        let ak = if d.air_breathing { air.clamp(0.0, 1.2) } else { 1.0 };
+        let th = d.thrust * frac * ak;
+        point_forces.push((d.vox, [ax[0] * th, ax[1] * th, ax[2] * th]));
         sf(s, "firing", frac)?;
         sf(s, "throttle", frac)?;
         production += d.power_output * frac;

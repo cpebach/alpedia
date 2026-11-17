@@ -31,6 +31,8 @@ class CityAddon(Addon):
         self.cities = CityManager(world)
         if self.cities.enabled:
             self.cities.clear_overlaps(world.constructs.values())
+        from .blockify import Streamer
+        self.blocks = Streamer(world, self.cities)        # 近くの街の建物（ブロック）を作る・片付ける（A-03）
         self.economy = Economy(world, self)
         if self.cities.enabled:
             self.economy.give_starter()
@@ -39,6 +41,7 @@ class CityAddon(Addon):
     def on_save(self, world):
         if self.cities.enabled:
             world.settings["city_state"] = self.cities.to_state()
+            self.blocks.save()
 
     # ------------------------------------------------------------------
     # 1ティックごと
@@ -86,6 +89,9 @@ class CityAddon(Addon):
         """建物の損傷と、動いている街への反動をまとめて反映する。"""
         if not self.cities.enabled:
             return
+        if getattr(self, "blocks", None) is not None:
+            # 近くの街の建物（ブロック）を置く・片付ける（ティックの終わりに。途中で構築物を増減させない）
+            self.blocks.update()
         mine = set(map(id, self.cities.cities))
         for c in cons:
             for city, best, J, pts in c.ext_events:

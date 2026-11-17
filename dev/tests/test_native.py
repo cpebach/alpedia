@@ -189,7 +189,8 @@ class TestPlanet(unittest.TestCase):
             cd, cg = pl.cave_dist(p - pl.center, grad=True)
             self.assertLess(np.abs(cd - pl.cave_dist(p - pl.center)).max(), 1e-12)
             m = cd < 50
-            self.assertLess(np.abs(np.linalg.norm(cg[m], axis=1) - 1).max(), 1e-6)
+            if m.any():                       # 大きな惑星（A-01）では、ばらまいた点の近くに洞窟が無いこともある
+                self.assertLess(np.abs(np.linalg.norm(cg[m], axis=1) - 1).max(), 1e-6)
 
     def test_sphere_planet(self):
         self._compare("terra")
@@ -259,7 +260,7 @@ class TestPairs(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp()); saves = paths.SAVES; paths.SAVES = tmp
         try:
             d = paths.world_dir("t"); (d / "scripts").mkdir(parents=True)
-            (d / "world.json").write_text(json.dumps(dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "gaia", "position": [0, 0, 0], "craters": []}])), "utf-8")
+            (d / "world.json").write_text(json.dumps(dict(DEFAULT_SETTINGS, name="t", format=3, planets=[{"def": "gaia", "position": [0, 0, 0], "craters": []}])), "utf-8")
             w = World("t", json.loads(json.dumps(config.DEFAULTS)), addons=[]).load()
             pl = w.planets[0]
             up = np.array([0, 1.0, 0])
@@ -307,7 +308,7 @@ class TestStep(unittest.TestCase):
         (d / "scripts").mkdir(parents=True)
         planets = [{"def": "gaia", "position": [0, 0, 0], "craters": []},
                    {"def": "luna", "position": [2500, 0, 0], "craters": []}]
-        (d / "world.json").write_text(json.dumps(dict(DEFAULT_SETTINGS, name="t", format=2, planets=planets,
+        (d / "world.json").write_text(json.dumps(dict(DEFAULT_SETTINGS, name="t", format=3, planets=planets,
                                                       gravity_scale=1.3)), "utf-8")
         cls.w = World("t", json.loads(json.dumps(config.DEFAULTS)), addons=[]).load()
         cls.w.planets[0].dig(cls.w.planets[0].center + np.array([0, 600.0, 0]), 2.0)   # 掘削跡も渡す

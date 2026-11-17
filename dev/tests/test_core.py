@@ -53,7 +53,7 @@ class CoreCase(unittest.TestCase):
     def world(self, addons=(), **settings):
         d = paths.world_dir("t")
         (d / "scripts").mkdir(parents=True, exist_ok=True)
-        s = dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}],
+        s = dict(DEFAULT_SETTINGS, name="t", format=3, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}],
                  full_rigid=False)                  # テストはやわらかいブロックの計算を調べる（完全剛体は指定して）
         s.update(settings)
         (d / "world.json").write_text(json.dumps(s), encoding="utf-8")
@@ -764,13 +764,13 @@ class TestFormats(CoreCase):
 
     def test_old_world_settings_become_mods(self):
         s, mods, up = savefmt.upgrade_world({"creative": False, "voxel_size": 0.5}, [])
-        self.assertEqual((mods, up, "creative" in s, s["format"], s["mode"]), (["city"], True, False, 2, "survival"))
+        self.assertEqual((mods, up, "creative" in s, s["format"], s["mode"]), (["city"], True, False, 3, "survival"))
         # 前の版のサバイバルの MOD は、本体の遊び方に
-        s, mods, up = savefmt.upgrade_world({"format": 2}, ["survival", "city"])
+        s, mods, up = savefmt.upgrade_world({"format": 3}, ["survival", "city"])
         self.assertEqual((mods, up, s["mode"]), (["city"], True, "survival"))
         s, mods, _ = savefmt.upgrade_world({"creative": True, "cities": False}, ["example_mod"])
         self.assertEqual(mods, ["example_mod"])
-        self.assertEqual(savefmt.upgrade_world({"format": 2}, ["city"])[1:], (["city"], False))
+        self.assertEqual(savefmt.upgrade_world({"format": 3}, ["city"])[1:], (["city"], False))
 
     def test_survival_is_a_mode(self):
         """サバイバルは本体の遊び方（world.json の mode）。MOD なしで資源のルールと目標が入る。前の版の MOD も読み替える"""
@@ -1001,7 +1001,7 @@ class TestFuelAndFlow(CoreCase):
                 tank = self.dev(c, "tank")["state"]["contents"].get("fuel", 0.0)
                 burned = self.dev(c, "thruster")["state"]["lit"] or self.dev(c, "thruster")["state"].get("firing", 0) > 0
                 made = self.dev(c, "refiner")["state"]["store"].get("fuel", 0.0)
-                if open_tank:
+                if open_tank and not open_thr:     # 両方開いていると、推進機がすぐ燃やしきって消えることもある（本当の燃費。A-01）
                     self.assertGreater(tank, 0.0)
                     self.assertLess(made, 1e-6)          # できた燃料はタンクへ流れた
                 else:
@@ -1039,7 +1039,7 @@ class TestFuelAndFlow(CoreCase):
     def test_old_world_generator_becomes_pipe(self):
         d = paths.world_dir("t")
         (d / "scripts").mkdir(parents=True, exist_ok=True)
-        s = dict(DEFAULT_SETTINGS, name="t", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}],
+        s = dict(DEFAULT_SETTINGS, name="t", format=3, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}],
                  full_rigid=False)                  # テストはやわらかいブロックの計算を調べる（完全剛体は指定して）
         (d / "world.json").write_text(json.dumps(s), encoding="utf-8")
         (d / "constructs.json").write_text(json.dumps([{"id": "g", "name": "古い", "voxel_size": 0.5, "voxels": [

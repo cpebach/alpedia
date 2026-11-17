@@ -5,7 +5,9 @@ saves/<ワールド名>/ の各ファイルに入れてよい項目と型は Rus
 """
 from . import native
 
-FORMAT = 2     # 2: クリエイティブ／サバイバル・街の ON/OFF を world.json ではなく MOD（mods.json）で決める
+# 2: クリエイティブ／サバイバル・街の ON/OFF を world.json ではなく MOD（mods.json）で決める
+# 3: 惑星が大きくなった（A-01）。前の形式の月・小惑星の位置を広げる。惑星の公転（orbit）
+FORMAT = native.require().SAVE_FORMAT
 
 
 def upgrade_world(settings, mods):

@@ -445,6 +445,8 @@ mod layers;
 mod construct_view;
 mod decal;
 mod planet_view;
+mod planet_lod;
+mod vegetation;
 mod carve;
 pub(crate) use self::layers::*;
 pub(crate) use self::construct_view::*;

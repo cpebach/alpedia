@@ -322,8 +322,10 @@ pub fn construct_native_planets<'py>(py: Python<'py>, planets: &Bound<'py, PyAny
         };
         let rad = f("radius")?;
         let air = 1.225 * (kpa / 101.3).max(0.0);
+        // 公転（L-08）：影響圏の半径と、惑星の加速度（影響圏の中の物はこの惑星と一緒に動くので、重力からこれを引く）
+        let (soi, acc) = { let b = pla(&pl)?.borrow(); (b.soi, b.oacc) };
         out.append((nat, f("bound")?, f("lipschitz")?, f("gm")?, rad, pl.getattr("has_water")?.is_truthy()?, air,
-                    (rad * 0.25).max(30.0)))?;
+                    (rad * 0.25).max(30.0), soi, acc.to_vec()))?;
     }
     Ok(out.into_any().unbind())
 }
@@ -397,6 +399,15 @@ pub struct Construct {
     pub asleep: bool,
     #[pyo3(get, set)]
     pub sleep_t: f64,
+    /// どの公転する惑星と一緒に動いているか（planets の番号。-1 は無し、-2 はまだ決めていない。L-08）
+    #[pyo3(get, set)]
+    pub frame: i64,
+    /// 重さ（A-01）：最後に質量を計算したときのタンクの中身の重さ・全体の重さ（kg）・質量の版（Rust の物体を作り直す印）
+    #[pyo3(get)]
+    pub mass_ref: f64,
+    #[pyo3(get)]
+    pub mass_total: f64,
+    pub mass_ver: i64,
 
     // ---- 物理の配列（rebuild で作る。ボクセルごと n・頂点ごと 8n・結合ごと） ----
     #[pyo3(get, set)]
@@ -683,7 +694,7 @@ impl Construct {
             rb: None, rb_epoch: 0, sleep_epoch: 0, in_pool: false,
             ext_colliders: PyList::empty_bound(py).into_any().unbind(),
             ext_events: PyList::empty_bound(py).into_any().unbind(),
-            anchor: py.None(), asleep: false, sleep_t: 0.0,
+            anchor: py.None(), asleep: false, sleep_t: 0.0, frame: -2, mass_ref: 0.0, mass_total: 0.0, mass_ver: 0,
             force: fz(py, &[0, 3]), prev: fz(py, &[0, 3]), mass: fz(py, &[0]), inv_mass: fz(py, &[0]), damp: fz(py, &[0]),
             fric: fz(py, &[0]), v_stiff: fz(py, &[0]), v_jstiff: fz(py, &[0]), v_break: fz(py, &[0]), v_yield: fz(py, &[0]),
             v_density: fz(py, &[0]), v_rebond_dist: fz(py, &[0]), v_plast: fz(py, &[0]), v_rebond: bz(py, &[0]),
@@ -888,8 +899,15 @@ impl Construct {
             v_break = g(|m| m.break_distance).into_iter().map(|x| x * size).collect::<Vec<_>>();
             v_plast = clip(g(|m| m.plasticity));
             let v_density = g(|m| m.density);
-            let s3 = size.powf(3.0);
-            let vm: Vec<f64> = v_density.iter().map(|d| d * s3 / 8.0).collect();
+            // ブロックの重さ：素材の密度 × 体積（機器に "mass" があればそれ）＋タンクの中身（A-01）
+            let (vox_m, cm) = Self::voxel_masses(slf, &v_density)?;
+            let vm: Vec<f64> = vox_m.iter().map(|m| m / 8.0).collect();
+            {
+                let mut b = slf.try_borrow_mut()?;
+                b.mass_ref = cm;
+                b.mass_total = vox_m.iter().sum();
+                b.mass_ver += 1;
+            }
             let rep = |v: &[f64]| -> Vec<f64> { v.iter().flat_map(|x| std::iter::repeat(*x).take(8)).collect() };
             let rb: Vec<bool> = mats.iter().map(|m| m.rebond).collect();
             let mut b = slf.try_borrow_mut()?;
@@ -1325,5 +1343,88 @@ impl Construct {
             }
         }
         Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------- 重さ（A-01：燃料の重さ・機器の重さ）
+impl Construct {
+    /// 資源の中身の重さ（kg）。1 単位の重さは資源の "unit_mass"（無ければ 1 kg）
+    pub(crate) fn contents_mass(reg: &Bound<'_, PyAny>, cont: &Bound<'_, PyAny>) -> R<f64> {
+        let mut m = 0.0;
+        let res = reg.getattr("defs")?.get_item("resources")?;
+        for it in cont.call_method0("items")?.iter()? {
+            let (k, v): (Bound<'_, PyAny>, f64) = it?.extract()?;
+            let um = match res.dget1(&k) {
+                Ok(d) if !d.is_none() => match d.dget1("unit_mass") { Ok(u) if !u.is_none() => u.extract::<f64>().unwrap_or(1.0), _ => 1.0 },
+                _ => 1.0,
+            };
+            m += v.max(0.0) * um;
+        }
+        Ok(m)
+    }
+    /// ブロックごとの重さ（kg）と、タンクの中身の重さの合計
+    pub(crate) fn voxel_masses(slf: &Bound<'_, Self>, density: &[f64]) -> R<(Vec<f64>, f64)> {
+        let py = slf.py();
+        let s3 = Self::sz(slf).powi(3);
+        let reg = Self::g_reg(slf)?;
+        let devs = Self::g_devs(slf)?;
+        let nd = devs.len()?;
+        let mut out = Vec::with_capacity(density.len());
+        let mut cm = 0.0;
+        for (i, d) in density.iter().enumerate() {
+            let mut m = d * s3;
+            let dv = if i < nd { devs.get_item(i)? } else { py.None().into_bound(py) };
+            if dv.is_truthy()? {
+                let dd = reg.call_method1("device", (dv.get_item("def")?,))?;
+                if !dd.is_none() {
+                    if let Ok(x) = dd.dget1("mass") {
+                        if !x.is_none() {
+                            m = x.extract::<f64>()?;
+                        }
+                    }
+                    if let Ok(st) = dv.dget1("state") {
+                        if !st.is_none() {
+                            if let Ok(cont) = st.dget1("contents") {
+                                if !cont.is_none() {
+                                    let c = Self::contents_mass(&reg, &cont)?;
+                                    m += c;
+                                    cm += c;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            out.push(m.max(1e-3));
+        }
+        Ok((out, cm))
+    }
+    /// 頂点の質量だけを計算し直す（燃料を使った・入れたとき。形は変わらない）。剛体なら重心・慣性も取り直す
+    pub(crate) fn refresh_mass(slf: &Bound<'_, Self>) -> R<()> {
+        let py = slf.py();
+        let n = Self::n(slf)?;
+        // 関節つきの剛体（art）は部分ごとの質量を別に持っているので、形を作り直すまで変えない
+        if n == 0 || slf.borrow().art.is_some() || slf.borrow().mode == "art" {
+            return Ok(());
+        }
+        let dens = fv(Self::g_v_density(slf)?.as_any())?;
+        if dens.len() != n {
+            return Ok(());
+        }
+        let (vox_m, cm) = Self::voxel_masses(slf, &dens)?;
+        let vm: Vec<f64> = vox_m.iter().flat_map(|m| std::iter::repeat(m / 8.0).take(8)).collect();
+        let inv: Vec<f64> = vm.iter().map(|m| 1.0 / m).collect();
+        {
+            let mut b = slf.try_borrow_mut()?;
+            b.mass = fa(py, vm, &[8 * n])?;
+            b.inv_mass = fa(py, inv, &[8 * n])?;
+            b.mass_ref = cm;
+            b.mass_total = vox_m.iter().sum();
+            b.mass_ver += 1;
+        }
+        if slf.borrow().mode == "rigid" && slf.borrow().rb.is_some() {
+            Self::enter_rigid(slf)?;
+        }
+        Ok(())
     }
 }

@@ -19,6 +19,7 @@ impl World {
         let td = thrust_dir.map(|x| x.clone()).unwrap_or_else(z);
         let mut pt = std::time::Instant::now();
         slf.borrow_mut().time += dt;
+        Self::orbit_tick(slf, true)?;           // 公転（影響圏の中の物も一緒に動かす）
         let time = slf.borrow().time;
         let ambient = 0.0;
         let seats = PyDict::new_bound(py);
@@ -78,7 +79,10 @@ impl World {
                 None => vec![],
             })?;
             prof_add(7, &mut pt);
-            crate::game::devices::dev_update(py, &c, cdt, Some(keys.as_any()), in_seat, ambient)?;
+            let air = { let p = Construct::g_pos(con(&c)?)?; Self::air_at(slf, v3(&p.get_item(0)?)?)? };      // ジェット用の空気の濃さ
+            let _ = ambient;
+            crate::game::devices::dev_update(py, &c, cdt, Some(keys.as_any()), in_seat, air)?;
+            Self::fire_decouplers(slf, &c, keys.as_any())?;         // 切り離し（多段式）
             prof_add(0, &mut pt);
             if let Some(n) = Construct::o_notes(con(&c)?)? {
                 if n.is_truthy()? {

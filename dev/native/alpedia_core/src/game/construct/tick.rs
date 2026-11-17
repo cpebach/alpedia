@@ -55,8 +55,13 @@ impl Construct {
             Some(n) if n.getattr("cavities")?.is_truthy()? => n,
             _ => return Ok(py.None().into_bound(py)),
         };
+        // 形が変わって配管・空洞をまだ数え直していない（分かれた直後など）：古い番号を使わないように、このティックは浮力なし
+        if slf.borrow().dirty {
+            return Ok(py.None().into_bound(py));
+        }
+        let ver = Self::ver(slf);
         if let Some(c) = Self::cache_get(slf, |c| &c.cav)? {
-            if c.get_item(0)?.is(&net) {
+            if c.get_item(0)?.is(&net) && c.get_item(2)?.eq(ver)? {
                 return c.get_item(1);
             }
         }
@@ -86,7 +91,7 @@ impl Construct {
             let k = nb.len() / 6;
             PyTuple::new_bound(py, [iarr(py, nb, &[k, 6])?]).into_any()
         };
-        Self::cache_put(slf, |c| &mut c.cav, (net, &data))?;
+        Self::cache_put(slf, |c| &mut c.cav, (net, &data, ver))?;
         Ok(data)
     }
 
@@ -270,7 +275,7 @@ impl Construct {
             }
         }
         let key = PyTuple::new_bound(py, [Self::ver(slf).into_py(py), Self::n(slf)?.into_py(py),
-            PyTuple::new_bound(py, &hk).into_py(py)]);
+            PyTuple::new_bound(py, &hk).into_py(py), slf.borrow().mass_ver.into_py(py)]);
         if let Some(c) = Self::cache_hit(slf, |c| &c.nb, key.as_any())? {
             return c.get_item(1);
         }

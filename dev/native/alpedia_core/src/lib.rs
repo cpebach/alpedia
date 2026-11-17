@@ -258,7 +258,8 @@ fn gravity<'py>(py: Python<'py>, p: RoF<'py>, centers: RoF<'py>, gm: RoF<'py>, r
 #[pyclass(frozen)]
 struct PlanetShape {
     shape: Arc<planet::Shape>,
-    center: [f64; 3],
+    /// 中心（公転で動く。L-08）
+    center: RwLock<[f64; 3]>,
     craters: RwLock<Vec<[f64; 4]>>,
     /// 水の満ちた掘削跡（惑星ローカルの [x, y, z, 半径, 水面の半径]）
     floods: RwLock<Vec<[f64; 5]>>,
@@ -340,14 +341,21 @@ impl PlanetShape {
                     cell: f("cell")?,
                     cave_index: index,
                     cave_cap: cap,
+                    range_dist: match d.get_item("range_dist")? { Some(v) => v.extract()?, None => 0.0 },
+                    range_w: match d.get_item("range_w")? { Some(v) => v.extract()?, None => 0.0 },
+                    range_h: match d.get_item("range_h")? { Some(v) => v.extract()?, None => 0.0 },
                 })
             }
         };
-        Ok(PlanetShape { shape: Arc::new(planet::Shape::new(radius, amp, freq, seed, e)), center, craters: RwLock::new(Vec::new()),
+        Ok(PlanetShape { shape: Arc::new(planet::Shape::new(radius, amp, freq, seed, e)), center: RwLock::new(center), craters: RwLock::new(Vec::new()),
                          floods: RwLock::new(Vec::new()) })
     }
 
     /// 掘削跡（惑星ローカル座標の [x, y, z, 半径]）を入れ替える
+    /// 中心を動かす（公転）
+    fn set_center(&self, center: [f64; 3]) {
+        *self.center.write().unwrap() = center;
+    }
     fn set_craters(&self, craters: RoF) -> PyResult<()> {
         let c = ro(&craters, "craters")?;
         *self.craters.write().unwrap() = c.chunks_exact(4).map(|v| [v[0], v[1], v[2], v[3]]).collect();
@@ -446,11 +454,29 @@ impl PlanetShape {
         Ok(PyArray1::from_vec_bound(py, out))
     }
 
+    /// 地球型：気候 (N,2) = (気温, 湿り気)。h は地表の高さ (N,)（A-02）
+    fn climate<'py>(&self, py: Python<'py>, dirs: RoF<'py>, h: RoF<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let d = ro(&dirs, "dirs")?;
+        let hh = ro(&h, "h")?;
+        let e = self.shape.earth.as_ref().ok_or_else(|| PyValueError::new_err("地球型ではありません"))?;
+        let n = d.len() / 3;
+        if hh.len() != n {
+            return Err(PyValueError::new_err("climate: dirs と h の数が違います"));
+        }
+        let mut out = vec![0.0; 2 * n];
+        for i in 0..n {
+            let (a, b) = self.shape.climate(e, [d[3 * i], d[3 * i + 1], d[3 * i + 2]], hh[i]);
+            out[2 * i] = a;
+            out[2 * i + 1] = b;
+        }
+        Ok(PyArray1::from_vec_bound(py, out).reshape([n, 2])?)
+    }
+
     /// 世界座標 (N,3) → 符号付き距離（負＝地中）
     fn sdf<'py>(&self, py: Python<'py>, p: RoF<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         let pp = ro(&p, "p")?;
         let cr = self.craters.read().unwrap().clone();
-        let c = self.center;
+        let c = *self.center.read().unwrap();
         let out = py.allow_threads(|| map_points(pp, |q| self.shape.sdf([q[0] - c[0], q[1] - c[1], q[2] - c[2]], &cr)));
         Ok(PyArray1::from_vec_bound(py, out))
     }
@@ -461,7 +487,7 @@ impl PlanetShape {
         let pp = ro(&p, "p")?;
         let n = n_rows(&p);
         let cr = self.craters.read().unwrap().clone();
-        let c = self.center;
+        let c = *self.center.read().unwrap();
         let res = py.allow_threads(|| map_points(pp, |q| self.shape.sdf_grad([q[0] - c[0], q[1] - c[1], q[2] - c[2]], &cr, eps)));
         let d: Vec<f64> = res.iter().map(|x| x.0).collect();
         let g: Vec<f64> = res.iter().flat_map(|x| x.1).collect();
@@ -484,7 +510,7 @@ impl PlanetShape {
             return Err(PyValueError::new_err("collide: 配列の大きさが合いません"));
         }
         let cr = self.craters.read().unwrap().clone();
-        let c = self.center;
+        let c = *self.center.read().unwrap();
         let res = py.allow_threads(|| {
             let lim2 = (bound + r) * (bound + r);
             let lip = lipschitz.max(0.2);
@@ -560,7 +586,7 @@ impl PlanetShape {
 
     /// 世界座標の点の水深（水面からの深さ。水の外は -1e9）
     fn water_depth_at(&self, p: [f64; 3]) -> f64 {
-        let c = self.center;
+        let c = *self.center.read().unwrap();
         let q = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
         let r = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
         let ri = r.max(1e-9);
@@ -572,7 +598,7 @@ impl PlanetShape {
     /// 球面行進で地表との交点 (t, 点) か None（planet.raycast）
     fn raycast(&self, py: Python<'_>, origin: [f64; 3], dir: [f64; 3], max_dist: f64, lipschitz: f64) -> Option<(f64, [f64; 3])> {
         let cr = self.craters.read().unwrap().clone();
-        let c = self.center;
+        let c = *self.center.read().unwrap();
         py.allow_threads(|| {
             let mut t = 0.0;
             for _ in 0..160 {
@@ -728,10 +754,13 @@ fn planet_ctx(planets: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<body::Pl
         // 7・8 番目（無ければ大気なし）：地表の空気の密度、密度が 1/e になる高さ
         let air: f64 = if tu.len() > 6 { tu.get_item(6)?.extract()? } else { 0.0 };
         let air_h: f64 = if tu.len() > 7 { tu.get_item(7)?.extract()? } else { 1.0 };
+        // 9・10 番目（無ければ公転なし）：影響圏の半径、惑星の加速度
+        let soi: f64 = if tu.len() > 8 { tu.get_item(8)?.extract()? } else { 0.0 };
+        let acc: [f64; 3] = if tu.len() > 9 { tu.get_item(9)?.extract()? } else { [0.0; 3] };
         let p = ps.get();
         out.push(body::PlanetCtx {
             shape: p.shape.clone(),
-            center: p.center,
+            center: *p.center.read().unwrap(),
             craters: p.craters.read().unwrap().clone(),
             floods: p.floods.read().unwrap().clone(),
             bound,
@@ -741,6 +770,8 @@ fn planet_ctx(planets: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<body::Pl
             has_water,
             air,
             air_h,
+            soi,
+            acc,
         });
     }
     Ok(out)
@@ -1455,8 +1486,11 @@ pub fn step_tick_native(
         let vel = rw(&mut ja.vel, "vel")?;
         let prev = rw(&mut ja.prev, "prev")?;
         let force = ro(&ja.force, "force")?;
-        need(pos.len() == 3 * nv && vel.len() == 3 * nv && prev.len() == 3 * nv && force.len() == 3 * nv
-             && cav.iter().flatten().all(|&j| (j >> 7) < t.nvox as i64) && ja.proxy.get().p.n == t.nvox, "step_tick 構築物")?;
+        if !(pos.len() == 3 * nv && vel.len() == 3 * nv && prev.len() == 3 * nv && force.len() == 3 * nv
+             && cav.iter().flatten().all(|&j| (j >> 7) < t.nvox as i64) && ja.proxy.get().p.n == t.nvox) {
+            return Err(PyValueError::new_err(format!("step_tick 構築物: 配列の大きさが合いません（pos {} vel {} prev {} force {} 頂点 {} 当たり {}）",
+                pos.len() / 3, vel.len() / 3, prev.len() / 3, force.len() / 3, nv, ja.proxy.get().p.n)));
+        }
         let [a0, a1, a2, a3, a4, _] = &mut ja.a;
         let [b0, b1, _] = &ja.b;
         let part = match ja.kind {
@@ -1595,6 +1629,7 @@ impl DevPlan {
                 power_output: dget(d, "power_output", 0.0)?,
                 ignite_energy: dget(d, "ignite_energy", 0.0)?,
                 max_flow: dget(d, "max_flow", 6.0)?,
+                air_breathing: dget(d, "air_breathing", false)?,
                 key: dget(d, "key", None)?,
                 recipes: rs,
                 inputs: dget(d, "inputs", Vec::new())?,
@@ -1621,9 +1656,10 @@ impl DevPlan {
     /// 1ティック。states：devs と同じ順の state の dict。force・cav_air は書き換える。
     /// 戻り値 (production, demand, stored, capacity, ratio, 電力が来た機器のボクセル, 知らせ)
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[pyo3(signature = (states, dt, keys, seated, pos, mass, force, cav_air, air=1.0))]
     fn update(
         &self, states: Vec<Bound<'_, PyDict>>, dt: f64, keys: Vec<String>, seated: bool, pos: RoF, mass: RoF, mut force: RwF,
-        mut cav_air: RwF,
+        mut cav_air: RwF, air: f64,
     ) -> PyResult<(f64, f64, f64, f64, f64, Vec<usize>, Vec<String>)> {
         let p = &self.p;
         need(states.len() == p.devs.len(), "DevPlan.update states")?;
@@ -1633,7 +1669,7 @@ impl DevPlan {
         need(ps.len() == 3 * ms.len() && f.len() == ps.len() && ca.len() == p.cav_volume.len()
              && p.devs.iter().all(|d| 8 * d.vox + 8 <= ms.len()), "DevPlan.update")?;
         let ks = keys.into_iter().collect();
-        let r = devices::update(p, &states, dt, &ks, seated, ps, ms, f, ca)?;
+        let r = devices::update(p, &states, dt, &ks, seated, ps, ms, f, ca, air)?;
         Ok((r.production, r.demand, r.stored, r.capacity, r.ratio, r.powered, r.notes))
     }
 }

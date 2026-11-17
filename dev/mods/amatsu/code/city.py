@@ -1,6 +1,6 @@
 """軌道都市アマツの形（景色の箱）。
 
-主な惑星の中心から DIST の高さに、円筒の軸を地平に沿わせて浮かべる（上の外壁は惑星と反対を向く）。
+主な惑星の中心から 半径 × DIST_K の所（重力が地表の 0.15 倍ほどの宇宙）に、円筒の軸を地平に沿わせて浮かべる（上の外壁は惑星と反対を向く）。
 甲板の座標 (x, z)：甲板の真ん中が原点、+Z が円筒の軸の向き（前）、+X が右。高さ y は甲板の上の面から。
 """
 import numpy as np
@@ -8,7 +8,7 @@ import numpy as np
 from main.scenery import CYAN, DARK, METAL, OFF, REDL, WARM, WHITE, Scenery, unit
 
 DIR = (-0.6, 0.55, -0.58)        # 主な惑星の中心から見たアマツの向き（ガイアの北の基地から、振り返った空に見える）
-DIST = 1550.0                    # 主な惑星の中心からの距離 m
+DIST_K = 1550.0 / 600.0          # 主な惑星の中心からの距離 ÷ 半径（前の大きさの 1550 m ÷ 600 m。重力が同じになる。A-01）
 LENGTH = 240.0                   # 円筒の長さ
 RADIUS = 40.0                    # 円筒の半径
 DECK_W = 64.0                    # 上の甲板の幅
@@ -17,13 +17,13 @@ SIDES = 16
 NAVY_D = (0.16, 0.22, 0.38)
 
 
-def frame(center):
+def frame(center, radius=600.0):
     """アマツの中心と向き（列が 右・上・前 のワールド方向）。上＝惑星と反対。"""
     up = unit(DIR)
     ref = np.array([0.0, 1.0, 0.0])
     f = unit(np.cross(up, unit(np.cross(ref, up))))
     r = np.cross(up, f)
-    c = np.asarray(center, float) + up * DIST
+    c = np.asarray(center, float) + up * (radius * DIST_K)
     return c, np.stack([r, up, f], axis=1)
 
 
@@ -46,8 +46,8 @@ class Deck:
         return np.stack([np.cross(R[:, 1], f), R[:, 1], f], axis=1)
 
 
-def build(center):
-    c, R = frame(center)
+def build(center, radius=600.0):
+    c, R = frame(center, radius)
     s = Scenery("amatsu", None)
     rx, up, fw = R[:, 0], R[:, 1], R[:, 2]
     # 円筒（16 枚の板）

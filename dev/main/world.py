@@ -28,14 +28,16 @@ DEFAULT_SETTINGS = {
 }
 
 # 新しいワールドの天体：選んだ惑星＋月（ルナ）＋小惑星3つ。月・小惑星・洞窟のまわりでは星鉱石が採れる
-MOON = {"def": "luna", "position": [0, 0, 4000], "craters": []}
+MOON = {"def": "luna", "position": [0, 0, 60000], "craters": []}
 ASTEROIDS = [
-    {"def": "asteroid", "position": [5200, 1500, -3000], "craters": [], "override": {"name": "小惑星A", "seed": 21}},
-    {"def": "asteroid", "position": [-5800, -800, 2600], "craters": [],
-     "override": {"name": "小惑星B", "seed": 22, "radius": 20}},
-    {"def": "asteroid", "position": [2500, 3500, 6500], "craters": [],
-     "override": {"name": "小惑星C", "seed": 23, "radius": 36}},
+    {"def": "asteroid", "position": [78000, 22500, -45000], "craters": [], "override": {"name": "小惑星A", "seed": 21}},
+    {"def": "asteroid", "position": [-87000, -12000, 39000], "craters": [],
+     "override": {"name": "小惑星B", "seed": 22, "radius": 300}},
+    {"def": "asteroid", "position": [37500, 52500, 97500], "craters": [],
+     "override": {"name": "小惑星C", "seed": 23, "radius": 550}},
 ]
+# 前の大きさ（主な惑星の半径 600 m）のセーブを読むとき、月・小惑星の位置を何倍にするか（format 2 → 3。A-01）
+LEGACY_SCALE = 15.0
 
 default_bodies = _c.world_default_bodies
 _read_json = _c.world_read_json

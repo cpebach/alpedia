@@ -7,31 +7,22 @@ use crate::game::construct::{con, Construct};
 
 #[pymethods]
 impl World {
+    /// 重力（全部の惑星の和 × 重力倍率）。公転する惑星の影響圏の中では、その惑星の加速度を引く（物は惑星と一緒に運ばれるので。L-08）
     pub(crate) fn gravity<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
         let np = crate::game::construct::np(py)?;
-        let pls: Vec<Bound<'py, PyAny>> = Self::g_planets(slf)?.iter()?.collect::<R<_>>()?;
-        if pls.is_empty() {
-            return np.call_method1("zeros_like", (crate::game::construct::as_f64(&p)?,));
+        let pa = crate::game::construct::as_f64(&p)?;
+        let shape = pa.getattr("shape")?;
+        let pts = crate::game::construct::fv(&crate::game::construct::cflt(&pa)?)?;
+        let pd = Self::planet_data(slf)?;
+        let gs = Self::gscale(slf)?;
+        let mut out = vec![0.0; pts.len()];
+        for (i, q) in pts.chunks_exact(3).enumerate() {
+            let g = grav_at(&pd, [q[0], q[1], q[2]], gs);
+            out[3 * i..3 * i + 3].copy_from_slice(&g);
         }
-        let ok = match Self::cache_get(slf, |c| &c.grav_key)? { Some(k) => k.eq(pls.len())?, None => false };
-        if !ok {
-            let mut c = vec![];
-            let mut gm = vec![];
-            let mut r = vec![];
-            for x in &pls {
-                c.extend(v3(&x.getattr("center")?)?);
-                gm.push(x.getattr("gm")?.extract::<f64>()?);
-                r.push(x.getattr("radius")?.extract::<f64>()?);
-            }
-            let n = pls.len();
-            Self::cache_put(slf, |c| &mut c.grav, (arr(py, c, &[n, 3])?, arr(py, gm, &[n])?, arr(py, r, &[n])?))?;
-            Self::cache_put(slf, |c| &mut c.grav_key, n)?;
-        }
-        let gr = Self::cache_get(slf, |c| &c.grav)?.ok_or_else(|| PyAttributeError::new_err("_grav"))?;
-        let pa = crate::game::construct::cflt(&p)?.call_method1("reshape", (-1, 3))?;
-        let g = imp(py, "alpedia_core")?.call_method1("gravity", (pa, gr.get_item(0)?, gr.get_item(1)?, gr.get_item(2)?))?;
-        g.call_method1("reshape", (np.call_method1("shape", (p,))?,))?.call_method1("__mul__", (Self::gscale(slf)?,))
+        let n = out.len();
+        np.call_method1("reshape", (arr(py, out, &[n])?, shape))
     }
     pub(crate) fn nearest_planet<'py>(slf: &Bound<'py, Self>, p: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         let py = slf.py();
@@ -163,5 +154,75 @@ impl World {
     pub(crate) fn add_construct<'py>(slf: &Bound<'py, Self>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
         Self::g_constructs(slf)?.set_item(Construct::g_id(con(&c)?)?, c)?;
         Ok(c.clone())
+    }
+}
+
+/// 重力の計算に使う惑星の値：(中心, gm, 半径, 影響圏, 加速度)
+pub(crate) type PData = Vec<(V3, f64, f64, f64, V3)>;
+
+impl World {
+    pub(crate) fn planet_data(slf: &Bound<'_, Self>) -> R<PData> {
+        let mut out = vec![];
+        for x in Self::g_planets(slf)?.iter()? {
+            let x = x?;
+            let b = crate::game::planet::pla(&x)?.borrow();
+            let py = slf.py();
+            out.push((v3(b.center.bind(py))?, b.gm, b.radius, b.soi, b.oacc));
+        }
+        Ok(out)
+    }
+}
+
+/// 点 p の重力（body.rs の gravity と同じ）
+pub(crate) fn grav_at(pd: &PData, p: V3, gs: f64) -> V3 {
+    let mut g = [0.0; 3];
+    for (c, gm, r, _, _) in pd {
+        let q = sub(*c, p);
+        let r2 = dot(q, q).max((r * 0.5).powi(2));
+        let s = gm / (r2 * r2.sqrt());
+        for a in 0..3 {
+            g[a] += q[a] * s;
+        }
+    }
+    let off = match frame_index(pd, p) { Some(i) => pd[i].4, None => [0.0; 3] };
+    [g[0] * gs - off[0], g[1] * gs - off[1], g[2] * gs - off[2]]
+}
+
+/// 点 p がどの公転する惑星の影響圏にあるか（いちばん小さい影響圏）
+pub(crate) fn frame_index(pd: &PData, p: V3) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (i, (c, _, _, soi, _)) in pd.iter().enumerate() {
+        if *soi > 0.0 {
+            let q = sub(p, *c);
+            if dot(q, q) < soi * soi && best.map_or(true, |b| *soi < pd[b].3) {
+                best = Some(i);
+            }
+        }
+    }
+    best
+}
+
+impl World {
+    /// 点 p の空気の密度（地表 101.3 kPa を 1。高さ（半径の 1/4、30 m 以上ごと）で 1/e。全部の惑星の和。A-01 のジェット用）
+    pub(crate) fn air_at(slf: &Bound<'_, Self>, p: V3) -> R<f64> {
+        let py = slf.py();
+        let mut a = 0.0;
+        for x in Self::g_planets(slf)?.iter()? {
+            let x = x?;
+            let b = crate::game::planet::pla(&x)?.borrow();
+            let kpa: f64 = match b.defn.bind(py).dget2("atmosphere_pressure", 101.3) {
+                Ok(v) if !v.is_none() => v.extract().unwrap_or(101.3),
+                _ => 101.3,
+            };
+            if kpa <= 0.0 {
+                continue;
+            }
+            let alt = (norm(sub(p, v3(b.center.bind(py))?)) - b.radius).max(0.0);
+            let h = (b.radius * 0.25).max(30.0);
+            if alt < h * 30.0 {
+                a += kpa / 101.3 * (-alt / h).exp();
+            }
+        }
+        Ok(a)
     }
 }

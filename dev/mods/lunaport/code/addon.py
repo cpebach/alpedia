@@ -31,7 +31,7 @@ class LunaPortAddon(SceneryHost, Addon):
             L.info("月ルナと主な惑星が無いので、ルナ・ポートは作りません")
             return
         self.luna, self.terra = luna, main
-        self.map = port.luna_map(luna, main.center)
+        self.map = port.luna_map(luna, port._c0(main))
         s = port.build(luna, main)
         self.scenes = [s]
         self.points = dict(s.points)

@@ -1525,6 +1525,7 @@ impl Client {
         ns(py)?.call_method1("advance", (&w, dt))?;
         let tm: f64 = w.getattr("time")?.extract()?;
         w.setattr("time", tm + dt)?;
+        World::orbit_tick(wld(&w)?, true)?;         // 公転（L-08）。時刻だけで決まるので、ホストと同じ位置になる
         for a in World::g_addons(wld(&w)?)?.iter()? {
             let a = a?;
             if let Err(e) = a.call_method1("net_client_tick", (&w, dt)) {

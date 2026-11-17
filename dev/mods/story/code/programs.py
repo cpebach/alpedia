@@ -330,7 +330,8 @@ BRAKE = 2.5                  # 減速の強さ (m/s²)
 HOVER_ALT = 90.0             # 降下を始める、発着場の上の高さ (m)
 LAND_H = 1.5                 # 着陸したとみなす、発着場の上面からの重心の高さ (m)
 # 段階
-WAIT, COUNT, ASCENT, CRUISING, DESCENT, LANDED = range(6)
+WAIT, COUNT, ASCENT, CRUISING, DESCENT, LANDED, TRANSFER = range(7)
+# TRANSFER：月までの間はシナリオが船を運ぶ（月は公転していて遠いので。A-01・L-08）。推進機はほとんど噴かさない
 
 
 def phase_is(k):
@@ -404,6 +405,8 @@ def moon_program(pad, pad_up):
         # 加速 ＝（行きたい速度 − 速度）× 0.8 − 重力（重力に負けないぶんも出す）
         setvv("加速", vsub(vmul(vsub(VV("行きたい速度"), VS("velocity")), N(0.8)), VV("重力"))),
         iff(phase_is(COUNT), [setvv("加速", vec(0, 0, 0))]),
+        iff(phase_is(TRANSFER), [setvv("加速", vec(0, 0, 0))]),
+        iff(phase_is(LANDED), [setvv("加速", vec(0, 0, 0))]),
         setv("出力", div(vlen(VV("加速")), V("最大加速"))),
         iff(cmp(">", V("出力"), N(1)), [setv("出力", N(1))]),
         if_else(cmp(">", V("出力"), N(0.001)), [setvv("推力の向き", vnorm(VV("加速")))],
@@ -445,7 +448,8 @@ def moon_program(pad, pad_up):
             terms.append(mul(V("前後"), N(-oz * 0.5)))
         if ox:
             terms.append(mul(V("左右"), N(ox * 0.5)))
-        fly.append(valve(name, add(fn("マイナスなら0", add(*terms)), N(SHIP_KEEP))))
+        fly.append(if_else(phase_is(LANDED), [valve(name, N(0))],              # 着いたら火を消す
+                           [valve(name, add(fn("マイナスなら0", add(*terms)), N(SHIP_KEEP)))]))
     for side in ("前", "後"):                         # ブースターは同じ出力で（前後に1つずつなので、傾きは変わらない）
         for k in (1, 2):
             fly.append(if_else(attached(f"ブースターの留め具 {side}"),

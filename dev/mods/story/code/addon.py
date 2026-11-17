@@ -42,7 +42,13 @@ COUNTDOWN = 5.0
 LIFT_T1 = 4.0                # まっすぐ上へ（加速 LIFT_A）
 LIFT_A = 3.0
 TURN_T = 24.0                # そのあと、この秒数で水平に倒しながら軌道の速さへ
-ORBIT_H = 150.0              # 軌道の高さ（発射台から）
+ORBIT_H = 3000.0             # 軌道の高さ（発射台から。大きくなったガイアの山より上。A-01）
+# 第9章：月まで運ぶ道（A-01・L-08）。上昇・ガイアのまわり・月のまわり・着陸の秒数と、道の目印の高さ (m)
+MOON_T = (25.0, 60.0, 35.0, 18.0)
+MOON_CLIMB = 1500.0          # まっすぐ上がる高さ
+MOON_GATE = 12000.0          # 月の手前の点：月の地表からの高さ
+MOON_APPROACH = 3000.0       # 発着場の上の点
+MOON_LAND_H = 2.4            # 運び終える所：発着場の上面からの重心の高さ（少し上から下ろす）
 SEP_T = LIFT_T1 + 9.0        # ブースター分離    # シナリオが位置を決める（物理で動かさない）構築物
 
 IDX = {cid: k for k, cid in enumerate(script.CHAPTER_IDS)}
@@ -416,7 +422,7 @@ class StoryAddon(SceneryHost, Addon):
         if key is None:
             return None
         special = {"navi": ("ship", "computer", None), "valve": ("power", "valve", None),
-                   "engine": ("power", "thruster", None), "gate": ("gate", "actuator", None),
+                   "engine": ("power", "jet", None), "gate": ("gate", "actuator", None),
                    "refiner": ("factory", "refiner", None), "fabricator": ("factory", "fabricator", None),
                    "fuel_valve": ("factory", "valve", None), "turret_pc": ("interceptor", "computer", None),
                    "unit_pc": ("unit", "computer", "再加速の航法"), "fuel_port": ("ship", "actuator", "給油口"),
@@ -559,7 +565,7 @@ class StoryAddon(SceneryHost, Addon):
         c = self.con("power")
         if c is None:
             return 0
-        return sum(1 for d in c.devs if d and d["def"] == "thruster" and d["state"].get("lit"))
+        return sum(1 for d in c.devs if d and d["def"] in ("thruster", "jet") and d["state"].get("lit"))
 
     def check_engine(self):
         return self._engines_lit() >= 2
@@ -1138,7 +1144,14 @@ class StoryAddon(SceneryHost, Addon):
         # 迎撃艦の甲板の真ん中（砲塔の間）に、艦と同じ向き（前 = +Z）で立てる
         base = self._cell_world(ship, space.ROBOT_ON_SHIP) - R[:, 1] * (ship.size * 0.5 - 0.05)
         origin = base - R @ (np.array([2.5, 0.0, 0.5]) * size)
-        c = Construct.from_voxels(self.world.registry, data["voxels"], origin, R, size=size, name=ROBOT_NAME,
+        # ツバメの推進機は核融合推進機（燃費がとてもよい。ふつうの推進機では燃料がすぐ尽きる：A-01）
+        vox = []
+        for v in data["voxels"]:
+            v = list(v)
+            if len(v) > 2 and v[2] and v[2].get("def") in ("thruster", "jet"):        # アマツは宇宙（ジェットは点かない）
+                v[2] = dict(v[2], **{"def": "fusion_thruster"})
+            vox.append(v)
+        c = Construct.from_voxels(self.world.registry, vox, origin, R, size=size, name=ROBOT_NAME,
                                   links=data["links"])
         c.storage = dict(data.get("storage") or {})
         self.world.add_construct(c)
@@ -1247,7 +1260,15 @@ class StoryAddon(SceneryHost, Addon):
     def before_physics(self, world, dt):
         if not self.active or not self.st.get("built"):
             return set()
+        if self._cid() == "launch":
+            try:
+                self._moon_flight(dt)                 # 物理の前に（運んでいる船は物理で動かさない）
+            except Exception:  # noqa: BLE001
+                L.exception("月への飛行でエラー")
         anchored = self._anchored()
+        mf = self.st.get("moonflight")
+        if mf and not mf.get("done") and self.st["ids"].get("ship"):
+            anchored = set(anchored) | {self.st["ids"]["ship"]}      # 月へ運んでいる間は物理で動かさない
         if self.st.get("lights") != getattr(self, "_lights_on", None):      # 基地の明かり（ライトのまとまり base）
             from main import buildkit
             self._lights_on = self.st.get("lights")
@@ -1335,6 +1356,138 @@ class StoryAddon(SceneryHost, Addon):
             self._rise(dt)
         if cid == "depart" or st.get("flight"):
             self._rocket_tick(dt)
+
+    # --- 第9章：月へ（公転する遠い月まではシナリオが運ぶ。A-01・L-08） ------------------
+    def _ship_var(self, name, default=None):
+        c, i = self.dev("ship", "computer")
+        if i is None:
+            return default
+        return ((c.devs[i]["state"].get("memory") or {}).get("vars") or {}).get(name, default)
+
+    def _set_ship_var(self, name, value):
+        c, i = self.dev("ship", "computer")
+        if i is not None:
+            c.devs[i]["state"].setdefault("memory", {}).setdefault("vars", {})[name] = value
+
+    def _moon_path(self, mf, s):
+        """運ぶ道の点（世界座標）と船の上向き。s：0〜1（時刻の割合）。月の位置は今の位置で計算する"""
+        T, L_ = self.terra, self.luna
+        tc, lc = np.asarray(T.center, float), np.asarray(L_.center, float)
+        p0 = np.asarray(mf["p0"], float)
+        u0 = np.asarray(mf["u0"], float)
+        pad = np.asarray(self.points["pad"], float)
+        pu = np.asarray(self.points["pad_up"], float)
+        r0 = float(np.linalg.norm(p0 - tc))
+        top = tc + u0 * (r0 + MOON_CLIMB)                 # まっすぐ上がった所
+        to_t = (tc - lc) / np.linalg.norm(tc - lc)
+        m = lc + to_t * (L_.radius + MOON_GATE)             # 月の手前（ガイア側）
+        q = pad + pu * MOON_APPROACH                       # 発着場の上
+        land = pad + pu * MOON_LAND_H
+
+        def ease(x):
+            x = min(max(x, 0.0), 1.0)
+            return x * x * (3 - 2 * x)
+
+        def sph(c, a, b, k, bump=0.0):
+            """中心 c のまわりを a → b へ（向きは大円、半径は直線で）。bump：真ん中で外へふくらませる量"""
+            da, db = a - c, b - c
+            ra, rb = float(np.linalg.norm(da)), float(np.linalg.norm(db))
+            ua, ub = da / ra, db / rb
+            om = float(np.arccos(np.clip(ua @ ub, -1, 1)))
+            if om < 1e-6:
+                d = ua
+            else:
+                d = (np.sin((1 - k) * om) * ua + np.sin(k * om) * ub) / np.sin(om)
+            return c + d / np.linalg.norm(d) * (ra + (rb - ra) * k + bump * np.sin(np.pi * k))
+
+        a, b, c_ = MOON_T[0], MOON_T[0] + MOON_T[1], MOON_T[0] + MOON_T[1] + MOON_T[2]
+        tt = s * sum(MOON_T)
+        if tt < a:                                          # 上昇（ゆっくり始める）
+            k = ease(tt / a)
+            return p0 + (top - p0) * k, u0
+        if tt < b:                                          # ガイアのまわりを月の手前へ
+            k = ease((tt - a) / MOON_T[1])
+            return sph(tc, top, m, k, bump=4000.0), self._lerp_up(u0, -to_t, k * 0.5)
+        if tt < c_:                                         # 月のまわりを発着場の上へ
+            k = ease((tt - b) / MOON_T[2])
+            return sph(lc, m, q, k), self._lerp_up(self._lerp_up(u0, -to_t, 0.5), pu, k)
+        k = ease((tt - c_) / MOON_T[3])                     # 発着場へ降りる
+        return q + (land - q) * k, pu
+
+    @staticmethod
+    def _lerp_up(a, b, k):
+        v = np.asarray(a, float) * (1 - k) + np.asarray(b, float) * k
+        n = float(np.linalg.norm(v))
+        return v / n if n > 1e-9 else np.asarray(b, float)
+
+    def _moon_flight(self, dt):
+        """船が上昇を始めたら（航法の段階が上昇以上）、発着場まで決まった道で運ぶ。ブースターは上昇の終わりで切り離す"""
+        from . import programs
+        st = self.st
+        c = self.con("ship")
+        if c is None or self.luna is None or "pad" not in self.points:
+            return
+        mf = st.get("moonflight")
+        if mf is None:
+            ph = self._ship_var("段階")
+            if ph is None or int(ph) < programs.ASCENT or int(ph) == programs.LANDED or self._flag("landed"):
+                return
+            tf = c.render_transform()
+            R0 = np.asarray(tf[0], float) if tf is not None else np.eye(3)
+            com = c.center_of_mass()
+            mf = st["moonflight"] = {"t": 0.0, "p0": com.tolist(), "u0": self.terra.up(com).tolist(), "R0": R0.tolist(),
+                                     "dl0": float(np.linalg.norm(com - self.luna.center)), "prev": com.tolist(), "sep": False}
+        if mf.get("done"):
+            return
+        self._set_ship_var("段階", programs.TRANSFER)
+        mf["t"] += dt
+        s = min(mf["t"] / sum(MOON_T), 1.0)
+        p, up = self._moon_path(mf, s)
+        # 向き：最初の向きの「上」を、道の上向きへ回す
+        R0 = np.asarray(mf["R0"], float)
+        u0 = R0[:, 1]
+        ax = np.cross(u0, up)
+        sn = float(np.linalg.norm(ax))
+        cs = float(np.clip(u0 @ up, -1, 1))
+        if sn < 1e-9:
+            Rot = np.eye(3)
+        else:
+            k_ = ax / sn
+            K = np.array([[0, -k_[2], k_[1]], [k_[2], 0, -k_[0]], [-k_[1], k_[0], 0]])
+            Rot = np.eye(3) + K * sn + K @ K * (1 - cs)
+        R = Rot @ R0
+        prev = np.asarray(mf["prev"], float)
+        v = (p - prev) / max(dt, 1e-6)
+        mf["prev"] = p.tolist()
+        if c.frame >= 0:                                    # 月の影響圏の中では、速度は月に対する速度
+            v = v - np.asarray(self.world.planets[c.frame].orbit_vel, float)
+        c.move_with_frame(R, p, v, np.zeros(3))
+        if not mf["sep"] and mf["t"] > MOON_T[0] * 0.8:
+            mf["sep"] = True
+            self._drop_boosters(c)
+        if s >= 1.0:
+            mf["done"] = True
+            c.release_frame()
+            # 重心を発着場の上のちょうどの高さに（ブースターを外すと重心がずれるので、道の点ではなく重心で合わせる）
+            pad = np.asarray(self.points["pad"], float)
+            pu = np.asarray(self.points["pad_up"], float)
+            c.pos[:] = c.pos + (pad + pu * MOON_LAND_H - c.center_of_mass())
+            c.vel[:] = 0.0
+            self._set_ship_var("段階", programs.LANDED)
+
+    def _drop_boosters(self, c):
+        """ブースターの留め具（前・後）を外す（航法プログラムと同じ）"""
+        done = False
+        for side in ("前", "後"):
+            for i, d in enumerate(c.devs):
+                if d and d.get("name") == f"ブースターの留め具 {side}":
+                    try:
+                        done |= bool(self.world.actuator_detach(c, i))
+                    except Exception:  # noqa: BLE001
+                        L.exception("ブースターを切り離せませんでした")
+                    break
+        if done:
+            self.world.message("ブースターを切り離しました（第1段 → 第2段）")
 
     # --- 第6章・第7章：キンギのドローン ------------------------------------
     def _ensure_kdrone(self, pos):
@@ -1652,8 +1805,9 @@ class StoryAddon(SceneryHost, Addon):
                 if c is not ship and any(d and d["def"] == "fuel_pump" for d in c.devs):
                     c.name = "給油車"
                     self.st["flags"]["cart_named"] = True
-        conds = {"lift": dt_ > 25 and self.check_launch(), "space": dt_ > 400, "rutero": dt_ > 700,
-                 "half": dl < 2300, "near": dp < 350}
+        dl0 = float((self.st.get("moonflight") or {}).get("dl0", 4600.0))
+        conds = {"lift": dt_ > 25 and self.check_launch(), "space": dt_ > 1200, "rutero": dt_ > 5000,
+                 "half": dl < dl0 * 0.5, "near": dp < 350}
         for k in ("lift", "space", "rutero", "half", "near"):
             if conds[k]:
                 self._event(k)

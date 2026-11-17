@@ -26,8 +26,13 @@ def luna_pad_dir(terra_center, luna_center):
     return _unit(u0 * np.cos(a) + n * np.sin(a))
 
 
+def _c0(planet):
+    """基準の時刻の中心（公転しても発着場の向きが変わらないように）"""
+    return getattr(planet, "center0", planet.center)
+
+
 def luna_map(planet, terra_center):
-    u = luna_pad_dir(terra_center, planet.center)
+    u = luna_pad_dir(terra_center, _c0(planet))
     return Map(planet, u, (0, 1, 0))
 
 
@@ -61,7 +66,7 @@ def pad_frame(luna, terra, top_point, fwd0):
 
 def build(planet, terra):
     """ルナ・ポートの景色の箱（月 planet の、ガイア terra の方の地平線が見える所）。"""
-    m = luna_map(planet, terra.center)
+    m = luna_map(planet, _c0(terra))
     s = Scenery("lunaport", m)
     rng = _rng(23)
     # 発着場（平らな台。上の面は、下の地面のいちばん高い所より少し上）

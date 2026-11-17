@@ -51,7 +51,7 @@ class ModCase(unittest.TestCase):
     def world(self, mods, constructs=None):
         d = paths.world_dir("w")
         (d / "scripts").mkdir(parents=True, exist_ok=True)
-        s = dict(DEFAULT_SETTINGS, name="w", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
+        s = dict(DEFAULT_SETTINGS, name="w", format=3, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
         (d / "world.json").write_text(json.dumps(s), "utf-8")
         (d / "mods.json").write_text(json.dumps({"enabled": mods}), "utf-8")
         if constructs is not None:

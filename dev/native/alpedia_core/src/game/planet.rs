@@ -139,6 +139,42 @@ pub struct Planet {
     flood_now: Vec<f64>,
     flood_ncr: i64,
     flood_acc: f64,
+    /// 公転（L-08）：基準の時刻の中心・公転の値（公転しなければ None）・今の速度と加速度・影響圏の半径（公転しなければ 0）
+    pub center0: V3,
+    pub orbit: Option<Orbit>,
+    pub ovel: V3,
+    pub oacc: V3,
+    pub soi: f64,
+}
+
+/// 円軌道の公転。親（planets の番号）のまわりを、axis を軸に右回りに角速度 omega で回る。t0 のとき親から rel0 の所
+#[derive(Clone, Copy, Debug)]
+pub struct Orbit {
+    pub parent: usize,
+    pub axis: V3,
+    pub omega: f64,
+    pub t0: f64,
+    pub rel0: V3,
+}
+
+impl Orbit {
+    /// 時刻 t の (親からの位置, 親に対する速度, 親に対する加速度)
+    pub fn at(&self, t: f64) -> (V3, V3, V3) {
+        let th = self.omega * (t - self.t0);
+        let (s, c) = th.sin_cos();
+        let k = self.axis;
+        let v = self.rel0;
+        let kxv = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]];
+        let kd = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+        let mut r = [0.0; 3];
+        for a in 0..3 {
+            r[a] = v[a] * c + kxv[a] * s + k[a] * kd * (1.0 - c);
+        }
+        let w = [k[0] * self.omega, k[1] * self.omega, k[2] * self.omega];
+        let vel = [w[1] * r[2] - w[2] * r[1], w[2] * r[0] - w[0] * r[2], w[0] * r[1] - w[1] * r[0]];
+        let o2 = self.omega * self.omega;
+        (r, vel, [-r[0] * o2, -r[1] * o2, -r[2] * o2])
+    }
 }
 
 impl Planet {
@@ -159,7 +195,21 @@ impl Planet {
             version: 0, bound: radius + amp * 1.5 + 2.0, lipschitz,
             defn: d.into_any().unbind(), nat: None, nat_ncr: -1,
             flood_target: Vec::new(), flood_now: Vec::new(), flood_ncr: -1, flood_acc: 0.0,
+            center0: v3(position)?, orbit: None, ovel: [0.0; 3], oacc: [0.0; 3], soi: 0.0,
         })
+    }
+    /// 中心を c に動かす（中心の配列はその場で書き換える。Rust の地形にも渡す）
+    pub(crate) fn move_center(slf: &Bound<'_, Self>, c: V3) -> R<()> {
+        let py = slf.py();
+        let a = slf.borrow().center.clone_ref(py).into_bound(py);
+        if !super::construct::with_rw(&a, |s| s[..3].copy_from_slice(&c))? {
+            slf.borrow_mut().center = super::construct::a1(py, c).unbind();
+        }
+        let nat = slf.borrow().nat.as_ref().map(|n| n.clone_ref(py));
+        if let Some(n) = nat {
+            n.bind(py).call_method1("set_center", (c.to_vec(),))?;
+        }
+        Ok(())
     }
     fn ctr(slf: &Bound<'_, Self>) -> R<V3> {
         let py = slf.py();
@@ -538,9 +588,40 @@ impl Planet {
         let py = slf.py();
         let d = PyDict::new_bound(py);
         d.set_item("def", Self::defn(slf).get_item("id")?)?;
-        d.set_item("position", Self::ctr(slf)?.to_vec())?;
+        d.set_item("position", slf.borrow().center0.to_vec())?;
         d.set_item("craters", slf.borrow().craters.clone_ref(py))?;
+        let o = slf.borrow().orbit;
+        match o {
+            Some(o) => {
+                let od = PyDict::new_bound(py);
+                od.set_item("around", o.parent)?;
+                od.set_item("axis", o.axis.to_vec())?;
+                od.set_item("t0", o.t0)?;
+                d.set_item("orbit", od)?;
+            }
+            None => d.set_item("orbit", false)?,
+        }
         Ok(d)
+    }
+    /// 基準の時刻（公転の t0）の中心
+    #[getter]
+    fn center0<'py>(slf: &Bound<'py, Self>) -> Bound<'py, PyAny> {
+        super::construct::a1(slf.py(), slf.borrow().center0)
+    }
+    /// 公転の速度（公転しなければ 0）
+    #[getter]
+    fn orbit_vel<'py>(slf: &Bound<'py, Self>) -> Bound<'py, PyAny> {
+        super::construct::a1(slf.py(), slf.borrow().ovel)
+    }
+    /// 影響圏の半径（この中の物は惑星と一緒に動く。公転しなければ 0）
+    #[getter]
+    fn soi(&self) -> f64 {
+        self.soi
+    }
+    /// 公転しているか
+    #[getter]
+    fn orbiting(&self) -> bool {
+        self.orbit.is_some()
     }
 }
 
@@ -623,6 +704,10 @@ struct Earth {
     cstart: Vec<i64>,
     cend: Vec<i64>,
     ccap: Vec<i64>,
+    /// 出現地点のそばの山脈（定義の spawn_range = [距離, 幅] m。無ければ 0）
+    range_dist: f64,
+    range_w: f64,
+    range_h: f64,
 }
 
 const CELL: f64 = 8.0;
@@ -635,6 +720,9 @@ fn earth_params<'py>(py: Python<'py>, e: &Earth, empty: bool) -> R<Bound<'py, Py
     d.set_item("hill_h", e.hill_h)?;
     d.set_item("flat_r", e.flat_r)?;
     d.set_item("spawn_h", e.spawn_h)?;
+    d.set_item("range_dist", e.range_dist)?;
+    d.set_item("range_w", e.range_w)?;
+    d.set_item("range_h", e.range_h)?;
     d.set_item("cell", CELL)?;
     let f1 = |v: Vec<f64>| -> R<Bound<'py, PyAny>> { let n = v.len(); arr(py, v, &[n]) };
     let i1 = |v: &Vec<i64>| -> R<Bound<'py, PyAny>> { iarr(py, if empty { vec![] } else { v.clone() }, &[if empty { 0 } else { v.len() }]) };
@@ -889,6 +977,12 @@ pub struct EarthPlanet {
     ccap: PyObject,
     #[pyo3(get, set, name = "_bare")]
     bare: PyObject,
+    #[pyo3(get, set)]
+    range_dist: f64,
+    #[pyo3(get, set)]
+    range_w: f64,
+    #[pyo3(get, set)]
+    range_h: f64,
 }
 
 fn sup<'py>(s: &Bound<'py, EarthPlanet>) -> Bound<'py, Planet> {
@@ -909,34 +1003,57 @@ impl EarthPlanet {
             ponds: (0..pd.len()).map(|i| (pd[i], pr[i], pdp[i], pl[i])).collect(),
             cave_a: v3s(b.cave_a.bind(py))?, cave_b: v3s(b.cave_b.bind(py))?, cave_ra: g(&b.cave_ra)?, cave_rb: g(&b.cave_rb)?,
             cave_id: gi(&b.cave_id)?, ck: gi(&b.ck)?, cstart: gi(&b.cstart)?, cend: gi(&b.cend)?, ccap: gi(&b.ccap)?,
+            range_dist: b.range_dist, range_w: b.range_w, range_h: b.range_h,
         })
     }
     fn sample_v(slf: &Bound<'_, Self>, dirs: &[V3]) -> R<Vec<[f64; 2]>> {
         Planet::sample_v(&sup(slf), dirs)
     }
-    fn pal(&self, h: &[f64], slope: &[f64], water_h: Option<&[f64]>) -> Vec<V3> {
-        let grass = [0.36, 0.55, 0.26];
-        let dry = [0.52, 0.55, 0.3];
-        let sand = [0.78, 0.72, 0.5];
+    /// 地表の色（A-02：気候で変わる）。clim は (気温, 湿り気)
+    fn pal(&self, h: &[f64], slope: &[f64], water_h: Option<&[f64]>, clim: &[(f64, f64)]) -> Vec<V3> {
+        // 気温（寒い・温かい・暑い）× 湿り気（乾いた・ふつう・湿った）の色
+        const TAB: [[V3; 3]; 3] = [
+            [[0.56, 0.55, 0.47], [0.33, 0.42, 0.30], [0.25, 0.36, 0.27]],     // 寒い：ツンドラ・針葉樹林・湿った針葉樹林
+            [[0.56, 0.56, 0.33], [0.36, 0.55, 0.26], [0.22, 0.42, 0.19]],     // 温かい：草原（乾）・草原・森
+            [[0.84, 0.73, 0.49], [0.64, 0.60, 0.32], [0.19, 0.40, 0.15]],     // 暑い：砂漠・サバンナ・密林
+        ];
+        let sand = [0.80, 0.74, 0.52];
         let rock = [0.47, 0.44, 0.41];
+        let rock_red = [0.66, 0.42, 0.30];
         let snow = [0.93, 0.94, 0.96];
         let mud = [0.42, 0.36, 0.27];
-        let mh = self.mountain_h;
+        let mix = |col: V3, other: V3, t: f64| -> V3 { [col[0] * (1.0 - t) + other[0] * t, col[1] * (1.0 - t) + other[1] * t, col[2] * (1.0 - t) + other[2] * t] };
         (0..h.len()).map(|i| {
             let (hh, sl) = (h[i], slope[i]);
-            let mix = |col: V3, other: V3, t: f64| -> V3 { [col[0] * (1.0 - t) + other[0] * t, col[1] * (1.0 - t) + other[1] * t, col[2] * (1.0 - t) + other[2] * t] };
-            let t = ss(8.0, 30.0, hh);
-            let mut col = [grass[0] * (1.0 - t) + dry[0] * t, grass[1] * (1.0 - t) + dry[1] * t, grass[2] * (1.0 - t) + dry[2] * t];
+            let (tt, mm) = clim.get(i).copied().unwrap_or((0.5, 0.5));
+            // 3×3 の表を気温・湿り気で補間（気温の中心 0.1 / 0.5 / 0.88、湿り気 0.2 / 0.5 / 0.8）
+            let ti = if tt < 0.5 { ((tt - 0.1) / 0.4).clamp(0.0, 0.999) } else { (1.0 + (tt - 0.5) / 0.38).clamp(1.0, 1.999) };
+            let mi = ((mm - 0.2) / 0.3).clamp(0.0, 1.999);
+            let (t0, m0) = (ti.floor() as usize, mi.floor() as usize);
+            let (ft, fm) = (ti - t0 as f64, mi - m0 as f64);
+            let a = mix(TAB[t0][m0], TAB[t0][m0 + 1], fm);
+            let b = mix(TAB[t0 + 1][m0], TAB[t0 + 1][m0 + 1], fm);
+            let mut col = mix(a, b, ft);
             col = mix(col, sand, ss(1.6, 0.6, hh - self.sea));
-            col = mix(col, rock, ss(0.45, 0.65, sl));
-            col = mix(col, rock, ss(0.45 * mh, 0.6 * mh, hh));
-            let sn = ss(mh * 0.82, mh * 0.95, hh) * (1.0 - ss(0.55, 0.75, sl));
+            // 崖：乾いた暑い所は赤い岩
+            let dry = ss(0.45, 0.75, tt) * ss(0.5, 0.2, mm);
+            col = mix(col, mix(rock, rock_red, dry), ss(0.45, 0.65, sl));
+            // 雪：寒い所（高い山の上も気温が下がる）
+            let sn = ss(0.05, -0.1, tt) * (1.0 - ss(0.55, 0.75, sl));
             col = mix(col, snow, sn);
             if let Some(w) = water_h {
                 col = mix(col, mud, ss(-0.2, 0.4, w[i] - hh));
             }
             col
         }).collect()
+    }
+    /// 地表の点の気候 (気温, 湿り気)
+    fn clim(slf: &Bound<'_, Self>, d: &[V3], h: &[f64]) -> R<Vec<(f64, f64)>> {
+        let py = slf.py();
+        let n = h.len();
+        let r = Planet::_nat(&sup(slf))?.call_method1("climate", (rows3(py, d)?, arr(py, h.to_vec(), &[n])?))?;
+        let v = fv(&r)?;
+        Ok(v.chunks_exact(2).map(|c| (c[0], c[1])).collect())
     }
     fn cave_d(slf: &Bound<'_, Self>, q: &[V3]) -> R<Vec<f64>> {
         let py = slf.py();
@@ -959,9 +1076,22 @@ impl EarthPlanet {
             sea: g("sea_level", 0.0)?, mountain_h: g("mountain_height", 45.0)?, hill_h: g("hill_height", 4.0)?,
             flat_r: g("spawn_flat_radius", 38.0)?, spawn_h: g("spawn_height", 3.0)?, n_caves: gi("caves", 220)?, n_ponds: gi("ponds", 260)?,
             ponds: vec![], cave_a: vec![], cave_b: vec![], cave_ra: vec![], cave_rb: vec![], cave_id: vec![],
-            ck: vec![], cstart: vec![], cend: vec![], ccap: vec![],
+            ck: vec![], cstart: vec![], cend: vec![], ccap: vec![], range_dist: 0.0, range_w: 0.0, range_h: 0.0,
         };
-        base.bound = base.radius + e.mountain_h * 1.4 + e.hill_h * 2.0 + 20.0;
+        if let Ok(sr) = d.dget1("spawn_range") {
+            if !sr.is_none() {
+                let v: Vec<f64> = sr.extract()?;
+                if v.len() >= 2 {
+                    e.range_dist = v[0];
+                    e.range_w = v[1];
+                }
+                if v.len() >= 3 {
+                    e.range_h = v[2];
+                }
+            }
+        }
+        // 山・丘のほかに、台地（90 m）・砂丘（8 m）・陸の土台（45 m）の分
+        base.bound = base.radius + e.mountain_h * 1.4 + e.hill_h * 2.0 + 160.0;
         base.amp = e.mountain_h;
         // 池・洞窟を作る間の高さは、それらの無い地形で計算する
         let c = v3(base.center.bind(py))?;
@@ -981,6 +1111,7 @@ impl EarthPlanet {
             cave_a: rows3(py, &e.cave_a)?.unbind(), cave_b: rows3(py, &e.cave_b)?.unbind(),
             cave_ra: f1(e.cave_ra.clone())?, cave_rb: f1(e.cave_rb.clone())?, cave_id: i1(&e.cave_id)?,
             ck: i1(&e.ck)?, cstart: i1(&e.cstart)?, cend: i1(&e.cend)?, ccap: i1(&e.ccap)?, bare: py.None(),
+            range_dist: e.range_dist, range_w: e.range_w, range_h: e.range_h,
         };
         Ok(PyClassInitializer::from(base).add_subclass(me))
     }
@@ -1071,7 +1202,7 @@ impl EarthPlanet {
     #[pyo3(signature = (h, slope, water_h=None))]
     fn palette<'py>(slf: &Bound<'py, Self>, h: &Bound<'py, PyAny>, slope: &Bound<'py, PyAny>, water_h: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
         let w = match water_h { Some(w) if !w.is_none() => Some(fv(w)?), _ => None };
-        let col = slf.borrow().pal(&fv(h)?, &fv(slope)?, w.as_deref());
+        let col = slf.borrow().pal(&fv(h)?, &fv(slope)?, w.as_deref(), &[]);
         rows3(slf.py(), &col)
     }
     pub(crate) fn surface_color<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>, r: &Bound<'py, PyAny>, normals: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
@@ -1081,7 +1212,8 @@ impl EarthPlanet {
         let h: Vec<f64> = fv(r)?.iter().map(|x| x - rad).collect();
         let slope: Vec<f64> = d.iter().zip(&n).map(|(d, n)| ((1.0 - dot(*n, *d).clamp(0.0, 1.0)) * 3.3).clamp(0.0, 1.0)).collect();
         let w: Vec<f64> = Self::sample_v(slf, &d)?.iter().map(|s| s[1] - rad).collect();
-        let col = slf.borrow().pal(&h, &slope, Some(&w));
+        let cl = Self::clim(slf, &d, &h)?;
+        let col = slf.borrow().pal(&h, &slope, Some(&w), &cl);
         let col = Planet::tint(&sup(slf), &d, &h, col)?;
         rows3(slf.py(), &col)
     }
@@ -1135,7 +1267,8 @@ impl EarthPlanet {
         let d2: Vec<V3> = d.iter().map(|x| { let (t1, _) = tangent(*x); unit([x[0] + t1[0] * e, x[1] + t1[1] * e, x[2] + t1[2] * e]) }).collect();
         let h2 = fv(&Self::height0(slf, &rows3(py, &d2)?)?)?;
         let slope: Vec<f64> = h2.iter().zip(&h).map(|(a, b)| ((a - b).abs() / 3.0).clamp(0.0, 1.0)).collect();
-        let col = slf.borrow().pal(&h, &slope, None);
+        let cl = Self::clim(slf, &d, &h)?;
+        let col = slf.borrow().pal(&h, &slope, None, &cl);
         let mut col = Planet::tint(&sup(slf), &d, &h, col)?;
         let mut r = vec![0.0; d.len()];
         for i in 0..d.len() {

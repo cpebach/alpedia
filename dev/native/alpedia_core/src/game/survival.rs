@@ -19,13 +19,13 @@ pub const DIG_AMOUNT: f64 = 10.0;
 /// 1回くむと手に入る水（海や池の水は減らない）
 pub const WATER_AMOUNT: f64 = 20.0;
 /// 最初の所持品（詰まないように：精錬機・手回し発電機・太陽光パネル・タンクが作れて、少し飛べる）
-pub const STARTER_KIT: [(&str, f64); 4] = [("iron", 250.0), ("silica", 40.0), ("parts", 12.0), ("fuel", 60.0)];
+pub const STARTER_KIT: [(&str, f64); 4] = [("iron", 250.0), ("silica", 40.0), ("parts", 12.0), ("fuel", 600.0)];
 /// サバイバルの目標（上から順に。画面の左上に出す）：(ID, 表示)
 pub const GOALS: [(&str, &str); 7] = [
     ("ore", "地面を掘って鉱石を 30 集める（左クリック）"),
     ("refiner", "精錬機を置く（I → 機器 → 精錬機）"),
     ("iron", "精錬機に鉱石を入れて、鉄を受け取る（精錬機を E）"),
-    ("fuel", "燃料を 100 ためる（硫黄鉱石・水を精錬。タンクの分も数える）"),
+    ("fuel", "燃料を 2000 ためる（硫黄鉱石・水を精錬。タンクの分も数える）"),
     ("fly", "推進機の乗り物に乗って、高さ 50 m まで飛ぶ"),
     ("orbit", "軌道に乗る（近点が地表より上）"),
     ("moon", "月に降り立つ"),
@@ -117,7 +117,7 @@ fn check_goals(world: &Bound<'_, PyAny>) -> R<()> {
             }
         }
     }
-    if fuel >= 100.0 {
+    if fuel >= 2000.0 {
         done("fuel")?;
     }
     let seated = Player::g_seated(ply(&p)?)?;
