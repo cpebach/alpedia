@@ -7,7 +7,7 @@
 use super::*;
 
 /// 絵の並び（4 列 × 2 段）と大きさ（幅, 高さ m）
-const SPRITES: [(f64, f64); 8] = [
+const SPRITES: [(f64, f64); 16] = [
     (0.9, 0.55),   // 0 草
     (0.8, 0.5),    // 1 花のある草
     (6.5, 9.0),    // 2 広葉樹
@@ -16,7 +16,18 @@ const SPRITES: [(f64, f64); 8] = [
     (1.6, 3.2),    // 5 サボテン
     (1.8, 1.4),    // 6 枯れた低木
     (4.2, 9.5),    // 7 雪の針葉樹
+    (4.0, 9.0),    // 8 シラカバ
+    (9.0, 14.0),   // 9 熱帯の大木
+    (1.6, 1.3),    // 10 シダ・低木
+    (1.2, 2.0),    // 11 アシ（水辺）
+    (5.0, 6.5),    // 12 岩の上の松
+    (6.0, 8.5),    // 13 紅葉したカエデ
+    (8.0, 7.0),    // 14 アカシア
+    (1.0, 0.7),    // 15 砂丘の草
 ];
+/// 絵の並び：4 列 × 4 段
+const ATLAS_COLS: f64 = 4.0;
+const ATLAS_ROWS: f64 = 4.0;
 const GRASS_R: f64 = 70.0;
 const GRASS_CELL: f64 = 4.0;
 const TREE_R: f64 = 450.0;
@@ -102,34 +113,45 @@ impl Veg {
     }
 
     /// 気候 (t, m) と高さから、生える物（絵の番号と、生える確率）
-    fn pick(t: f64, m: f64, grass: bool) -> Option<(usize, f64)> {
+    /// var（0〜1）：同じ気候の中で種類を混ぜるための乱数
+    fn pick(t: f64, m: f64, grass: bool, var: f64) -> Option<(usize, f64)> {
         let arid = ss(0.45, 0.75, t) * ss(0.5, 0.2, m);
         if t < -0.15 {
             return None;
         }
         if grass {
-            if arid > 0.6 || t < 0.05 {
+            if arid > 0.6 {
+                return if t > 0.45 { Some((15, 0.12)) } else { None };          // 砂丘の草（まばら）
+            }
+            if t < 0.05 {
                 return None;
             }
             let p = (0.25 + 0.75 * m) * (1.0 - arid) * ss(0.05, 0.25, t);
-            return Some((if m > 0.45 && t > 0.3 { 1 } else { 0 }, p));
+            if arid > 0.3 {
+                return Some((15, p));                                         // 乾いた草原：枯れ色の草
+            }
+            return Some((if m > 0.45 && t > 0.3 && var < 0.35 { 1 } else { 0 }, p));
         }
         if t < 0.05 {
-            return Some((7, 0.25 * m));                                    // 雪の針葉樹（まばら）
+            return Some((7, 0.25 * m));                                       // 雪の針葉樹（まばら）
         }
         if arid > 0.6 {
-            return Some((if m < 0.12 { 5 } else { 6 }, 0.12));             // 砂漠：サボテン・枯れた低木
+            return Some((if m < 0.12 { 5 } else { 6 }, 0.12));                // 砂漠：サボテン・枯れた低木
         }
-        if t < 0.35 {
-            return Some((3, 0.15 + 0.6 * m));                               // 寒い：針葉樹
+        if t < 0.35 {                                                         // 寒い：針葉樹とシラカバ
+            return Some((if m > 0.4 && var < 0.3 { 8 } else { 3 }, 0.15 + 0.6 * m));
         }
-        if t > 0.7 && m > 0.6 {
-            return Some((4, 0.5 * m));                                      // 暑くて湿った：ヤシ
+        if t > 0.7 && m > 0.6 {                                               // 暑くて湿った：密林
+            let sp = if var < 0.45 { 9 } else if var < 0.8 { 4 } else { 10 };
+            return Some((sp, 0.55 * m));
         }
-        if arid > 0.3 {
-            return Some((if m > 0.3 { 2 } else { 6 }, 0.06));               // サバンナ：まばら
+        if arid > 0.3 {                                                       // サバンナ：アカシア・低木
+            return Some((if var < 0.65 { 14 } else { 6 }, 0.07));
         }
-        Some((if t < 0.5 && m > 0.5 { 3 } else { 2 }, (m - 0.2).max(0.0) * 0.7))  // 温かい：森（湿り気で増える）
+        // 温かい：森（湿り気で増える）。広葉樹・シラカバ・カエデ・針葉樹・シダ
+        let sp = if t < 0.5 && m > 0.5 && var < 0.3 { 3 } else if var < 0.55 { 2 } else if var < 0.7 { 8 }
+                 else if var < 0.85 && t < 0.6 { 13 } else if m > 0.6 { 10 } else { 2 };
+        Some((sp, (m - 0.2).max(0.0) * 0.7))
     }
 
     /// 1 つの層のメッシュ（頂点 (N,12)・三角形）
@@ -148,7 +170,7 @@ impl Veg {
         let craters = ps.craters.read().unwrap().clone();
         let sea: f64 = if planet.getattr("has_water")?.is_truthy()? { planet.getattr("sea").and_then(|x| x.extract()).unwrap_or(0.0) } else { -1e9 };
         let dirs: Vec<[f64; 3]> = cs.iter().map(|c| c.0).collect();
-        let samp: Vec<([f64; 2], (f64, f64), f64)> = py.allow_threads(|| {
+        let samp: Vec<([f64; 2], (f64, f64), f64, f64, i64)> = py.allow_threads(|| {
             use rayon::prelude::*;
             dirs.par_chunks(64).flat_map_iter(|ch| {
                 let tv = shape.tile_values(ch);
@@ -160,7 +182,8 @@ impl Veg {
                         let rr = v[0] + 0.3;
                         shape.sdf([d[0] * rr, d[1] * rr, d[2] * rr], &craters)
                     };
-                    (v, cl, sd)
+                    let fp = shape.feature_paint(*d, h, 0.0);
+                    (v, cl, sd, fp.bare, fp.tree)
                 }).collect::<Vec<_>>()
             }).collect()
         });
@@ -178,7 +201,16 @@ impl Veg {
                 continue;
             }
             let (tt, mm) = (clim[2 * i], clim[2 * i + 1]);
-            let (sp, p) = match Self::pick(tt, mm, grass) { Some(x) => x, None => continue };
+            let var = (rot * 7.31).fract();
+            // 地形の名所：草木を生やさない所・生やす木の種類
+            let (bare, hint) = (samp[i].3, samp[i].4);
+            if bare > 0.0 && (rot * 13.7).fract() < bare {
+                continue;
+            }
+            let (mut sp, p) = match Self::pick(tt, mm, grass, var) { Some(x) => x, None => continue };
+            if !grass && hint >= 0 && var < 0.7 {
+                sp = hint as usize;
+            }
             if h3 > p {
                 continue;
             }
@@ -203,13 +235,16 @@ impl Veg {
             let tint = [1.0 + 0.15 * dry, 1.0, 1.0 - 0.35 * dry];
             let sh = shade_rs(s_, amb, d, [tint[0] * 0.95, tint[1] * 0.95, tint[2] * 0.95]);
             // 絵の段：画像の上の段が v の大きい方（v = 1 が画像の上）
-            let (u0, vb) = ((sp % 4) as f64 * 0.25, 1.0 - ((sp / 4) as f64 + 1.0) * 0.5);
+            let (cw, ch) = (1.0 / ATLAS_COLS, 1.0 / ATLAS_ROWS);
+            let (u0, vb) = ((sp as f64 % ATLAS_COLS) * cw, 1.0 - ((sp as f64 / ATLAS_COLS).floor() + 1.0) * ch);
             for e in [e1, e2] {
                 let b = (v.len() / 12) as i64;
-                let corners = [(-0.5, 0.0, u0, vb), (0.5, 0.0, u0 + 0.25, vb), (0.5, 1.0, u0 + 0.25, vb + 0.5), (-0.5, 1.0, u0, vb + 0.5)];
+                let corners = [(-0.5, 0.0, u0, vb), (0.5, 0.0, u0 + cw, vb), (0.5, 1.0, u0 + cw, vb + ch), (-0.5, 1.0, u0, vb + ch)];
                 for (sx, sy, u, vv) in corners {
                     let p = [base[0] + e[0] * sx * w + d[0] * sy * hh, base[1] + e[1] * sx * w + d[1] * sy * hh, base[2] + e[2] * sx * w + d[2] * sy * hh];
-                    v.extend_from_slice(&[p[0] as f32, p[1] as f32, p[2] as f32, d[0] as f32, d[1] as f32, d[2] as f32,
+                    // 法線の長さ − 1 ＝ 風で揺れる割合（上の頂点だけ揺れる。シェーダーが使う）
+                    let k = 1.0 + sy;
+                    v.extend_from_slice(&[p[0] as f32, p[1] as f32, p[2] as f32, (d[0] * k) as f32, (d[1] * k) as f32, (d[2] * k) as f32,
                                           sh[0] as f32, sh[1] as f32, sh[2] as f32, 1.0, u as f32, vv as f32]);
                 }
                 t.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);

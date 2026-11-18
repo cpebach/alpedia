@@ -19,6 +19,7 @@ mod pairs;
 mod contacts;
 mod devices;
 mod planet;
+pub(crate) mod features;
 mod tick;
 mod geomx;
 mod topo;
@@ -265,6 +266,27 @@ pub(crate) struct PlanetShape {
     floods: RwLock<Vec<[f64; 5]>>,
 }
 
+/// 地形の名所：earth の "feat_kind"（種類の番号 (N,)）と "feat"（(N, 12)：中心・e1・e2・半径・高さ・乱数の種）
+fn parse_features(d: &Bound<'_, PyDict>) -> PyResult<Vec<features::Feature>> {
+    let (k, f) = match (d.get_item("feat_kind")?, d.get_item("feat")?) {
+        (Some(k), Some(f)) => (k, f),
+        _ => return Ok(vec![]),
+    };
+    let kinds: Vec<i64> = k.extract()?;
+    let vals: Vec<f64> = f.extract()?;
+    if vals.len() != kinds.len() * 12 {
+        return Err(PyValueError::new_err("feat の大きさが合いません"));
+    }
+    let mut out = vec![];
+    for (i, &kk) in kinds.iter().enumerate() {
+        let v = &vals[i * 12..i * 12 + 12];
+        let kind = features::Kind::from_index(kk).ok_or_else(|| PyValueError::new_err(format!("名所の種類 {kk} がありません")))?;
+        out.push(features::Feature { kind, dir: [v[0], v[1], v[2]], e1: [v[3], v[4], v[5]], e2: [v[6], v[7], v[8]],
+                                     radius: v[9], height: v[10], seed: v[11] as i64 });
+    }
+    Ok(out)
+}
+
 /// 掘削跡の中の水深（球の中で、水面より下なら 水面 − 半径。無ければ -1e9）。q は惑星ローカル
 pub(crate) fn flood_depth(floods: &[[f64; 5]], q: [f64; 3]) -> f64 {
     let r = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
@@ -344,6 +366,7 @@ impl PlanetShape {
                     range_dist: match d.get_item("range_dist")? { Some(v) => v.extract()?, None => 0.0 },
                     range_w: match d.get_item("range_w")? { Some(v) => v.extract()?, None => 0.0 },
                     range_h: match d.get_item("range_h")? { Some(v) => v.extract()?, None => 0.0 },
+                    features: parse_features(d)?,
                 })
             }
         };
@@ -452,6 +475,33 @@ impl PlanetShape {
         let e = self.shape.earth.as_ref().ok_or_else(|| PyValueError::new_err("地球型ではありません"))?;
         let out = py.allow_threads(|| map_points(d, |p| self.shape.height0(e, p)));
         Ok(PyArray1::from_vec_bound(py, out))
+    }
+
+    /// 地形の名所 (N,8)：色 r,g,b・色の重み・草木を生やさない度合い・木の種類（-1 は気候のまま）・名所の水面（m、無ければ -1e9）・名所の中か(1/0)
+    fn features_at<'py>(&self, py: Python<'py>, dirs: RoF<'py>, h: RoF<'py>, slope: RoF<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let d = ro(&dirs, "dirs")?;
+        let hh = ro(&h, "h")?;
+        let sl = ro(&slope, "slope")?;
+        let n = d.len() / 3;
+        if hh.len() != n || sl.len() != n {
+            return Err(PyValueError::new_err("features_at: 数が違います"));
+        }
+        let mut out = vec![0.0; 8 * n];
+        if let Some(e) = &self.shape.earth {
+            for i in 0..n {
+                let dd = [d[3 * i], d[3 * i + 1], d[3 * i + 2]];
+                let p = self.shape.feature_paint(dd, hh[i], sl[i]);
+                let inside = e.features.iter().any(|f| f.local(dd, self.shape.radius).is_some());
+                out[8 * i..8 * i + 8].copy_from_slice(&[p.rgb[0], p.rgb[1], p.rgb[2], p.w, p.bare, p.tree as f64,
+                                                        self.shape.feature_water(e, dd), if inside { 1.0 } else { 0.0 }]);
+            }
+        } else {
+            for i in 0..n {
+                out[8 * i + 5] = -1.0;
+                out[8 * i + 6] = -1e9;
+            }
+        }
+        Ok(PyArray1::from_vec_bound(py, out).reshape([n, 8])?)
     }
 
     /// 地球型：気候 (N,2) = (気温, 湿り気)。h は地表の高さ (N,)（A-02）

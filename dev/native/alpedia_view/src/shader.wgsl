@@ -2,6 +2,10 @@
 
 struct Camera {
     view_proj: mat4x4<f32>,
+    eye: vec4<f32>,       // xyz：目の位置（描く座標）、w：時刻（秒）
+    fog: vec4<f32>,       // rgb：空気遠近の色（空の色）、a：1 m あたりの濃さ（0 で無し。画面の上の板は 0）
+    pad0: vec4<f32>,
+    pad1: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> cam: Camera;
 
@@ -9,7 +13,7 @@ struct Model {
     model: mat4x4<f32>,
     tint: vec4<f32>,      // 色を掛ける（ノードの色）
     flags: vec4<f32>,     // x：2枚目のテクスチャを使う、y：テクスチャを使う、z：不透明さがこれ未満は描かない
-    extra: vec4<f32>,     // x：立体映像（ホログラム）の描き方、y：時刻
+    extra: vec4<f32>,     // x：立体映像（ホログラム）の描き方、y：時刻、z：風で揺らす強さ（m。草木）
 };
 @group(1) @binding(0) var<uniform> mdl: Model;
 
@@ -30,12 +34,23 @@ struct VOut {
     @location(0) col: vec4<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) raw: vec4<f32>,      // 頂点の色そのまま（立体映像：縁の光り方・高さ・明るさの倍率・濃さ）
+    @location(3) wpos: vec3<f32>,     // 描く座標の位置（空気遠近）
 };
 
 @vertex
 fn vs_main(v: VIn) -> VOut {
     var o: VOut;
-    o.clip = cam.view_proj * mdl.model * vec4<f32>(v.pos, 1.0);
+    var wp = (mdl.model * vec4<f32>(v.pos, 1.0)).xyz;
+    if (mdl.extra.z > 0.0) {
+        // 風：法線の長さ − 1 が揺れる割合（草木の板の上ほど大きい）。場所ごとに少しずらしたゆっくりした揺れ＋細かい揺れ
+        let k = max(length(v.nrm) - 1.0, 0.0) * mdl.extra.z;
+        let t = cam.eye.w;
+        let ph = wp.x * 0.13 + wp.z * 0.11 + wp.y * 0.07;
+        let sway = sin(t * 1.3 + ph) * 0.7 + sin(t * 3.1 + ph * 2.3) * 0.3;
+        wp = wp + vec3<f32>(sway, 0.0, cos(t * 1.1 + ph * 1.3) * 0.6) * k;
+    }
+    o.clip = cam.view_proj * vec4<f32>(wp, 1.0);
+    o.wpos = wp;
     o.col = vec4<f32>(v.col, v.alpha) * mdl.tint;
     o.uv = v.uv;
     o.raw = vec4<f32>(v.col, v.alpha);
@@ -69,6 +84,12 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
     }
     if (c.a < max(mdl.flags.z, 0.01)) {
         discard;
+    }
+    if (cam.fog.a > 0.0) {
+        // 空気遠近：遠い物ほど空の色に（大気の濃さはカメラの所の空気で決める）
+        let d = length(i.wpos - cam.eye.xyz);
+        let f = 1.0 - exp(-d * cam.fog.a);
+        c = vec4<f32>(mix(c.rgb, cam.fog.rgb, clamp(f, 0.0, 0.85)), c.a);
     }
     return c;
 }

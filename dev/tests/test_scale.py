@@ -136,5 +136,49 @@ class TestLegacySave(CoreCase):
         self.assertAlmostEqual(float(np.linalg.norm(w.planets[1].center0)), 60000.0, delta=1.0)
 
 
+class TestEarthMod(CoreCase):
+    """地球の名所（Earth MOD）：10 の地形が読み込まれ、それぞれの形になっている"""
+
+    def test_landmarks(self):
+        from main.world import default_bodies
+        d = paths.world_dir("t")
+        (d / "scripts").mkdir(parents=True, exist_ok=True)
+        (d / "mods.json").write_text(json.dumps({"enabled": ["earth"]}), encoding="utf-8")
+        w = self.world(planets=default_bodies("earth", False, False))
+        pl = w.planets[0]
+        fs = {f["kind"]: f for f in pl.defn["features"]}
+        self.assertEqual(len(fs), 10)
+
+        def at(kind, dx=0.0, dz=0.0, n=0, spread=0.0):
+            f = fs[kind]
+            x, z = f["at"][0] + dx, f["at"][1] + dz
+            if n:
+                rng = np.random.default_rng(1)
+                pts = np.array([[x, z]]) + rng.uniform(-spread, spread, size=(n, 2))
+            else:
+                pts = np.array([[x, z]])
+            dist = np.hypot(pts[:, 0], pts[:, 1])
+            a = dist / pl.radius
+            dirs = np.stack([np.sin(a) * pts[:, 0] / dist, np.cos(a), np.sin(a) * pts[:, 1] / dist], 1)
+            v = np.asarray(pl._tile_values(dirs))
+            return v[:, 0] - pl.radius, v[:, 1] - pl.radius, dirs
+
+        h, wv, _ = at("canyon", n=400, spread=1500)
+        self.assertGreater(h.max() - h.min(), 300, "峡谷は深い")
+        h, wv, _ = at("dune_lagoons", n=400, spread=1200)
+        self.assertGreater((wv > h).mean(), 0.1, "砂丘の間に湖")
+        h, wv, _ = at("pillars", n=600, spread=500)
+        self.assertGreater(h.max(), 120, "高い石柱")
+        h, wv, dirs = at("high_mountains", n=300, spread=2000)
+        self.assertGreater(h.max(), 1000, "高い山脈")
+        top = dirs[int(np.argmax(h))][None]
+        t_, _ = np.asarray(pl._nat().climate(top, np.array([h.max()])))[0]
+        self.assertLess(t_, 0.0, "高い所は雪")
+        h, wv, _ = at("travertine", n=300, spread=300)
+        self.assertGreater((wv > h).mean(), 0.05, "石灰棚の水たまり")
+        h, wv, _ = at("cascade_lakes", n=300, spread=400)
+        self.assertGreater((wv > h).mean(), 0.05, "段々の湖")
+
+
 if __name__ == "__main__":
     unittest.main()

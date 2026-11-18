@@ -708,6 +708,9 @@ struct Earth {
     range_dist: f64,
     range_w: f64,
     range_h: f64,
+    /// 地形の名所：種類の番号と (中心・e1・e2・半径・高さ・乱数の種) × N
+    feat_kind: Vec<i64>,
+    feat: Vec<f64>,
 }
 
 const CELL: f64 = 8.0;
@@ -723,6 +726,8 @@ fn earth_params<'py>(py: Python<'py>, e: &Earth, empty: bool) -> R<Bound<'py, Py
     d.set_item("range_dist", e.range_dist)?;
     d.set_item("range_w", e.range_w)?;
     d.set_item("range_h", e.range_h)?;
+    d.set_item("feat_kind", e.feat_kind.clone())?;
+    d.set_item("feat", e.feat.clone())?;
     d.set_item("cell", CELL)?;
     let f1 = |v: Vec<f64>| -> R<Bound<'py, PyAny>> { let n = v.len(); arr(py, v, &[n]) };
     let i1 = |v: &Vec<i64>| -> R<Bound<'py, PyAny>> { iarr(py, if empty { vec![] } else { v.clone() }, &[if empty { 0 } else { v.len() }]) };
@@ -983,6 +988,8 @@ pub struct EarthPlanet {
     range_w: f64,
     #[pyo3(get, set)]
     range_h: f64,
+    feat_kind: Vec<i64>,
+    feat: Vec<f64>,
 }
 
 fn sup<'py>(s: &Bound<'py, EarthPlanet>) -> Bound<'py, Planet> {
@@ -1003,7 +1010,7 @@ impl EarthPlanet {
             ponds: (0..pd.len()).map(|i| (pd[i], pr[i], pdp[i], pl[i])).collect(),
             cave_a: v3s(b.cave_a.bind(py))?, cave_b: v3s(b.cave_b.bind(py))?, cave_ra: g(&b.cave_ra)?, cave_rb: g(&b.cave_rb)?,
             cave_id: gi(&b.cave_id)?, ck: gi(&b.ck)?, cstart: gi(&b.cstart)?, cend: gi(&b.cend)?, ccap: gi(&b.ccap)?,
-            range_dist: b.range_dist, range_w: b.range_w, range_h: b.range_h,
+            range_dist: b.range_dist, range_w: b.range_w, range_h: b.range_h, feat_kind: b.feat_kind.clone(), feat: b.feat.clone(),
         })
     }
     fn sample_v(slf: &Bound<'_, Self>, dirs: &[V3]) -> R<Vec<[f64; 2]>> {
@@ -1047,6 +1054,26 @@ impl EarthPlanet {
             col
         }).collect()
     }
+    /// 地形の名所の色を混ぜる。戻り値：(色, 名所の水面（無ければ -1e9）)
+    fn feature_tint(slf: &Bound<'_, Self>, d: &[V3], h: &[f64], slope: &[f64], mut col: Vec<V3>) -> R<(Vec<V3>, Vec<f64>)> {
+        let py = slf.py();
+        let n = h.len();
+        if slf.borrow().feat_kind.is_empty() {
+            return Ok((col, vec![-1e9; n]));
+        }
+        let r = Planet::_nat(&sup(slf))?.call_method1("features_at", (rows3(py, d)?, arr(py, h.to_vec(), &[n])?, arr(py, slope.to_vec(), &[n])?))?;
+        let v = fv(&r)?;
+        let mut water = vec![-1e9; n];
+        for i in 0..n {
+            let f = &v[8 * i..8 * i + 8];
+            let w = f[3].clamp(0.0, 1.0);
+            for k in 0..3 {
+                col[i][k] = col[i][k] * (1.0 - w) + f[k] * w;
+            }
+            water[i] = f[6];
+        }
+        Ok((col, water))
+    }
     /// 地表の点の気候 (気温, 湿り気)
     fn clim(slf: &Bound<'_, Self>, d: &[V3], h: &[f64]) -> R<Vec<(f64, f64)>> {
         let py = slf.py();
@@ -1076,7 +1103,7 @@ impl EarthPlanet {
             sea: g("sea_level", 0.0)?, mountain_h: g("mountain_height", 45.0)?, hill_h: g("hill_height", 4.0)?,
             flat_r: g("spawn_flat_radius", 38.0)?, spawn_h: g("spawn_height", 3.0)?, n_caves: gi("caves", 220)?, n_ponds: gi("ponds", 260)?,
             ponds: vec![], cave_a: vec![], cave_b: vec![], cave_ra: vec![], cave_rb: vec![], cave_id: vec![],
-            ck: vec![], cstart: vec![], cend: vec![], ccap: vec![], range_dist: 0.0, range_w: 0.0, range_h: 0.0,
+            ck: vec![], cstart: vec![], cend: vec![], ccap: vec![], range_dist: 0.0, range_w: 0.0, range_h: 0.0, feat_kind: vec![], feat: vec![],
         };
         if let Ok(sr) = d.dget1("spawn_range") {
             if !sr.is_none() {
@@ -1090,8 +1117,37 @@ impl EarthPlanet {
                 }
             }
         }
+        // 地形の名所（Earth MOD）：[{"kind", "at": [x, z]（出現地点から地表に沿って m）, "radius", "height", "yaw"（度）, "seed"}]
+        let mut feat_top = 0.0f64;
+        if let Ok(fl) = d.dget1("features") {
+            if !fl.is_none() {
+                for f in fl.iter()? {
+                    let f = f?;
+                    let name: String = f.get_item("kind")?.extract()?;
+                    let kind = crate::features::Kind::from_name(&name)
+                        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("地形の名所の種類 {name} がありません")))?;
+                    let at: Vec<f64> = f.get_item("at")?.extract()?;
+                    let (x, z) = (at[0], at.get(1).copied().unwrap_or(0.0));
+                    let rf: f64 = f.get_item("radius")?.extract()?;
+                    let hf: f64 = match f.dget1("height") { Ok(v) if !v.is_none() => v.extract()?, _ => 100.0 };
+                    let yaw: f64 = match f.dget1("yaw") { Ok(v) if !v.is_none() => v.extract()?, _ => 0.0 };
+                    let seed: i64 = match f.dget1("seed") { Ok(v) if !v.is_none() => v.extract()?, _ => 1 };
+                    // 出現地点（+Y）から地表に沿って (x, z) m
+                    let dist = (x * x + z * z).sqrt();
+                    let a = dist / base.radius;
+                    let dir = if dist < 1e-9 { [0.0, 1.0, 0.0] } else { unit([a.sin() * x / dist, a.cos(), a.sin() * z / dist]) };
+                    let (t1, t2) = tangent(dir);
+                    let (cy, sy) = (yaw.to_radians().cos(), yaw.to_radians().sin());
+                    let e1 = [t1[0] * cy + t2[0] * sy, t1[1] * cy + t2[1] * sy, t1[2] * cy + t2[2] * sy];
+                    let e2 = cross(dir, e1);
+                    e.feat_kind.push(kind.index());
+                    e.feat.extend_from_slice(&[dir[0], dir[1], dir[2], e1[0], e1[1], e1[2], e2[0], e2[1], e2[2], rf, hf, seed as f64]);
+                    feat_top = feat_top.max(hf + 500.0);
+                }
+            }
+        }
         // 山・丘のほかに、台地（90 m）・砂丘（8 m）・陸の土台（45 m）の分
-        base.bound = base.radius + e.mountain_h * 1.4 + e.hill_h * 2.0 + 160.0;
+        base.bound = base.radius + e.mountain_h * 1.4 + e.hill_h * 2.0 + 160.0 + feat_top;
         base.amp = e.mountain_h;
         // 池・洞窟を作る間の高さは、それらの無い地形で計算する
         let c = v3(base.center.bind(py))?;
@@ -1111,7 +1167,7 @@ impl EarthPlanet {
             cave_a: rows3(py, &e.cave_a)?.unbind(), cave_b: rows3(py, &e.cave_b)?.unbind(),
             cave_ra: f1(e.cave_ra.clone())?, cave_rb: f1(e.cave_rb.clone())?, cave_id: i1(&e.cave_id)?,
             ck: i1(&e.ck)?, cstart: i1(&e.cstart)?, cend: i1(&e.cend)?, ccap: i1(&e.ccap)?, bare: py.None(),
-            range_dist: e.range_dist, range_w: e.range_w, range_h: e.range_h,
+            range_dist: e.range_dist, range_w: e.range_w, range_h: e.range_h, feat_kind: e.feat_kind.clone(), feat: e.feat.clone(),
         };
         Ok(PyClassInitializer::from(base).add_subclass(me))
     }
@@ -1214,7 +1270,9 @@ impl EarthPlanet {
         let w: Vec<f64> = Self::sample_v(slf, &d)?.iter().map(|s| s[1] - rad).collect();
         let cl = Self::clim(slf, &d, &h)?;
         let col = slf.borrow().pal(&h, &slope, Some(&w), &cl);
+        // 鉱石の色の後に名所の色（名所の地面が勝つように）
         let col = Planet::tint(&sup(slf), &d, &h, col)?;
+        let col = Self::feature_tint(slf, &d, &h, &slope, col)?.0;
         rows3(slf.py(), &col)
     }
     fn _cave_res<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
@@ -1269,14 +1327,17 @@ impl EarthPlanet {
         let slope: Vec<f64> = h2.iter().zip(&h).map(|(a, b)| ((a - b).abs() / 3.0).clamp(0.0, 1.0)).collect();
         let cl = Self::clim(slf, &d, &h)?;
         let col = slf.borrow().pal(&h, &slope, None, &cl);
-        let mut col = Planet::tint(&sup(slf), &d, &h, col)?;
+        let col = Planet::tint(&sup(slf), &d, &h, col)?;
+        let (mut col, fwater) = Self::feature_tint(slf, &d, &h, &slope, col)?;
         let mut r = vec![0.0; d.len()];
         for i in 0..d.len() {
-            let wet = sea > h[i];
+            // 海と、名所の湖（入り江・石灰棚・段々の湖・峡谷の川）
+            let lvl = sea.max(fwater[i]);
+            let wet = lvl > h[i];
             if wet {
-                col[i] = [0.16, 0.33, 0.55];
+                col[i] = if fwater[i] > sea { [0.25, 0.55, 0.62] } else { [0.16, 0.33, 0.55] };
             }
-            r[i] = rad + if wet { sea } else { h[i] };
+            r[i] = rad + if wet { lvl } else { h[i] };
         }
         let n = r.len();
         Ok(PyTuple::new_bound(py, [arr(py, r, &[n])?, rows3(py, &col)?]))

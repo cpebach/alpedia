@@ -173,6 +173,9 @@ impl Viewer {
         scene_prof(5, &mut pt);
         let c: Vec<f64> = (0..3).map(|i| SKY_SPACE[i] + (SKY_DAY[i] - SKY_SPACE[i]) * air).collect();
         Self::ga_view(slf)?.call_method1("set_clear", (c[0], c[1], c[2]))?;
+        // 空気遠近（A-02 のシェーダー）：遠くの物を地平線の空の色に寄せる。空気が薄いほど弱い（宇宙では無し）
+        let haze: Vec<f64> = (0..3).map(|i| c[i] * 0.75 + HAZE[i] * 0.25 * air).collect();
+        let _ = Self::ga_view(slf)?.call_method1("set_fog", (haze[0], haze[1], haze[2], air / FOG_VIS));
         Ok(())
     }
     /// 画面から消す（メニューに戻るとき）

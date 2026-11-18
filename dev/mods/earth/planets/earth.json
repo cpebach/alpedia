@@ -1,0 +1,129 @@
+[
+ {
+  "id": "earth",
+  "extends": "gaia",
+  "name": "アース",
+  "features": [
+   {
+    "kind": "tepui",
+    "name": "カナイマ国立公園のようなテーブル状の山（テプイ）",
+    "at": [
+     6000,
+     2000
+    ],
+    "radius": 2500,
+    "height": 420,
+    "yaw": 0,
+    "seed": 11
+   },
+   {
+    "kind": "pillars",
+    "name": "武陵源のような砂岩の石柱の林",
+    "at": [
+     2500,
+     -4000
+    ],
+    "radius": 1500,
+    "height": 180,
+    "yaw": 0,
+    "seed": 12
+   },
+   {
+    "kind": "travertine",
+    "name": "ヒエラポリス（パムッカレ）のような白い石灰棚",
+    "at": [
+     -2500,
+     1500
+    ],
+    "radius": 500,
+    "height": 70,
+    "yaw": 30,
+    "seed": 13
+   },
+   {
+    "kind": "basalt",
+    "name": "ジャイアンツコーズウェイのような六角柱の海岸",
+    "at": [
+     -5500,
+     -3500
+    ],
+    "radius": 350,
+    "height": 10,
+    "yaw": 0,
+    "seed": 14
+   },
+   {
+    "kind": "dune_lagoons",
+    "name": "レンソイス・マラニャンセスのような白い砂丘と湖",
+    "at": [
+     -8000,
+     5500
+    ],
+    "radius": 2200,
+    "height": 18,
+    "yaw": 0,
+    "seed": 15
+   },
+   {
+    "kind": "cascade_lakes",
+    "name": "プリトヴィツェ湖群のような段々に続く湖",
+    "at": [
+     4500,
+     6500
+    ],
+    "radius": 900,
+    "height": 120,
+    "yaw": 20,
+    "seed": 16
+   },
+   {
+    "kind": "star_dunes",
+    "name": "ナミブ砂海のような赤い大砂丘",
+    "at": [
+     12000,
+     -7000
+    ],
+    "radius": 4000,
+    "height": 180,
+    "yaw": 0,
+    "seed": 17
+   },
+   {
+    "kind": "karst_sea",
+    "name": "ハロン湾のような海から立つ石灰岩の塔",
+    "at": [
+     -12000,
+     -6000
+    ],
+    "radius": 3500,
+    "height": 110,
+    "yaw": 0,
+    "seed": 18
+   },
+   {
+    "kind": "high_mountains",
+    "name": "ヒマラヤ山脈のような雪の高い山脈",
+    "at": [
+     0,
+     16000
+    ],
+    "radius": 6000,
+    "height": 3200,
+    "yaw": 0,
+    "seed": 19
+   },
+   {
+    "kind": "canyon",
+    "name": "グランドキャニオンのような大峡谷",
+    "at": [
+     11000,
+     8000
+    ],
+    "radius": 4000,
+    "height": 520,
+    "yaw": 25,
+    "seed": 20
+   }
+  ]
+ }
+]

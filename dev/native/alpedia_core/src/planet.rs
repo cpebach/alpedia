@@ -59,6 +59,14 @@ fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// features.rs から使う
+pub fn fbm_pub(p: [f64; 3], seed: i64, octaves: i64) -> f64 {
+    fbm(p, seed, octaves)
+}
+pub fn ridged_pub(p: [f64; 3], seed: i64, octaves: i64) -> f64 {
+    ridged(p, seed, octaves)
+}
+
 #[inline]
 fn ridged(p: [f64; 3], seed: i64, octaves: i64) -> f64 {
     let n = (fbm(p, seed, octaves) - 0.5) / 0.12;
@@ -98,6 +106,8 @@ pub struct Earth {
     pub range_w: f64,
     /// その山脈の高さ（m。0 なら mountain_h）
     pub range_h: f64,
+    /// 地形の名所（Earth MOD など。features.rs）
+    pub features: Vec<crate::features::Feature>,
 }
 
 /// 気候の軸（北極の向き）。出現地点（+Y）が温帯になるように傾けてある
@@ -154,7 +164,41 @@ impl Shape {
         // 出現地点のまわり（6 km）は草原・森になるように湿らせる
         let e_sp = (-(self.ang(d, [0.0, 1.0, 0.0]) / 6000.0).powi(2)).exp();
         moist = moist * (1.0 - e_sp) + moist.max(0.55) * e_sp;
+        let mut temp = temp;
+        for f in &e.features {
+            if let Some((ft, fm, w)) = f.climate(d, self.radius) {
+                // 名所の気候（高さで下がる分は残す）
+                let lapse_part = -(h - e.sea).max(0.0) / lapse;
+                temp = temp * (1.0 - w) + (ft + lapse_part) * w;
+                moist = moist * (1.0 - w) + fm * w;
+            }
+        }
         (temp, moist)
+    }
+
+    /// 名所の水面（m。無ければ -1e9）
+    pub fn feature_water(&self, e: &Earth, d: [f64; 3]) -> f64 {
+        e.features.iter().map(|f| f.water(d, self.radius)).fold(-1e9, f64::max)
+    }
+
+    /// 名所の地表の色・草木（いちばん強いもの）
+    pub fn feature_paint(&self, d: [f64; 3], h: f64, slope: f64) -> crate::features::Paint {
+        let mut best = crate::features::Paint { tree: -1, ..Default::default() };
+        if let Some(e) = &self.earth {
+            for f in &e.features {
+                let p = f.paint(d, self.radius, h, slope);
+                if p.w > best.w || (p.w == best.w && p.bare > best.bare) {
+                    let tree = if p.tree >= 0 { p.tree } else { best.tree };
+                    best = crate::features::Paint { tree, bare: p.bare.max(best.bare), ..p };
+                } else {
+                    best.bare = best.bare.max(p.bare);
+                    if best.tree < 0 {
+                        best.tree = p.tree;
+                    }
+                }
+            }
+        }
+        best
     }
 
     /// 乾いた暑い土地の度合い（砂漠 1・サバンナ 0.5 くらい）
@@ -194,7 +238,10 @@ impl Shape {
         let mesa = terrace(mesa_n, 3.0) * 90.0 * arid * land;
         // 砂丘（砂漠だけ。波長 140 m、高さ 8 m）
         let dune = ridged(self.pm(d, 140.0, 9.0), sd + 7, 2) * 8.0 * smoothstep(0.5, 0.9, arid) * land;
-        let h = base + hills + mtn_h + mesa + dune;
+        let mut h = base + hills + mtn_h + mesa + dune;
+        for f in &e.features {
+            h = f.height(d, self.radius, h);
+        }
         let w = 1.0 - smoothstep(e.flat_r, e.flat_r * 1.9, a_sp);
         h * (1.0 - w) + (e.spawn_h + hills * 0.15) * w
     }
@@ -258,8 +305,9 @@ impl Shape {
                 let water = self.apply_ponds(e, dirs, &mut h);
                 h.iter()
                     .zip(water.iter())
-                    .map(|(&hh, &w0)| {
-                        let w = w0.max(e.sea);
+                    .zip(dirs.iter())
+                    .map(|((&hh, &w0), &d)| {
+                        let w = w0.max(e.sea).max(self.feature_water(e, d));
                         let mut wr = if w > hh { self.radius + w } else { 0.0 };
                         if wr == 0.0 {
                             wr = self.radius + w.min(hh - 0.05);

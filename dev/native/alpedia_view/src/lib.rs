@@ -293,7 +293,7 @@ impl Gfx {
         };
         let cam_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            entries: &[ub(0, false, wgpu::ShaderStages::VERTEX)],
+            entries: &[ub(0, false, wgpu::ShaderStages::VERTEX_FRAGMENT)],      // 空気遠近はフラグメントでも使う
         });
         let model_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -325,7 +325,7 @@ impl Gfx {
         });
         let cam_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: 64,
+            size: CAM_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -336,7 +336,7 @@ impl Gfx {
         });
         let ui_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: 64,
+            size: CAM_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -756,7 +756,14 @@ struct View {
     target: Option<Target>,
     dof: [f32; 3],            // ピントの距離・絞り・ぼけの最大の半径（px）
     near: f32,
+    /// 目の位置（描く座標）・空気遠近の色と濃さ（1 m あたり）・起動してからの時刻（風で草木を揺らす）
+    eye: [f32; 3],
+    fog: [f32; 4],
+    t0: std::time::Instant,
 }
+
+/// カメラの uniform：view_proj (64) ＋ 目の位置と時刻 (16) ＋ 空気遠近 (16) ＋ 予備 (32)
+const CAM_SIZE: u64 = 128;
 
 fn ro<'a, T: numpy::Element>(a: &'a PyReadonlyArrayDyn<'_, T>, name: &str) -> PyResult<&'a [T]> {
     a.as_slice().map_err(|_| PyValueError::new_err(format!("{name}: 連続した配列ではありません")))
@@ -818,6 +825,9 @@ impl View {
             parts: vec![],
             target: None,
             dof: [10.0, 0.0, 0.0],
+            eye: [0.0; 3],
+            fog: [0.0; 4],
+            t0: std::time::Instant::now(),
             near: 0.1,
         };
         // 窓ができるまで回す
@@ -940,6 +950,19 @@ impl View {
         }
         self.view_proj = m;
         self.near = near as f32;
+        self.eye = [eye[0] as f32, eye[1] as f32, eye[2] as f32];
+    }
+
+    /// 空気遠近：遠くの物を色 (r, g, b) に寄せる。density は 1 m あたりの濃さ（0 で無し）
+    fn set_fog(&mut self, r: f64, g: f64, b: f64, density: f64) {
+        self.fog = [r as f32, g as f32, b as f32, density.max(0.0) as f32];
+    }
+
+    /// 草木の揺れ：メッシュを風で揺らす強さ（m。頂点の法線の長さ − 1 が揺れる割合）
+    fn mesh_wind(&mut self, m: usize, strength: f32) -> PyResult<()> {
+        self.check_mesh(m)?;
+        self.meshes[m].extra[2] = strength;
+        Ok(())
     }
 
     /// 描く先を、窓の代わりに width×height の画（窓の外）にする（0 で窓に戻す）。ムービーの道具が使う。
@@ -1545,7 +1568,7 @@ impl View {
         }
         // 半透明は後に（描く順 bin で）
         draw.sort_by_key(|&(k, _, _)| (self.meshes[k].overlay, self.meshes[k].blend || self.meshes[k].add, self.meshes[k].bin));
-        let View { app, meshes, textures, view_proj, clear, capture, target, dof, near, .. } = self;
+        let View { app, meshes, textures, view_proj, clear, capture, target, dof, near, eye, fog, t0, .. } = self;
         let g = match app.gfx.as_mut() {
             Some(g) => g,
             None => return Ok(0),
@@ -1636,12 +1659,19 @@ impl View {
             data[o + 96..o + 112].copy_from_slice(bytemuck::cast_slice(&m.extra));
         }
         g.queue.write_buffer(&g.model_buf.as_ref().unwrap().0, 0, &data);
-        g.queue.write_buffer(&g.cam_buf, 0, bytemuck::cast_slice(view_proj));
+        let mut cam = [0f32; 32];
+        cam[..16].copy_from_slice(view_proj);
+        cam[16..19].copy_from_slice(eye);
+        cam[19] = t0.elapsed().as_secs_f32();
+        cam[20..24].copy_from_slice(fog);
+        g.queue.write_buffer(&g.cam_buf, 0, bytemuck::cast_slice(&cam));
         // 画面の上（overlay）：縦の高さが 1、真ん中が原点、x 右・y 上
         let (tw, th) = target.as_ref().map(|t| (t.w, t.h)).unwrap_or((g.config.width, g.config.height));
         let aspect = tw as f32 / th.max(1) as f32;
         let ui: [f32; 16] = [2.0 / aspect, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0];
-        g.queue.write_buffer(&g.ui_buf, 0, bytemuck::cast_slice(&ui));
+        let mut uic = [0f32; 32];
+        uic[..16].copy_from_slice(&ui);
+        g.queue.write_buffer(&g.ui_buf, 0, bytemuck::cast_slice(&uic));
         // テクスチャの組の bind group
         for &(k, _, _) in &draw {
             let key = (meshes[k].tex[0].map(|x| x as i64).unwrap_or(-1), meshes[k].tex[1].map(|x| x as i64).unwrap_or(-1));

@@ -79,6 +79,12 @@ impl PlanetView {
                 Ok(m.unbind())
             };
             let (g, t) = (mk("grass")?, mk("trees")?);
+            // 風で揺らす（草はよく、木は梢だけ少し）。前の画面（alpedia_view）では無いので、無ければ何もしない
+            for (m, k) in [(&g, 0.12f32), (&t, 0.35f32)] {
+                if let Ok(mid) = m.bind(py).getattr("mid") {
+                    let _ = crate::game::gfx::view(py)?.call_method1("mesh_wind", (mid, k));
+                }
+            }
             let mut b = slf.borrow_mut();
             b.veg = Some(Box::default());
             b.veg_mesh = Some((g, t));
