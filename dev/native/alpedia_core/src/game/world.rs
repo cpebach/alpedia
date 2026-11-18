@@ -480,6 +480,11 @@ impl World {
             let sr = survival.getattr("SurvivalRules")?.call0()?;
             Self::g_addons(slf)?.call_method1("insert", (0, sr))?;      // 本体の遊び方（MOD ではない）
         }
+        if Self::addon(slf, "rail")?.is_none() {
+            // レールと車輪（本体の機能。MOD ではない）：車輪のある構築物をレールに沿って走らせる
+            let ra = imp(py, "main.rail")?.getattr("RailAddon")?.call0()?;
+            Self::g_addons(slf)?.call_method1("append", (ra,))?;
+        }
         let extra = PyList::empty_bound(py);
         for a in Self::addons_v(slf)? {
             for k in a.getattr("settings_keys")?.iter()? {

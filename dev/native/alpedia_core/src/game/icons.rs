@@ -224,6 +224,23 @@ pub fn icons_mark<'py>(py: Python<'py>, img: &B<'py>, kind: &B<'py>, col: C4) ->
             dr.arc((-0.26, 0.26), (0.26, -0.26), 200.0, 500.0, col, w)?;
             dr.polygon(&[(0.26, 0.08), (0.36, -0.06), (0.16, -0.06)], col)?;
         }
+        "rail" => {
+            // レール：2 本の線と枕木
+            for yy in [-0.27, -0.09, 0.09, 0.27] {
+                dr.rect((-0.3, yy + 0.04), (0.3, yy - 0.04), Some((120, 80, 50, 230)), None, None)?;
+            }
+            for xx in [-0.17, 0.17] {
+                dr.rect((xx - 0.04, 0.38), (xx + 0.04, -0.38), Some(col), None, None)?;
+            }
+        }
+        "wheel" => {
+            // 車輪：輪とスポーク
+            dr.ellipse((-0.3, 0.3), (0.3, -0.3), None, Some(col), Some(w))?;
+            dr.ellipse((-0.07, 0.07), (0.07, -0.07), Some(col), None, None)?;
+            for (x, y) in [(0.0, 0.3), (0.26, -0.15), (-0.26, -0.15)] {
+                dr.line(&[(0.0, 0.0), (x, y)], col, hw)?;
+            }
+        }
         "piston" => {
             // ピストン：筒と、押し出す棒・矢印
             dr.rect((-0.32, 0.14), (-0.02, -0.14), None, Some(col), Some(w))?;

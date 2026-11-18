@@ -77,7 +77,7 @@ class TestModLoading(ModCase):
         self.mod("m1", {"code/__init__.py": GOOD_INIT, "code/rules.py": GOOD_RULES,
                         "code/later.py": "VALUE = 3\n", "code/sub/__init__.py": "", "code/sub/deep.py": "X = 1\n"})
         w = self.world(["m1"]).load()
-        self.assertEqual([a.name for a in w.addons], ["rules"])
+        self.assertEqual([a.name for a in w.addons], ["rules", "rail"])          # レールは本体の機能
         for name in ("alpedia_mods.m1", "alpedia_mods.m1.rules", "alpedia_mods.m1.later", "alpedia_mods.m1.sub.deep"):
             self.assertIn(name, sys.modules)        # 使われていないモジュールも始めるときに読み込み済み
 
@@ -129,14 +129,14 @@ class TestModLoading(ModCase):
         if "ursina" in sys.modules:
             self.skipTest("画面のライブラリが読み込まれている")
         w = self.world(["m1"]).load()
-        self.assertEqual(len(w.addons), 1)
+        self.assertEqual(len(w.addons), 2)          # MOD の 1 つ＋レール（本体）
         self.assertEqual([x[1] for x in modcode._deferred], ["alpedia_mods.m1.ui"])
 
     def test_builtin_mods_load_cleanly(self):
         """本体に入っている MOD（街）がエラーなく読み込める。前の版のサバイバルの MOD は本体の遊び方になる"""
         paths.MODS = self._mods
         w = self.world(["survival", "city"]).load()
-        self.assertEqual(sorted(a.name for a in w.addons), ["city", "survival"])
+        self.assertEqual(sorted(a.name for a in w.addons), ["city", "rail", "survival"])
         self.assertFalse(w.creative)
 
     def test_mod_types(self):
@@ -235,7 +235,7 @@ class TestVRMMod(ModCase):
         (d / "world.json").write_text(json.dumps(s), "utf-8")
         w = World("w", CFG).load()
         self.assertTrue(w.player.defn["model"].endswith(".vrm"))
-        self.assertEqual([a.name for a in w.addons], ["skinmodel"])
+        self.assertEqual([a.name for a in w.addons], ["skinmodel", "rail"])
 
     def test_rest_pose_and_motion(self):
         import numpy as np

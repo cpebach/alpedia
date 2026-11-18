@@ -744,7 +744,7 @@ impl Construct {
     #[classattr]
     #[allow(non_snake_case)]
     fn PASSIVE_DEVICES(py: Python<'_>) -> R<PyObject> {
-        Ok(PySet::new_bound(py, &["anchor", "pipe", "tank", "valve", "battery", "seat", "generator", "antenna", "computer"])?
+        Ok(PySet::new_bound(py, &["anchor", "pipe", "tank", "valve", "battery", "seat", "generator", "antenna", "computer", "rail"])?
             .into_any().unbind())
     }
     #[classattr]

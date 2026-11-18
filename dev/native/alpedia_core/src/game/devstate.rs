@@ -94,6 +94,8 @@ pub fn schema(dtype: &str) -> Option<Vec<F>> {
                          f("store", Dict, Def::EmptyDict), tmp("working", Bool)],
         "seat" => vec![],
         "anchor" => vec![],
+        "rail" => vec![],
+        "wheel" => vec![opt("off", Bool)],
         "light" => vec![f("enabled", Bool, Def::B(true)), opt("color", List), opt("blink", Float), opt("group", Str)],
         "air_vent" => vec![f("mode", Str, Def::PS("mode", "fill")), f("enabled", Bool, Def::B(true)), tmp("cavity", Bool)],
         "antenna" => vec![f("enabled", Bool, Def::B(true))],

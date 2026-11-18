@@ -776,7 +776,7 @@ class TestFormats(CoreCase):
         """サバイバルは本体の遊び方（world.json の mode）。MOD なしで資源のルールと目標が入る。前の版の MOD も読み替える"""
         w = self.world(mode="survival")
         self.assertFalse(w.creative)
-        self.assertEqual([a.name for a in w.addons], ["survival"])
+        self.assertEqual([a.name for a in w.addons], ["survival", "rail"])         # レールは本体の機能
         self.assertIsNone(getattr(w.addon("survival"), "mod_id", None), "MOD ではない")
         self.assertGreater(w.player.inventory.get("iron", 0), 0, "最初の所持品")
         w.save()

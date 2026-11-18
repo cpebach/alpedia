@@ -26,7 +26,7 @@ s = dict(DEFAULT_SETTINGS, name="c", format=3, planets=default_bodies())
 (d / "mods.json").write_text(json.dumps({"enabled": ["survival", "city"]}), encoding="utf-8")
 cfg = json.loads(json.dumps(config.DEFAULTS))
 w = World("c", cfg).load()
-assert [a.name for a in w.addons] == ["survival", "city"] and not w.creative
+assert [a.name for a in w.addons] == ["survival", "city", "rail"] and not w.creative
 pack = w.addon("city")
 p = w.player; iron0 = p.inventory.get("iron", 0)
 pl = w.planets[0]; up = pl.up(p.pos); side = np.cross(up, [0, 0, 1.0]); side /= np.linalg.norm(side)
