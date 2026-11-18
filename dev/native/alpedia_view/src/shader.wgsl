@@ -13,7 +13,7 @@ struct Model {
     model: mat4x4<f32>,
     tint: vec4<f32>,      // 色を掛ける（ノードの色）
     flags: vec4<f32>,     // x：2枚目のテクスチャを使う、y：テクスチャを使う、z：不透明さがこれ未満は描かない
-    extra: vec4<f32>,     // x：立体映像（ホログラム）の描き方、y：時刻、z：風で揺らす強さ（m。草木）
+    extra: vec4<f32>,     // x：立体映像（ホログラム）の描き方、y：時刻、z：風で揺らす強さ（m。草木）、w：絵を流す速さ（滝）
 };
 @group(1) @binding(0) var<uniform> mdl: Model;
 
@@ -52,7 +52,8 @@ fn vs_main(v: VIn) -> VOut {
     o.clip = cam.view_proj * vec4<f32>(wp, 1.0);
     o.wpos = wp;
     o.col = vec4<f32>(v.col, v.alpha) * mdl.tint;
-    o.uv = v.uv;
+    // 絵を流す（w：1 秒に何枚分。滝の水が下へ）
+    o.uv = v.uv + vec2<f32>(0.0, fract(cam.eye.w * mdl.extra.w));
     o.raw = vec4<f32>(v.col, v.alpha);
     return o;
 }

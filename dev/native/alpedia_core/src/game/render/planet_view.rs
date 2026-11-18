@@ -89,6 +89,35 @@ impl PlanetView {
             b.veg = Some(Box::default());
             b.veg_mesh = Some((g, t));
         }
+        // 滝（A-07）：名所の崖・湖の段。惑星ローカルの決まった形なので 1 回だけ作る
+        if let Ok(nat) = planet.call_method0("_nat") {
+            if let Ok(ps) = nat.downcast::<crate::PlanetShape>() {
+                let shape = ps.get().shape.clone();
+                let falls = py.allow_threads(|| shape.waterfalls().clone());
+                if !falls.is_empty() {
+                    let ((v, t), (mv, mt)) = super::waterfall::build(&falls, sun(py)?, ambient(py)?);
+                    let path = imp(py, "main.paths")?.getattr("TEXTURES")?.call_method1("__truediv__", ("waterfall.png",))?.str()?;
+                    let tex = rmod(py)?.call_method1("load_texture", (py.None(), path))?;
+                    for (name, v, t, flow) in [("waterfall", v, t, 0.55f32), ("waterfall_mist", mv, mt, 0.0f32)] {
+                        let m = dmesh(py, &root, name)?;
+                        let n = m.getattr("np")?;
+                        n.call_method1("setTwoSided", (true,))?;
+                        n.call_method1("setTransparency", (true,))?;
+                        n.call_method1("setDepthWrite", (false,))?;
+                        if tex.is_truthy()? {
+                            n.call_method1("setTexture", (&tex, 1))?;
+                        }
+                        m.call_method1("set", (f32_2(py, v, 12)?, i64_2(py, t, 3)?))?;
+                        // 水の絵を下へ流す（前の画面では無いので、無ければそのまま）
+                        if flow > 0.0 {
+                            if let Ok(mid) = m.getattr("mid") {
+                                let _ = crate::game::gfx::view(py)?.call_method1("mesh_flow", (mid, flow));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // 最初は遠くから見た形（いちばん粗い区画）
         let far = [0.0, 0.0, radius * 1e3];
         Self::_lod_update(slf, far, None)?;

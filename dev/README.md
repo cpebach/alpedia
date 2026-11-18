@@ -636,6 +636,9 @@ Rust から読み書きする形）。Python で書くのは、MOD のプログ�
   `cascade_lakes`（段々の湖）・`star_dunes`（赤い大砂丘）・`karst_sea`（海から立つ石灰岩の塔）・`high_mountains`（雪の高い山脈）・`canyon`（大峡谷）。
   `{"kind", "at": [x, z]（出現地点から地表に沿って m）, "radius", "height", "yaw", "seed", "name"}`。高さ・水・気候・地表の色・草木の種類も変わる。
   MOD「地球の名所（Earth）」（`mods/earth`）は、主な惑星アースに 10 の名所を置く（ワールドを作るときに MOD で選ぶ）。
+- **川と滝**：惑星の定義の `"rivers"`（0 で無し。1.0 で幅 30〜60 m ほど。大きいほど太い）で、陸の低い所に曲がりくねった川を通す
+  （地面を削って谷にし、水面を張る。`planet.rs` の `river`）。滝は名所の崖（`tepui`）と湖の段（`cascade_lakes`）に置かれ
+  （`features.rs` の `waterfalls`・`PlanetShape.waterfalls()`）、水の幕の絵（`sauce/textures/waterfall.png`。`tools/make_water_textures.py` で作る）が下へ流れ、滝つぼにしぶきが立つ。
 
 ## 現時点の制限（今後の拡張ポイント）
 

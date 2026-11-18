@@ -965,6 +965,13 @@ impl View {
         Ok(())
     }
 
+    /// 絵を流す速さ（1 秒に絵の何枚分、下へ。滝の水）
+    fn mesh_flow(&mut self, m: usize, speed: f32) -> PyResult<()> {
+        self.check_mesh(m)?;
+        self.meshes[m].extra[3] = speed;
+        Ok(())
+    }
+
     /// 描く先を、窓の代わりに width×height の画（窓の外）にする（0 で窓に戻す）。ムービーの道具が使う。
     /// このあと size() はこの大きさを返し、render() はここへ描く（窓には出さない）。画素は read_target() で読む
     fn set_target(&mut self, width: u32, height: u32) -> PyResult<()> {

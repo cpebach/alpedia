@@ -179,6 +179,44 @@ class TestEarthMod(CoreCase):
         h, wv, _ = at("cascade_lakes", n=300, spread=400)
         self.assertGreater((wv > h).mean(), 0.05, "段々の湖")
 
+    def test_waterfalls_at_cliffs_and_lake_steps(self):
+        from main.world import default_bodies
+        d = paths.world_dir("t")
+        (d / "scripts").mkdir(parents=True, exist_ok=True)
+        (d / "mods.json").write_text(json.dumps({"enabled": ["earth"]}), encoding="utf-8")
+        w = self.world(planets=default_bodies("earth", False, False))
+        pl = w.planets[0]
+        f = np.asarray(pl._nat().waterfalls())
+        self.assertGreaterEqual(len(f), 4, "テプイの崖と段々の湖に滝")
+        top, bot = f[:, :3], f[:, 3:6]
+        drop = np.linalg.norm(top, axis=1) - np.linalg.norm(bot, axis=1)
+        self.assertTrue((drop > 5).all(), f"落差 {drop}")
+        self.assertGreater(drop.max(), 150, "テプイの滝は高い")
+
+
+class TestRivers(CoreCase):
+    """川（A-07）：陸に、海へ向かう細い水の筋。地面は川の所だけ削れている"""
+
+    def test_rivers_on_land(self):
+        w = self.world(planets=[{"def": "gaia", "position": [0, 0, 0], "craters": []}])
+        pl = w.planets[0]
+        self.assertGreater(pl.defn.get("rivers", 0), 0)
+        rng = np.random.default_rng(3)
+        d = rng.normal(size=(60000, 3))
+        d /= np.linalg.norm(d, axis=1)[:, None]
+        v = np.asarray(pl._tile_values(d))
+        h, wv = v[:, 0] - pl.radius, v[:, 1] - pl.radius
+        land = h > 2.0
+        river = land & (wv > h)
+        self.assertGreater(river.sum(), 20, "陸に川")
+        self.assertLess(river.sum() / land.sum(), 0.15, "川は細い")
+        # 川は谷：まわり（少し離れた所）より低い
+        i = np.flatnonzero(river)[:20]
+        side = d[i] + np.cross(d[i], [0.0, 1.0, 0.0]) * (150.0 / pl.radius)
+        side /= np.linalg.norm(side, axis=1)[:, None]
+        hs = np.asarray(pl._tile_values(side))[:, 0] - pl.radius
+        self.assertGreater(float(np.median(hs - h[i])), 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

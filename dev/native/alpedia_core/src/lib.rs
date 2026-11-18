@@ -367,6 +367,7 @@ impl PlanetShape {
                     range_w: match d.get_item("range_w")? { Some(v) => v.extract()?, None => 0.0 },
                     range_h: match d.get_item("range_h")? { Some(v) => v.extract()?, None => 0.0 },
                     features: parse_features(d)?,
+                    rivers: match d.get_item("rivers")? { Some(v) => v.extract()?, None => 0.0 },
                 })
             }
         };
@@ -477,6 +478,13 @@ impl PlanetShape {
         Ok(PyArray1::from_vec_bound(py, out))
     }
 
+    /// 滝 (N,7)：上の点 xyz・下の点 xyz（惑星ローカル）・幅
+    fn waterfalls<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let f = py.allow_threads(|| self.shape.waterfalls().clone());
+        let n = f.len();
+        Ok(PyArray1::from_vec_bound(py, f.into_iter().flatten().collect()).reshape([n, 7])?)
+    }
+
     /// 地形の名所 (N,8)：色 r,g,b・色の重み・草木を生やさない度合い・木の種類（-1 は気候のまま）・名所の水面（m、無ければ -1e9）・名所の中か(1/0)
     fn features_at<'py>(&self, py: Python<'py>, dirs: RoF<'py>, h: RoF<'py>, slope: RoF<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let d = ro(&dirs, "dirs")?;
@@ -492,8 +500,9 @@ impl PlanetShape {
                 let dd = [d[3 * i], d[3 * i + 1], d[3 * i + 2]];
                 let p = self.shape.feature_paint(dd, hh[i], sl[i]);
                 let inside = e.features.iter().any(|f| f.local(dd, self.shape.radius).is_some());
+                let rw = self.shape.height_full(e, dd).1;
                 out[8 * i..8 * i + 8].copy_from_slice(&[p.rgb[0], p.rgb[1], p.rgb[2], p.w, p.bare, p.tree as f64,
-                                                        self.shape.feature_water(e, dd), if inside { 1.0 } else { 0.0 }]);
+                                                        self.shape.feature_water(e, dd).max(rw), if inside { 1.0 } else { 0.0 }]);
             }
         } else {
             for i in 0..n {

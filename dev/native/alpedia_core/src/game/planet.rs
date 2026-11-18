@@ -711,6 +711,8 @@ struct Earth {
     /// 地形の名所：種類の番号と (中心・e1・e2・半径・高さ・乱数の種) × N
     feat_kind: Vec<i64>,
     feat: Vec<f64>,
+    /// 川（定義の "rivers"。0 で無し）
+    rivers: f64,
 }
 
 const CELL: f64 = 8.0;
@@ -727,6 +729,7 @@ fn earth_params<'py>(py: Python<'py>, e: &Earth, empty: bool) -> R<Bound<'py, Py
     d.set_item("range_w", e.range_w)?;
     d.set_item("range_h", e.range_h)?;
     d.set_item("feat_kind", e.feat_kind.clone())?;
+    d.set_item("rivers", e.rivers)?;
     d.set_item("feat", e.feat.clone())?;
     d.set_item("cell", CELL)?;
     let f1 = |v: Vec<f64>| -> R<Bound<'py, PyAny>> { let n = v.len(); arr(py, v, &[n]) };
@@ -990,6 +993,8 @@ pub struct EarthPlanet {
     range_h: f64,
     feat_kind: Vec<i64>,
     feat: Vec<f64>,
+    #[pyo3(get)]
+    rivers: f64,
 }
 
 fn sup<'py>(s: &Bound<'py, EarthPlanet>) -> Bound<'py, Planet> {
@@ -1010,7 +1015,7 @@ impl EarthPlanet {
             ponds: (0..pd.len()).map(|i| (pd[i], pr[i], pdp[i], pl[i])).collect(),
             cave_a: v3s(b.cave_a.bind(py))?, cave_b: v3s(b.cave_b.bind(py))?, cave_ra: g(&b.cave_ra)?, cave_rb: g(&b.cave_rb)?,
             cave_id: gi(&b.cave_id)?, ck: gi(&b.ck)?, cstart: gi(&b.cstart)?, cend: gi(&b.cend)?, ccap: gi(&b.ccap)?,
-            range_dist: b.range_dist, range_w: b.range_w, range_h: b.range_h, feat_kind: b.feat_kind.clone(), feat: b.feat.clone(),
+            range_dist: b.range_dist, range_w: b.range_w, range_h: b.range_h, feat_kind: b.feat_kind.clone(), feat: b.feat.clone(), rivers: b.rivers,
         })
     }
     fn sample_v(slf: &Bound<'_, Self>, dirs: &[V3]) -> R<Vec<[f64; 2]>> {
@@ -1058,7 +1063,7 @@ impl EarthPlanet {
     fn feature_tint(slf: &Bound<'_, Self>, d: &[V3], h: &[f64], slope: &[f64], mut col: Vec<V3>) -> R<(Vec<V3>, Vec<f64>)> {
         let py = slf.py();
         let n = h.len();
-        if slf.borrow().feat_kind.is_empty() {
+        if slf.borrow().feat_kind.is_empty() && slf.borrow().rivers <= 0.0 {
             return Ok((col, vec![-1e9; n]));
         }
         let r = Planet::_nat(&sup(slf))?.call_method1("features_at", (rows3(py, d)?, arr(py, h.to_vec(), &[n])?, arr(py, slope.to_vec(), &[n])?))?;
@@ -1103,7 +1108,7 @@ impl EarthPlanet {
             sea: g("sea_level", 0.0)?, mountain_h: g("mountain_height", 45.0)?, hill_h: g("hill_height", 4.0)?,
             flat_r: g("spawn_flat_radius", 38.0)?, spawn_h: g("spawn_height", 3.0)?, n_caves: gi("caves", 220)?, n_ponds: gi("ponds", 260)?,
             ponds: vec![], cave_a: vec![], cave_b: vec![], cave_ra: vec![], cave_rb: vec![], cave_id: vec![],
-            ck: vec![], cstart: vec![], cend: vec![], ccap: vec![], range_dist: 0.0, range_w: 0.0, range_h: 0.0, feat_kind: vec![], feat: vec![],
+            ck: vec![], cstart: vec![], cend: vec![], ccap: vec![], range_dist: 0.0, range_w: 0.0, range_h: 0.0, feat_kind: vec![], feat: vec![], rivers: d.dget2("rivers", 0.0)?.extract()?,
         };
         if let Ok(sr) = d.dget1("spawn_range") {
             if !sr.is_none() {
@@ -1167,7 +1172,7 @@ impl EarthPlanet {
             cave_a: rows3(py, &e.cave_a)?.unbind(), cave_b: rows3(py, &e.cave_b)?.unbind(),
             cave_ra: f1(e.cave_ra.clone())?, cave_rb: f1(e.cave_rb.clone())?, cave_id: i1(&e.cave_id)?,
             ck: i1(&e.ck)?, cstart: i1(&e.cstart)?, cend: i1(&e.cend)?, ccap: i1(&e.ccap)?, bare: py.None(),
-            range_dist: e.range_dist, range_w: e.range_w, range_h: e.range_h, feat_kind: e.feat_kind.clone(), feat: e.feat.clone(),
+            range_dist: e.range_dist, range_w: e.range_w, range_h: e.range_h, feat_kind: e.feat_kind.clone(), feat: e.feat.clone(), rivers: e.rivers,
         };
         Ok(PyClassInitializer::from(base).add_subclass(me))
     }

@@ -108,9 +108,14 @@ pub struct Earth {
     pub range_h: f64,
     /// 地形の名所（Earth MOD など。features.rs）
     pub features: Vec<crate::features::Feature>,
+    /// 川（0 で無し、1 がふつう。川の幅の倍率）
+    pub rivers: f64,
 }
 
 /// 気候の軸（北極の向き）。出現地点（+Y）が温帯になるように傾けてある
+/// 川の幅（ノイズの値の幅。だいたい 40 m）
+const RIVER_W: f64 = 0.0065;
+
 const POLE: [f64; 3] = [0.6265, 0.7770, 0.0610];
 
 /// 段々（台地）：x を steps 段に分け、段の間を急にする
@@ -129,6 +134,8 @@ pub struct Shape {
     pub seed: i64,
     pub earth: Option<Earth>,
     n: usize,
+    /// 滝（名所から。最初に使うときに作る）
+    falls: std::sync::OnceLock<Vec<[f64; 7]>>,
     tiles: RwLock<(HashMap<(usize, i64, i64), Arc<Vec<[f64; 2]>>>, VecDeque<(usize, i64, i64)>)>,
 }
 
@@ -139,7 +146,7 @@ const MAX_TILES: usize = 4000;
 impl Shape {
     pub fn new(radius: f64, amp: f64, freq: f64, seed: i64, earth: Option<Earth>) -> Self {
         let n = ((std::f64::consts::PI / 2.0 * radius / RES / TILE as f64).ceil() as usize) * TILE;
-        Shape { radius, amp, freq, seed, earth, n, tiles: RwLock::new((HashMap::new(), VecDeque::new())) }
+        Shape { radius, amp, freq, seed, earth, n, falls: std::sync::OnceLock::new(), tiles: RwLock::new((HashMap::new(), VecDeque::new())) }
     }
 
     fn ang(&self, d: [f64; 3], r: [f64; 3]) -> f64 {
@@ -176,6 +183,14 @@ impl Shape {
         (temp, moist)
     }
 
+    /// 滝：[上 xyz, 下 xyz, 幅]（惑星ローカル）
+    pub fn waterfalls(&self) -> &Vec<[f64; 7]> {
+        self.falls.get_or_init(|| match &self.earth {
+            Some(e) => crate::features::waterfalls(&e.features, self.radius, &|d| self.height0(e, d)),
+            None => vec![],
+        })
+    }
+
     /// 名所の水面（m。無ければ -1e9）
     pub fn feature_water(&self, e: &Earth, d: [f64; 3]) -> f64 {
         e.features.iter().map(|f| f.water(d, self.radius)).fold(-1e9, f64::max)
@@ -209,6 +224,43 @@ impl Shape {
 
     /// 池を除いた地表の高さ（地球型）。A-02：大陸・丘・山脈・台地（メサ）・砂丘。大きさは m で決める
     pub fn height0(&self, e: &Earth, d: [f64; 3]) -> f64 {
+        self.height_full(e, d).0
+    }
+
+    /// 川：曲がりくねった線（ゆがめたノイズの等高線）に沿って、地形を削って水を入れる。(削る深さ, 川の水面) 。
+    /// 水面は削る前の地面の 1 m 下なので、川は土地の低い方へ下っていく。海の近く・高い山・名所の中には作らない
+    fn river(&self, e: &Earth, d: [f64; 3], h: f64) -> (f64, f64) {
+        if e.rivers <= 0.0 {
+            return (0.0, -1e9);
+        }
+        let sd = self.seed;
+        let mask = smoothstep(e.sea + 0.5, e.sea + 4.0, h) * smoothstep(800.0, 450.0, h);
+        if mask <= 0.0 {
+            return (0.0, -1e9);
+        }
+        let fw = e.features.iter().map(|f| f.weight(d, self.radius)).fold(0.0, f64::max);
+        let mask = mask * (1.0 - fw);
+        if mask <= 0.0 {
+            return (0.0, -1e9);
+        }
+        let q = self.pm(d, 9000.0, 31.0);
+        let wp = [fbm(self.pm(d, 2600.0, 57.0), sd + 41, 3) - 0.5, fbm(self.pm(d, 2600.0, 77.0), sd + 42, 3) - 0.5,
+                  fbm(self.pm(d, 2600.0, 97.0), sd + 43, 3) - 0.5];
+        let v = fbm([q[0] + wp[0] * 1.6, q[1] + wp[1] * 1.6, q[2] + wp[2] * 1.6], sd + 40, 2);
+        let a = (v - 0.5).abs();
+        let width = RIVER_W * e.rivers;
+        if a > width * 3.0 {
+            return (0.0, -1e9);
+        }
+        let ch = 1.0 - smoothstep(0.0, width, a);
+        let bank = 1.0 - smoothstep(width, width * 3.0, a);
+        let carve = mask * (ch * 4.5 + bank * 1.8);
+        let water = if ch > 0.15 && mask > 0.5 { h - 1.0 } else { -1e9 };
+        (carve, water)
+    }
+
+    /// 地表の高さと、川の水面（無ければ -1e9）
+    pub fn height_full(&self, e: &Earth, d: [f64; 3]) -> (f64, f64) {
         let sd = self.seed;
         // 大陸（波長 30 km）。出現地点（+Y）のまわり 3 km は陸
         let mut cont = (fbm(self.pm(d, 30000.0, 11.0), sd, 5) - 0.5) / 0.09;
@@ -243,7 +295,10 @@ impl Shape {
             h = f.height(d, self.radius, h);
         }
         let w = 1.0 - smoothstep(e.flat_r, e.flat_r * 1.9, a_sp);
-        h * (1.0 - w) + (e.spawn_h + hills * 0.15) * w
+        let (carve, rw) = self.river(e, d, h);
+        let h = h - carve * (1.0 - w);
+        let rw = if w > 0.01 { -1e9 } else { rw };
+        (h * (1.0 - w) + (e.spawn_h + hills * 0.15) * w, rw)
     }
 
     /// dirs の高さ h を池で削り、水面の高さ（無い所は -inf）を返す（まとめて：近い池だけ調べる）
@@ -301,8 +356,10 @@ impl Shape {
                 })
                 .collect(),
             Some(e) => {
-                let mut h: Vec<f64> = dirs.iter().map(|&d| self.height0(e, d)).collect();
+                let hf: Vec<(f64, f64)> = dirs.iter().map(|&d| self.height_full(e, d)).collect();
+                let mut h: Vec<f64> = hf.iter().map(|x| x.0).collect();
                 let water = self.apply_ponds(e, dirs, &mut h);
+                let water: Vec<f64> = water.iter().zip(hf.iter()).map(|(w, x)| w.max(x.1)).collect();
                 h.iter()
                     .zip(water.iter())
                     .zip(dirs.iter())

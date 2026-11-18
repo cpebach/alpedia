@@ -1100,7 +1100,9 @@ class TestLimits(CoreCase):
         w, pl, dirs, s = self._gaia()
         w.step(DT)
         shore = None
-        for i in np.where(s[:, 1] > s[:, 0])[0][:2000]:
+        # 海の岸で（川の水面は地形に沿って傾いているので、海で調べる）
+        sea = (s[:, 1] > s[:, 0]) & (np.abs(s[:, 1] - pl.radius) < 0.05)
+        for i in np.where(sea)[0][:2000]:
             t = np.cross(dirs[i], [0, 1.0, 0])
             t /= np.linalg.norm(t)
             for k in range(1, 40):

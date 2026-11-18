@@ -165,6 +165,11 @@ impl Feature {
         Some((x, z, u))
     }
 
+    /// 点 d がこの名所の地形になっている度合い（0〜1）
+    pub fn weight(&self, d: [f64; 3], r_planet: f64) -> f64 {
+        match self.local(d, r_planet) { Some((_, _, u)) => Self::blend(u), None => 0.0 }
+    }
+
     /// まわりの地形となめらかにつなぐ重み（中心 1、半径の 0.8〜1 で 0 へ）
     #[inline]
     fn blend(u: f64) -> f64 {
@@ -379,4 +384,106 @@ impl Feature {
         }
         p
     }
+}
+
+/// 局所の座標 (x, z) の向き（名所の中心のまわり）
+fn dir_at(f: &Feature, x: f64, z: f64, r_planet: f64) -> [f64; 3] {
+    let v = [f.dir[0] + f.e1[0] * x / r_planet + f.e2[0] * z / r_planet,
+             f.dir[1] + f.e1[1] * x / r_planet + f.e2[1] * z / r_planet,
+             f.dir[2] + f.e1[2] * x / r_planet + f.e2[2] * z / r_planet];
+    let n = dot(v, v).sqrt();
+    [v[0] / n, v[1] / n, v[2] / n]
+}
+
+/// 滝：[上の点 xyz, 下の点 xyz, 幅]（惑星ローカル、m）。h_of(d)：地表の高さ（基準の半径から）
+pub fn waterfalls(fs: &[Feature], r_planet: f64, h_of: &dyn Fn([f64; 3]) -> f64) -> Vec<[f64; 7]> {
+    let mut out = vec![];
+    let pos = |d: [f64; 3], h: f64| [d[0] * (r_planet + h), d[1] * (r_planet + h), d[2] * (r_planet + h)];
+    for f in fs {
+        match f.kind {
+            Kind::CascadeLakes => {
+                // 湖と湖の段（140 m ごとに 9 m）に、谷の真ん中の幅 28 m の滝
+                let mut k = 1;
+                loop {
+                    let xb = 140.0 * k as f64 - f.radius;
+                    if xb > f.radius * 0.75 {
+                        break;
+                    }
+                    if xb > -f.radius * 0.75 {
+                        let zc = 25.0 * (xb / 300.0 + f.seed as f64).sin();
+                        let top = f.height - (k - 1) as f64 * 9.0 - 0.2;
+                        let bot = f.height - k as f64 * 9.0 - 0.2;
+                        let dt = dir_at(f, xb - 3.0, zc, r_planet);
+                        let db = dir_at(f, xb + 7.0, zc, r_planet);
+                        let (a, b) = (pos(dt, top), pos(db, bot));
+                        out.push([a[0], a[1], a[2], b[0], b[1], b[2], 28.0]);
+                    }
+                    k += 1;
+                }
+            }
+            Kind::Tepui => {
+                // 台地の縁の、いちばん高い崖を 3 つまで（800 m 以上離して）。下は崖の麓まで
+                let step = 40.0;
+                let lim = f.radius * 0.7;
+                let n = (2.0 * lim / step) as i64;
+                let mut cand: Vec<(f64, f64, f64, f64, f64)> = vec![];       // (落差, x, z, 向き x, 向き z)
+                for i in 0..n {
+                    for j in 0..n {
+                        let (x, z) = (-lim + i as f64 * step, -lim + j as f64 * step);
+                        let h0 = h_of(dir_at(f, x, z, r_planet));
+                        if h0 < f.height * 0.7 {
+                            continue;
+                        }
+                        for (ux, uz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                            let h1 = h_of(dir_at(f, x + ux * 60.0, z + uz * 60.0, r_planet));
+                            if h0 - h1 > f.height * 0.5 {
+                                cand.push((h0 - h1, x, z, ux, uz));
+                            }
+                        }
+                    }
+                }
+                cand.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                let mut picked: Vec<(f64, f64)> = vec![];
+                for (_, x, z, ux, uz) in cand {
+                    if picked.iter().any(|p| (p.0 - x).hypot(p.1 - z) < 800.0) {
+                        continue;
+                    }
+                    // 縁：台地の上から崖の方へ、高さが下がり始める所
+                    let mut ex = x;
+                    let mut ez = z;
+                    let htop = h_of(dir_at(f, x, z, r_planet));
+                    for s in 0..15 {
+                        let (nx, nz) = (x + ux * 4.0 * s as f64, z + uz * 4.0 * s as f64);
+                        if h_of(dir_at(f, nx, nz, r_planet)) < htop - 3.0 {
+                            break;
+                        }
+                        ex = nx;
+                        ez = nz;
+                    }
+                    // 麓：下がらなくなるまで
+                    let (mut bx, mut bz) = (ex, ez);
+                    let mut hb = h_of(dir_at(f, ex, ez, r_planet));
+                    for _ in 0..80 {
+                        let (nx, nz) = (bx + ux * 8.0, bz + uz * 8.0);
+                        let hn = h_of(dir_at(f, nx, nz, r_planet));
+                        if hn > hb - 1.0 {
+                            break;
+                        }
+                        bx = nx;
+                        bz = nz;
+                        hb = hn;
+                    }
+                    let a = pos(dir_at(f, ex, ez, r_planet), htop - 1.0);
+                    let b = pos(dir_at(f, bx, bz, r_planet), hb);
+                    out.push([a[0], a[1], a[2], b[0], b[1], b[2], 22.0]);
+                    picked.push((x, z));
+                    if picked.len() >= 3 {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
