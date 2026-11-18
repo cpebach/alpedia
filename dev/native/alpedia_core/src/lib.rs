@@ -256,11 +256,11 @@ fn gravity<'py>(py: Python<'py>, p: RoF<'py>, centers: RoF<'py>, gm: RoF<'py>, r
 // 惑星の地形
 // ---------------------------------------------------------------------------
 #[pyclass(frozen)]
-struct PlanetShape {
-    shape: Arc<planet::Shape>,
+pub(crate) struct PlanetShape {
+    pub(crate) shape: Arc<planet::Shape>,
     /// 中心（公転で動く。L-08）
     center: RwLock<[f64; 3]>,
-    craters: RwLock<Vec<[f64; 4]>>,
+    pub(crate) craters: RwLock<Vec<[f64; 4]>>,
     /// 水の満ちた掘削跡（惑星ローカルの [x, y, z, 半径, 水面の半径]）
     floods: RwLock<Vec<[f64; 5]>>,
 }

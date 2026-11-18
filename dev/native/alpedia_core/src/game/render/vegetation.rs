@@ -141,22 +141,34 @@ impl Veg {
         if cs.is_empty() {
             return Ok((vec![], vec![]));
         }
-        let dirs: Vec<f64> = cs.iter().flat_map(|c| c.0).collect();
-        let d_o = f64_2(py, dirs.clone(), 3)?;
-        let sr = a1(&planet.call_method1("surface_radius_exact", (&d_o,))?)?;
-        let wr = match planet.call_method1("water_radius", (&d_o,)) { Ok(w) => a1(&w)?, Err(_) => vec![0.0; cs.len()] };
-        let sea: f64 = if planet.getattr("has_water")?.is_truthy()? { planet.getattr("sea").and_then(|x| x.extract()).unwrap_or(0.0) } else { -1e9 };
-        let h: Vec<f64> = sr.iter().map(|x| x - r).collect();
+        // 地面・水・気候・掘った穴は Rust の地形から直接（Python を通さず、まとめて並列に。A-02：重さの対策）
         let nat = planet.call_method0("_nat")?;
-        let clim = match nat.call_method1("climate", (&d_o, f64_1(py, h.clone()))) {
-            Ok(c) => a2(&c, 2)?.d,
-            Err(_) => vec![0.5; 2 * cs.len()],
-        };
-        // 掘った穴の中には生やさない（地表のすぐ上の点が地中なら掘ってある）
-        let pts: Vec<f64> = (0..cs.len()).flat_map(|i| { let d = cs[i].0; let rr = sr[i] + 0.3; [d[0] * rr, d[1] * rr, d[2] * rr] }).collect();
-        let ctr = v3(&planet.getattr("center")?)?;
-        let wp: Vec<f64> = pts.iter().enumerate().map(|(k, x)| x + ctr[k % 3]).collect();
-        let sdf = a1(&planet.call_method1("sdf", (f64_2(py, wp, 3)?,))?)?;
+        let ps = nat.downcast::<crate::PlanetShape>()?.get();
+        let shape = ps.shape.clone();
+        let craters = ps.craters.read().unwrap().clone();
+        let sea: f64 = if planet.getattr("has_water")?.is_truthy()? { planet.getattr("sea").and_then(|x| x.extract()).unwrap_or(0.0) } else { -1e9 };
+        let dirs: Vec<[f64; 3]> = cs.iter().map(|c| c.0).collect();
+        let samp: Vec<([f64; 2], (f64, f64), f64)> = py.allow_threads(|| {
+            use rayon::prelude::*;
+            dirs.par_chunks(64).flat_map_iter(|ch| {
+                let tv = shape.tile_values(ch);
+                ch.iter().zip(tv).map(|(d, v)| {
+                    let h = v[0] - r;
+                    let cl = match &shape.earth { Some(e) => shape.climate(e, *d, h), None => (0.5, 0.5) };
+                    // 掘った穴の中（地表のすぐ上の点が地中）
+                    let sd = if craters.is_empty() { 1.0 } else {
+                        let rr = v[0] + 0.3;
+                        shape.sdf([d[0] * rr, d[1] * rr, d[2] * rr], &craters)
+                    };
+                    (v, cl, sd)
+                }).collect::<Vec<_>>()
+            }).collect()
+        });
+        let sr: Vec<f64> = samp.iter().map(|s| s.0[0]).collect();
+        let wr: Vec<f64> = samp.iter().map(|s| s.0[1]).collect();
+        let h: Vec<f64> = sr.iter().map(|x| x - r).collect();
+        let clim: Vec<f64> = samp.iter().flat_map(|s| [s.1 .0, s.1 .1]).collect();
+        let sdf: Vec<f64> = samp.iter().map(|s| s.2).collect();
         let (s_, amb) = (sun(py)?, ambient(py)?);
         let mut v: Vec<f32> = vec![];
         let mut t: Vec<i64> = vec![];

@@ -22,7 +22,7 @@ Esc 一時停止メニュー（保存・メニューへ戻る・終了）
 [操縦席] Space などの割り当てキーで推進機、X でアクチュエータ
 """
 
-SEAT_KEYS = ["w", "a", "s", "d", "q", "e", "space", "left control", "left shift", "x", "z", "c",
+SEAT_KEYS = ["w", "a", "s", "d", "q", "e", "space", "left control", "left shift", "x", "z", "c", "g",
              "up arrow", "down arrow", "left arrow", "right arrow", "1", "2", "3", "4"]
 
 

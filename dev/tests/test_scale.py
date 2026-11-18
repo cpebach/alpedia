@@ -108,7 +108,8 @@ class TestSettlements(CoreCase):
         v = next(c for c in m.cities if getattr(c, "stype", "") == "village")
         st = Streamer(w, m)
         w.player.pos[:] = v.x + (v.x - w.planets[0].center) / np.linalg.norm(v.x - w.planets[0].center) * 3
-        st.update(2.0)
+        for _ in range(10):                       # 1 回に少しずつ置く
+            st.update(2.0)
         mine = [cid for cid in w.constructs if cid.startswith(f"blk-{v.id}-")]
         self.assertGreater(len(mine), 3)
         self.assertTrue(all(w.constructs[cid].anchored for cid in mine))

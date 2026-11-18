@@ -17,6 +17,8 @@ L = log.get("city.blocks")
 NEAR = 1200.0           # これより近い街の建物を作る
 FAR = 1800.0            # これより遠くなったら片付ける
 CHECK = 1.0             # 何秒ごとに調べるか
+CHECK_BUSY = 0.2        # 置く途中の建物があるときは、この間隔で続ける
+PER_CHECK = 2           # 1 回に置く建物の数（一度にたくさん置くと固まる）
 TOWER_MATS = ("hull_dark", "hull_navy", "hull_black", "concrete", "hull_teal")
 WALL_MAT = "concrete"
 
@@ -149,7 +151,7 @@ class Streamer:
             return
         if dt is None:
             last = getattr(self, "_last", None)
-            if last is not None and w.time - last < CHECK:
+            if last is not None and w.time - last < (CHECK_BUSY if getattr(self, "_busy", False) else CHECK):
                 return
             self._last = w.time
         else:
@@ -178,25 +180,45 @@ class Streamer:
             elif c.version != ver:
                 self.kept.add(cid)
                 del self.made[cid]
-        for city in self.m.cities:
-            if not getattr(city, "blocks", None):
-                continue
-            dist = min(float(np.linalg.norm(p - city.x)) for p in pp) - getattr(city, "block_radius", city.radius)
-            if dist < NEAR:
-                self.on_state(city)
-                for cid, b, V, org, rot, s, name in self._plan(city):
-                    if cid in cons or cid in self.gone or cid in self.kept:
-                        continue
-                    if b >= 0 and city.state is not None and b < len(city.state) and city.state[b] >= 2:
-                        continue
-                    c = Construct.from_voxels(w.registry, V, org, rot, size=s, name=f"{city.name}の{name}", id_=cid)
-                    w.add_construct(c)
-                    self.made[cid] = None
-            elif dist > FAR:
-                for cid, *_ in self._plan(city):
-                    if cid in self.made and cid in cons and self.made[cid] in (None, cons[cid].version):
-                        del cons[cid]
-                        del self.made[cid]
+        by_id = {c.id: c for c in self.m.cities}
+
+        def dist(city):
+            return min(float(np.linalg.norm(p - city.x)) for p in pp) - getattr(city, "block_radius", city.radius)
+
+        # 遠くなった街の、手を加えていない建物を片付ける（建物のある街だけ見る）
+        for cid in [k for k in self.made]:
+            city = by_id.get(self._city_of(cid))
+            if city is not None and dist(city) > FAR and cid in cons and self.made[cid] in (None, cons[cid].version):
+                del cons[cid]
+                del self.made[cid]
+        # 近い街から順に、まだ無い建物を少しずつ置く
+        near = sorted((d, i) for i, c in enumerate(self.m.cities) if getattr(c, "blocks", None) and (d := dist(c)) < NEAR)
+        left = PER_CHECK
+        busy = False
+        for _, i in near:
+            city = self.m.cities[i]
+            self.on_state(city)
+            for cid, b, V, org, rot, s, name in self._plan(city):
+                if cid in cons or cid in self.gone or cid in self.kept:
+                    continue
+                if b >= 0 and city.state is not None and b < len(city.state) and city.state[b] >= 2:
+                    continue
+                if left <= 0:
+                    busy = True
+                    break
+                c = Construct.from_voxels(w.registry, V, org, rot, size=s, name=f"{city.name}の{name}", id_=cid)
+                w.add_construct(c)
+                self.made[cid] = None
+                left -= 1
+            if busy:
+                break
+        self._busy = busy
+
+    @staticmethod
+    def _city_of(cid):
+        """建物の ID（blk-街の ID-番号）→ 街の ID"""
+        s = str(cid)[4:]
+        return s.rsplit("-", 1)[0]
 
     def on_state(self, city):
         """建物の状態が変わった（2 = 消えた）：その建物のブロックも片付ける"""

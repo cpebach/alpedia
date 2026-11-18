@@ -15,8 +15,10 @@ const G: usize = 16;
 const SPLIT_K: f64 = 2.4;
 /// いちばん細かい区画の大きさの目安（m）
 const LEAF_M: f64 = 64.0;
-/// 1 フレームに区画を作ってよい時間（秒）
-const BUDGET: f64 = 0.006;
+/// 1 フレームに作る区画の数（まとめて 1 回で地形を計算する）
+const BATCH: usize = 3;
+/// 区画を作っている途中は、何フレームごとにメッシュをまとめ直すか
+const REASSEMBLE_EVERY: u32 = 12;
 
 type Key = (u8, u8, u32, u32);
 
@@ -40,6 +42,7 @@ pub struct Lod {
     chunks: HashMap<Key, Chunk>,
     shown: Vec<Key>,
     frame_key: Vec<i64>,
+    since: u32,
 }
 
 /// 面 f の (a, b)（-1〜1）の向き（tan で角度を均等に）
@@ -71,8 +74,8 @@ impl Lod {
     }
 
     /// 区画のメッシュを作る（高さと色は惑星の far_samples。法線は 1 マス外まで取って隣の区画とつながるように）
-    fn build(&self, planet: &B<'_>, k: Key) -> R<Chunk> {
-        let py = planet.py();
+    /// 区画の格子の向き（1 マス外まで）
+    fn dirs_of(k: Key) -> Vec<f64> {
         let (a0, b0, s) = node_range(k);
         let h = s / G as f64;
         let m = G + 3;
@@ -83,9 +86,36 @@ impl Lod {
                 dirs.extend_from_slice(&d);
             }
         }
-        let fs = planet.call_method1("far_samples", (f64_2(py, dirs.clone(), 3)?,))?;
+        dirs
+    }
+
+    /// いくつかの区画をまとめて作る（高さ・色は 1 回の far_samples で。点が多いと地形の計算が並列になる）
+    fn build_many(&mut self, planet: &B<'_>, keys: &[Key]) -> R<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let py = planet.py();
+        let per = (G + 3) * (G + 3);
+        let mut all = Vec::with_capacity(keys.len() * per * 3);
+        for &k in keys {
+            all.extend(Self::dirs_of(k));
+        }
+        let fs = planet.call_method1("far_samples", (f64_2(py, all.clone(), 3)?,))?;
         let r = a1(&fs.get_item(0)?)?;
         let col = a2(&fs.get_item(1)?, 3)?;
+        for (n, &k) in keys.iter().enumerate() {
+            let dirs = &all[n * per * 3..(n + 1) * per * 3];
+            let rr = &r[n * per..(n + 1) * per];
+            let cc: Vec<[f64; 3]> = (0..per).map(|q| col.r3(n * per + q)).collect();
+            let ch = self.build(py, k, dirs, rr, &cc)?;
+            self.chunks.insert(k, ch);
+        }
+        Ok(())
+    }
+
+    fn build(&self, py: Python<'_>, k: Key, dirs: &[f64], r: &[f64], col: &[[f64; 3]]) -> R<Chunk> {
+        let (_, _, s) = node_range(k);
+        let m = G + 3;
         let p = |i: usize, j: usize| -> [f64; 3] {
             let q = i * m + j;
             let rr = r[q] - 0.6;
@@ -119,7 +149,7 @@ impl Lod {
                     nv = d;
                 }
                 nrms[i * n1 + j] = nv;
-                push(&mut verts, p(gi, gj), nv, col.r3(q));
+                push(&mut verts, p(gi, gj), nv, col[q]);
             }
         }
         let mut tris: Vec<u32> = Vec::with_capacity(G * G * 6 + 4 * G * 6);
@@ -142,7 +172,7 @@ impl Lod {
                 let q = (i + 1) * m + (j + 1);
                 let d = [dirs[q * 3], dirs[q * 3 + 1], dirs[q * 3 + 2]];
                 let pp = p(i + 1, j + 1);
-                push(&mut verts, [pp[0] - d[0] * skirt, pp[1] - d[1] * skirt, pp[2] - d[2] * skirt], nrms[i * n1 + j], col.r3(q));
+                push(&mut verts, [pp[0] - d[0] * skirt, pp[1] - d[1] * skirt, pp[2] - d[2] * skirt], nrms[i * n1 + j], col[q]);
             }
             for t in 0..e.len() - 1 {
                 let (a, b) = (id(e[t].0, e[t].1), id(e[t + 1].0, e[t + 1].1));
@@ -154,16 +184,14 @@ impl Lod {
         Ok(Chunk { verts, tris })
     }
 
-    /// 今のカメラ（惑星ローカルの位置 cam）で描く区画を選ぶ。足りない区画は時間の許す分だけ作る
-    fn select(&mut self, planet: &B<'_>, cam: [f64; 3], t0: std::time::Instant) -> R<Vec<Key>> {
+    /// 今のカメラ（惑星ローカルの位置 cam）で描く区画を選ぶ。足りない区画は集めて、まとめて作る（次のフレームから使う）。
+    /// 戻り値：(描く区画, まだ足りない区画があるか)
+    fn select(&mut self, planet: &B<'_>, cam: [f64; 3]) -> R<(Vec<Key>, bool)> {
         let mut out = vec![];
         let mut stack: Vec<Key> = (0..6u8).map(|f| (f, 0u8, 0u32, 0u32)).collect();
-        for &k in &stack {
-            if !self.chunks.contains_key(&k) {
-                let c = self.build(planet, k)?;
-                self.chunks.insert(k, c);
-            }
-        }
+        let roots: Vec<Key> = stack.iter().copied().filter(|k| !self.chunks.contains_key(k)).collect();
+        self.build_many(planet, &roots)?;
+        let mut missing: Vec<(f64, Key)> = vec![];
         while let Some(k) = stack.pop() {
             let (a0, b0, s) = node_range(k);
             let cd = face_dir(k.0, a0 + s * 0.5, b0 + s * 0.5);
@@ -172,26 +200,24 @@ impl Lod {
             let d = norm(sub(cam, cp));
             if k.1 < self.max_level && d < size * SPLIT_K {
                 let kids: Vec<Key> = (0..4u32).map(|c| (k.0, k.1 + 1, k.2 * 2 + c / 2, k.3 * 2 + c % 2)).collect();
-                let mut ready = true;
-                for &c in &kids {
-                    if !self.chunks.contains_key(&c) {
-                        if t0.elapsed().as_secs_f64() < BUDGET {
-                            let ch = self.build(planet, c)?;
-                            self.chunks.insert(c, ch);
-                        } else {
-                            ready = false;
-                        }
-                    }
-                }
-                if ready {
+                let lack: Vec<Key> = kids.iter().copied().filter(|c| !self.chunks.contains_key(c)).collect();
+                if lack.is_empty() {
                     stack.extend(kids);
                     continue;
+                }
+                for c in lack {
+                    missing.push((d, c));
                 }
             }
             out.push(k);
         }
+        // 近い区画から、1 フレームに BATCH 個まで
+        missing.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let pending = !missing.is_empty();
+        let want: Vec<Key> = missing.iter().take(BATCH).map(|x| x.1).collect();
+        self.build_many(planet, &want)?;
         out.sort_unstable();
-        Ok(out)
+        Ok((out, pending))
     }
 
     /// 遠くなった区画を忘れる（作り直せるので、数が多いときだけ）
@@ -235,8 +261,8 @@ impl Lod {
     /// 毎フレーム：区画を選び直し、組か詳細な地表の範囲が変わったらメッシュを作り直す。作り直したら Some
     pub fn update(&mut self, planet: &B<'_>, cam: [f64; 3], frame: Option<([f64; 3], [f64; 3], [f64; 3], f64, f64)>)
         -> R<Option<(Vec<f32>, Vec<i64>)>> {
-        let t0 = std::time::Instant::now();
-        let sel = self.select(planet, cam, t0)?;
+        let (sel, pending) = self.select(planet, cam)?;
+        self.since += 1;
         let fk: Vec<i64> = match frame {
             None => vec![],
             Some((u, a, _, r0, h)) => [u[0], u[1], u[2], a[0], a[1], a[2], r0, h].iter().map(|x| (x * 1e4).round() as i64).collect(),
@@ -244,6 +270,11 @@ impl Lod {
         if sel == self.shown && fk == self.frame_key {
             return Ok(None);
         }
+        // まだ区画を作っている途中は、まとめ直し（メッシュを送り直す）を間引く
+        if pending && fk == self.frame_key && self.since < REASSEMBLE_EVERY && !self.shown.is_empty() {
+            return Ok(None);
+        }
+        self.since = 0;
         self.trim(&sel);
         self.shown = sel;
         self.frame_key = fk;

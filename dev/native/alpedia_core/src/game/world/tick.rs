@@ -266,7 +266,8 @@ impl World {
         let maxv: i64 = cl.get_item("max_vertices")?.call_method0("__int__")?.extract()?;
         let secs: f64 = cl.get_item("seconds")?.extract()?;
         for (cid, c) in items {
-            if Self::seated_in(slf, &c)? {
+            // 座っている物・アンカーで固定した建物（MOD が 1 回だけ建てる月の港などの建物も）は消さない
+            if Self::seated_in(slf, &c)? || Construct::anchored_b(con(&c)?)? {
                 Construct::s_far_time(con(&c)?, 0.0)?;
                 continue;
             }

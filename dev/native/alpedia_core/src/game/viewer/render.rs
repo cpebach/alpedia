@@ -93,7 +93,9 @@ impl Viewer {
                 continue;
             }
             if v.is_none() {
-                if !seated && ga(c, "n_vox")?.extract::<i64>()? > 150 && !shape.call_method1("request_mesh", (c,))?.is_truthy()? {
+                // 大きな物・アンカーで固定された建物（街の建物はたくさん一度に出てくる）は、形を裏で作る（できるまでは遠くの見た目の箱）
+                let big = ga(c, "n_vox")?.extract::<i64>()? > 150 || Construct::anchored_b(con(&c)?)?;
+                if !seated && big && !shape.call_method1("request_mesh", (c,))?.is_truthy()? {
                     lod_list.append(c)?;
                     continue;
                 }

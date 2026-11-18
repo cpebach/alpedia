@@ -19,4 +19,19 @@ if __name__ == "__main__":
     ap.add_argument("--steps", type=int, default=600)
     ap.add_argument("--new", action="store_true", help="空のワールドを新規作成")
     args = ap.parse_args()
-    app.main(args)
+    # 落ちたときの記録：Python のエラーはログへ、Rust・ドライバーなどで止まったときの場所は logs/crash.log へ
+    import faulthandler
+    import time
+    from main import log, paths
+    paths.LOGS.mkdir(parents=True, exist_ok=True)
+    _crash = open(paths.LOGS / "crash.log", "a", encoding="utf-8")
+    _crash.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} 起動\n")
+    _crash.flush()
+    faulthandler.enable(file=_crash, all_threads=True)
+    try:
+        app.main(args)
+    except SystemExit:
+        raise
+    except BaseException:
+        log.get("crash").critical("エラーで止まりました", exc_info=True)
+        raise
