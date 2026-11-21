@@ -137,6 +137,8 @@ pub struct Shape {
     /// 滝（名所から。最初に使うときに作る）
     falls: std::sync::OnceLock<Vec<[f64; 7]>>,
     tiles: RwLock<(HashMap<(usize, i64, i64), Arc<Vec<[f64; 2]>>>, VecDeque<(usize, i64, i64)>)>,
+    /// 舗装（MOD の街・道。pave.rs）
+    pub paving: RwLock<Vec<(String, crate::pave::Pave)>>,
 }
 
 pub const TILE: usize = 32;
@@ -146,7 +148,8 @@ const MAX_TILES: usize = 4000;
 impl Shape {
     pub fn new(radius: f64, amp: f64, freq: f64, seed: i64, earth: Option<Earth>) -> Self {
         let n = ((std::f64::consts::PI / 2.0 * radius / RES / TILE as f64).ceil() as usize) * TILE;
-        Shape { radius, amp, freq, seed, earth, n, falls: std::sync::OnceLock::new(), tiles: RwLock::new((HashMap::new(), VecDeque::new())) }
+        Shape { radius, amp, freq, seed, earth, n, falls: std::sync::OnceLock::new(), tiles: RwLock::new((HashMap::new(), VecDeque::new())),
+                paving: RwLock::new(Vec::new()) }
     }
 
     fn ang(&self, d: [f64; 3], r: [f64; 3]) -> f64 {
@@ -194,6 +197,19 @@ impl Shape {
     /// 名所の水面（m。無ければ -1e9）
     pub fn feature_water(&self, e: &Earth, d: [f64; 3]) -> f64 {
         e.features.iter().map(|f| f.water(d, self.radius)).fold(-1e9, f64::max)
+    }
+
+    /// 舗装の (色, 重み)。重み 0 は舗装していない所
+    pub fn pave(&self, d: [f64; 3]) -> ([f64; 3], f64) {
+        self.pave_blur(d, 0.0)
+    }
+    /// blur：点の間隔（m）。細い道を粗いメッシュでぎざぎざにしない
+    pub fn pave_blur(&self, d: [f64; 3], blur: f64) -> ([f64; 3], f64) {
+        let p = self.paving.read().unwrap();
+        if p.is_empty() {
+            return ([0.0; 3], 0.0);
+        }
+        crate::pave::paint(&p, d, self.radius, blur)
     }
 
     /// 名所の地表の色・草木（いちばん強いもの）

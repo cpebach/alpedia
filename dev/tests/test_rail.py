@@ -131,6 +131,52 @@ class TestMegalopolis(CoreCase):
         w2, m2 = self.mega()
         self.assertEqual([b["id"] for b in m2.plan["buildings"]][:50], [b["id"] for b in m.plan["buildings"]][:50])
 
+    def test_paving(self):
+        """街の道はアスファルト・区画はコンクリート・公園は草地のまま。場所どうしの道路も舗装。地表の色に出る"""
+        from megalopolis.code import pave, plan
+        w, m = self.mega()
+        pl = w.planets[0]
+        nat = pl._nat()
+        T = next(s for s in m.plan["sites"] if s["kind"] == "tokyo")
+        # 東京型：区画は 70 m ごと（真ん中 56 m が区画、まわり 14 m が道）
+        lot = next(b for b in T["blocks"] if b[4] == "lot")
+        x, z = lot[0], lot[1]
+        # 街の外：縁から 600 m・どの線からも離れた所
+        LP = plan.unit(np.concatenate([ln["P"] for ln in m.plan["lines"]]))
+        outs = [(np.cos(a) * (T["R"] + 600.0), np.sin(a) * (T["R"] + 600.0)) for a in np.linspace(0, 2 * np.pi, 16, endpoint=False)]
+        ox, oz = max(outs, key=lambda o: float(np.arccos(np.clip(LP @ plan.along(T["d"], T["F"], o[0], o[1], pl.radius), -1, 1)).min()))
+        dirs = plan.along(T["d"], T["F"], np.array([x, x + 35.0, ox]), np.array([z, z, oz]), pl.radius)
+        pv = nat.pave_at(dirs)
+        self.assertGreater(pv[0, 0], 0.4, "区画はコンクリート（明るい灰色）")
+        self.assertLess(pv[1, 0], 0.25, "道はアスファルト（暗い灰色）")
+        self.assertEqual(pv[2, 3], 0.0, "街の外は塗らない")
+        self.assertTrue((pv[:2, 3] > 0.99).all())
+        parks = [b for s in m.plan["sites"] for b in s["blocks"] if b[4] == "park"]
+        if parks:
+            s = next(s for s in m.plan["sites"] if parks[0] in s["blocks"])
+            self.assertEqual(nat.pave_at(plan.along(s["d"], s["F"], np.array([parks[0][0]]), np.array([parks[0][1]]), pl.radius))[0, 3], 0.0,
+                             "公園は草地のまま")
+        # 線路の横の道路
+        ln = m.plan["lines"][0]
+        i = len(ln["P"]) // 2
+        road = plan.unit(plan.offset_track(ln["P"], ln["U"], pave.ROAD_SIDE))[i:i + 1]
+        off = plan.unit(plan.offset_track(ln["P"], ln["U"], pave.ROAD_SIDE + 30.0))[i:i + 1]
+        self.assertGreater(nat.pave_at(road)[0, 3], 0.99)
+        self.assertEqual(nat.pave_at(off)[0, 3], 0.0)
+        # 地表の色（近く・遠景）にも出る
+        q = np.concatenate([dirs[1:2], road])
+        col = pl.surface_color(q, pl.surface_radius(q), q)
+        self.assertTrue((np.abs(np.asarray(col) - pave.ASPHALT[0]).max(1) < 0.06).all(), col)
+        _, col = pl.far_samples(dirs[1:2])
+        self.assertLess(float(np.abs(np.asarray(col)[0] - pave.ASPHALT[0]).max()), 0.06)
+        # 遠景のメッシュ（点の間隔が道より広い）では、細い道は薄く広がる（ぎざぎざにしない）
+        a, b = plan.offset_track(ln["P"], ln["U"], pave.ROAD_SIDE)[i], ln["P"][i + 1] - ln["P"][i]
+        side = plan.unit(np.cross(ln["U"][i], b))
+        row = plan.unit(np.array([a + side * k for k in np.arange(-120, 121, 40.0)]))
+        _, col = pl.far_samples(row)
+        mid = np.asarray(col)[3]
+        self.assertGreater(float(np.abs(mid - pave.ASPHALT[0]).max()), 0.05, "40 m 間隔では道の色だけにはならない")
+
     def test_schedule(self):
         from megalopolis.code import addon as A
         Ln = 4000.0

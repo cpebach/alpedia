@@ -282,6 +282,32 @@ impl Planet {
         let c = v3(&Self::defn(slf).get_item("color")?)?;
         Ok(vec![c; n])
     }
+    /// 舗装（MOD の街・道）の色を混ぜる
+    /// coarse：遠景（点がメッシュの格子に並ぶ）。となりの点との間隔だけ細い道をぼかす
+    pub(crate) fn pave_tint(slf: &Bound<'_, Self>, d: &[V3], mut col: Vec<V3>, coarse: bool) -> R<Vec<V3>> {
+        let nat = Self::_nat(slf)?;
+        let ps = nat.downcast::<crate::PlanetShape>()?.get();
+        if ps.shape.paving.read().unwrap().is_empty() {
+            return Ok(col);
+        }
+        let rad = ps.shape.radius;
+        let gap = |i: usize, j: usize| -> f64 { let a = d[i]; let b = d[j]; ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() * rad };
+        let n = d.len();
+        for (i, (q, c)) in d.iter().zip(col.iter_mut()).enumerate() {
+            let blur = if coarse && n > 1 {
+                let a = if i > 0 { gap(i, i - 1) } else { f64::INFINITY };
+                let b = if i + 1 < n { gap(i, i + 1) } else { f64::INFINITY };
+                a.min(b)
+            } else { 0.0 };
+            let (rgb, w) = ps.shape.pave_blur(*q, blur);
+            if w > 0.0 {
+                for k in 0..3 {
+                    c[k] = c[k] * (1.0 - w) + rgb[k] * w;
+                }
+            }
+        }
+        Ok(col)
+    }
 }
 
 #[pymethods]
@@ -434,6 +460,7 @@ impl Planet {
         let rad = slf.borrow().radius;
         let h: Vec<f64> = fv(&r)?.iter().map(|x| x - rad).collect();
         let col = Self::tint(slf, &d, &h, Self::base_col(slf, d.len())?)?;
+        let col = Self::pave_tint(slf, &d, col, true)?;
         Ok(PyTuple::new_bound(py, [r, rows3(py, &col)?]))
     }
     /// 近景の地表の色（頂点ごと）
@@ -443,6 +470,7 @@ impl Planet {
         let rad = slf.borrow().radius;
         let h: Vec<f64> = fv(r)?.iter().map(|x| x - rad).collect();
         let col = Self::tint(slf, &d, &h, Self::base_col(slf, d.len())?)?;
+        let col = Self::pave_tint(slf, &d, col, false)?;
         rows3(slf.py(), &col)
     }
     fn _deposit_weights<'py>(slf: &Bound<'py, Self>, dirs: &Bound<'py, PyAny>, h: &Bound<'py, PyAny>) -> R<Bound<'py, PyList>> {
@@ -1278,6 +1306,7 @@ impl EarthPlanet {
         // 鉱石の色の後に名所の色（名所の地面が勝つように）
         let col = Planet::tint(&sup(slf), &d, &h, col)?;
         let col = Self::feature_tint(slf, &d, &h, &slope, col)?.0;
+        let col = Planet::pave_tint(&sup(slf), &d, col, false)?;
         rows3(slf.py(), &col)
     }
     fn _cave_res<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
@@ -1333,7 +1362,8 @@ impl EarthPlanet {
         let cl = Self::clim(slf, &d, &h)?;
         let col = slf.borrow().pal(&h, &slope, None, &cl);
         let col = Planet::tint(&sup(slf), &d, &h, col)?;
-        let (mut col, fwater) = Self::feature_tint(slf, &d, &h, &slope, col)?;
+        let (col, fwater) = Self::feature_tint(slf, &d, &h, &slope, col)?;
+        let mut col = Planet::pave_tint(&sup(slf), &d, col, true)?;
         let mut r = vec![0.0; d.len()];
         for i in 0..d.len() {
             // 海と、名所の湖（入り江・石灰棚・段々の湖・峡谷の川）

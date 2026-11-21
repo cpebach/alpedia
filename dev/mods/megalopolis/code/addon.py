@@ -12,7 +12,7 @@ from main import log
 from main.construct import Construct
 from main.hooks import Addon
 
-from . import build, plan
+from . import build, pave, plan
 
 L = log.get("megalopolis")
 
@@ -102,7 +102,9 @@ class MegaAddon(Addon):
             if getattr(c, "host", None) is pl and getattr(c, "kind", "") == "surface":
                 d = np.asarray(c.x, float) - np.asarray(pl.center, float)
                 avoid.append((d / np.linalg.norm(d), float(getattr(c, "radius", 200.0))))
-        self.plan = plan.generate(pl, (pl.id, pl.seed, round(pl.radius)), avoid)
+        seed = (pl.id, pl.seed, round(pl.radius))
+        self.plan = plan.generate(pl, seed, avoid)
+        pave.apply(pl, self.plan, seed)              # 街の道・区画・場所どうしの道路を舗装の色に
         self.sites = {s["id"]: s for s in self.plan["sites"]}
         self._objects()
         # 線路をレールの機能に登録・電車

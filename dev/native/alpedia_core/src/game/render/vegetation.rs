@@ -183,7 +183,9 @@ impl Veg {
                         shape.sdf([d[0] * rr, d[1] * rr, d[2] * rr], &craters)
                     };
                     let fp = shape.feature_paint(*d, h, 0.0);
-                    (v, cl, sd, fp.bare, fp.tree)
+                    // 舗装した所（MOD の街・道）にも生やさない
+                    let pv = shape.pave(*d).1;
+                    (v, cl, sd, if pv > 0.05 { 1.0 } else { fp.bare }, fp.tree)
                 }).collect::<Vec<_>>()
             }).collect()
         });

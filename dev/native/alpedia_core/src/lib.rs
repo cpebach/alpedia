@@ -19,6 +19,7 @@ mod pairs;
 mod contacts;
 mod devices;
 mod planet;
+mod pave;
 pub(crate) mod features;
 mod tick;
 mod geomx;
@@ -313,6 +314,14 @@ fn map_points<T: Send, F: Fn([f64; 3]) -> T + Sync>(pts: &[f64], f: F) -> Vec<T>
     }
 }
 
+impl PlanetShape {
+    fn put_pave(&self, key: String, p: pave::Pave) {
+        let mut v = self.shape.paving.write().unwrap();
+        v.retain(|(k, _)| *k != key);
+        v.push((key, p));
+    }
+}
+
 #[pymethods]
 impl PlanetShape {
     /// earth：地球型のときの値（dict）。sea, mountain_h, hill_h, flat_r, spawn_h, ponds_*, cave_*, cell, ck, cstart, cend, ccap
@@ -476,6 +485,41 @@ impl PlanetShape {
         let e = self.shape.earth.as_ref().ok_or_else(|| PyValueError::new_err("地球型ではありません"))?;
         let out = py.allow_threads(|| map_points(d, |p| self.shape.height0(e, p)));
         Ok(PyArray1::from_vec_bound(py, out))
+    }
+
+    /// 舗装の面を置く（同じ key は入れ替え）。d・e1・e2：中心の向きと地表の軸、(x0, z0)：マス目の角（m）、
+    /// codes：nx×nz の u8（x が外側の並び。0 は塗らない、k は pal の k-1 番の色）
+    #[pyo3(signature = (key, d, e1, e2, x0, z0, cell, nx, nz, codes, pal))]
+    #[allow(clippy::too_many_arguments)]
+    fn set_pave_grid(&self, key: String, d: [f64; 3], e1: [f64; 3], e2: [f64; 3], x0: f64, z0: f64, cell: f64, nx: usize, nz: usize,
+                     codes: Vec<u8>, pal: Vec<[f64; 3]>) -> PyResult<()> {
+        if codes.len() != nx * nz || cell <= 0.0 {
+            return Err(PyValueError::new_err("set_pave_grid: マスの数が違います"));
+        }
+        let g = pave::Grid::new(d, e1, e2, x0, z0, cell, nx, nz, codes, pal, self.shape.radius);
+        self.put_pave(key, pave::Pave::Grid(g));
+        Ok(())
+    }
+    /// 舗装の帯を置く：pts (N,3) は地表に沿った折れ線の向き（単位ベクトル）、half：幅の半分 m、edge：ぼかす幅 m
+    fn set_pave_strip(&self, key: String, pts: RoF, half: f64, edge: f64, rgb: [f64; 3]) -> PyResult<()> {
+        let p = rows3(ro(&pts, "pts")?);
+        if p.len() < 2 {
+            return Err(PyValueError::new_err("set_pave_strip: 点が足りません"));
+        }
+        let s = pave::Strip::new(p, half, edge, rgb, self.shape.radius);
+        self.put_pave(key, pave::Pave::Strip(s));
+        Ok(())
+    }
+    /// 舗装を外す（key で始まる物すべて）
+    fn clear_pave(&self, prefix: &str) {
+        self.shape.paving.write().unwrap().retain(|(k, _)| !k.starts_with(prefix));
+    }
+    /// 舗装 (N,4)：色 r,g,b・重み（0 は舗装していない）
+    fn pave_at<'py>(&self, py: Python<'py>, dirs: RoF<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let d = rows3(ro(&dirs, "dirs")?);
+        let n = d.len();
+        let out: Vec<f64> = py.allow_threads(|| d.iter().flat_map(|q| { let (c, w) = self.shape.pave(*q); [c[0], c[1], c[2], w] }).collect());
+        Ok(PyArray1::from_vec_bound(py, out).reshape([n, 4])?)
     }
 
     /// 滝 (N,7)：上の点 xyz・下の点 xyz（惑星ローカル）・幅

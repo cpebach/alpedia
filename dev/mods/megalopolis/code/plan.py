@@ -130,7 +130,7 @@ def choose_sites(pl, seed, avoid=()):
 # ---------------------------------------------------------------------------
 # 建物の並び（場所の座標 x, z m・幅 w・奥行き d・高さ h・様式）
 # ---------------------------------------------------------------------------
-def _tokyo(r, Rk):
+def _tokyo(r, Rk, blocks):
     out = []
     pitch, street = 70.0, 14.0
     centers = [(0.0, 0.0, 1.0)]
@@ -143,8 +143,12 @@ def _tokyo(r, Rk):
         for j in range(-n, n + 1):
             bx, bz = i * pitch, j * pitch
             dc = float(np.hypot(bx, bz))
-            if dc > Rk - 40.0 or r.random() < 0.04:
-                continue                                    # 街の外・小さな公園
+            if dc > Rk - 40.0:
+                continue                                    # 街の外
+            if r.random() < 0.04:
+                blocks.append((bx, bz, blk, blk, "park", (street, street)))   # 小さな公園
+                continue
+            blocks.append((bx, bz, blk, blk, "lot", (street, street)))
             m = r.random()
             if m < 0.3:
                 lots = [(bx, bz, blk, blk)]
@@ -169,7 +173,7 @@ def _tokyo(r, Rk):
     return out
 
 
-def _newyork(r, Rk):
+def _newyork(r, Rk, blocks):
     out = []
     Lh, Wh = KINDS["newyork"]["half"]
     px, pz = 80.0, 280.0                                    # 通り（x 方向に 80 m ごと）・大通り（z 方向に 280 m ごと）
@@ -181,8 +185,12 @@ def _newyork(r, Rk):
             cx, cz = i * px, j * pz
             if abs(cx) > Lh - 40 or abs(cz) > Wh:
                 continue
+            zlo, zhi = max(cz - bz_ / 2, -Wh), min(cz + bz_ / 2, Wh)     # 街の幅の外は舗装しない
+            blk = (cx, (zlo + zhi) / 2, bx_, zhi - zlo)
             if park[0] < cx < park[1] and abs(cz) < park[2]:
+                blocks.append(blk + ("park", (20.0, 30.0)))
                 continue                                    # 大きな公園
+            blocks.append(blk + ("lot", (20.0, 30.0)))
             # 区画（60 × 250）の中：x 方向に 2 つ、z 方向に 40〜60 m ごと
             z0 = cz - bz_ / 2
             while z0 < cz + bz_ / 2 - 20:
@@ -203,7 +211,7 @@ def _newyork(r, Rk):
     return out
 
 
-def _industrial(r, Rk):
+def _industrial(r, Rk, blocks):
     out = []
     px, pz = 120.0, 90.0
     n = int(Rk / px) + 1
@@ -212,6 +220,7 @@ def _industrial(r, Rk):
             x, z = i * px, j * pz
             if np.hypot(x, z) > Rk - 50:
                 continue
+            blocks.append((x, z, px - 12.0, pz - 12.0, "yard", (12.0, 12.0)))
             m = r.random()
             if m < 0.35:
                 out.append({"x": x, "z": z, "w": r.uniform(60, 90), "d": r.uniform(40, 60), "h": r.uniform(12, 20), "style": "factory"})
@@ -305,7 +314,8 @@ def generate(pl, seed, avoid=()):
     buildings = []
     for s in sites:
         r = rng("mega-layout", *seed, s["id"])
-        for k, b in enumerate(LAYOUT[s["kind"]](r, s["R"])):
+        s["blocks"] = []                                    # 区画 (x, z, 幅, 奥行き, 種類, まわりの道の幅 (x, z))：舗装（pave.py）に使う
+        for k, b in enumerate(LAYOUT[s["kind"]](r, s["R"], s["blocks"])):
             b["id"] = f"mb-{s['id']}-{k}"
             b["site"] = s["id"]
             b["seed"] = int(r.integers(1 << 30))
