@@ -6,6 +6,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 
+use rayon::prelude::*;
+
+/// これより多い点はまとめて並列に計算する（地球型は 1 点が重い。X-15）
+const PAR_MIN: usize = 64;
+
 const M1: u32 = 374761393;
 const M2: u32 = 668265263;
 const M3: u32 = 2246822519;
@@ -372,15 +377,24 @@ impl Shape {
                 })
                 .collect(),
             Some(e) => {
-                let hf: Vec<(f64, f64)> = dirs.iter().map(|&d| self.height_full(e, d)).collect();
+                let hf: Vec<(f64, f64)> = if dirs.len() >= PAR_MIN {
+                    dirs.par_iter().map(|&d| self.height_full(e, d)).collect()
+                } else {
+                    dirs.iter().map(|&d| self.height_full(e, d)).collect()
+                };
                 let mut h: Vec<f64> = hf.iter().map(|x| x.0).collect();
                 let water = self.apply_ponds(e, dirs, &mut h);
                 let water: Vec<f64> = water.iter().zip(hf.iter()).map(|(w, x)| w.max(x.1)).collect();
+                let fw: Vec<f64> = if dirs.len() >= PAR_MIN {
+                    dirs.par_iter().map(|&d| self.feature_water(e, d)).collect()
+                } else {
+                    dirs.iter().map(|&d| self.feature_water(e, d)).collect()
+                };
                 h.iter()
                     .zip(water.iter())
-                    .zip(dirs.iter())
-                    .map(|((&hh, &w0), &d)| {
-                        let w = w0.max(e.sea).max(self.feature_water(e, d));
+                    .zip(fw.iter())
+                    .map(|((&hh, &w0), &fwd)| {
+                        let w = w0.max(e.sea).max(fwd);
                         let mut wr = if w > hh { self.radius + w } else { 0.0 };
                         if wr == 0.0 {
                             wr = self.radius + w.min(hh - 0.05);
@@ -400,7 +414,11 @@ impl Shape {
                 .map(|&d| self.radius + (fbm(affine(d, self.freq, 100.0), self.seed, 3) - 0.5) * 2.0 * self.amp)
                 .collect(),
             Some(e) => {
-                let mut h: Vec<f64> = dirs.iter().map(|&d| self.height0(e, d)).collect();
+                let mut h: Vec<f64> = if dirs.len() >= PAR_MIN {
+                    dirs.par_iter().map(|&d| self.height0(e, d)).collect()
+                } else {
+                    dirs.iter().map(|&d| self.height0(e, d)).collect()
+                };
                 self.apply_ponds(e, dirs, &mut h);
                 h.iter().map(|&x| self.radius + x).collect()
             }
@@ -431,11 +449,12 @@ impl Shape {
         if let Some(t) = self.tiles.read().unwrap().0.get(&key) {
             return t.clone();
         }
-        let mut g = self.tiles.write().unwrap();
-        if let Some(t) = g.0.get(&key) {
-            return t.clone();
-        }
+        // 作るのは鍵の外で（作っている間、ほかのスレッドの読み出しを止めないように。X-15）
         let t = Arc::new(self.make_tile(key.0, key.1, key.2));
+        let mut g = self.tiles.write().unwrap();
+        if let Some(t0) = g.0.get(&key) {
+            return t0.clone();
+        }
         g.0.insert(key, t.clone());
         g.1.push_back(key);
         if g.0.len() > MAX_TILES {
@@ -444,6 +463,60 @@ impl Shape {
             }
         }
         t
+    }
+
+    /// 点ごとの (面, タイル, タイルの中の位置, 端数)
+    fn tile_pos(&self, d: [f64; 3]) -> ((usize, i64, i64), usize, usize, f64, f64) {
+        let n = self.n as f64;
+        let ab = [d[0].abs(), d[1].abs(), d[2].abs()];
+        let mut major = 0;
+        if ab[1] > ab[major] {
+            major = 1;
+        }
+        if ab[2] > ab[major] {
+            major = 2;
+        }
+        let face = major * 2 + usize::from(d[major] < 0.0);
+        let (a1, a2) = ((major + 1) % 3, (major + 2) % 3);
+        let m = ab[major];
+        let gx = ((d[a1] / m + 1.0) * 0.5 * n).clamp(0.0, n - 1e-6);
+        let gy = ((d[a2] / m + 1.0) * 0.5 * n).clamp(0.0, n - 1e-6);
+        let (ix, iy) = (gx.floor() as i64, gy.floor() as i64);
+        let t = TILE as i64;
+        let (tx, ty) = (ix.div_euclid(t), iy.div_euclid(t));
+        ((face, tx, ty), (ix - tx * t) as usize, (iy - ty * t) as usize, gx - ix as f64, gy - iy as f64)
+    }
+
+    /// sample と同じ値。ただしタイルがまだ無い点はタイルを作らずに直接計算する（色など、見た目だけに使う。
+    /// 地球型ではタイル 1 枚に 10 ms 以上かかるので、新しい場所でまとめてタイルを作ると止まる。X-15）
+    pub fn sample_quick(&self, dirs: &[[f64; 3]]) -> Vec<[f64; 2]> {
+        let mut out = vec![[0.0; 2]; dirs.len()];
+        let mut miss = vec![];
+        {
+            let g = self.tiles.read().unwrap();
+            let w = TILE + 1;
+            for (i, &d) in dirs.iter().enumerate() {
+                let (key, lx, ly, fx, fy) = self.tile_pos(d);
+                match g.0.get(&key) {
+                    Some(tile) => {
+                        let at = |a: usize, b: usize| tile[a * w + b];
+                        let (v00, v10, v01, v11) = (at(lx, ly), at(lx + 1, ly), at(lx, ly + 1), at(lx + 1, ly + 1));
+                        for c in 0..2 {
+                            out[i][c] = v00[c] * (1.0 - fx) * (1.0 - fy) + v10[c] * fx * (1.0 - fy) + v01[c] * (1.0 - fx) * fy
+                                + v11[c] * fx * fy;
+                        }
+                    }
+                    None => miss.push(i),
+                }
+            }
+        }
+        if !miss.is_empty() {
+            let md: Vec<[f64; 3]> = miss.iter().map(|&i| dirs[i]).collect();
+            for (k, v) in miss.iter().zip(self.tile_values(&md)) {
+                out[*k] = v;
+            }
+        }
+        out
     }
 
     /// タイルにキャッシュした値（地表半径・水面半径）を双線形補間
@@ -513,7 +586,13 @@ impl Shape {
         let r = dot(q, q).sqrt();
         let ri = r.max(1e-9);
         let d0 = [q[0] / ri, q[1] / ri, q[2] / ri];
-        let mut d = r - self.sample(d0)[0];
+        self.sdf_with(q, self.sample(d0)[0], craters)
+    }
+
+    /// sdf と同じ。ただし地表の半径 surf はわかっている（タイルを作らない。X-15）
+    pub fn sdf_with(&self, q: [f64; 3], surf: f64, craters: &[[f64; 4]]) -> f64 {
+        let r = dot(q, q).sqrt();
+        let mut d = r - surf;
         if !craters.is_empty() {
             let mut m = f64::INFINITY;
             for c in craters {

@@ -206,7 +206,7 @@ impl Veg {
                     // 掘った穴の中（地表のすぐ上の点が地中）
                     let sd = if craters.is_empty() { 1.0 } else {
                         let rr = v[0] + 0.3;
-                        shape.sdf([d[0] * rr, d[1] * rr, d[2] * rr], &craters)
+                        shape.sdf_with([d[0] * rr, d[1] * rr, d[2] * rr], v[0], &craters)     // タイルを作らない（X-15）
                     };
                     let fp = shape.feature_paint(*d, h, 0.0);
                     // 舗装した所（MOD の街・道）にも生やさない

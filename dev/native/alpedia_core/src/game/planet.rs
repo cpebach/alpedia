@@ -1300,7 +1300,9 @@ impl EarthPlanet {
         let rad = sup(slf).borrow().radius;
         let h: Vec<f64> = fv(r)?.iter().map(|x| x - rad).collect();
         let slope: Vec<f64> = d.iter().zip(&n).map(|(d, n)| ((1.0 - dot(*n, *d).clamp(0.0, 1.0)) * 3.3).clamp(0.0, 1.0)).collect();
-        let w: Vec<f64> = Self::sample_v(slf, &d)?.iter().map(|s| s[1] - rad).collect();
+        // 水面：タイルを作らずに（新しい場所でタイルを大量に作ると止まる。X-15）
+        let sq = Planet::_nat(&sup(slf))?.call_method1("sample_quick", (rows3(slf.py(), &d)?,))?;
+        let w: Vec<f64> = fv(&sq)?.chunks_exact(2).map(|s| s[1] - rad).collect();
         let cl = Self::clim(slf, &d, &h)?;
         let col = slf.borrow().pal(&h, &slope, Some(&w), &cl);
         // 鉱石の色の後に名所の色（名所の地面が勝つように）

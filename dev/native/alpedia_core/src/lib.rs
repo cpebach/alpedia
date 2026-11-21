@@ -465,6 +465,14 @@ impl PlanetShape {
         Ok(PyArray1::from_vec_bound(py, out).reshape([n, 2])?)
     }
 
+    /// sample と同じ値。ただしタイルが無い所はタイルを作らずに直接計算する（見た目用。X-15）
+    fn sample_quick<'py>(&self, py: Python<'py>, dirs: RoF<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let d = rows3(ro(&dirs, "dirs")?);
+        let n = d.len();
+        let out: Vec<f64> = py.allow_threads(|| self.shape.sample_quick(&d).into_iter().flatten().collect());
+        Ok(PyArray1::from_vec_bound(py, out).reshape([n, 2])?)
+    }
+
     /// 単位方向 (N,3) → タイルに入れる値そのもの (地表半径, 水面半径) (N,2)（補間しない）
     fn tile_values<'py>(&self, py: Python<'py>, dirs: RoF<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let d = rows3(ro(&dirs, "dirs")?);
@@ -540,13 +548,16 @@ impl PlanetShape {
         }
         let mut out = vec![0.0; 8 * n];
         if let Some(e) = &self.shape.earth {
-            for i in 0..n {
+            // 点ごとに重い（名所・川の高さ）ので並列に（X-15）
+            let rows: Vec<[f64; 8]> = py.allow_threads(|| (0..n).into_par_iter().map(|i| {
                 let dd = [d[3 * i], d[3 * i + 1], d[3 * i + 2]];
                 let p = self.shape.feature_paint(dd, hh[i], sl[i]);
                 let inside = e.features.iter().any(|f| f.local(dd, self.shape.radius).is_some());
                 let rw = self.shape.height_full(e, dd).1;
-                out[8 * i..8 * i + 8].copy_from_slice(&[p.rgb[0], p.rgb[1], p.rgb[2], p.w, p.bare, p.tree as f64,
-                                                        self.shape.feature_water(e, dd).max(rw), if inside { 1.0 } else { 0.0 }]);
+                [p.rgb[0], p.rgb[1], p.rgb[2], p.w, p.bare, p.tree as f64, self.shape.feature_water(e, dd).max(rw), if inside { 1.0 } else { 0.0 }]
+            }).collect());
+            for (i, r) in rows.iter().enumerate() {
+                out[8 * i..8 * i + 8].copy_from_slice(r);
             }
         } else {
             for i in 0..n {
@@ -566,12 +577,10 @@ impl PlanetShape {
         if hh.len() != n {
             return Err(PyValueError::new_err("climate: dirs と h の数が違います"));
         }
-        let mut out = vec![0.0; 2 * n];
-        for i in 0..n {
+        let out: Vec<f64> = py.allow_threads(|| (0..n).into_par_iter().flat_map_iter(|i| {
             let (a, b) = self.shape.climate(e, [d[3 * i], d[3 * i + 1], d[3 * i + 2]], hh[i]);
-            out[2 * i] = a;
-            out[2 * i + 1] = b;
-        }
+            [a, b]
+        }).collect());
         Ok(PyArray1::from_vec_bound(py, out).reshape([n, 2])?)
     }
 

@@ -884,7 +884,12 @@ class CityManager:
     def _ground(self, c):
         """ステーションが地面に落ちた：ぶつかった建物が壊れ、止まったら墜落した街になる。"""
         for pl in self.world.planets:
-            if np.linalg.norm(c.x - pl.center) > pl.bound + c.radius:
+            dist = float(np.linalg.norm(c.x - pl.center))
+            if dist > pl.bound + c.radius:
+                continue
+            # 真下の地面より十分高ければ調べない（sdf_grad は細かいタイルを作るので、遠い地面に使うととても重い。X-15）
+            r_g, _ = _ground(pl, ((c.x - pl.center) / max(dist, 1e-9))[None])
+            if dist - c.radius > float(r_g[0]) + max(pl.amp, 50.0):
                 continue
             Cw, Aw, E, idx = c.world_boxes()
             corners = []
