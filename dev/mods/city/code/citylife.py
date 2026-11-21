@@ -138,15 +138,17 @@ def _light(city, base, fr, x, z, b, col=(0.9, 0.95, 1.0)):
     city.add(base + U * (H_IN - 0.05) + X * x + Z * z, fr, (0.6, 0.03, 0.3), col, col, False, b, "neon")
 
 
-def build_shop(city, rng, base, fr, w, d, b, role):
-    """店（商人）・不動産屋：中にカウンターと NPC。前の真ん中に扉。"""
+def build_shop(city, rng, base, fr, w, d, b, role, walls=True):
+    """店（商人）・不動産屋：中にカウンターと NPC。前の真ん中に扉。
+    walls=False：既にある建物の中に置く（壁・看板・入口の光は作らない。w×d は売り場の広さ）"""
     X, U, Z = fr
-    top = _walls(city, base, fr, w, d, b, [0.0])
+    top = _walls(city, base, fr, w, d, b, [0.0]) if walls else None
     hd = d / 2
     sc = SIGN[role]
-    # 扉の上の看板と、入口の光
-    city.add(base + U * (DOOR_H + 0.55) + Z * (hd + 0.08), fr, (min(w / 2 - 0.3, 2.2), 0.3, 0.06), sc, sc, False, b, "sign")
-    city.add(base + U * 0.02 + Z * (hd + 0.6), fr, (DOOR_W / 2, 0.02, 0.5), sc * 0.6, sc * 0.6, False, b, "neon")
+    if walls:
+        # 扉の上の看板と、入口の光
+        city.add(base + U * (DOOR_H + 0.55) + Z * (hd + 0.08), fr, (min(w / 2 - 0.3, 2.2), 0.3, 0.06), sc, sc, False, b, "sign")
+        city.add(base + U * 0.02 + Z * (hd + 0.6), fr, (DOOR_W / 2, 0.02, 0.5), sc * 0.6, sc * 0.6, False, b, "neon")
     # カウンター
     cz = -hd + 1.7
     cnt = city.add(base + U * 0.55 + Z * cz, fr, (w / 2 - T - 0.6, 0.55, 0.3), WOOD if role == "estate" else FURN,
@@ -201,7 +203,7 @@ TALK = {
     # 大都市圏の街（metro.py）
     "dept": ["いらっしゃいませ。百貨店はいい品をそろえております。", "ときどき大きな値下げをしております。町の噂に耳を澄ましてみては？",
              "お値段は少々張りますが、どの品もすぐにお渡しできます。"],
-    "metro": ["駅の近くの部屋は高いけど、電車ですぐどこへでも行けるよ。", "スカイタワーの最上階からの眺めは最高らしい。",
+    "metro": ["駅の近くの部屋は高いけど、電車ですぐどこへでも行けるよ。", "いちばん高いビルの上の階に住めるらしいよ。眺めは最高だろうね。", "百貨店はあちこちのビルに入ってるよ。郊外にもあるんだ。",
               "大都市の不動産屋では、工場や鉱山、農場も買えるんだって。持っていると勝手に稼いでくれる。",
               "工業地帯の工場で働けば、すぐにお金がもらえるよ。", "{region}だからね。{note}。"],
     "foreman": ["今日も現場は忙しいよ。", "仕事が欲しければサバイバルで来な。"],

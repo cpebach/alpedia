@@ -106,8 +106,6 @@ class MegaAddon(Addon):
                 avoid.append((d / np.linalg.norm(d), float(getattr(c, "radius", 200.0))))
         seed = (pl.id, pl.seed, round(pl.radius))
         self.plan = plan.generate(pl, seed, avoid)
-        self.districts = district.choose(pl, self.plan)     # 駅前の広場など（建物を建てない区画。A-10）
-        district.clear_buildings(self.plan, self.districts)
         self._seed = seed
         pave.apply(pl, self.plan, seed)              # 街の道・区画・場所どうしの道路を舗装の色に
         self.sites = {s["id"]: s for s in self.plan["sites"]}
@@ -128,8 +126,8 @@ class MegaAddon(Addon):
         # 保存されていた建物・線路（手を加えていない物）：これからも出し入れする
         for cid, c in list(world.constructs.items()):
             if str(cid).startswith(("mb-", "ms-", "mst-")) and cid not in self.kept:
-                if cid not in self.by_id:
-                    del world.constructs[cid]        # 今は建てない建物（広場になった区画など）
+                if cid not in self.by_id or str(cid).startswith("mst-"):
+                    del world.constructs[cid]        # 今は建てない物・駅（形が変わったかもしれないので、近づいたら作り直す）
                     continue
                 self.made[cid] = c.version
         self._ensure_districts(world)
@@ -155,7 +153,8 @@ class MegaAddon(Addon):
                 f = (s - S[i]) / max(S[i + 1] - S[i], 1e-9)
                 p = P[i] * (1 - f) + P[i + 1] * f
                 T = plan.unit(P[i + 1] - P[i])
-                objs.append({"id": f"mst-{ln['id']}-{end}", "kind": "st", "P": p, "U": plan.unit(p), "T": T,
+                big = self.sites[ln[end]]["kind"] in ("tokyo", "newyork")     # 都心の駅は駅ビル
+                objs.append({"id": f"mst-{ln['id']}-{end}", "kind": "st", "P": p, "U": plan.unit(p), "T": T, "big": big,
                              "near": NEAR_T, "far": FAR_T, "p": pc + p})
         self.objs = objs
         self.pos = np.array([o["p"] for o in objs]) if objs else np.zeros((0, 3))
@@ -187,13 +186,16 @@ class MegaAddon(Addon):
         if not ca.cities.enabled:
             return
         pi = list(world.planets).index(self.planet)
+        # 前の版の街（駅前の広場に建てていた）の建物を片付ける
+        for cid in [k for k in world.constructs if str(k).startswith("blk-") and f"-mega-m" in str(k)]:
+            del world.constructs[cid]
         n = 0
         for s in self.plan["sites"]:
-            ch = self.districts.get(s["id"])
-            if ch is None:
-                continue
             try:
-                ca.cities.add_city(district.build(ca, self.planet, pi, s, ch, self._seed))
+                c = district.build(ca, self.planet, pi, s, self.plan, self._seed)
+                if c is None:
+                    continue
+                ca.cities.add_city(c)
                 n += 1
             except Exception:  # noqa: BLE001
                 L.exception("大都市圏：%s の街を作れませんでした", s["name"])
@@ -316,10 +318,11 @@ class MegaAddon(Addon):
         if o["kind"] == "st":
             org, rot = build.station_place(pc + o["P"], o["U"], o["T"])
             from main import buildkit
-            V = buildkit.anchored(build.station(), 3)
+            V = buildkit.anchored(build.station(o.get("big", False)), 3)
             ln_name = o["id"].split("-")[1]
             name = next((ln["name"] for ln in self.plan["lines"] if ln["id"] == ln_name), "駅")
-            return Construct.from_voxels(w.registry, V, org, rot, size=1.0, name=name + "の駅", id_=o["id"])
+            return Construct.from_voxels(w.registry, V, org, rot, size=1.0, name=name + ("の駅ビル" if o.get("big") else "の駅"),
+                                         id_=o["id"])
         return None
 
     # ------------------------------------------------------------------ 電車

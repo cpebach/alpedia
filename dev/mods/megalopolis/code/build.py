@@ -84,10 +84,8 @@ def building(b):
     mat[floor] = "concrete"
     mat[roof] = rf
     # 入り口・搬入口（前の面の真ん中）
-    door_h = 1 if s >= 2 else 2
-    if st in ("factory", "warehouse"):
-        door_h = min(2, ny - 2)
-    hole = (z == z.max()) & (np.abs(x) <= (1 if st != "warehouse" else 3)) & (y >= 1) & (y <= door_h) & ~roof
+    dw, door_h = door_cells(st, s, ny)
+    hole = (z == z.max()) & (np.abs(x) <= dw) & (y >= 1) & (y <= door_h) & ~roof
     V = [((int(a), int(b_), int(c)), m, None) for a, b_, c, m, hh in zip(x, y, z, mat, hole) if not hh]
     if st == "tower" and nx > 6 and nz > 6:
         V += [((i, j, k_), "steel", None) for i in (-1, 0, 1) for j in (ny, ny + 1) for k_ in (-1, 0, 1)]
@@ -98,10 +96,17 @@ def building(b):
     return V, s, name
 
 
-def realize(b, site, pl):
-    """建物 b を建てる：(ボクセル, 原点（世界）, 回転, セルの大きさ, 名前)。水の中・急すぎる坂なら None"""
+def dims(b):
+    """建物 b の (セルの大きさ, セルの数 nx, ny, nz)。building と同じ"""
+    st, h = b["style"], float(b["h"])
+    s = _cell(st, h)
+    return s, max(3, int(round(b["w"] / s))), max(2, int(round(h / s))), max(3, int(round(b["d"] / s)))
+
+
+def place(b, site, pl):
+    """建物 b の置き場所：{foot（世界。足もとの真ん中の地面の上）, right, up, front, top, low} か None（水の中・急すぎる坂）。
+    セル (i, j, k) の真ん中 = foot + right·i·s + up·(j + 0.5)·s + front·k·s（s はセルの大きさ）"""
     from .plan import frame, ground, unit
-    V, s, name = building(b)
     up = np.asarray(b["dir"], float)
     F = frame(up, site["F"][2])
     right, front = F[0], F[2]
@@ -116,6 +121,24 @@ def realize(b, site, pl):
     top, low = float(g.max()), float(g.min())
     if top - low > 30.0:
         return None
+    return {"foot": pc + up * top, "right": right, "up": up, "front": front, "top": top, "low": low}
+
+
+def door_cells(st, s, ny):
+    """入口の (半幅のセル数, 高さのセル数)。building と同じ"""
+    door_h = 1 if s >= 2 else 2
+    if st in ("factory", "warehouse"):
+        door_h = min(2, ny - 2)
+    return (1 if st != "warehouse" else 3), door_h
+
+
+def realize(b, site, pl):
+    """建物 b を建てる：(ボクセル, 原点（世界）, 回転, セルの大きさ, 名前)。水の中・急すぎる坂なら None"""
+    V, s, name = building(b)
+    pp = place(b, site, pl)
+    if pp is None:
+        return None
+    right, up, front, top, low = pp["right"], pp["up"], pp["front"], pp["top"], pp["low"]
     # 土台：足もとの外周の下を、坂の低い所まで埋める（中は空ける）
     depth = int(np.ceil((top - low) / s)) + 1
     cells = {v[0] for v in V}
@@ -129,7 +152,7 @@ def realize(b, site, pl):
                 found += [((i, -j, k), "concrete", None) for j in range(1, depth + 1)]
     V = buildkit.anchored(found + list(V), 3)
     rot = np.stack([right, up, front], axis=1)
-    foot = pc + up * top
+    foot = pp["foot"]
     org = foot - right * (0.5 * s) - front * (0.5 * s)
     return V, org, rot, s, name
 
@@ -180,8 +203,9 @@ def segment_place(P0, P1, U0):
 STATION_LEN = 120
 
 
-def station():
-    """ホームの上面がレールの上面より 1 m 上（車両の床の高さ）"""
+def station(enclosed=False):
+    """ホームの上面がレールの上面より 1 m 上（車両の床の高さ）。
+    enclosed：都心の駅ビル（ホームを壁と屋根で囲み、真ん中の上に何階もの駅ビル。両端は電車が通れるように開ける）"""
     k = buildkit.Kit()
     L = STATION_LEN
     for side in (-1, 1):
@@ -200,7 +224,33 @@ def station():
     k.fill(-8, 8, m + 2, 8, 8, m + 2, "glass")
     for x in (-7, 7):
         k.fill(x, 1, m + 3, x, 6, m + 3, "steel")
+    if enclosed:
+        _station_building(k, L, m)
     return k.voxels()
+
+
+STATION_TOWER = (25, 26)    # 駅ビルの上の階：真ん中から前後の長さ・高さ（m）
+
+
+def _station_building(k, L, m):
+    """駅ビル：ホームの外側の壁（入口つき）・屋根・真ん中の上の何階もの建物"""
+    W, H = 9, 10
+    for x in (-W, W):
+        k.fill(x, 0, 0, x, H - 1, L - 1, "concrete")
+        k.paint("glass", x, 4, 2, x, 7, L - 3)                          # 窓の帯
+        for zc in (20, m, L - 21):                                      # 入口（ホームの高さ）
+            k.clear(x, 1, zc - 3, x, 3, zc + 3)
+            k.paint("hull_yellow", x, 4, zc - 3, x, 4, zc + 3)          # 入口の上の帯
+    k.fill(-W, H, 0, W, H, L - 1, "hull_dark")                          # 屋根
+    hz, th = STATION_TOWER
+    z0, z1 = max(m - hz, 1), min(m + hz, L - 2)
+    k.shell(-W, H + 1, z0, W, H + th, z1, "hull_cream", "concrete", "hull_dark")
+    for y in range(H + 2, H + th, 2):
+        k.paint("glass", -W, y, z0 + 1, -W, y, z1 - 1)
+        k.paint("glass", W, y, z0 + 1, W, y, z1 - 1)
+        k.paint("glass", -W + 1, y, z0, W - 1, y, z0)
+        k.paint("glass", -W + 1, y, z1, W - 1, y, z1)
+    k.paint("hull_teal", -W, H + th - 2, z0, W, H + th - 2, z1)         # 屋上の下の色の帯（駅の目印）
 
 
 def station_place(P, U, T):

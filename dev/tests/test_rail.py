@@ -239,12 +239,13 @@ class TestMegaLife(CoreCase):
         self.w = World("t", CFG, addons=[CityAddon(), MegaAddon()]).load()
         self.w.step(DT)
         self.ca = self.w.addon("city")
-        self.mc = [c for c in self.ca.cities.cities if "-mega-" in c.id]
+        self.mc = [c for c in self.ca.cities.cities if "-metro-" in c.id]
 
     def city(self, stype):
         return next(c for c in self.mc if c.stype == stype)
 
     def test_districts(self):
+        """店・不動産屋・部屋は大都市圏の建物の中に点在する。高層階は街でいちばん高いビルの上の階"""
         from city.code import citylife
         m = self.w.addon("megalopolis")
         self.assertEqual(sorted(c.stype for c in self.mc).count("metro"), 2)
@@ -253,17 +254,51 @@ class TestMegaLife(CoreCase):
         self.assertTrue({"dept", "estate", "trader", "citizen"} <= {n["role"] for n in M.npcs})
         self.assertTrue(any(n.get("gossip") for n in M.npcs), "情報通がいる")
         self.assertTrue({"foreman", "worker"} <= {n["role"] for n in self.city("works").npcs})
+        by = {b["id"]: b for b in m.plan["buildings"]}
+        site = next(s for s in m.plan["sites"] if M.id.endswith(s["id"]))
+        R = self.w.planets[0].radius
+        depts = [n for n in M.npcs if n["role"] == "dept"]
+        self.assertEqual(len(depts), 2)
+        for n in [x for x in M.npcs if x["role"] in ("dept", "estate", "trader")]:
+            b = by[n["inside"]]
+            self.assertIn(b["style"], ("office", "tower", "apartment"), "既にある建物の中")
+            # NPC は建物の足もとの範囲の中
+            q = M.x + n["pos"] - self.w.planets[0].center
+            q /= np.linalg.norm(q)
+            loc = np.array([q @ site["F"][0], q @ site["F"][2]]) * R / max(q @ site["d"], 1e-9)
+            self.assertLess(abs(loc[0] - b["x"]), b["w"] / 2 + 1.0)
+            self.assertLess(abs(loc[1] - b["z"]), b["d"] / 2 + 1.0)
+        a, b2 = (by[n["inside"]] for n in depts)
+        self.assertGreater(np.hypot(a["x"] - b2["x"], a["z"] - b2["z"]), 200.0, "都心と郊外に点在")
+        # 高層階：いちばん高いビル（入口が道に面している物）の上の方
+        views = [h for h in M.homes if h.get("grade") == "view"]
+        self.assertGreaterEqual(len(views), 2)
+        tower = by[views[0]["inside"]]
+        tall = sorted((b for b in m.plan["buildings"] if b["site"] == site["id"]), key=lambda b: -b["h"])[:6]
+        self.assertIn(tower["id"], [b["id"] for b in tall])
+        up = (M.x - self.w.planets[0].center) / np.linalg.norm(M.x - self.w.planets[0].center)
+        hgt = float((np.asarray(views[0]["lift_up"]) - np.asarray(views[0]["lift_down"])) @ up)
+        self.assertGreater(hgt, tower["h"] * 0.7, "上の方の階")
         # 部屋：ふつう < 駅近 < 高層階
         price = {g: np.mean([citylife.home_price(M, h) for h in M.homes if h.get("grade") == g]) for g in ("normal", "station", "view")}
         self.assertLess(price["normal"], price["station"])
         self.assertLess(price["station"], price["view"])
-        # 使う区画には大都市圏の建物を建てない
-        for s in m.plan["sites"]:
-            ch = m.districts.get(s["id"])
-            x, z, hx, hz = ch["plaza"]
-            for b in m.plan["buildings"]:
-                if b["site"] == s["id"]:
-                    self.assertFalse(abs(b["x"] - x) < hx + b["w"] / 2 and abs(b["z"] - z) < hz + b["d"] / 2)
+        self.assertTrue(all(h.get("inside") in by for h in M.homes))
+
+    def test_station_building(self):
+        """都心の駅は駅ビル（壁・屋根・上の階）。工業地帯の駅はそのまま"""
+        from megalopolis.code import build
+        m = self.w.addon("megalopolis")
+        sts = [o for o in m.objs if o["kind"] == "st"]
+        self.assertTrue(any(o["big"] for o in sts) and not all(o["big"] for o in sts))
+        plain, big = build.station(False), build.station(True)
+        self.assertGreater(len(big), len(plain) + 3000)
+        ys = [c[1] for c, _, _ in big]
+        self.assertGreaterEqual(max(ys), 10 + build.STATION_TOWER[1])
+        # 両端は電車が通れる（線路の上の真ん中が空いている）
+        cells = {c for c, _, _ in big}
+        for z in (0, build.STATION_LEN - 1):
+            self.assertFalse(any((x, y, z) in cells for x in range(-3, 4) for y in range(1, 5)))
 
     def test_dept_sales_and_tips(self):
         from city.code import citylife, metro
@@ -326,7 +361,7 @@ class TestMegaLife(CoreCase):
         self.assertIn("お疲れ", eco.job_talk(Wk, fore))
         self.assertIsNone(eco.state["job"])
 
-    def test_sky_tower_room(self):
+    def test_view_room(self):
         M = self.city("metro")
         h = next(x for x in M.homes if x.get("grade") == "view")
         up = (M.x - self.w.planets[0].center) / np.linalg.norm(M.x - self.w.planets[0].center)

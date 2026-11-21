@@ -1,204 +1,267 @@
-"""A-10：大都市圏の街の暮らし。場所ごとに、街 MOD（city）の街（City）を 1 つ作り、NPC・店・部屋・仕事場を置く。
+"""A-10・A-11：大都市圏の街の暮らし。場所ごとに街 MOD（city）の街（City）を 1 つ作り、大都市圏の建物の中に店・部屋・仕事場を置く。
 
-- 大きな街（東京・ニューヨークのような街）：駅にいちばん近い区画を広場にして、百貨店・不動産屋・商人・駅前の部屋・
-  スカイタワー（最上階の部屋）を置く。駅から少し離れた区画に、ふつうの部屋の建物を 2 棟。住民（半分は情報通）。
-- 工業地帯：駅に近い区画に工場（班長・置き場・装置・作業員）と商人。
-- 使う区画にあった大都市圏の建物は建てない（plan["buildings"] から外す）。
-建物の中身・値下げ・物件・仕事は街 MOD の metro.py。街 MOD が無いワールドでは作らない。
+- 大きな街（東京・ニューヨークのような街）：都心の高層ビルと郊外の建物に、百貨店 2・不動産屋 2・商人 2 が点在する。
+  駅近の部屋（駅にいちばん近い集合住宅など 2 棟）・ふつうの部屋（郊外の集合住宅 2 棟）。
+  高層階の部屋は街でいちばん高いビルの上の方の階（3 フロア。1 階のロビーのエレベーターで上がる）。
+  店の前には住民（半分は情報通）。
+- 工業地帯：駅にいちばん近い工場の建物の中に仕事場（班長・置き場・装置・作業員）、倉庫の中に商人。
+- 建物はそのまま（ブロックの殻）。中の家具・NPC・明かり・看板・入口の階段は街の箱。部屋の壁は街の壁（ブロック）。
+  建物の中の床は、殻の 1 段目の上（地面から セルの大きさ だけ上）なので、入口の前に階段を置く。
+中身（百貨店・値下げ・物件・仕事）は街 MOD の metro.py。街 MOD が無いワールドでは作らない。
 """
 import importlib
 
 import numpy as np
 
+from . import build as BLD
 from . import plan as P
 
 CONC = np.array([0.5, 0.5, 0.52])
-PLAZA = {"tokyo": 30.0, "newyork": 30.0, "industrial": 34.0}     # 使う区画の範囲（区画の中心から ±m）
-RES_HALF = 16.0
+FRONT_CLEAR = 10.0      # 入口の前にこれだけ空いている建物だけ使う（道に面している）
 
 
-def _site_lines(mplan, site):
-    """場所のまわりの線路の点（単位ベクトル）と、駅の真ん中（単位ベクトル）"""
-    pts, stations = [], []
+def _stations(mplan, site):
+    """場所の駅の真ん中（単位ベクトル）"""
+    out = []
     for ln in mplan["lines"]:
-        U = P.unit(ln["P"])
-        pts.append(U)
-        if site["id"] in (ln["a"], ln["b"]):
-            S = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(ln["P"], axis=0), axis=1))])
-            from .addon import STOP
-            s = STOP if ln["a"] == site["id"] else S[-1] - STOP
-            i = int(np.clip(np.searchsorted(S, s) - 1, 0, len(S) - 2))
-            stations.append(U[i])
-    return (np.concatenate(pts) if pts else np.zeros((0, 3))), stations
-
-
-def choose(pl, mplan):
-    """場所ごとに使う区画：{場所 ID: {"plaza": (x, z, hx, hz), "res": (x, z, hx, hz) か None}}（毎回同じ）"""
-    R = pl.radius
-    out = {}
-    for s in mplan["sites"]:
-        LP, stations = _site_lines(mplan, s)
-        want = "yard" if s["kind"] == "industrial" else "lot"
-        cand = []
-        for (x, z, w, d, kind, _st) in s.get("blocks", []):
-            if kind != want or np.hypot(x, z) > s["R"] * 0.5:
-                continue
-            hx, hz = min(w / 2, PLAZA[s["kind"]]), min(d / 2, PLAZA[s["kind"]])
-            dv = P.along(s["d"], s["F"], x, z, R)
-            if len(LP):
-                near = float(np.arccos(np.clip(LP @ dv, -1, 1)).min()) * R
-                if near < np.hypot(hx, hz) + P.CLEAR + P.STEP / 2:
-                    continue                                 # 線路・駅にかかる
-            st = min((P.angdist(dv, q, R) for q in stations), default=float(np.hypot(x, z)))
-            cand.append((st, x, z, hx, hz))
-        if not cand:
+        if site["id"] not in (ln["a"], ln["b"]):
             continue
-        cand.sort()
-        plaza = cand[0][1:]
-        res = None
-        if s["kind"] != "industrial":
-            far = [c for c in cand[1:] if 150.0 <= c[0] <= 450.0 and np.hypot(c[1] - plaza[0], c[2] - plaza[1]) > 100.0]
-            if far:
-                c = min(far, key=lambda c: abs(c[0] - 260.0))
-                res = (c[1], c[2], min(c[3], RES_HALF + 4), min(c[4], RES_HALF + 4))
-        out[s["id"]] = {"plaza": plaza, "res": res}
+        U = P.unit(ln["P"])
+        S = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(ln["P"], axis=0), axis=1))])
+        from .addon import STOP
+        s = STOP if ln["a"] == site["id"] else S[-1] - STOP
+        i = int(np.clip(np.searchsorted(S, s) - 1, 0, len(S) - 2))
+        out.append(U[i])
     return out
 
 
-def clear_buildings(mplan, chosen):
-    """使う区画にかかる大都市圏の建物を外す"""
-    rects = {}
-    for sid, ch in chosen.items():
-        rects[sid] = [r for r in (ch["plaza"], ch["res"]) if r is not None]
-    keep = []
-    for b in mplan["buildings"]:
-        hit = False
-        for (x, z, hx, hz) in rects.get(b["site"], []):
-            if abs(b["x"] - x) < hx + b["w"] / 2 and abs(b["z"] - z) < hz + b["d"] / 2:
-                hit = True
-                break
-        if not hit:
-            keep.append(b)
-    mplan["buildings"] = keep
+class Host:
+    """大都市圏の建物 1 つの中：置き場所・中の広さ・入口（街ローカルの点と軸を返す）"""
 
+    def __init__(self, b, site, pl, city):
+        self.b, self.city = b, city
+        self.pp = BLD.place(b, site, pl)
+        self.s, self.nx, self.ny, self.nz = BLD.dims(b)
+        s = self.s
+        x0, z0 = -(self.nx // 2), -(self.nz // 2)
+        self.x_lo, self.x_hi = (x0 + 1) * s - s / 2, (x0 + self.nx - 2) * s + s / 2
+        self.z_lo, self.z_hi = (z0 + 1) * s - s / 2, (z0 + self.nz - 2) * s + s / 2
+        self.front_out = (z0 + self.nz - 1) * s + s / 2
+        self.ceil = (self.ny - 1) * s - s / 2
+        self.dw, self.dh = BLD.door_cells(b["style"], s, self.ny)
 
-# ---------------------------------------------------------------------------
-# 街を作る
-# ---------------------------------------------------------------------------
-class _Builder:
-    def __init__(self, city, pl, site):
-        self.city, self.pl, self.site = city, pl, site
-        self.pc = np.asarray(pl.center, float)
-        self.R = pl.radius
+    @property
+    def ok(self):
+        return self.pp is not None
 
-    def frame(self, x, z, door):
-        """場所の座標 (x, z) の上向きと、扉が場所の向き door=(dx, dz) を向く建物の軸（行が 横・上・前）"""
-        s = self.site
-        up = P.along(s["d"], s["F"], x, z, self.R)
-        fz = s["F"][0] * door[0] + s["F"][2] * door[1]
-        fz = P.unit(fz - up * (fz @ up))
-        return np.stack([np.cross(up, fz), up, fz])
+    @property
+    def inner(self):
+        return self.x_hi - self.x_lo, self.z_hi - self.z_lo, self.ceil - self.s
 
-    def ground_at(self, fr, x, z, offs):
-        s = self.site
-        c = P.along(s["d"], s["F"], x, z, self.R) * self.R
-        D = P.unit(np.array([c + fr[0] * ox + fr[2] * oz for ox, oz in offs]))
-        g, _ = P.ground(self.pl, D)
-        return g
+    def fr(self):
+        return np.stack([self.pp["right"], self.pp["up"], self.pp["front"]])
 
-    def place(self, x, z, door, w, d, b):
-        """建物の足もと（街ローカル）と軸。坂なら土台と、扉の前の階段を置く"""
-        fr = self.frame(x, z, door)
-        offs = [(ox, oz) for ox in (-w / 2, 0, w / 2) for oz in (-d / 2, 0, d / 2)]
-        g = self.ground_at(fr, x, z, offs + [(0.0, d / 2 + 1.6)])
-        top, low, front = float(g[:-1].max()), float(g[:-1].min()), float(g[-1])
-        up = fr[1]
-        base = self.pc + up * top - self.city.x
-        hh = (top - min(low, front) + 0.6) / 2
-        self.city.add(self.pc + up * (top - hh) - self.city.x, fr, (w / 2 + 0.2, hh, d / 2 + 0.2), CONC, None, True, b, "found")
-        rise = top - front
-        if rise > 0.4:
+    def at(self, x, z, h):
+        """建物の足もと（真ん中）から 横 x・前 z・上 h m の点（街ローカル）"""
+        p = self.pp
+        return p["foot"] + p["right"] * x + p["front"] * z + p["up"] * h - self.city.x
+
+    def entrance(self, pl, b, sign_col=None):
+        """入口の前の階段（地面から建物の床まで）と、扉の上の看板"""
+        c, fr, s = self.city, self.fr(), self.s
+        up = self.pp["up"]
+        pc = np.asarray(pl.center, float)
+        q = self.pp["foot"] + self.pp["front"] * (self.front_out + 1.5) - pc
+        g, _ = P.ground(pl, P.unit(q)[None])
+        drop = float(self.pp["top"] - g[0])            # 足もとの地面から入口の前の地面まで（下が正）
+        rise = s + drop
+        width = (2 * self.dw + 1) * s / 2
+        if rise > 0.3:
             n = int(np.ceil(rise / 0.22))
             for k in range(n):
-                st_top = top - (k + 1) * rise / (n + 1)
-                h2 = (st_top - front + 0.6) / 2
-                zc = d / 2 + 0.2 + (k + 0.5) * 0.35
-                self.city.add(self.pc + up * (st_top - h2) + fr[2] * zc - self.city.x, fr, (1.3, h2, 0.18), CONC, None, True, b,
-                              "stair")
-        return base, fr
+                st = s - (k + 1) * rise / (n + 1)       # 段の上面（足もとの地面から）
+                bot = -drop - 0.4
+                c.add(self.at(0.0, self.front_out + (k + 0.5) * 0.35, (st + bot) / 2), fr, (width, (st - bot) / 2, 0.18),
+                      CONC, None, True, b, "stair")
+        if sign_col is not None:
+            col = np.asarray(sign_col, float)
+            h = s * (self.dh + 1) + 0.6
+            c.add(self.at(0.0, self.front_out + 0.1, h), fr, (min(width + 1.0, 4.0), 0.4, 0.06), col, col, False, b, "sign")
+            c.add(self.at(0.0, self.front_out + 0.6, s + 0.03 - 0.0), fr, (width, 0.02, 0.5), col * 0.6, col * 0.6, False, b, "neon")
+
+    def area(self, w_max, d_max, back=False):
+        """中の床の上の、入口側（back なら奥）に寄せた売り場の真ん中（街ローカル）と、その広さ"""
+        iw, id_, _ = self.inner
+        w, d = min(iw - 1.0, w_max), min(id_ - 1.0, d_max)
+        xc = (self.x_lo + self.x_hi) / 2
+        zc = (self.z_lo + d / 2 + 0.3) if back else (self.z_hi - d / 2 - 0.3)
+        return self.at(xc, zc, self.s), w, d
 
 
 def _mods(ca):
     pkg = type(ca).__module__.rsplit(".", 1)[0]
-    return (importlib.import_module(pkg + ".cities"), importlib.import_module(pkg + ".citylife"),
-            importlib.import_module(pkg + ".metro"))
+    return tuple(importlib.import_module(pkg + "." + m) for m in ("cities", "citylife", "metro", "blockify"))
 
 
-def build(ca, pl, pi, site, ch, seed):
-    """場所 site の街（City）を作る。ch：choose の結果"""
-    cities, citylife, metro = _mods(ca)
+def build(ca, pl, pi, site, mplan, seed):
+    """場所 site の街（City）を作る。建てられる建物が無ければ None"""
+    cities, citylife, metro, blockify = _mods(ca)
     rng = P.rng("mega-district", *seed, site["id"])
     works = site["kind"] == "industrial"
-    c = cities.City(f"{pl.id}{pi}-mega-{site['id']}", site["name"], "surface", pl)
+    c = cities.City(f"{pl.id}{pi}-metro-{site['id']}", site["name"], "surface", pl)
     c.stype = "works" if works else "metro"
     c.region = c.stype
     c.home = pi
-    px, pz = ch["plaza"][0], ch["plaza"][1]
-    dp = P.along(site["d"], site["F"], px, pz, pl.radius)
-    g, _ = P.ground(pl, dp[None])
-    c.x = np.asarray(pl.center, float) + dp * float(g[0])
-    B = _Builder(c, pl, site)
-    b = 0
+    g, _ = P.ground(pl, site["d"][None])
+    c.x = np.asarray(pl.center, float) + site["d"] * float(g[0])
+    R = pl.radius
+    st_dirs = _stations(mplan, site)
+    mine = [b for b in mplan["buildings"] if b["site"] == site["id"]]
+    for b in mine:
+        b["_r"] = float(np.hypot(b["x"], b["z"]))
+        bd = np.asarray(b["dir"], float)
+        b["_st"] = min((P.angdist(bd, q, R) for q in st_dirs), default=b["_r"])
 
-    def npc(x, z, role, wander, talk=None, gossip=False):
-        fr = B.frame(x, z, (0.0, 1.0))
-        gg = B.ground_at(fr, x, z, [(0.0, 0.0)])
-        base = B.pc + fr[1] * float(gg[0]) - c.x
-        n = citylife.add_npc(c, rng, role, base, fr[2], fr[1], -1, wander=wander)
-        n["talk_set"] = talk or role
-        n["gossip"] = gossip
-        return n
+    hosts = {}
+
+    def host(b):
+        h = hosts.get(b["id"])
+        if h is None:
+            h = hosts[b["id"]] = Host(b, site, pl, c)
+        return h
+
+    # 入口の前（建物の前 FRONT_CLEAR m）にほかの建物が無いか（道に面しているか）。建物はみな場所の +z を向いている
+    rects = np.array([(b["x"] - b["w"] / 2, b["x"] + b["w"] / 2, b["z"] - b["d"] / 2, b["z"] + b["d"] / 2) for b in mine]) \
+        if mine else np.zeros((0, 4))
+    idx = {b["id"]: k for k, b in enumerate(mine)}
+
+    def faces_street(b):
+        x0, x1, z0 = b["x"] - b["w"] / 2 + 1.0, b["x"] + b["w"] / 2 - 1.0, b["z"] + b["d"] / 2
+        z1 = z0 + FRONT_CLEAR
+        hit = (rects[:, 0] < x1) & (rects[:, 1] > x0) & (rects[:, 2] < z1) & (rects[:, 3] > z0)
+        hit[idx[b["id"]]] = False
+        return not hit.any()
+
+    def cands(styles, r0=0.0, r1=1e9, min_w=8.0, min_d=8.0, min_h=4.2):
+        out = []
+        for b in mine:
+            if b["style"] not in styles or not (r0 * site["R"] <= b["_r"] <= r1 * site["R"]):
+                continue
+            if not faces_street(b):
+                continue
+            s, nx, ny, nz = BLD.dims(b)
+            if (nx - 2) * s < min_w or (nz - 2) * s < min_d or (ny - 2) * s < min_h:
+                continue
+            out.append(b)
+        return out
+
+    used, spots = set(), []
+
+    def choose(bs, key, sep=150.0):
+        """ちょうどいい建物を 1 つ（置けない所・使った建物・近すぎる所は飛ばす）"""
+        for b in sorted(bs, key=key):
+            if b["id"] in used or any(np.hypot(b["x"] - x, b["z"] - z) < sep for x, z in spots):
+                continue
+            h = host(b)
+            if not h.ok:
+                continue
+            used.add(b["id"])
+            spots.append((b["x"], b["z"]))
+            return b, h
+        return None
+
+    bi = [0]
+
+    def nb():
+        bi[0] += 1
+        return bi[0] - 1
+
+    def citizen(h, k, talk):
+        p = h.at(rng.uniform(-3, 3), h.front_out + 5.0, 0.0)
+        n = citylife.add_npc(c, rng, "citizen", p, h.pp["front"], h.pp["up"], -1, wander=float(rng.uniform(2.0, 3.5)))
+        n["talk_set"] = talk
+        n["gossip"] = (k % 2 == 0) and talk == "metro"
+
+    def shop(h, role, k):
+        b = nb()
+        base, w, d = h.area(14.0, 12.0)
+        if role == "dept":
+            metro.build_dept(c, rng, base, h.fr(), w, d, b, walls=False)
+        else:
+            citylife.build_shop(c, rng, base, h.fr(), w, d, b, role, walls=False)
+        c.npcs[-1]["inside"] = h.b["id"]
+        h.entrance(pl, b, citylife.SIGN[role])
+        citizen(h, k, "worker" if works else "metro")
+
+    def rooms(h, grade, label):
+        b = nb()
+        base, w, d = h.area(12.0, 7.0, back=True)
+        n0 = len(c.homes)
+        metro.housing(c, rng, base, h.fr(), w, d, b, grade, label)
+        for hm in c.homes[n0:]:
+            hm["inside"] = h.b["id"]
+        h.entrance(pl, b, citylife.SIGN["home"])
 
     if works:
-        base, fr = B.place(px, pz - 8, (0.0, 1.0), 26.0, 18.0, b)
-        metro.build_factory_hall(c, rng, base, fr, 26.0, 18.0, b)
-        b += 1
-        base, fr = B.place(px + 20, pz + 18, (0.0, -1.0), 8.0, 7.0, b)
-        citylife.build_shop(c, rng, base, fr, 8.0, 7.0, b, "trader")
-        b += 1
+        fac = choose(cands(("factory",), min_w=28.0, min_d=20.0, min_h=6.0), key=lambda b: b["_st"], sep=0.0)
+        if fac is None:
+            return None
+        h = fac[1]
+        b = nb()
+        base, w, d = h.area(26.0, 18.0)
+        metro.build_factory_hall(c, rng, base, h.fr(), w, d, b, walls=False)
+        h.entrance(pl, b, citylife.SIGN["factory"])
         for k in range(2):
-            npc(px + rng.uniform(-14, 6), pz + rng.uniform(6, 16), "citizen", float(rng.uniform(2.0, 3.5)), talk="worker")
+            citizen(h, k, "worker")
+        tr = choose(cands(("warehouse", "factory")), key=lambda b: b["_st"], sep=60.0)
+        if tr is not None:
+            shop(tr[1], "trader", 1)
     else:
-        base, fr = B.place(px - 6, pz - 17, (0.0, 1.0), 24.0, 12.0, b)
-        metro.build_dept(c, rng, base, fr, 24.0, 12.0, b)
-        b += 1
-        h = 75.0 if site["kind"] == "tokyo" else 95.0
-        base, fr = B.place(px + 17, pz - 17, (0.0, 1.0), 12.0, 12.0, b)
-        metro.build_sky_tower(c, rng, base, fr, 12.0, 12.0, h, b, b + 1, (0.0, 7.0))
-        b += 2
-        base, fr = B.place(px - 20, pz + 8, (1.0, 0.0), 8.0, 7.0, b)
-        citylife.build_shop(c, rng, base, fr, 8.0, 7.0, b, "estate")
-        b += 1
-        base, fr = B.place(px + 20, pz + 8, (-1.0, 0.0), 8.0, 7.0, b)
-        citylife.build_shop(c, rng, base, fr, 8.0, 7.0, b, "trader")
-        b += 1
-        base, fr = B.place(px, pz + 21, (0.0, -1.0), 12.0, 7.0, b)
-        metro.housing(c, rng, base, fr, 12.0, 7.0, b, "station", "駅前")
-        b += 1
-        for k in range(4):
-            npc(px + rng.uniform(-10, 10), pz + rng.uniform(-5, 8), "citizen", float(rng.uniform(2.0, 4.0)), talk="metro",
-                gossip=(k % 2 == 0))
-        if ch["res"] is not None:
-            rx, rz = ch["res"][0], ch["res"][1]
-            for door, zz in (((0.0, 1.0), -8.0), ((0.0, -1.0), 8.0)):
-                base, fr = B.place(rx, rz + zz, door, 12.0, 7.0, b)
-                metro.housing(c, rng, base, fr, 12.0, 7.0, b, "normal", "")
-                b += 1
-            for k in range(2):
-                npc(rx + rng.uniform(-6, 6), rz + rng.uniform(-2, 2), "citizen", float(rng.uniform(1.5, 3.0)), talk="metro",
-                    gossip=(k == 0))
-    from importlib import import_module
-    blockify = import_module(type(ca).__module__.rsplit(".", 1)[0] + ".blockify")
+        office = ("office", "tower", "apartment")
+        # 高層階：街でいちばん高いビル
+        towers = sorted((b for b in mine if b["style"] == "tower"), key=lambda b: -b["h"])
+        top = None
+        for b in [t for t in towers if faces_street(t)][:6] or towers[:6]:
+            h = host(b)
+            if h.ok and h.inner[0] >= 10 and h.inner[1] >= 10 and h.ceil > 40:
+                top = (b, h)
+                used.add(b["id"])
+                break
+        if top is not None:
+            b, h = top
+            bt = nb()
+            lobby = h.at((h.x_lo + h.x_hi) / 2, h.z_hi - 2.5, h.s)
+            floors = [h.ceil - 4.5 - 14.0 * k for k in range(3) if h.ceil - 4.5 - 14.0 * k > 30.0]
+            for k, hf in enumerate(floors):
+                fb = nb()
+                metro.build_view_floor(c, rng, h.at((h.x_lo + h.x_hi) / 2, (h.z_lo + h.z_hi) / 2, hf), h.fr(),
+                                       h.inner[0], h.inner[1], fb, lobby, (k - (len(floors) - 1) / 2) * 2.2,
+                                       f"{site['name']} タワー {int(round(hf))} m の階", h.b["id"])
+            h.entrance(pl, bt, (0.4, 0.9, 1.0))
+        R_ = site["R"]
+        picks = [
+            ("dept", cands(("tower", "office"), 0.0, 0.35, 12, 10), lambda b: b["_r"]),                      # 都心のビル
+            ("estate", cands(office, 0.0, 0.5), lambda b: b["_st"]),                                          # 駅のそば
+            ("trader", cands(office, 0.0, 0.4), lambda b: abs(b["_r"] - 0.25 * R_)),
+            ("dept", cands(("office", "apartment"), 0.55, 0.9, 12, 10), lambda b: rng.random()),              # 郊外
+            ("estate", cands(office, 0.5, 0.9), lambda b: rng.random()),
+            ("trader", cands(office, 0.45, 0.9), lambda b: rng.random()),
+        ]
+        k = 0
+        for role, bs, key in picks:
+            ch = choose(bs, key)
+            if ch is not None:
+                shop(ch[1], role, k)
+                k += 1
+        # 部屋：駅近（駅にいちばん近い集合住宅など）2 棟・郊外のふつうの部屋 2 棟
+        for grade, label, bs, key in (("station", "駅前", cands(("apartment", "office"), 0.0, 0.6, 9, 10.5), lambda b: b["_st"]),
+                                      ("normal", "", cands(("apartment",), 0.4, 0.95, 9, 10.5), lambda b: rng.random())):
+            for _ in range(2):
+                ch = choose(bs, key, sep=60.0)
+                if ch is not None:
+                    rooms(ch[1], grade, label)
+    if not c.parts:
+        return None
     blockify.extract(c)
     c.finish()
     c.radius = max(c.radius, blockify.extent(c) + 1.0)

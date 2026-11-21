@@ -1,8 +1,9 @@
 """A-10：大都市の暮らし。百貨店と値下げ・高い部屋（駅近・高層階）・収益物件・工場の仕事。
 
 大都市圏 MOD（megalopolis）が、場所ごとに街（City）を作るときに、ここの建物を使う。
-- 大きな街（stype "metro"）：百貨店・不動産屋・商人・駅前の部屋・スカイタワー（最上階の部屋とエレベーター）・ふつうの部屋・住民。
-- 工業地帯（stype "works"）：工場（班長・置き場・装置・作業員）・商人。
+- 大きな街（stype "metro"）：大都市圏の建物の中に、百貨店・不動産屋・商人・駅近とふつうの部屋が点在する。
+  いちばん高いビルの上の方の階が高層階の部屋（1 階のロビーのエレベーターで上がる）。店の前に住民。
+- 工業地帯（stype "works"）：工場の建物の中に仕事場（班長・置き場・装置・作業員）、倉庫の中に商人。
 
 百貨店（店員 role "dept"）：ふだんは商人より高い（DEPT_MARKUP 倍）。時間帯（SALE_SLOT 秒）ごとに、ときどき
   1〜2 品を数分だけ大きく値下げする（街と時刻で決まる）。大きな値下げ（BIG_SALE 以上）はどこにも出さず、
@@ -281,13 +282,10 @@ def job_target(pack):
 # ---------------------------------------------------------------------------
 # 建物
 # ---------------------------------------------------------------------------
-GLASS = np.array([0.55, 0.75, 0.85])
-
-
-def build_dept(city, rng, base, fr, w, d, b):
+def build_dept(city, rng, base, fr, w, d, b, walls=True):
     """百貨店：店員のカウンターと、売り場の台・棚・明かり"""
     X, U, Z = fr
-    top = build_shop(city, rng, base, fr, w, d, b, "dept")
+    top = build_shop(city, rng, base, fr, w, d, b, "dept", walls)
     sc = citylife.SIGN["dept"]
     for x in (-w / 4, w / 4):
         for z in (-0.6, 1.6):
@@ -309,40 +307,31 @@ def lift(city, base, fr, x, z, b, hid, way):
     return k
 
 
-def build_sky_tower(city, rng, base, fr, w, d, h, b, b_room, lobby):
-    """スカイタワー：中が空いた高いビル（ブロック）と、屋上のガラスの部屋（高層階・眺望の部屋）。
-    下のエレベーター（lobby：塔の前の (x, z)）と部屋のエレベーターでつなぐ。部屋（city.homes）を返す"""
+def build_view_floor(city, rng, base, fr, w, d, b, lobby, lobby_x, name, inside=None):
+    """高層階の部屋：既にある高いビルの中の上の階に、床と家具（ビルの窓から街が見える）。
+    base：床の上面の真ん中（街ローカル）、w×d：床の広さ。lobby：1 階のロビーの床の点（街ローカル）、lobby_x：ロビーのエレベーターの横の位置。
+    1 階のエレベーターと、この階のエレベーターでつなぐ。部屋（city.homes の 1 つ）を返す"""
     X, U, Z = fr
-    body = np.array([0.1, 0.12, 0.17])
-    city.add(base + U * (h / 2), fr, (w / 2, h / 2, d / 2), body, None, True, b, "body")
-    neon = np.array([0.4, 0.9, 1.0])
-    y = 6.0
-    while y < h - 2:
-        city.add(base + U * y, fr, (w / 2 + 0.06, 0.12, d / 2 + 0.06), neon * 0.9, neon, False, b, "neon")
-        y += 8.0
-    top = base + U * h
-    city.add(top + U * 0.1, fr, (w / 2, 0.1, d / 2), (0.3, 0.3, 0.33), None, True, b_room, "found")     # 床
-    rw, rd = w - 1.0, d - 1.0
-    _walls(city, top + U * 0.2, fr, rw, rd, b_room, [], kind="glass")
+    city.add(base - U * 0.15, fr, (w / 2, 0.15, d / 2), (0.32, 0.3, 0.3), None, True, b, "found")      # 床
     hid = f"{city.id}-h{len(city.homes)}"
-    ib = top + U * 0.2
-    bed = city.add(ib + U * 0.3 + X * (-rw / 2 + T + 0.6) + Z * (-rd / 2 + T + 1.1), fr, (0.6, 0.3, 1.05),
-                   np.array([0.75, 0.75, 0.8]), None, True, b_room, "furn")
-    chest = city.add(ib + U * 0.4 + X * (rw / 2 - T - 0.45) + Z * (-rd / 2 + T + 0.4), fr, (0.4, 0.4, 0.3), WOOD,
-                     None, True, b_room, "furn")
+    rw, rd = min(w, 18.0), min(d, 14.0)                                   # 住む所（床の真ん中あたり）
+    bed = city.add(base + U * 0.3 + X * (-rw / 2 + 0.8) + Z * (-rd / 2 + 1.2), fr, (0.65, 0.3, 1.05),
+                   np.array([0.78, 0.78, 0.84]), None, True, b, "furn")
+    chest = city.add(base + U * 0.4 + X * (rw / 2 - 0.6) + Z * (-rd / 2 + 0.5), fr, (0.4, 0.4, 0.3), WOOD, None, True, b, "furn")
     city.parts[bed]["tag"] = ("bed", hid)
     city.parts[chest]["tag"] = ("chest", hid)
-    city.add(ib + U * 0.3 + Z * (rd / 2 - T - 1.2), fr, (1.4, 0.3, 0.45), np.array([0.5, 0.2, 0.25]), None, True, b_room,
-             "furn")                                                                   # ソファ（窓ぎわ）
-    _light(city, ib, fr, 0.0, 0.0, b_room, (1.0, 0.9, 0.75))
-    up_at = rw / 2 - T - 0.8
-    lift(city, ib, fr, -up_at, rd / 2 - T - 0.7, b_room, hid, "down")
-    lx, lz = lobby
-    lift(city, base, fr, lx, lz, b, hid, "up")
-    home = {"id": hid, "name": f"{city.name} スカイタワー 最上階", "bld": b_room, "grade": "view",
-            "door": ib + X * (-up_at + 1.2) + Z * (rd / 2 - T - 1.6),
-            "lift_up": ib + X * (-up_at + 1.2) + Z * (rd / 2 - T - 1.6),
-            "lift_down": base + X * lx + Z * (lz + 1.6)}
+    city.add(base + U * 0.3 + X * (rw / 4) + Z * (rd / 2 - 1.5), fr, (1.6, 0.3, 0.5), np.array([0.5, 0.2, 0.25]), None, True, b,
+             "furn")                                                       # ソファ（窓の方）
+    city.add(base + U * 0.25 + X * (rw / 4) + Z * (rd / 2 - 3.0), fr, (0.8, 0.25, 0.5), WOOD, None, True, b, "furn")   # テーブル
+    city.add(base + U * 0.01 + X * (rw / 4) + Z * (rd / 2 - 2.6), fr, (2.2, 0.01, 1.6), np.array([0.55, 0.45, 0.35]), None, False,
+             b, "decor")                                                   # 敷物
+    for x in (-rw / 4, rw / 4):
+        _light(city, base, fr, x, 0.0, b, (1.0, 0.9, 0.75))
+    lift(city, base, fr, -rw / 4, rd / 2 - 0.8, b, hid, "down")
+    lift(city, lobby, fr, lobby_x, 0.0, b, hid, "up")
+    stand = base + X * (-rw / 4) + Z * (rd / 2 - 2.2)
+    home = {"id": hid, "name": name, "bld": b, "grade": "view", "door": stand, "lift_up": stand,
+            "lift_down": lobby + X * lobby_x - Z * 1.6, "inside": inside}
     city.homes.append(home)
     return home
 
@@ -358,13 +347,15 @@ def housing(city, rng, base, fr, w, d, b, grade="normal", label=""):
     return top
 
 
-def build_factory_hall(city, rng, base, fr, w, d, b):
-    """工場（仕事場）：班長と机・置き場（床の光る四角と番号）・装置 3 つ・ベルトコンベア・作業員"""
+def build_factory_hall(city, rng, base, fr, w, d, b, walls=True):
+    """工場（仕事場）：班長と机・置き場（床の光る四角と番号）・装置 3 つ・ベルトコンベア・作業員。
+    walls=False：既にある工場の建物の中に置く"""
     X, U, Z = fr
-    top = _walls(city, base, fr, w, d, b, [0.0])
+    top = _walls(city, base, fr, w, d, b, [0.0]) if walls else None
     hd, hw = d / 2, w / 2
     sc = citylife.SIGN["factory"]
-    city.add(base + U * (citylife.DOOR_H + 0.55) + Z * (hd + 0.08), fr, (2.4, 0.3, 0.06), sc, sc, False, b, "sign")
+    if walls:
+        city.add(base + U * (citylife.DOOR_H + 0.55) + Z * (hd + 0.08), fr, (2.4, 0.3, 0.06), sc, sc, False, b, "sign")
     for x in (-w / 3, 0.0, w / 3):
         for z in (-d / 4, d / 4):
             _light(city, base, fr, x, z, b)

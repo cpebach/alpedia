@@ -213,7 +213,7 @@ class EstatePanel(_Panel):
             y -= 0.06
         self._pager(len(homes), y)
         if self.metro:
-            self._text("駅近：駅のそば。高層階：スカイタワーの最上階（塔の前のエレベーターで上がる）。", (-0.7, y - 0.055), 0.55,
+            self._text("駅近：駅のそば。高層階：街でいちばん高いビルの上の方の階（ビルの 1 階のロビーのエレベーターで上がる）。", (-0.7, y - 0.055), 0.55,
                        color.light_gray)
             y -= 0.04
         return y - 0.02
