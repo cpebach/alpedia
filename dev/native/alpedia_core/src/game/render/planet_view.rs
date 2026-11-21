@@ -32,6 +32,8 @@ pub struct PlanetView {
     pub a_verts: Option<PyObject>,
     /// 距離で細かさを変える遠景（A-01）
     pub lod: Option<Box<super::planet_lod::Lod>>,
+    /// 遠景の内側（詳細な地表のまわり。planet_lod.rs）のメッシュ
+    pub lod_inner: Option<PyObject>,
     /// 草・木（A-02。定義に "vegetation": true の惑星だけ）：(草のメッシュ, 木のメッシュ)
     pub veg: Option<Box<super::vegetation::Veg>>,
     pub veg_mesh: Option<(PyObject, PyObject)>,
@@ -48,7 +50,7 @@ impl PlanetView {
     #[new]
     #[pyo3(signature = (*_a, **_k))]
     pub(crate) fn new(_a: &Bound<'_, PyTuple>, _k: Option<&Bound<'_, PyDict>>) -> Self {
-        PlanetView { a_CUT: None, a_base: None, a_cut: None, a_dirs: None, a_frame_key: None, a_mesh: None, a_p: None, a_pos: None, a_root: None, a_tris: None, a_verts: None, lod: None, veg: None, veg_mesh: None }
+        PlanetView { a_CUT: None, a_base: None, a_cut: None, a_dirs: None, a_frame_key: None, a_mesh: None, a_p: None, a_pos: None, a_root: None, a_tris: None, a_verts: None, lod: None, lod_inner: None, veg: None, veg_mesh: None }
     }
     #[pyo3(signature = (parent, loader, planet, n=48))]
     pub(crate) fn __init__(slf: &Bound<'_, Self>, parent: &B<'_>, loader: &B<'_>, planet: &B<'_>, n: usize) -> R<()> {
@@ -59,6 +61,7 @@ impl PlanetView {
         Self::sa_root(slf, &root)?;
         let mesh = dmesh(py, &root, "far")?;
         Self::sa_mesh(slf, &mesh)?;
+        slf.borrow_mut().lod_inner = Some(dmesh(py, &root, "far_in")?.unbind());
         Self::sa_frame_key(slf, py.None())?;
         let radius = f64of(&planet.getattr("radius")?)?;
         slf.borrow_mut().lod = Some(Box::new(super::planet_lod::Lod::new(radius)));
@@ -123,6 +126,14 @@ impl PlanetView {
         Self::_lod_update(slf, far, None)?;
         Ok(())
     }
+    /// 描画の重さの内訳 [(名前, 秒)] を取り出して 0 に戻す（開発用）
+    #[staticmethod]
+    pub(crate) fn prof_take() -> Vec<(String, f64)> {
+        let mut p = super::RPROF.lock().unwrap_or_else(|e| e.into_inner());
+        let out = super::RPROF_PARTS.iter().zip(p.iter()).map(|(k, v)| (k.to_string(), *v)).collect();
+        *p = [0.0; 10];
+        out
+    }
     /// patch_frame：この惑星の詳細な地表の範囲 (上, 接線1, 接線2, 半径, 半幅) か None
     #[pyo3(signature = (origin, player_pos=None, patch_frame=None))]
     pub(crate) fn update(slf: &Bound<'_, Self>, origin: &B<'_>, player_pos: Option<&B<'_>>, patch_frame: Option<&B<'_>>) -> R<()> {
@@ -150,6 +161,7 @@ impl PlanetView {
         slf.borrow_mut().veg = Some(veg);
         let (g, t) = res?;
         let meshes = slf.borrow().veg_mesh.as_ref().map(|(a, b)| (a.clone_ref(py), b.clone_ref(py)));
+        let mut pt = std::time::Instant::now();
         if let Some((gm, tm)) = meshes {
             for (data, m) in [(g, gm), (t, tm)] {
                 if let Some((v, tr)) = data {
@@ -157,6 +169,7 @@ impl PlanetView {
                 }
             }
         }
+        super::rprof(5, &mut pt);
         Ok(())
     }
     fn _lod_update(slf: &Bound<'_, Self>, cam: [f64; 3], frame: Option<([f64; 3], [f64; 3], [f64; 3], f64, f64)>) -> R<()> {
@@ -165,9 +178,18 @@ impl PlanetView {
         let mut lod = match slf.borrow_mut().lod.take() { Some(l) => l, None => return Ok(()) };
         let res = lod.update(&p, cam, frame);
         slf.borrow_mut().lod = Some(lod);
-        if let Some((v, t)) = res? {
+        let (outer, inner) = res?;
+        let mut pt = std::time::Instant::now();
+        if let Some((v, t)) = outer {
             Self::ga_mesh(slf)?.call_method1("set", (f32_2(py, v, 12)?, i64_2(py, t, 3)?))?;
         }
+        if let Some((v, t)) = inner {
+            let m = slf.borrow().lod_inner.as_ref().map(|m| m.clone_ref(py));
+            if let Some(m) = m {
+                m.bind(py).call_method1("set", (f32_2(py, v, 12)?, i64_2(py, t, 3)?))?;
+            }
+        }
+        super::rprof(2, &mut pt);
         Ok(())
     }
 }
@@ -269,7 +291,12 @@ impl TerrainPatch {
                 npnorm(py, [pp[0] - pc[0] - a[0], pp[1] - pc[1] - a[1], pp[2] - pc[2] - a[2]])? > f64of(&Self::ga_step(slf)?)? * f64of(&Self::ga_cells(slf)?)? * 0.25
             };
         if need {
+            let mut pt = std::time::Instant::now();
             s.call_method1("_build", (planet, player_pos, carve.cloned().unwrap_or_else(|| none(py))))?;
+            super::rprof(6, &mut pt);
+            if let Ok(mut p) = super::RPROF.lock() {
+                p[7] += 1.0;
+            }
         }
         let cl = v3(&Self::ga_center(slf)?)?;
         let pc = v3(&planet.getattr("center")?)?;
@@ -318,7 +345,10 @@ impl TerrainPatch {
             }
         }
         let d_o = f64_2(py, d.clone(), 3)?;
-        let sm = a2(&Planet::_sample(pla(&pl)?, &IntoPy::<PyObject>::into_py(&d_o, pl.py()).into_bound(pl.py())).map(|v| IntoPy::<PyObject>::into_py(v, pl.py()).into_bound(pl.py()))?, 2)?;
+        let mut pt = std::time::Instant::now();
+        // 高さは地形から直接（当たり判定用の細かいタイル（0.25 m）を作らない。値はタイルと同じ。高速移動で止まらないように）
+        let sm = a2(&pl.call_method1("_tile_values", (&d_o,))?, 2)?;
+        super::rprof(8, &mut pt);
         let mut r: Vec<f64> = (0..nv).map(|i| sm.d[i * 2]).collect();
         let wr: Vec<f64> = (0..nv).map(|i| sm.d[i * 2 + 1]).collect();
         let r_nat = r.clone();
@@ -402,7 +432,9 @@ impl TerrainPatch {
             }
         }
         let nrm_o = f64_2(py, nrm.clone(), 3)?;
+        let mut pt = std::time::Instant::now();
         let mut col = a2(&pl.call_method1("surface_color", (&d_o, f64_1(py, r_nat.clone()), &nrm_o,))?, 3)?;
+        super::rprof(9, &mut pt);
         // 掘った所は土の色に
         if has_craters && !use_carve {
             let dirt = [0.45, 0.33, 0.22];

@@ -3,6 +3,7 @@
 //! 置き場所は惑星ローカルの決まった格子（キューブの面ごとに、角度で等間隔）の中の乱数（格子の番号から作るので、いつも同じ所）。
 //! 気候（気温・湿り気）で種類と数を決める。水の中・浜・掘った穴の中には生えない。
 //! 草はプレイヤーのまわり GRASS_R m、木は TREE_R m。プレイヤーが動いたら作り直す（草は 6 m、木は 25 m ごと）。
+//! 作り直しは別のスレッドで（高速移動で止まらないように）。できるまでは前のメッシュを描く。
 
 use super::*;
 
@@ -66,11 +67,28 @@ fn face_dir(f: usize, al: f64, be: f64) -> [f64; 3] {
 /// 候補：(向き, 絵の番号, 大きさの倍率, 板の向き)
 type Cand = ([f64; 3], usize, f64, f64);
 
+type Mesh = (Vec<f32>, Vec<i64>);
+
+/// 作るのに要る物（Python から先に集めておく。スレッドでは Python を使わない）
+#[derive(Clone)]
+struct Ctx {
+    r: f64,
+    shape: std::sync::Arc<crate::planet::Shape>,
+    craters: Vec<[f64; 4]>,
+    sea: f64,
+    sun: [f64; 3],
+    amb: f64,
+}
+
 #[derive(Default)]
 pub struct Veg {
     grass_at: Option<[f64; 3]>,
     tree_at: Option<[f64; 3]>,
     version: i64,
+    /// 作っている途中の層（草, 木）
+    jobs: [Option<std::thread::JoinHandle<Mesh>>; 2],
+    /// 作っている途中に惑星が変わった（終わったらもう一度作る）
+    stale: [bool; 2],
 }
 
 impl Veg {
@@ -155,22 +173,30 @@ impl Veg {
     }
 
     /// 1 つの層のメッシュ（頂点 (N,12)・三角形）
-    fn layer(planet: &B<'_>, cam: [f64; 3], grass: bool) -> R<(Vec<f32>, Vec<i64>)> {
+    fn ctx(planet: &B<'_>) -> R<Ctx> {
         let py = planet.py();
         let r: f64 = f64of(&planet.getattr("radius")?)?;
+        let nat = planet.call_method0("_nat")?;
+        let ps = nat.downcast::<crate::PlanetShape>()?.get();
+        let sea: f64 = if planet.getattr("has_water")?.is_truthy()? { planet.getattr("sea").and_then(|x| x.extract()).unwrap_or(0.0) } else { -1e9 };
+        let (shape, craters) = (ps.shape.clone(), ps.craters.read().unwrap().clone());
+        let cx = Ctx { r, shape, craters, sea, sun: sun(py)?, amb: ambient(py)? };
+        Ok(cx)
+    }
+
+    fn layer(cx: &Ctx, cam: [f64; 3], grass: bool) -> Mesh {
+        let r = cx.r;
         let (range, cell, lay) = if grass { (GRASS_R, GRASS_CELL, 1) } else { (TREE_R, TREE_CELL, 2) };
         let cs = Self::cands(cam, r, range, cell, lay);
         if cs.is_empty() {
-            return Ok((vec![], vec![]));
+            return (vec![], vec![]);
         }
         // 地面・水・気候・掘った穴は Rust の地形から直接（Python を通さず、まとめて並列に。A-02：重さの対策）
-        let nat = planet.call_method0("_nat")?;
-        let ps = nat.downcast::<crate::PlanetShape>()?.get();
-        let shape = ps.shape.clone();
-        let craters = ps.craters.read().unwrap().clone();
-        let sea: f64 = if planet.getattr("has_water")?.is_truthy()? { planet.getattr("sea").and_then(|x| x.extract()).unwrap_or(0.0) } else { -1e9 };
+        let shape = cx.shape.clone();
+        let craters = &cx.craters;
+        let sea = cx.sea;
         let dirs: Vec<[f64; 3]> = cs.iter().map(|c| c.0).collect();
-        let samp: Vec<([f64; 2], (f64, f64), f64, f64, i64)> = py.allow_threads(|| {
+        let samp: Vec<([f64; 2], (f64, f64), f64, f64, i64)> = {
             use rayon::prelude::*;
             dirs.par_chunks(64).flat_map_iter(|ch| {
                 let tv = shape.tile_values(ch);
@@ -188,13 +214,13 @@ impl Veg {
                     (v, cl, sd, if pv > 0.05 { 1.0 } else { fp.bare }, fp.tree)
                 }).collect::<Vec<_>>()
             }).collect()
-        });
+        };
         let sr: Vec<f64> = samp.iter().map(|s| s.0[0]).collect();
         let wr: Vec<f64> = samp.iter().map(|s| s.0[1]).collect();
         let h: Vec<f64> = sr.iter().map(|x| x - r).collect();
         let clim: Vec<f64> = samp.iter().flat_map(|s| [s.1 .0, s.1 .1]).collect();
         let sdf: Vec<f64> = samp.iter().map(|s| s.2).collect();
-        let (s_, amb) = (sun(py)?, ambient(py)?);
+        let (s_, amb) = (cx.sun, cx.amb);
         let mut v: Vec<f32> = vec![];
         let mut t: Vec<i64> = vec![];
         for (i, c) in cs.iter().enumerate() {
@@ -252,12 +278,12 @@ impl Veg {
                 t.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
             }
         }
-        Ok((v, t))
+        (v, t)
     }
 
-    /// 毎フレーム：作り直す層があれば (草, 木) の新しいメッシュ（変わらない層は None）
     #[allow(clippy::type_complexity)]
-    pub fn update(&mut self, planet: &B<'_>, cam: [f64; 3]) -> R<(Option<(Vec<f32>, Vec<i64>)>, Option<(Vec<f32>, Vec<i64>)>)> {
+    /// 毎フレーム：作り直す層があれば別のスレッドで作り始め、できた層を (草, 木) で返す（変わらない層は None）
+    pub fn update(&mut self, planet: &B<'_>, cam: [f64; 3]) -> R<(Option<Mesh>, Option<Mesh>)> {
         let r: f64 = f64of(&planet.getattr("radius")?)?;
         let alt = dot(cam, cam).sqrt() - r;
         let ver: i64 = planet.getattr("version")?.extract()?;
@@ -267,10 +293,9 @@ impl Veg {
             None => true,
             Some(p) => { let q = [cam[0] - p[0], cam[1] - p[1], cam[2] - p[2]]; dot(q, q).sqrt() > lim }
         };
-        let mut g = None;
-        let mut tr = None;
         if alt > TREE_R + 200.0 {
-            // 高い所：何も描かない
+            // 高い所：何も描かない（作っている途中の物は捨てる）
+            self.jobs = [None, None];
             if self.tree_at.is_some() || self.grass_at.is_some() {
                 self.tree_at = None;
                 self.grass_at = None;
@@ -278,14 +303,42 @@ impl Veg {
             }
             return Ok((None, None));
         }
-        if changed || far(&self.grass_at, 6.0) {
-            self.grass_at = Some(cam);
-            g = Some(if alt < GRASS_R { Self::layer(planet, cam, true)? } else { (vec![], vec![]) });
+        let mut pt = std::time::Instant::now();
+        let mut out: [Option<Mesh>; 2] = [None, None];
+        let mut cx: Option<Ctx> = None;
+        for i in 0..2 {
+            let grass = i == 0;
+            // 終わった仕事を受け取る
+            if self.jobs[i].as_ref().map(|h| h.is_finished()).unwrap_or(false) {
+                if let Ok(m) = self.jobs[i].take().unwrap().join() {
+                    out[i] = Some(m);
+                }
+                if self.stale[i] {
+                    // 作っている途中に惑星が変わった：もう一度作る
+                    self.stale[i] = false;
+                    if grass { self.grass_at = None } else { self.tree_at = None }
+                }
+            }
+            if changed && self.jobs[i].is_some() {
+                self.stale[i] = true;
+            }
+            let (at, lim) = if grass { (&self.grass_at, 6.0) } else { (&self.tree_at, 25.0) };
+            if !(changed || far(at, lim)) || self.jobs[i].is_some() {
+                continue;
+            }
+            if grass { self.grass_at = Some(cam) } else { self.tree_at = Some(cam) }
+            if grass && alt >= GRASS_R {
+                out[i] = Some((vec![], vec![]));
+                continue;
+            }
+            if cx.is_none() {
+                cx = Some(Self::ctx(planet)?);
+            }
+            let c = cx.clone().unwrap();
+            self.jobs[i] = Some(std::thread::spawn(move || Self::layer(&c, cam, grass)));
         }
-        if changed || far(&self.tree_at, 25.0) {
-            self.tree_at = Some(cam);
-            tr = Some(Self::layer(planet, cam, false)?);
-        }
+        super::rprof(3, &mut pt);
+        let [g, tr] = out;
         Ok((g, tr))
     }
 }

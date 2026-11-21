@@ -92,7 +92,7 @@ impl Grid {
 }
 
 impl Strip {
-    pub fn new(pts: Vec<[f64; 3]>, half: f64, edge: f64, rgb: [f64; 3], radius: f64) -> Self {
+    pub fn new(pts: Vec<[f64; 3]>, half: f64, edge: f64, rgb: [f64; 3], _radius: f64) -> Self {
         let mut chunks = vec![];
         let n = pts.len();
         let mut i0 = 0;

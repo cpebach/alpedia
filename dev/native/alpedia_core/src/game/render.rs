@@ -441,6 +441,16 @@ pub fn render_edge_stage(py: Python<'_>) -> R<B<'_>> {
 const BOX_FACES: [[usize; 4]; 6] = [[1, 3, 7, 5], [0, 4, 6, 2], [2, 6, 7, 3], [0, 1, 5, 4], [4, 5, 7, 6], [0, 2, 3, 1]];
 
 // 中身は分けて書いている（C-02）
+/// 描画の重さの内訳（開発用。PlanetView.prof_take() で取り出す）
+pub(crate) const RPROF_PARTS: [&str; 10] = ["lod_build", "lod_asm", "lod_set", "veg_grass", "veg_tree", "veg_set", "patch", "patch_n", "p_samp", "p_col"];
+pub(crate) static RPROF: std::sync::Mutex<[f64; 10]> = std::sync::Mutex::new([0.0; 10]);
+pub(crate) fn rprof(i: usize, t: &mut std::time::Instant) {
+    let now = std::time::Instant::now();
+    if let Ok(mut p) = RPROF.lock() {
+        p[i] += (now - *t).as_secs_f64();
+    }
+    *t = now;
+}
 mod layers;
 mod construct_view;
 mod decal;

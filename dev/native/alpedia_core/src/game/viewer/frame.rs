@@ -5,6 +5,11 @@ use crate::game::PyDictOps;
 use crate::game::player::{ply, Player};
 use super::*;
 
+/// 1 フレームで物理に使う時間の上限（秒）
+const PHYS_BUDGET: f64 = 0.012;
+/// 物理が PHYS_BUDGET を超えたとき、超えた時間の何倍だけ物理を休むか（少し超えただけならほとんど休まない）
+const PHYS_REST: f64 = 1.5;
+
 #[pymethods]
 impl Viewer {
     // ---- 1フレーム ----
@@ -127,7 +132,18 @@ impl Viewer {
         }
         let mvo = np3(py, mv);
         let tho = np3(py, thrust);
+        // 物理は 1 フレームに PHYS_BUDGET 秒まで（最低 1 回）。重いときは追いつこうとせず世界の時間が遅くなる
+        // （操作の反映・画面が遅れないように。遅れを取り戻そうとして次のフレームも重くなるのを防ぐ）
+        // 物理がとても重い（1 回で PHYS_BUDGET を超えた）ときは、超えた分に合わせて物理を休んで画面と操作だけ進める
+        // （とても重いときは物理は時間の半分ほどまで。世界の時間はさらに遅くなるが、視点・メニュー・キーは早く反映される）
+        let rest_until = f64of(&gd(s, "_phys_rest", tb(py, 0.0)))?;
+        if t0 < rest_until {
+            acc = 0.0;
+        }
         while acc >= tick && n < 3 {
+            if n > 0 && pc()? - t0 > PHYS_BUDGET {
+                break;
+            }
             if client {
                 net.call_method1("step", (tick, &mvo, jump && n == 0, &tho))?; // 自分の体だけ動かす
             } else {
@@ -136,8 +152,13 @@ impl Viewer {
             acc -= tick;
             n += 1;
         }
-        if n == 3 {
-            acc = 0.0;
+        if acc >= tick {
+            acc = 0.0; // 追いつけなかった分は捨てる（時間が遅くなる）
+        }
+        if n > 0 {
+            let now = pc()?;
+            let cost = now - t0;
+            s.setattr("_phys_rest", if cost > PHYS_BUDGET { now + (cost - PHYS_BUDGET) * PHYS_REST } else { 0.0 })?;
         }
         Self::sa_acc(slf, acc)?;
         if !net.is_none() && !client {

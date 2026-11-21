@@ -2,10 +2,17 @@
 //!
 //! キューブスフィアの各面を四分木に分け、カメラに近い区画ほど細かくする（いちばん細かい区画は約 64 m 四方）。
 //! 区画はそれぞれ (G+1)² の格子のメッシュ。隣の区画と細かさが違う所のすき間は、縁を下に垂らした「スカート」で隠す。
-//! 足りない区画は 1 フレームに少しずつ作り（できるまでは親の区画を描く）、使う区画の組が変わったときだけ 1 つのメッシュにまとめ直す。
+//! 足りない区画は 1 フレームに少しずつ作り（できるまでは親の区画を描く）、使う区画の組が変わったときだけまとめ直す。
 //! 詳細な地表（TerrainPatch）の範囲の三角形は描かない（洞窟や穴を遠景が覆わないように）。
+//!
+//! メッシュは 2 つ（高速移動で止まらないように）：
+//! - 外側：詳細な地表のまわりより外の区画。切り抜かないので、詳細な地表が動いても作り直さない。
+//!   区画の組が変わったときのまとめ直しは別のスレッドで（できるまでは前のメッシュを描く）。
+//! - 内側：詳細な地表のまわりの区画だけ。詳細な地表が動くたびに切り抜いてまとめ直す（小さいので軽い）。
+//!   内側の範囲の中心は、詳細な地表が MOVE m 動いたときだけ動かす。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::*;
 
@@ -17,8 +24,15 @@ const SPLIT_K: f64 = 2.4;
 const LEAF_M: f64 = 64.0;
 /// 1 フレームに作る区画の数（まとめて 1 回で地形を計算する）
 const BATCH: usize = 3;
-/// 区画を作っている途中は、何フレームごとにメッシュをまとめ直すか
+/// 外側のメッシュをまとめ直す間隔（フレーム）
 const REASSEMBLE_EVERY: u32 = 12;
+/// 内側のメッシュの範囲：詳細な地表の半幅 × 1.5 ＋ この値（m）
+const REGION_PAD: f64 = 60.0;
+/// 詳細な地表がこれだけ動いたら内側の範囲の中心を動かす（m）
+const MOVE: f64 = 40.0;
+
+type Mesh = (Vec<f32>, Vec<i64>);
+type Frame = ([f64; 3], [f64; 3], [f64; 3], f64, f64);
 
 type Key = (u8, u8, u32, u32);
 
@@ -33,15 +47,32 @@ fn norm(a: [f64; 3]) -> f64 {
 pub struct Chunk {
     verts: Vec<f32>,
     tris: Vec<u32>,
+    /// 中心の向きと、中心から角までの距離（m）
+    dir: [f64; 3],
+    rad: f64,
+}
+
+/// 外側のメッシュをまとめている途中の仕事：(スレッド, 区画の組, そのときの内側の組)
+struct Job {
+    handle: std::thread::JoinHandle<Mesh>,
+    outer: Vec<Key>,
+    inner: Vec<Key>,
 }
 
 #[derive(Default)]
 pub struct Lod {
     radius: f64,
     max_level: u8,
-    chunks: HashMap<Key, Chunk>,
-    shown: Vec<Key>,
+    chunks: HashMap<Key, Arc<Chunk>>,
+    /// 描いている外側の区画の組と、そのときの内側の組
+    outer: Vec<Key>,
+    outer_inner: Vec<Key>,
+    /// 描いている内側の区画の組
+    inner: Vec<Key>,
     frame_key: Vec<i64>,
+    /// 内側の範囲の中心（惑星ローカルの単位ベクトル）と半径（m）
+    anchor: Option<([f64; 3], f64)>,
+    job: Option<Job>,
     since: u32,
 }
 
@@ -108,7 +139,7 @@ impl Lod {
             let rr = &r[n * per..(n + 1) * per];
             let cc: Vec<[f64; 3]> = (0..per).map(|q| col.r3(n * per + q)).collect();
             let ch = self.build(py, k, dirs, rr, &cc)?;
-            self.chunks.insert(k, ch);
+            self.chunks.insert(k, Arc::new(ch));
         }
         Ok(())
     }
@@ -181,7 +212,14 @@ impl Lod {
                 tris.extend_from_slice(&[a, sa, sb, a, sb, b, a, sb, sa, a, b, sb]);
             }
         }
-        Ok(Chunk { verts, tris })
+        let (a0, b0, _) = node_range(k);
+        let cd = face_dir(k.0, a0 + s * 0.5, b0 + s * 0.5);
+        let mut rad: f64 = 0.0;
+        for (ca, cb) in [(0.0, 0.0), (s, 0.0), (0.0, s), (s, s)] {
+            let q = face_dir(k.0, a0 + ca, b0 + cb);
+            rad = rad.max(dot(q, cd).clamp(-1.0, 1.0).acos() * self.radius);
+        }
+        Ok(Chunk { verts, tris, dir: cd, rad })
     }
 
     /// 今のカメラ（惑星ローカルの位置 cam）で描く区画を選ぶ。足りない区画は集めて、まとめて作る（次のフレームから使う）。
@@ -229,12 +267,11 @@ impl Lod {
         self.chunks.retain(|k, _| k.1 <= 2 || ks.contains(k));
     }
 
-    /// 選んだ区画を 1 つのメッシュにまとめる。frame（上・接線1・接線2・半径・半幅）の中の三角形は省く
-    fn assemble(&self, frame: Option<([f64; 3], [f64; 3], [f64; 3], f64, f64)>) -> (Vec<f32>, Vec<i64>) {
+    /// 区画をまとめて 1 つのメッシュに。frame（上・接線1・接線2・半径・半幅）の中の三角形は省く
+    fn assemble(chunks: &[Arc<Chunk>], frame: Option<Frame>) -> Mesh {
         let mut v = vec![];
         let mut t = vec![];
-        for k in &self.shown {
-            let c = match self.chunks.get(k) { Some(c) => c, None => continue };
+        for c in chunks {
             let base = (v.len() / 12) as i64;
             v.extend_from_slice(&c.verts);
             let inside = |i: u32| -> bool {
@@ -258,26 +295,104 @@ impl Lod {
         (v, t)
     }
 
-    /// 毎フレーム：区画を選び直し、組か詳細な地表の範囲が変わったらメッシュを作り直す。作り直したら Some
-    pub fn update(&mut self, planet: &B<'_>, cam: [f64; 3], frame: Option<([f64; 3], [f64; 3], [f64; 3], f64, f64)>)
-        -> R<Option<(Vec<f32>, Vec<i64>)>> {
-        let (sel, pending) = self.select(planet, cam)?;
+    fn arcs(&self, keys: &[Key]) -> Vec<Arc<Chunk>> {
+        keys.iter().filter_map(|k| self.chunks.get(k).cloned()).collect()
+    }
+
+    /// 毎フレーム：区画を選び直し、組か詳細な地表の範囲が変わったらメッシュを作り直す。
+    /// 戻り値：(外側の新しいメッシュ, 内側の新しいメッシュ)（変わらない方は None）
+    pub fn update(&mut self, planet: &B<'_>, cam: [f64; 3], frame: Option<Frame>) -> R<(Option<Mesh>, Option<Mesh>)> {
+        let mut pt = std::time::Instant::now();
+        let (sel, _pending) = self.select(planet, cam)?;
+        super::rprof(0, &mut pt);
         self.since += 1;
+        // 内側の範囲（詳細な地表が MOVE m 動いたら中心を動かす）
+        match frame {
+            None => self.anchor = None,
+            Some((up, _, _, _, half)) => {
+                let reg = half * 1.5 + REGION_PAD;
+                let moved = match self.anchor {
+                    None => true,
+                    Some((a, r)) => dot(a, up).clamp(-1.0, 1.0).acos() * self.radius > MOVE || (r - reg).abs() > 1.0,
+                };
+                if moved {
+                    self.anchor = Some((up, reg));
+                }
+            }
+        }
+        let anchor = self.anchor;
+        let radius = self.radius;
+        let in_region = |c: &Chunk| -> bool {
+            match anchor {
+                None => false,
+                Some((a, reg)) => dot(a, c.dir).clamp(-1.0, 1.0).acos() * radius - c.rad < reg,
+            }
+        };
+        let (mut inner_new, mut outer_new) = (vec![], vec![]);
+        for k in &sel {
+            match self.chunks.get(k) {
+                Some(c) if in_region(c) => inner_new.push(*k),
+                Some(_) => outer_new.push(*k),
+                None => {}
+            }
+        }
+        // 外側：まとめ終わった仕事を受け取る
+        let mut out_mesh = None;
+        if self.job.as_ref().map(|j| j.handle.is_finished()).unwrap_or(false) {
+            let j = self.job.take().unwrap();
+            if let Ok(m) = j.handle.join() {
+                out_mesh = Some(m);
+                self.outer = j.outer;
+                self.outer_inner = j.inner;
+            }
+        }
+        // 外側：組が変わったら別のスレッドでまとめ直す。はじめの 1 回はここで
+        if self.job.is_none() && (outer_new != self.outer || self.outer_inner != inner_new) {
+            let first = self.outer.is_empty() && self.outer_inner.is_empty();
+            // 送り直し（数 ms）が続かないように、間を REASSEMBLE_EVERY フレームあける（それまでは前のメッシュを描く）
+            if first || self.since >= REASSEMBLE_EVERY {
+                self.since = 0;
+                let arcs = self.arcs(&outer_new);
+                if first {
+                    out_mesh = Some(Self::assemble(&arcs, None));
+                    self.outer = outer_new.clone();
+                    self.outer_inner = inner_new.clone();
+                } else {
+                    let handle = std::thread::spawn(move || Self::assemble(&arcs, None));
+                    self.job = Some(Job { handle, outer: outer_new.clone(), inner: inner_new.clone() });
+                }
+            }
+        }
+        // 内側：今の内側の組。描いている外側がまだ前の組なら、そのときの内側の区画も描く（すき間ができないように）
+        let mut inner = inner_new.clone();
+        if self.outer_inner != inner_new {
+            for k in &self.outer_inner {
+                if !inner.contains(k) && self.chunks.contains_key(k) {
+                    inner.push(*k);
+                }
+            }
+        }
+        inner.sort_unstable();
         let fk: Vec<i64> = match frame {
             None => vec![],
             Some((u, a, _, r0, h)) => [u[0], u[1], u[2], a[0], a[1], a[2], r0, h].iter().map(|x| (x * 1e4).round() as i64).collect(),
         };
-        if sel == self.shown && fk == self.frame_key {
-            return Ok(None);
+        let mut in_mesh = None;
+        if inner != self.inner || fk != self.frame_key {
+            self.inner = inner;
+            self.frame_key = fk;
+            in_mesh = Some(Self::assemble(&self.arcs(&self.inner), frame));
         }
-        // まだ区画を作っている途中は、まとめ直し（メッシュを送り直す）を間引く
-        if pending && fk == self.frame_key && self.since < REASSEMBLE_EVERY && !self.shown.is_empty() {
-            return Ok(None);
+        super::rprof(1, &mut pt);
+        let mut keep: Vec<Key> = sel;
+        keep.extend(self.outer.iter().copied());
+        keep.extend(self.outer_inner.iter().copied());
+        keep.extend(self.inner.iter().copied());
+        if let Some(j) = &self.job {
+            keep.extend(j.outer.iter().copied());
+            keep.extend(j.inner.iter().copied());
         }
-        self.since = 0;
-        self.trim(&sel);
-        self.shown = sel;
-        self.frame_key = fk;
-        Ok(Some(self.assemble(frame)))
+        self.trim(&keep);
+        Ok((out_mesh, in_mesh))
     }
 }
