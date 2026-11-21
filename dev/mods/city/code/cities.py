@@ -660,6 +660,17 @@ class CityManager:
                 c.home = pi
                 self.cities.append(c)
 
+    def add_city(self, c):
+        """ほかの MOD が作った街を加える（大都市圏 MOD の街など。A-10）。保存されていた状態（建物の壊れ具合）も戻す"""
+        if c.id in self.by_id:
+            return self.by_id[c.id]
+        self.cities.append(c)
+        self.by_id[c.id] = c
+        st = (self.world.settings.get("city_state") or {}).get(c.id)
+        if st:
+            c.load_state(st)
+        return c
+
     @staticmethod
     def _region(c, pl):
         """地域：辺境（月・小惑星）／海辺（桟橋がある）／火山（硫黄の採れる高い山）／平地。"""

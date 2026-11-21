@@ -12,7 +12,7 @@ from main import log
 from main.construct import Construct
 from main.hooks import Addon
 
-from . import build, pave, plan
+from . import build, district, pave, plan
 
 L = log.get("megalopolis")
 
@@ -85,6 +85,8 @@ class MegaAddon(Addon):
         self._ct = 0.0
         self._inside = {}
         self._mt = 0.0
+        self.districts = {}       # 街の暮らしに使う区画（district.py）
+        self._dist_done = False
 
     # ------------------------------------------------------------------ 読み込み
     def on_load(self, world):
@@ -104,6 +106,9 @@ class MegaAddon(Addon):
                 avoid.append((d / np.linalg.norm(d), float(getattr(c, "radius", 200.0))))
         seed = (pl.id, pl.seed, round(pl.radius))
         self.plan = plan.generate(pl, seed, avoid)
+        self.districts = district.choose(pl, self.plan)     # 駅前の広場など（建物を建てない区画。A-10）
+        district.clear_buildings(self.plan, self.districts)
+        self._seed = seed
         pave.apply(pl, self.plan, seed)              # 街の道・区画・場所どうしの道路を舗装の色に
         self.sites = {s["id"]: s for s in self.plan["sites"]}
         self._objects()
@@ -121,9 +126,13 @@ class MegaAddon(Addon):
         for cid in [k for k in world.constructs if str(k).startswith("mt-")]:
             del world.constructs[cid]
         # 保存されていた建物・線路（手を加えていない物）：これからも出し入れする
-        for cid, c in world.constructs.items():
+        for cid, c in list(world.constructs.items()):
             if str(cid).startswith(("mb-", "ms-", "mst-")) and cid not in self.kept:
+                if cid not in self.by_id:
+                    del world.constructs[cid]        # 今は建てない建物（広場になった区画など）
+                    continue
                 self.made[cid] = c.version
+        self._ensure_districts(world)
         L.info("大都市圏：%d か所・建物 %d・線 %d", len(self.plan["sites"]), len(self.plan["buildings"]), len(self.plan["lines"]))
 
     def _objects(self):
@@ -164,9 +173,36 @@ class MegaAddon(Addon):
         ps = [w.player] + list(getattr(w, "remote", {}).values())
         return [np.asarray(p.pos, float) for p in ps if p is not None]
 
+    def _ensure_districts(self, world):
+        """街 MOD があれば、場所ごとの街（NPC・店・部屋・仕事場）を加える（街 MOD の読み込みの後で。A-10）"""
+        if self._dist_done or self.plan is None:
+            return
+        ca = world.addon("city")
+        if ca is None:
+            self._dist_done = True
+            return
+        if getattr(ca, "economy", None) is None:
+            return                                   # 街 MOD の読み込みがまだ（次のティックで）
+        self._dist_done = True
+        if not ca.cities.enabled:
+            return
+        pi = list(world.planets).index(self.planet)
+        n = 0
+        for s in self.plan["sites"]:
+            ch = self.districts.get(s["id"])
+            if ch is None:
+                continue
+            try:
+                ca.cities.add_city(district.build(ca, self.planet, pi, s, ch, self._seed))
+                n += 1
+            except Exception:  # noqa: BLE001
+                L.exception("大都市圏：%s の街を作れませんでした", s["name"])
+        L.info("大都市圏：街の暮らし %d か所", n)
+
     def before_physics(self, world, dt):
         if self.plan is None:
             return set()
+        self._ensure_districts(world)
         self._dt = float(dt)
         self._where(world, float(dt))
         return self._trains_move(world)

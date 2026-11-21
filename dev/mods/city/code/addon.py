@@ -49,6 +49,8 @@ class CityAddon(Addon):
     def before_physics(self, world, dt):
         if self.politics is not None:
             self.politics.update(dt)
+        if self.economy is not None and self.cities.enabled:
+            self.economy.update(dt)                  # 収益物件の収入（metro.py）
         # 軌道上の街：くっついた構築物の推進機の力を街に伝えて、街ごと軌道を進める
         anchored = self._anchored(world)
         if self.cities.enabled:

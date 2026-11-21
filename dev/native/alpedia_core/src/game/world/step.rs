@@ -162,7 +162,9 @@ impl World {
         // 機能処理の距離より遠い物は止めておく（当たり判定の相手にはなる）。レールに乗っている物は軌道だけ進める
         for cid in far.iter()? {
             let cid = cid?;
-            if !constructs.get_item(&cid)?.getattr("mode")?.eq("rails")? {
+            // 遠い物の組は 0.25 秒ごとに作り直すので、その間に消えた物が残っていることがある（同じ数だけ増えたとき）
+            let Some(c) = constructs.get_item(&cid).ok() else { continue };
+            if !c.getattr("mode")?.eq("rails")? {
                 anchored_ids.add(cid)?;
             }
         }

@@ -17,7 +17,7 @@ L = log.get("citylife")
 CURRENCY = "credits"
 # 基準の値段（1単位あたりのクレジット）。精錬：鉱石10→鉄4+ケイ砂3、硫黄10→燃料20、星鉱石10→燃料5+鉄8+ケイ砂6+部品1
 BASE = {"ore": 1.0, "sulfur": 1.2, "rich_ore": 3.0, "water": 0.2, "fuel": 0.8,
-        "iron": 2.4, "silica": 1.5, "parts": 16.0}
+        "iron": 2.4, "silica": 1.5, "parts": 16.0, "electronics": 40.0}
 BUY_SPREAD = 1.10      # 店から買う値段 = 基準 × これ
 SELL_SPREAD = 0.90     # 店に売る値段 = 基準 × これ
 REGIONS = {
@@ -33,8 +33,15 @@ REGIONS = {
     "frontier": {"name": "辺境の基地", "mult": {"rich_ore": 0.6, "fuel": 1.8, "water": 2.0, "parts": 1.2, "ore": 0.9,
                                            "iron": 0.9},
                  "home": 350, "note": "星鉱石が安い。燃料と水が高い"},
+    # 大都市圏 MOD の街（metro.py）
+    "metro":    {"name": "大都市", "mult": {"electronics": 0.9, "parts": 0.95, "fuel": 1.2, "water": 1.3, "ore": 0.9},
+                 "home": 800, "note": "電子部品が手に入りやすい。燃料と水は高め。部屋は高い"},
+    "works":    {"name": "工業地帯", "mult": {"iron": 0.85, "parts": 0.8, "electronics": 0.8, "ore": 1.15, "sulfur": 1.15,
+                                          "rich_ore": 1.1},
+                 "home": 350, "note": "鉄・部品・電子部品が安い。鉱石は高く売れる"},
 }
-ROLE_NAMES = {"trader": "商人", "estate": "不動産屋", "citizen": "住民"}
+ROLE_NAMES = {"trader": "商人", "estate": "不動産屋", "citizen": "住民", "dept": "百貨店の店員", "foreman": "班長",
+              "worker": "作業員"}
 FIRST = ["カイ", "ユナ", "レン", "ミオ", "ジン", "サラ", "トウマ", "リコ", "ノア", "エマ", "ケン", "アヤ", "ルカ", "ハル", "ニナ", "ゼン"]
 LAST = ["-07", "・K", "・ゼロ", "・ネオ", "-X", "・ブルー", "・V", "-22", "・シン", ""]
 STARTER_CREDITS = 200.0
@@ -64,9 +71,14 @@ def prices(city):
     return out
 
 
+# 部屋の格：(値段の倍率, 説明)。駅近・高層階は大都市（metro.py）だけ
+GRADES = {"normal": (1.0, ""), "station": (2.2, "駅近"), "view": (7.0, "高層階・眺望")}
+
+
 def home_price(city, home):
     rng = _rng("home", home["id"])
-    return float(round(region_info(city)["home"] * rng.uniform(0.8, 1.2) / 10) * 10)
+    mult = GRADES.get(home.get("grade", "normal"), GRADES["normal"])[0]
+    return float(round(region_info(city)["home"] * mult * rng.uniform(0.8, 1.2) / 10) * 10)
 
 
 RENT_SECONDS = 3600.0      # 1回の賃貸の期間（ゲーム内の時間）
@@ -83,23 +95,25 @@ def rent_price(city, home):
 WALL = np.array([0.3, 0.31, 0.37])      # 内装のある建物の壁（窓の模様なし）
 FURN = np.array([0.42, 0.4, 0.45])
 WOOD = np.array([0.45, 0.32, 0.22])
-SIGN = {"trader": np.array([1.0, 0.7, 0.15]), "estate": np.array([0.3, 1.0, 0.5]), "home": np.array([0.1, 0.95, 1.0])}
+SIGN = {"trader": np.array([1.0, 0.7, 0.15]), "estate": np.array([0.3, 1.0, 0.5]), "home": np.array([0.1, 0.95, 1.0]),
+        "dept": np.array([1.0, 0.3, 0.7]), "factory": np.array([1.0, 0.55, 0.1])}
 H_IN = 3.4                 # 内側の天井の高さ
 T = 0.25                   # 壁の厚さ
 DOOR_W, DOOR_H = 1.6, 2.6
 
 
-def _walls(city, base, fr, w, d, b, doors, partitions=()):
-    """中が空いた箱（壁・天井）。doors：前（+z）の壁の扉の位置（x 座標のリスト）。partitions：仕切り壁の x 座標。"""
+def _walls(city, base, fr, w, d, b, doors, partitions=(), kind="wall"):
+    """中が空いた箱（壁・天井）。doors：前（+z）の壁の扉の位置（x 座標のリスト）。partitions：仕切り壁の x 座標。
+    kind："wall"（コンクリート）か "glass"（ガラスの壁。天井はコンクリート）"""
     X, U, Z = fr
     ht = H_IN + 0.3
     hw, hd = w / 2, d / 2
     # 後ろ・左右
-    city.add(base + U * (ht / 2) - Z * (hd - T / 2), fr, (hw, ht / 2, T / 2), WALL, None, True, b, "wall")
+    city.add(base + U * (ht / 2) - Z * (hd - T / 2), fr, (hw, ht / 2, T / 2), WALL, None, True, b, kind)
     for s in (-1, 1):
-        city.add(base + U * (ht / 2) + X * s * (hw - T / 2), fr, (T / 2, ht / 2, hd - T), WALL, None, True, b, "wall")
+        city.add(base + U * (ht / 2) + X * s * (hw - T / 2), fr, (T / 2, ht / 2, hd - T), WALL, None, True, b, kind)
     for px in partitions:
-        city.add(base + U * (ht / 2) + X * px, fr, (T / 2, ht / 2, hd - T), WALL, None, True, b, "wall")
+        city.add(base + U * (ht / 2) + X * px, fr, (T / 2, ht / 2, hd - T), WALL, None, True, b, kind)
     # 前の壁（扉の所は空ける）
     xs = sorted(doors)
     edges = [-hw]
@@ -110,10 +124,10 @@ def _walls(city, base, fr, w, d, b, doors, partitions=()):
         a, c = edges[k], edges[k + 1]
         if c - a > 0.05:
             city.add(base + U * (ht / 2) + X * ((a + c) / 2) + Z * (hd - T / 2), fr, ((c - a) / 2, ht / 2, T / 2),
-                     WALL, None, True, b, "wall")
+                     WALL, None, True, b, kind)
     for dx in xs:   # 扉の上
         city.add(base + U * (DOOR_H + (ht - DOOR_H) / 2) + X * dx + Z * (hd - T / 2), fr,
-                 (DOOR_W / 2, (ht - DOOR_H) / 2, T / 2), WALL, None, True, b, "wall")
+                 (DOOR_W / 2, (ht - DOOR_H) / 2, T / 2), WALL, None, True, b, kind)
     # 天井（屋根）
     city.add(base + U * (ht + 0.15), fr, (hw, 0.15, hd), WALL, None, True, b, "wall")
     return base + U * (ht + 0.3)            # 屋根の上（上にビルを重ねるとき用）
@@ -184,6 +198,15 @@ TALK = {
                 "海辺の街なら燃料が安く買えるよ。", "月や小惑星の基地は星鉱石が安いらしい。",
                 "このあたりは{region}。{note}。", "部屋を持ってると、荷物を預けておけるよ。",
                 "ベッドで休むと、そこが自宅になる。M キーで自宅の目印が出せるよ。", "ネオンの線は段差の目印だよ。気をつけて。"],
+    # 大都市圏の街（metro.py）
+    "dept": ["いらっしゃいませ。百貨店はいい品をそろえております。", "ときどき大きな値下げをしております。町の噂に耳を澄ましてみては？",
+             "お値段は少々張りますが、どの品もすぐにお渡しできます。"],
+    "metro": ["駅の近くの部屋は高いけど、電車ですぐどこへでも行けるよ。", "スカイタワーの最上階からの眺めは最高らしい。",
+              "大都市の不動産屋では、工場や鉱山、農場も買えるんだって。持っていると勝手に稼いでくれる。",
+              "工業地帯の工場で働けば、すぐにお金がもらえるよ。", "{region}だからね。{note}。"],
+    "foreman": ["今日も現場は忙しいよ。", "仕事が欲しければサバイバルで来な。"],
+    "worker": ["置き場の番号を間違えると、班長にしかられるよ。", "プレス機は赤、溶接機は青、検査装置は黄色だ。",
+               "急いで運ぶと、班長がおまけをくれるよ。", "工場の持ち主になれば、黙っていても部品が届くらしい。"],
 }
 
 
@@ -195,7 +218,7 @@ def add_npc(city, rng, role, pos, face, up, b, wander=0.0):
     npc = {"id": nid, "name": name, "role": role, "pos": np.asarray(pos, float), "face": np.asarray(face, float),
            "up": np.asarray(up, float), "bld": b, "color": col, "visor": visor, "wander": float(wander),
            "phase": float(rng.uniform(0, 2 * np.pi)), "speed": float(rng.uniform(0.25, 0.45)),
-           "talk": int(rng.integers(100))}
+           "talk": int(rng.integers(100)), "talk_set": role, "gossip": False}
     city.npcs.append(npc)
     return npc
 
@@ -231,9 +254,18 @@ def npc_box(city, npc, t):
     return p + up * NPC_HALF[1], np.stack([side, up, f]), NPC_HALF
 
 
-def talk_line(city, npc):
+def talk_line(city, npc, pack=None, t=0.0):
     info = region_info(city)
-    lines = TALK[npc["role"]]
+    if npc.get("gossip") and pack is not None:
+        # 情報通：百貨店の大きな値下げのうわさ（metro.py）
+        from . import metro
+        tip = metro.tip(pack, city, t)
+        if tip:
+            return tip
+        if npc["talk"] % 2 == 0:
+            npc["talk"] += 1
+            return "最近は百貨店の大きな値下げの話は聞かないね。またあとで聞いてみて。"
+    lines = TALK.get(npc.get("talk_set") or npc["role"], TALK["citizen"])
     k = npc["talk"] % len(lines)
     npc["talk"] += 1
     return lines[k].format(note=info["note"], region=info["name"], city=city.name)
@@ -402,6 +434,32 @@ class Economy:
     def home_id(self):
         hid = self.state.get("home")
         return hid if hid and (self.creative or self.home_status(hid) in ("own", "rent", "expired")) else None
+
+    # --- 大都市（metro.py）：百貨店・収益物件・工場の仕事 -------------------
+    def dept_buy(self, city, res, amount):
+        from . import metro
+        return metro.dept_buy(self, city, res, amount)
+
+    def buy_property(self, pid):
+        from . import metro
+        return metro.buy_property(self, pid)
+
+    def job_talk(self, city, npc):
+        from . import metro
+        return metro.job_talk(self, city, npc)
+
+    def job_act(self, city, kind, k):
+        from . import metro
+        return metro.job_act(self, city, kind, int(k))
+
+    def update(self, dt):
+        """毎ティック（ホスト）：収益物件の収入"""
+        self._acc = getattr(self, "_acc", 0.0) + float(dt)
+        if self._acc < 2.0:
+            return
+        self._acc = 0.0
+        from . import metro
+        metro.pay_properties(self)
 
     def give_starter(self):
         p = self.world.player

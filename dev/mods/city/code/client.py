@@ -81,6 +81,15 @@ class CityClient(ClientAddon):
                 npc = next((n for n in city.npcs if n["id"] == tag[1]), None)
                 if npc is None or not citylife.npc_alive(city, npc):
                     return True
+            elif tag[0] in ("pad", "machine"):
+                # 工場の置き場・装置（metro.py の仕事）
+                msg = w.addon_call("city", "economy.job_act", city, tag[0], tag[1])
+                if msg:
+                    w.message(msg)
+                return True
+            elif tag[0] == "lift":
+                self._lift(city, tag)
+                return True
             else:
                 home = next((x for x in city.homes if x["id"] == tag[1]), None)
                 if home is None:
@@ -110,9 +119,36 @@ class CityClient(ClientAddon):
             game._open_panel(lambda: ui.TradePanel(game, city, npc))
         elif npc["role"] == "estate" and survival:
             game._open_panel(lambda: ui.EstatePanel(game, city, npc))
+        elif npc["role"] == "dept" and survival:
+            game._open_panel(lambda: ui.DeptPanel(game, city, npc))
+        elif npc["role"] == "foreman" and survival:
+            msg = w.addon_call("city", "economy.job_talk", city, npc)
+            if msg:
+                w.message(msg)
         else:
-            w.message(f"{npc['name']}「{citylife.talk_line(city, npc)}」")
+            w.message(f"{npc['name']}「{citylife.talk_line(city, npc, self.pack, w.time)}」")
         return True
+
+    def _lift(self, city, tag):
+        """スカイタワーのエレベーター：使える部屋（買った・借りた）なら上の部屋へ／下へ"""
+        w = self.world
+        home = next((x for x in city.homes if x["id"] == tag[1]), None)
+        if home is None:
+            return
+        if city.state[home["bld"]] >= 2:
+            w.message("建物が壊れていて使えません")
+            return
+        if not self.pack.can_use_home(home["id"]):
+            w.message(f"{home['name']} 専用のエレベーターです（不動産屋で買うか借りると使えます）")
+            return
+        local = home["lift_up"] if tag[2] == "up" else home["lift_down"]
+        pl = city.host
+        p = city.x + city.R @ np.asarray(local, float)
+        up = (p - pl.center) / np.linalg.norm(p - pl.center)
+        pp = w.player
+        pp.pos = p + up * 1.0
+        pp.vel = np.zeros(3)
+        w.message(f"{home['name']}へ上がりました" if tag[2] == "up" else "1 階に下りました")
 
     # ------------------------------------------------------------------
     # 近くのもの（画面右のボタン）：NPC・カウンター・ベッド・収納箱
@@ -171,15 +207,36 @@ class CityClient(ClientAddon):
             return None
         if h["kind"] == "npc":
             n = h["npc"]
-            act = {"trader": "取引する", "estate": "部屋を見る", "citizen": "話す"}[n["role"]]
-            if w.creative and n["role"] != "citizen":
-                act = "話す（取引はサバイバルだけ）"
+            act = {"trader": "取引する", "estate": "部屋を見る", "dept": "買い物する", "foreman": "仕事をもらう"}.get(n["role"], "話す")
+            if n["role"] == "estate" and getattr(h["city"], "stype", "") == "metro":
+                act = "部屋・物件を見る"
+            if n["role"] == "foreman":
+                job = (self.pack.economy.state.get("job") if self.pack.economy else None) or {}
+                if job.get("city") == h["city"].id:
+                    act = "仕事を終える"
+            if w.creative and n["role"] in ("trader", "estate", "dept", "foreman"):
+                act = "話す（取引・仕事はサバイバルだけ）"
             return f"{n['name']}（{citylife.ROLE_NAMES[n['role']]}）［E {act}］", False
         city = h["city"]
         tag = city.parts[h["part"]].get("tag")
         if tag:
             if tag[0] == "counter":
                 return "カウンター［E 取引する］", False
+            if tag[0] in ("pad", "machine"):
+                from . import metro
+                what = f"置き場 {tag[1] + 1}" if tag[0] == "pad" else metro.MACHINES[tag[1]][0]
+                job = (self.pack.economy.state.get("job") if self.pack.economy else None) or {}
+                if job.get("city") != city.id or w.creative:
+                    return f"{what}（班長に話しかけると仕事がもらえます）", False
+                if job.get("type") == tag[0] and job.get("target") == tag[1]:
+                    return f"{what}［E 「{job['item']}」を{'置く' if tag[0] == 'pad' else '入れる'}］", False
+                return f"{what}（「{job['item']}」の行き先ではありません）", False
+            if tag[0] == "lift":
+                home = next((x for x in city.homes if x["id"] == tag[1]), None)
+                name = home["name"] if home else "部屋"
+                if not self.pack.can_use_home(tag[1]):
+                    return f"{name} 専用のエレベーター（不動産屋で買うか借りると使えます）", False
+                return f"エレベーター［E {'上の部屋へ' if tag[2] == 'up' else '1 階へ'}］", False
             home = next((x for x in city.homes if x["id"] == tag[1]), None)
             name = home["name"] if home else "部屋"
             if not self.pack.can_use_home(tag[1]):
@@ -221,7 +278,9 @@ class CityClient(ClientAddon):
 
     def _update_marker(self, origin):
         """最寄りの街の方向に目印。画面の外にあるときは画面の端に寄せ、矢印で向きを示す。"""
-        if not self.marker_on or not self.pack.city_list():
+        from . import metro
+        jt = metro.job_target(self.pack)            # 工場の仕事中は、目印が OFF でも行き先を指す
+        if (not self.marker_on and jt is None) or not self.pack.city_list():
             self.marker.enabled = False
             return
         now = _time.time()
@@ -230,7 +289,13 @@ class CityClient(ClientAddon):
             self._marker_city, _, self._marker_surface = self.pack.marker_target(origin)
         c = self._marker_city
         home = None
-        if self.marker_mode == "home":
+        if jt is not None and float(np.linalg.norm(jt[0].x - origin)) < 600.0:
+            # 工場の仕事中：行き先（置き場・装置）を指す
+            home = {"name": jt[2], "door": jt[1], "_job": True}
+            c = jt[0]
+        elif not self.marker_on:
+            c = None
+        elif self.marker_mode == "home":
             hc, hh = self.pack.home()
             if hc is not None:
                 c, home = hc, hh
@@ -274,5 +339,8 @@ class CityClient(ClientAddon):
             x, y = dx * k, max(dy * k, -0.33)     # 下はアイテムバーに重ならないように
             arrow = ("◀ " if dx < 0 else "▶ ") if abs(dx) >= abs(dy) else ("▲ " if dy > 0 else "▼ ")
         self.marker.position = (x, y, -0.05)
-        self.marker_text.text = f"{arrow}{home['name'] + '（自宅）' if home else c.name}  {dtxt}"
+        label = c.name
+        if home is not None:
+            label = home["name"] + ("（仕事の行き先）" if home.get("_job") else "（自宅）")
+        self.marker_text.text = f"{arrow}{label}  {dtxt}"
         self.marker.enabled = True

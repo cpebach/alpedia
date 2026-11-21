@@ -226,5 +226,117 @@ class TestMegalopolis(CoreCase):
         self.assertLess(len([c for c in w.constructs if str(c).startswith(f"mb-{site['id']}-")]), len(mine))
 
 
+class TestMegaLife(CoreCase):
+    """A-10：大都市圏の街の暮らし（街 MOD と一緒に）。NPC・百貨店と値下げ・高い部屋・収益物件・工場の仕事"""
+
+    def setUp(self):
+        super().setUp()
+        from city.code.addon import CityAddon
+        from megalopolis.code.addon import MegaAddon
+        from main.world import World, default_bodies
+        from test_core import CFG
+        self.world(planets=default_bodies("terra", False, False), mode="survival")
+        self.w = World("t", CFG, addons=[CityAddon(), MegaAddon()]).load()
+        self.w.step(DT)
+        self.ca = self.w.addon("city")
+        self.mc = [c for c in self.ca.cities.cities if "-mega-" in c.id]
+
+    def city(self, stype):
+        return next(c for c in self.mc if c.stype == stype)
+
+    def test_districts(self):
+        from city.code import citylife
+        m = self.w.addon("megalopolis")
+        self.assertEqual(sorted(c.stype for c in self.mc).count("metro"), 2)
+        self.assertGreaterEqual(sorted(c.stype for c in self.mc).count("works"), 1)
+        M = self.city("metro")
+        self.assertTrue({"dept", "estate", "trader", "citizen"} <= {n["role"] for n in M.npcs})
+        self.assertTrue(any(n.get("gossip") for n in M.npcs), "情報通がいる")
+        self.assertTrue({"foreman", "worker"} <= {n["role"] for n in self.city("works").npcs})
+        # 部屋：ふつう < 駅近 < 高層階
+        price = {g: np.mean([citylife.home_price(M, h) for h in M.homes if h.get("grade") == g]) for g in ("normal", "station", "view")}
+        self.assertLess(price["normal"], price["station"])
+        self.assertLess(price["station"], price["view"])
+        # 使う区画には大都市圏の建物を建てない
+        for s in m.plan["sites"]:
+            ch = m.districts.get(s["id"])
+            x, z, hx, hz = ch["plaza"]
+            for b in m.plan["buildings"]:
+                if b["site"] == s["id"]:
+                    self.assertFalse(abs(b["x"] - x) < hx + b["w"] / 2 and abs(b["z"] - z) < hz + b["d"] / 2)
+
+    def test_dept_sales_and_tips(self):
+        from city.code import citylife, metro
+        M = self.city("metro")
+        p = metro.dept_prices(M, 0.0)
+        quiet = next(t for t in np.arange(0, 7200, 20.0) if not metro.sale_now(M, t))
+        pq = metro.dept_prices(M, quiet)
+        self.assertGreater(pq["fuel"][0], citylife.prices(M)["fuel"][0], "ふだんは商人より高い")
+        big = [x for s in range(12) for x in metro.sales(M, s) if x[1] >= metro.BIG_SALE]
+        self.assertTrue(big, "ときどき大きな値下げ")
+        res, off, a, b = big[0]
+        mid = (a + b) / 2
+        self.assertAlmostEqual(metro.dept_prices(M, mid)[res][0], round(metro.dept_prices(M, quiet)[res][2] * (1 - off), 2), places=1)
+        # うわさ：始まる前に、情報通が教えてくれる
+        gossip = next(n for n in M.npcs if n.get("gossip"))
+        line = citylife.talk_line(M, gossip, self.ca, a - 60.0)
+        self.assertIn("割引", line)
+        self.assertEqual(metro.sales(M, 3), metro.sales(M, 3), "毎回同じ")
+        # 買う
+        w = self.w
+        w.player.inventory["credits"] = 1000.0
+        msg = self.ca.economy.dept_buy(M, "electronics", 2)
+        self.assertIn("買いました", msg)
+        self.assertEqual(w.player.inventory["electronics"], 2.0)
+        del p
+
+    def test_properties_pay(self):
+        from city.code import metro
+        eco, w = self.ca.economy, self.w
+        props = metro.properties(self.ca)
+        self.assertTrue({"factory", "mine", "farm"} <= {p["kind"] for p in props})
+        fac = next(p for p in props if p["kind"] == "factory")
+        w.player.inventory["credits"] = fac["price"] - 1
+        self.assertIn("足りません", eco.buy_property(fac["id"]))
+        w.player.inventory["credits"] = fac["price"] + 10
+        self.assertIn("買いました", eco.buy_property(fac["id"]))
+        w.time += metro.PROP_PERIOD * 2 + 5
+        eco.update(5.0)
+        self.assertEqual(w.player.inventory.get("electronics"), 6.0)
+        self.assertAlmostEqual(w.player.inventory["credits"], 10 + 240.0, places=1)
+        w2 = self.reload(w, addons=[type(self.ca)(), type(w.addon("megalopolis"))()])
+        self.assertIn(fac["id"], w2.settings["economy"]["props"], "保存される")
+
+    def test_factory_job(self):
+        from city.code import metro
+        eco, w = self.ca.economy, self.w
+        Wk = self.city("works")
+        fore = next(n for n in Wk.npcs if n["role"] == "foreman")
+        self.assertTrue(any(p.get("tag", (None,))[0] == "pad" for p in Wk.parts))
+        self.assertEqual(sum(1 for p in Wk.parts if p.get("tag", (None,))[0] == "machine"), len(metro.MACHINES))
+        w.player.inventory["credits"] = 0.0
+        eco.job_talk(Wk, fore)
+        job = eco.state["job"]
+        wrong = ("pad", (job["target"] + 1) % metro.N_PADS) if job["type"] == "pad" else ("machine", (job["target"] + 1) % 3)
+        eco.job_act(Wk, *wrong)
+        self.assertEqual(w.player.inventory["credits"], 0.0, "違う所では払われない")
+        self.assertIsNotNone(metro.job_target(self.ca))
+        eco.job_act(Wk, job["type"], job["target"])
+        self.assertGreaterEqual(w.player.inventory["credits"], metro.JOB_PAY)
+        self.assertIn("お疲れ", eco.job_talk(Wk, fore))
+        self.assertIsNone(eco.state["job"])
+
+    def test_sky_tower_room(self):
+        M = self.city("metro")
+        h = next(x for x in M.homes if x.get("grade") == "view")
+        up = (M.x - self.w.planets[0].center) / np.linalg.norm(M.x - self.w.planets[0].center)
+        self.assertGreater(float((np.asarray(h["lift_up"]) - np.asarray(h["lift_down"])) @ up), 60.0, "最上階は高い")
+        self.assertEqual(sum(1 for p in M.parts if p.get("tag", (None,))[0] == "lift" and p["tag"][1] == h["id"]), 2)
+        self.w.player.inventory["credits"] = 1e6
+        self.assertFalse(self.ca.can_use_home(h["id"]))
+        self.ca.economy.rent_home(M, h)
+        self.assertTrue(self.ca.can_use_home(h["id"]))
+
+
 if __name__ == "__main__":
     unittest.main()

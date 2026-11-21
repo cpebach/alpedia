@@ -29,7 +29,7 @@ def extract(city):
         return
     keep, groups = [], {}
     for p in city.parts:
-        if p["kind"] in ("body", "wall") and p["bld"] >= 0:
+        if p["kind"] in ("body", "wall", "glass") and p["bld"] >= 0:
             groups.setdefault((p["bld"], p["kind"]), []).append(p)
         else:
             keep.append(p)
@@ -97,6 +97,8 @@ def plan(city, rng_seed):
             s = 1.0 if big <= 24 else 2.0
             mat = TOWER_MATS[int(rng.integers(len(TOWER_MATS)))]
             shell = True
+        elif bl["kind"] == "glass":
+            s, mat, shell = 0.5, "glass", False             # ガラスの壁（高層階の部屋。metro.py）
         else:
             s, mat, shell = 0.5, WALL_MAT, False
         # 1 つの建物の箱は同じ向き。最初の箱の向き・原点に合わせて、ほかの箱のセルを並べる
@@ -112,7 +114,7 @@ def plan(city, rng_seed):
                 vox[(cell[0] + off[0], cell[1] + off[1], cell[2] + off[2])] = (m, d)
         V = [(cell, m, d) for cell, (m, d) in vox.items()]
         V = buildkit.anchored(V, 4 if s < 1 else 3)
-        name = "ビル" if bl["kind"] == "body" else "建物"
+        name = {"body": "ビル", "glass": "ガラスの壁"}.get(bl["kind"], "建物")
         out.append((cid, bl["bld"], V, city.x + R @ org0, R @ A0.T, s, name))
     return out
 

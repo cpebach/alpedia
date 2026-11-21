@@ -102,7 +102,7 @@ class TradePanel(_Panel):
         self._text("買値", (-0.27, y), 0.7, color.light_gray)
         self._text("売値", (-0.15, y), 0.7, color.light_gray)
         for res, (buy, sell) in P.items():
-            y -= 0.062
+            y -= 0.058
             self._text(self.reg.res_name(res), (-0.7, y))
             self._text(f"{inv.get(res, 0.0):.0f}", (-0.42, y))
             self._text(f"{buy:.2f}", (-0.27, y), col=color.rgb(1, 0.75, 0.6))
@@ -123,23 +123,69 @@ class TradePanel(_Panel):
 
 
 class EstatePanel(_Panel):
+    """部屋の売買・賃貸。大都市（metro）の不動産屋は、駅近・高層階の部屋と、収益物件（工場・鉱山・農場）も扱う"""
     TITLE = "部屋（不動産屋）"
+    PAGE = 8
 
     def __init__(self, game, city, npc):
         super().__init__(game, city)
         self.npc = npc
+        self.metro = getattr(city, "stype", "") == "metro"
+        self.tab = "rooms"
+        self.page = 0
         self.title.text = f"{npc['name']}（不動産屋）  {city.name}"
         self.sub.text = ("部屋には収納箱とベッドがあります。ベッドで休むとそこが自宅に（M キーで目印）。"
                          f"借りると {citylife.RENT_SECONDS / 60:.0f} 分（ゲーム内の時間）使えます。")
         self.refresh()
 
+    def _set(self, tab=None, page=None):
+        if tab is not None and tab != self.tab:
+            self.tab, self.page = tab, 0
+        if page is not None:
+            self.page = page
+        self.refresh()
+
+    def _pager(self, n, y):
+        color = self.U["color"]
+        pages = max(1, (n + self.PAGE - 1) // self.PAGE)
+        if pages <= 1:
+            return
+        self._text(f"{self.page + 1} / {pages}", (0.43, y), 0.6, color.light_gray)
+        if self.page > 0:
+            self._btn("◀ 前", (0.33, y), lambda: self._set(page=self.page - 1), w=0.1, parent=self.body)
+        if self.page < pages - 1:
+            self._btn("次 ▶", (0.6, y), lambda: self._set(page=self.page + 1), w=0.1, parent=self.body)
+
     def refresh(self):
         self._clear()
         color = self.U["color"]
-        y = 0.27
-        if not self.city.homes:
+        y = 0.29
+        if self.metro:
+            for k, (tab, lab) in enumerate((("rooms", "部屋"), ("props", "収益物件（工場・鉱山・農場）"))):
+                on = tab == self.tab
+                self._btn(lab, (-0.6 + k * 0.3, y), (lambda t=tab: self._set(tab=t)), w=0.28 if k else 0.2, parent=self.body,
+                          col=color.rgb(0.3, 0.45, 0.65) if on else color.rgb(0.18, 0.2, 0.26))
+            y -= 0.065
+        if self.tab == "props":
+            y = self._props(y)
+        else:
+            y = self._rooms(y)
+        self._text(f"所持金  {self.eco.credits():.1f} クレジット", (-0.7, y - 0.03), 0.85, color.rgb(1.0, 0.85, 0.3))
+        esc = self.eco.state.get("escrow") or {}
+        if esc and self.tab == "rooms":
+            self._text("預かり品（滅びた街の部屋の収納箱から）：" + self.reg.res_text(esc), (-0.7, y - 0.085), 0.62,
+                       color.light_gray)
+            self._btn("預かり品を受け取る", (0.35, y - 0.085), self.act(lambda: self._call("economy.claim_escrow")), w=0.24,
+                      parent=self.body, col=color.rgb(0.25, 0.5, 0.35))
+        self.status_text.text = self.status
+
+    def _rooms(self, y):
+        color = self.U["color"]
+        homes = self.city.homes
+        if not homes:
             self._text("この街には部屋がありません", (-0.7, y))
-        for h in self.city.homes:
+        shown = homes[self.page * self.PAGE:(self.page + 1) * self.PAGE]
+        for h in shown:
             usable = self.city.state[h["bld"]] < 2
             st = self.eco.home_status(h["id"])
             if not usable:
@@ -152,23 +198,112 @@ class EstatePanel(_Panel):
                 txt = "借りていた（期限切れ・荷物は預かり中）"
             else:
                 txt = "空き"
+            grade = citylife.GRADES.get(h.get("grade", "normal"), ("", ""))[1]
             price = citylife.home_price(self.city, h)
             rent = citylife.rent_price(self.city, h)
-            self._text(h["name"], (-0.7, y))
-            self._text(txt, (-0.38, y), 0.65, color.light_gray)
+            self._text(h["name"], (-0.7, y), 0.65)
+            if grade:
+                self._text(grade, (-0.3, y), 0.6, color.rgb(1.0, 0.8, 0.4))
+            self._text(txt, (-0.15, y), 0.6, color.light_gray)
             if usable and st != "own":
-                self._btn(f"買う {price:.0f}", (0.2, y), self.act(lambda h=h: self._call("economy.buy_home", self.city, h)),
-                          w=0.16, parent=self.body, col=color.rgb(0.25, 0.5, 0.35))
-                self._btn(("延長 " if st == "rent" else "借りる ") + f"{rent:.0f}", (0.38, y),
-                          self.act(lambda h=h: self._call("economy.rent_home", self.city, h)), w=0.16, parent=self.body)
-            y -= 0.07
-        self._text(f"所持金  {self.eco.credits():.1f} クレジット", (-0.7, y - 0.04), 0.85, color.rgb(1.0, 0.85, 0.3))
-        esc = self.eco.state.get("escrow") or {}
-        if esc:
-            self._text("預かり品（滅びた街の部屋の収納箱から）：" + self.reg.res_text(esc), (-0.7, y - 0.1), 0.62,
+                self._btn(f"買う {price:.0f}", (0.36, y), self.act(lambda h=h: self._call("economy.buy_home", self.city, h)),
+                          w=0.15, parent=self.body, col=color.rgb(0.25, 0.5, 0.35))
+                self._btn(("延長 " if st == "rent" else "借りる ") + f"{rent:.0f}", (0.53, y),
+                          self.act(lambda h=h: self._call("economy.rent_home", self.city, h)), w=0.15, parent=self.body)
+            y -= 0.06
+        self._pager(len(homes), y)
+        if self.metro:
+            self._text("駅近：駅のそば。高層階：スカイタワーの最上階（塔の前のエレベーターで上がる）。", (-0.7, y - 0.055), 0.55,
                        color.light_gray)
-            self._btn("預かり品を受け取る", (0.35, y - 0.1), self.act(lambda: self._call("economy.claim_escrow")), w=0.24, parent=self.body,
-                      col=color.rgb(0.25, 0.5, 0.35))
+            y -= 0.04
+        return y - 0.02
+
+    def _props(self, y):
+        from . import metro
+        color = self.U["color"]
+        props = metro.properties(self.pack)
+        props.sort(key=lambda p: (not metro.owned(self.eco, p["id"]), p["kind"] != "factory",
+                                  float(np.linalg.norm(p["city"].x - self.city.x))))
+        shown = props[self.page * self.PAGE:(self.page + 1) * self.PAGE]
+        if not props:
+            self._text("買える物件がありません", (-0.7, y))
+        for p in shown:
+            dist = float(np.linalg.norm(p["city"].x - self.city.x))
+            where = f"{dist / 1000:.1f} km" if p["city"].host is self.city.host else p["city"].host.name
+            out = self.reg.res_text(metro.prop_output(p))
+            self._text(p["name"], (-0.7, y), 0.62)
+            self._text(where, (-0.33, y), 0.58, color.light_gray)
+            self._text(f"{metro.PROP_PERIOD / 60:.0f} 分ごと {out}", (-0.22, y), 0.55, color.rgb(0.6, 1.0, 0.7))
+            if metro.owned(self.eco, p["id"]):
+                self._text("あなたの物件", (0.45, y), 0.6, color.rgb(1.0, 0.85, 0.3))
+            elif getattr(p["city"], "fallen", False):
+                self._text("（滅びた）", (0.45, y), 0.6, color.light_gray)
+            else:
+                self._btn(f"買う {p['price']:.0f}", (0.53, y), self.act(lambda p=p: self._call("economy.buy_property", p["id"])),
+                          w=0.17, parent=self.body, col=color.rgb(0.25, 0.5, 0.35))
+            y -= 0.06
+        self._pager(len(props), y)
+        self._text("持っている物件の収入は、遊んでいる間に手持ちへ届きます（滅びた場所からは届きません）。", (-0.7, y - 0.055), 0.55,
+                   color.light_gray)
+        return y - 0.06
+
+
+class DeptPanel(_Panel):
+    """百貨店：ふだんは商人より高いが、ときどき大きく値下げする（うわさは町の情報通から）"""
+    TITLE = "百貨店"
+
+    def __init__(self, game, city, npc):
+        super().__init__(game, city)
+        self.npc = npc
+        self.title.text = f"{city.name} 百貨店  （{npc['name']}）"
+        self.sub.text = "どの品もすぐに買えます。ふだんは少し高め。ときどき大きな値下げがあります（町の人のうわさを聞いてみて）。"
+        self._t = 0.0
+        self._sale = None
+        panel = self
+
+        class Tick(self.U["Entity"]):
+            def update(self_):
+                import time as _t
+                if _t.time() - panel._t > 1.0:
+                    panel._t = _t.time()
+                    panel._maybe_refresh()
+        self.tick = Tick(parent=self.root)
+        self.refresh()
+
+    def _maybe_refresh(self):
+        """値下げが始まった・終わったら描き直す"""
+        from . import metro
+        now = metro.sale_now(self.city, self.world.time)
+        if now != self._sale:
+            self.refresh()
+
+    def refresh(self):
+        from . import metro
+        self._clear()
+        color = self.U["color"]
+        self._sale = metro.sale_now(self.city, self.world.time)
+        P = metro.dept_prices(self.city, self.world.time)
+        inv = self.world.player.inventory
+        y = 0.28
+        self._text("品物", (-0.7, y), 0.7, color.light_gray)
+        self._text("手持ち", (-0.42, y), 0.7, color.light_gray)
+        self._text("値段（1単位）", (-0.27, y), 0.7, color.light_gray)
+        for res, (price, off, normal) in P.items():
+            y -= 0.062
+            self._text(self.reg.res_name(res), (-0.7, y))
+            self._text(f"{inv.get(res, 0.0):.0f}", (-0.42, y))
+            if off > 0:
+                self._text(f"{price:.2f}", (-0.27, y), col=color.rgb(1.0, 0.35, 0.45))
+                self._text(f"（{int(round(off * 10))}割引・ふだん {normal:.2f}）", (-0.17, y), 0.58, color.rgb(1.0, 0.6, 0.6))
+            else:
+                self._text(f"{price:.2f}", (-0.27, y), col=color.rgb(1, 0.75, 0.6))
+            x = 0.2
+            for amt in (1, 10, 100):
+                self._btn(f"買う {amt}", (x + 0.05, y), self.act(lambda r=res, a=amt: self._call("economy.dept_buy", self.city, r, a)),
+                          w=0.1, parent=self.body)
+                x += 0.115
+        self._text(f"所持金  {self.eco.credits():.1f} クレジット", (-0.7, y - 0.07), 0.85, color.rgb(1.0, 0.85, 0.3))
+        self._text("品物を売るときは、商人へ。", (-0.7, y - 0.11), 0.6, color.light_gray)
         self.status_text.text = self.status
 
 
