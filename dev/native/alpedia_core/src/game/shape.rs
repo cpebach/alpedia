@@ -507,20 +507,15 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
     let rotor_gid: Option<Vec<usize>> = if has_rotors && c.hasattr("_art_groups")? {
         Some(iv(&Construct::_art_groups(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?.into_iter().map(|x| x as usize).collect())
     } else { None };
-    // 透ける素材（ガラス）と透けない素材は別の部分（別の形）にする。1つの形だと、ガラスと接した所に
-    // 透けないブロックの面ができず、ガラス越しに隣のブロックの中（裏側）が見えてしまうため。
-    // 別の部分にすると、境に両側の切り口の面ができる（アクチュエーターで別に動く部分と同じ作り方）
+    // 透ける素材（ガラス）と透けない素材は 1 つの形にする（窓と壁が同じ面でつながる。A-17）。
+    // ガラスと接した所の透けないブロックの面は、形の中になってできないので、あとで平らな四角で足す（ガラス越しに見える）。
+    // 別の形に分けるのは、ローター（アクチュエーター）で別に動く部分だけ
     let clear = clear_v(c)?;
-    let split_clear = clear.iter().any(|x| *x) && clear.iter().any(|x| !*x);
-    let gid: Option<Vec<usize>> = match (&rotor_gid, split_clear) {
-        (Some(g), true) => Some(g.iter().zip(&clear).map(|(g, t)| g * 2 + *t as usize).collect()),
-        (None, true) => Some(clear.iter().map(|t| *t as usize).collect()),
-        (g, false) => g.clone(),
-    };
+    let gid: Option<Vec<usize>> = rotor_gid.clone();
     let mut parts: Vec<(Vec<f32>, Option<Vec<bool>>)> = vec![];
     match &gid {
         Some(g) if g.iter().copied().max().unwrap_or(0) > 0 => {
-            // 回転ジョイント（アクチュエーター）で別に動く部分・透けるかどうかごとに、別の形・別のメッシュにする
+            // 回転ジョイント（アクチュエーター）で別に動く部分ごとに、別の形・別のメッシュにする
             let mut rotor_pairs: Vec<(usize, usize)> = vec![];
             let rotors = match opt(c, "rotors")? { Some(x) if !x.is_none() => x.iter()?.collect::<R<Vec<_>>>()?, _ => vec![] };
             for r_ in rotors {
@@ -626,6 +621,41 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
     }
     if pall.is_empty() {
         return Ok(none);
+    }
+    // ガラスと接した透けないブロックの面（形の中なのでできていない）：ブロックの境の平らな四角（ガラス越しに見える。A-17）
+    if clear.iter().any(|x| *x) {
+        let open = open_doors_v(c)?;
+        let index: HashMap<[i64; 3], usize> = cells.iter().enumerate().filter(|(i, _)| !open[*i]).map(|(i, q)| (*q, i)).collect();
+        let part = |i: usize| rotor_gid.as_ref().map(|g| g[i]).unwrap_or(0);
+        for (i, q) in cells.iter().enumerate() {
+            if clear[i] || open[i] {
+                continue;
+            }
+            for ax in 0..3usize {
+                for sgn in [1i64, -1] {
+                    let mut nq = *q;
+                    nq[ax] += sgn;
+                    let Some(&j) = index.get(&nq) else { continue };
+                    if !clear[j] || part(i) != part(j) {
+                        continue;
+                    }
+                    let (u, v) = ((ax + 1) % 3, (ax + 2) % 3);
+                    let plane = (q[ax] + if sgn > 0 { 1 } else { 0 }) as f64;
+                    let base = pall.len() as i64;
+                    for (cu, cv) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+                        let mut p = [0.0; 3];
+                        p[ax] = plane;
+                        p[u] = q[u] as f64 + cu;
+                        p[v] = q[v] as f64 + cv;
+                        pall.push(p);
+                        oall.push(i);
+                    }
+                    let (t1, t2) = if sgn > 0 { ([0, 1, 2], [0, 2, 3]) } else { ([0, 2, 1], [0, 3, 2]) };
+                    fall.push([base + t1[0], base + t1[1], base + t1[2]]);
+                    fall.push([base + t2[0], base + t2[1], base + t2[2]]);
+                }
+            }
+        }
     }
     // 各頂点をボクセルに割り当て、そのボクセルの8頂点で補間（スキニング）
     let np_ = pall.len();
