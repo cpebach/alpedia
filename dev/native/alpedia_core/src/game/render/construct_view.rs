@@ -47,6 +47,9 @@ pub struct ConstructView {
 
 /// この距離（m）より構築物（の箱）に近いと、閉じた空洞の中（内側の面）も描く。ガラスもこの半分の距離から透け始める（A-14）
 pub const INNER_NEAR: f64 = 8.0;
+/// この距離（m）より近いと、なめらか（角の丸い）メッシュ。遠ざかって SMOOTH_FAR を越えると平らなメッシュに戻す（A-16）
+pub const SMOOTH_NEAR: f64 = 24.0;
+pub const SMOOTH_FAR: f64 = 32.0;
 
 pub(crate) fn remove_groups(s: &B<'_>) -> R<()> {
     for g in s.getattr("groups")?.iter()? {
@@ -142,7 +145,7 @@ impl ConstructView {
     pub(crate) fn _rebuild(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
         remove_groups(s)?;
-        Self::sa_version(slf, crate::game::shape::draw_ver(&Self::ga_c(slf)?)?)
+        Self::sa_version(slf, Self::cur_ver(slf)?)
     }
     pub(crate) fn _rebuild_blob(slf: &Bound<'_, Self>) -> R<bool> {
         let py = slf.py();
@@ -151,9 +154,17 @@ impl ConstructView {
         let rm = rmod(py)?;
         remove_groups(s)?;
         let c = Self::ga_c(slf)?;
-        let m = shape.call_method1("mesh_for", (&c,))?;
+        // なめらかか平らか（A-16）。なめらかなメッシュがまだできていなければ平らで
+        let mut smooth = Self::smooth(slf)?;
+        if smooth && !shape.call_method1("mesh_ready", (&c, true))?.is_truthy()? && !Self::small(&c)? {
+            if !shape.call_method1("request_mesh", (&c, true))?.is_truthy()? {
+                smooth = false;
+                slf.setattr("_smooth", false)?;
+            }
+        }
+        let m = shape.call_method1("mesh_for", (&c, smooth))?;
         Self::sa_blob(slf, &m)?;
-        Self::sa_version(slf, crate::game::shape::draw_ver(&c)?)?;
+        Self::sa_version(slf, Self::cur_ver(slf)?)?;
         if m.is_none() {
             return Ok(false);
         }
@@ -473,7 +484,7 @@ impl ConstructView {
         }
         let base = if sr.is_some() { anchor.cloned().unwrap_or_else(|| none(py)) } else { origin.clone() };
         Self::sa_tf(slf, py.None())?;
-        if !Self::ga_version(slf)?.eq(crate::game::shape::draw_ver(&c)?)? {
+        if !Self::ga_version(slf)?.eq(Self::cur_ver(slf)?)? {
             if !Self::_rebuild_blob(slf)? {
                 Self::sa_blob(slf, py.None())?;
                 Self::_rebuild(slf)?;
@@ -513,6 +524,28 @@ impl ConstructView {
         }
         Ok(tf)
     }
+    /// 毎フレーム（A-16）：近いとなめらか・遠いと平らなメッシュに切り替え、中身・ガラスの見え方を決める。
+    /// メッシュを切り替えることにしたら True（呼んだ側は update で描き直す）
+    pub(crate) fn lod(slf: &Bound<'_, Self>, origin: &B<'_>) -> R<bool> {
+        let py = slf.py();
+        let c = Self::ga_c(slf)?;
+        if Construct::n(con(&c)?)? == 0 {
+            return Ok(false);
+        }
+        let d = Self::box_dist(slf, origin)?;
+        let cur = Self::smooth(slf)?;
+        let want = if cur { d < SMOOTH_FAR } else { d < SMOOTH_NEAR };
+        let mut changed = false;
+        if want != cur {
+            let ok = !want || Self::small(&c)? || imp(py, "main.shape")?.call_method1("request_mesh", (&c, true))?.is_truthy()?;
+            if ok {
+                slf.setattr("_smooth", want)?;
+                changed = true;
+            }
+        }
+        Self::_inner_and_glass(slf, origin)?;
+        Ok(changed)
+    }
     /// 閉じた構築物：遠いときは空洞の中（内側の面）を描かない。ガラスは外から見ると遠い所が不透明（中にいるときは透ける）。A-14
     pub(crate) fn _inner_and_glass(slf: &Bound<'_, Self>, origin: &B<'_>) -> R<()> {
         let py = slf.py();
@@ -527,32 +560,11 @@ impl ConstructView {
         if !need {
             return Ok(());
         }
-        let c = Self::ga_c(slf)?;
-        let o = v3(origin)?;
-        // 構築物の箱（世界の向き）。静止している物は版と最初の頂点が同じなら使い回す
-        let pos = c.getattr("pos")?;
-        let first = pos.get_item(0)?;
-        let key = PyTuple::new_bound(py, [crate::game::shape::draw_ver(&c)?.into_any(), first.call_method0("tobytes")?]);
-        let s = slf.as_any();
-        let bb = match gd(s, "_bbox", none(py)) {
-            b if !b.is_none() && b.get_item(0)?.eq(&key)? => b.get_item(1)?,
-            _ => {
-                let lo = pos.call_method1("min", (0,))?;
-                let hi = pos.call_method1("max", (0,))?;
-                let b = PyTuple::new_bound(py, [lo, hi]);
-                s.setattr("_bbox", (&key, &b))?;
-                b.into_any()
-            }
-        };
-        let (lo, hi) = (v3(&bb.get_item(0)?)?, v3(&bb.get_item(1)?)?);
-        let mut d2 = 0.0;
-        for a in 0..3 {
-            let e = (lo[a] - o[a]).max(0.0).max(o[a] - hi[a]);
-            d2 += e * e;
-        }
-        let dist = d2.sqrt();
+        let _ = py;
+        let dist = Self::box_dist(slf, origin)?;
         let show_inner = dist < INNER_NEAR;
-        let fade = if dist <= 0.0 { 0.0 } else { INNER_NEAR * 0.5 };
+        // ガラス：外から見ると、目から INNER_NEAR より遠い所は不透明（近づくと急に透ける。A-16）。中にいるときは透ける
+        let fade = if dist <= 0.0 { 0.0 } else { INNER_NEAR };
         for g in &groups {
             if g.get_item("inner")?.is_truthy()? && g.get_item("shown")?.is_truthy()? != show_inner {
                 g.get_item("mesh")?.getattr("np")?.call_method0(if show_inner { "show" } else { "hide" })?;
@@ -724,3 +736,46 @@ macro_rules! constructview_attr_fields {
 constructview_attr_fields!(
     ga_baked sa_baked pga_baked psa_baked a_baked "_baked", ga_devs sa_devs pga_devs psa_devs a_devs "_devs", ga_devs_ver sa_devs_ver pga_devs_ver psa_devs_ver a_devs_ver "_devs_ver", ga_lp sa_lp pga_lp psa_lp a_lp "_lp", ga_mat_key sa_mat_key pga_mat_key psa_mat_key a_mat_key "_mat_key", ga_parent0 sa_parent0 pga_parent0 psa_parent0 a_parent0 "_parent0", ga_tf sa_tf pga_tf psa_tf a_tf "_tf", ga_blob sa_blob pga_blob psa_blob a_blob "blob", ga_c sa_c pga_c psa_c a_c "c", ga_displays sa_displays pga_displays psa_displays a_displays "displays", ga_groups sa_groups pga_groups psa_groups a_groups "groups", ga_loader sa_loader pga_loader psa_loader a_loader "loader", ga_parent sa_parent pga_parent psa_parent a_parent "parent", ga_root sa_root pga_root psa_root a_root "root", ga_version sa_version pga_version psa_version a_version "version", ga_visible sa_visible pga_visible psa_visible a_visible "visible"
 );
+
+impl ConstructView {
+    /// いまなめらかなメッシュか（A-16。はじめは平ら）
+    fn smooth(slf: &Bound<'_, Self>) -> R<bool> {
+        Ok(match slf.getattr("_smooth") { Ok(v) => v.is_truthy()?, Err(_) => false })
+    }
+    /// 小さい構築物（なめらかなメッシュをその場で作ってよい）
+    fn small(c: &B<'_>) -> R<bool> {
+        Ok(Construct::n(con(&c)?)? <= 150 && !Construct::anchored_b(con(&c)?)?)
+    }
+    /// 描き直しの目安：(形の版, なめらかか)
+    fn cur_ver<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {
+        let py = slf.py();
+        Ok(PyTuple::new_bound(py, [crate::game::shape::draw_ver(&Self::ga_c(slf)?)?.into_any(), tb(py, Self::smooth(slf)?)]).into_any())
+    }
+    /// 目から構築物の箱までの距離（m。中にいれば 0）。静止している物は箱を使い回す
+    fn box_dist(slf: &Bound<'_, Self>, origin: &B<'_>) -> R<f64> {
+        let py = slf.py();
+        let c = Self::ga_c(slf)?;
+        let o = v3(origin)?;
+        let pos = c.getattr("pos")?;
+        let first = pos.get_item(0)?;
+        let key = PyTuple::new_bound(py, [crate::game::shape::draw_ver(&c)?.into_any(), first.call_method0("tobytes")?]);
+        let s = slf.as_any();
+        let bb = match gd(s, "_bbox", none(py)) {
+            b if !b.is_none() && b.get_item(0)?.eq(&key)? => b.get_item(1)?,
+            _ => {
+                let lo = pos.call_method1("min", (0,))?;
+                let hi = pos.call_method1("max", (0,))?;
+                let b = PyTuple::new_bound(py, [lo, hi]);
+                s.setattr("_bbox", (&key, &b))?;
+                b.into_any()
+            }
+        };
+        let (lo, hi) = (v3(&bb.get_item(0)?)?, v3(&bb.get_item(1)?)?);
+        let mut d2 = 0.0;
+        for a in 0..3 {
+            let e = (lo[a] - o[a]).max(0.0).max(o[a] - hi[a]);
+            d2 += e * e;
+        }
+        Ok(d2.sqrt())
+    }
+}

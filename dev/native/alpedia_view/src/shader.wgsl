@@ -84,9 +84,9 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
         return vec4<f32>(hc * holo, holo * (0.3 + 0.4 * fres + 0.1 * scan));
     }
     if (mdl.flags.w > 0.0) {
-        // ガラス：遠い所は不透明に（中が見えない。A-14）
+        // ガラス：この距離より遠い所は不透明（中が見えない）。近づくと急に透ける（A-14・A-16）
         let dg = length(i.wpos - cam.eye.xyz);
-        c = vec4<f32>(c.rgb, mix(c.a, 1.0, smoothstep(mdl.flags.w, mdl.flags.w * 2.0, dg)));
+        c = vec4<f32>(c.rgb, mix(c.a, 1.0, smoothstep(mdl.flags.w, mdl.flags.w + 0.3, dg)));
     }
     if (c.a < max(mdl.flags.z, 0.01)) {
         discard;

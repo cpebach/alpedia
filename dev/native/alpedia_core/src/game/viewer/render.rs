@@ -87,6 +87,7 @@ impl Viewer {
                 if !v.is_none() {
                     views.dpop1(&cid)?.call_method0("remove")?;
                     c.setattr("_mesh_cache", py.None())?;
+                    c.setattr("_mesh_cache_flat", py.None())?;
                 }
                 loaded.call_method1("discard", (&cid,))?;
                 lod_list.append(c)?;
@@ -95,7 +96,8 @@ impl Viewer {
             if v.is_none() {
                 // 大きな物・アンカーで固定された建物（街の建物はたくさん一度に出てくる）は、形を裏で作る（できるまでは遠くの見た目の箱）
                 let big = ga(c, "n_vox")?.extract::<i64>()? > 150 || Construct::anchored_b(con(&c)?)?;
-                if !seated && big && !shape.call_method1("request_mesh", (c,))?.is_truthy()? {
+                // はじめは平らなメッシュ（近ければ、なめらかなメッシュは描き始めてから裏で作る。A-16）
+                if !seated && big && !shape.call_method1("request_mesh", (c, false))?.is_truthy()? {
                     lod_list.append(c)?;
                     continue;
                 }
@@ -112,8 +114,12 @@ impl Viewer {
             // 公転する惑星と一緒に動いている物は毎フレーム置き直す（L-08）
             let static_ = !tf.is_none() && !seated && con(&c)?.borrow().frame < 0 && (ga(c, "is_static")?.is_truthy()? || ga(c, "asleep")?.is_truthy()?)
                 && !Construct::dev_ids(con(&c)?, Some(&IntoPy::<PyObject>::into_py("thruster", c.py()).into_bound(c.py()))).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.is_truthy()?;
-            let key = if static_ { PyTuple::new_bound(py, [ga(c, "version")?, tf.get_item(2)?, anchor_ver.clone()]).into_any() } else { none(py) };
+            let key = if static_ { PyTuple::new_bound(py, [crate::game::shape::draw_ver(c)?.into_any(), tf.get_item(2)?, anchor_ver.clone()]).into_any() } else { none(py) };
             let vd = ga(&v, "__dict__")?;
+            // 距離でなめらか・平らを切り替え、中身・ガラスの見え方を決める（毎フレーム。A-16）
+            if v.call_method1("lod", (origin,))?.is_truthy()? {
+                v.setattr("_static_key", py.None())?;
+            }
             if key.is_none() || !get(&vd, "_static_key", py.None())?.eq(&key)? {
                 v.setattr("_static_key", &key)?;
                 if static_ {

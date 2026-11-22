@@ -125,8 +125,6 @@ class MegaAddon(Addon):
             del world.constructs[cid]
         # 保存されていた建物・線路（手を加えていない物）：これからも出し入れする
         for cid, c in list(world.constructs.items()):
-            if str(cid).startswith(("mb-", "ms-", "mst-")):
-                c.flat_mesh = True                       # 面をまとめた平らなメッシュ（A-15。前のセーブの物にも）
             if str(cid).startswith(("mb-", "ms-", "mst-")) and cid not in self.kept:
                 if cid not in self.by_id or str(cid).startswith("mst-"):
                     del world.constructs[cid]        # 今は建てない物・駅（形が変わったかもしれないので、近づいたら作り直す）
@@ -289,7 +287,6 @@ class MegaAddon(Addon):
             if c is None:
                 o["skip"] = True
                 continue
-            c.flat_mesh = True                           # 面をまとめた平らなメッシュ（A-15）
             w.add_construct(c)
             self.made[cid] = None
             left -= 1
@@ -360,7 +357,6 @@ class MegaAddon(Addon):
                 org = x + R @ build.car_origin_local()
                 c = Construct.from_voxels(world.registry, V, org, R, size=build.CAR_S,
                                           name=f"{self.plan['lines'][li]['name']}の電車 {j + 1} 両目", id_=cid)
-                c.flat_mesh = True                       # 面をまとめた平らなメッシュ（A-15）
                 world.add_construct(c)
                 c.hold_in_frame(R, x, t * v, np.zeros(3))
                 self.cars[cid] = (k, j)

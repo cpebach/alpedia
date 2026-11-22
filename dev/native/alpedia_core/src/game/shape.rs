@@ -288,8 +288,8 @@ pub fn shape_owner<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, p: &Bound<'py, P
     iarr(py, o.into_iter().map(|x| x as i64).collect(), &[n])
 }
 
-/// 平らなメッシュ（A-15）：ブロックの外に出ている面だけを、同じ見た目・向き・内外ごとに大きな四角にまとめる。
-/// 建物など固定した構築物用（MOD が flat_mesh を付ける）。変形しないので、頂点はそれぞれ 1 つのボクセルの角に付ける。
+/// 平らなメッシュ（A-15・A-16）：ブロックの外に出ている面だけを、同じ見た目・向き・内外・動く部分（ローター）ごとに大きな四角にまとめる。
+/// 遠くの構築物用（近くはなめらかなメッシュ。描画が距離で切り替える）。頂点はそれぞれ 1 つのボクセルの角に付ける。
 /// ガラスと透けないブロックの間は、透けないブロックの面だけ作る（ガラス越しに見える）。ガラスどうし・ガラスの裏には作らない
 fn flat_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     let cells: Vec<[i64; 3]> = Construct::g_cells(con(&c)?)?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
@@ -300,6 +300,13 @@ fn flat_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>
     let kind = block_kinds_v(c)?;
     let clear = clear_v(c)?;
     let open = open_doors_v(c)?;
+    // ローターで別に動く部分：部分ごとにまとめ、部分の境には面を作る
+    let has_rotors = match opt(c, "rotors")? { Some(x) => x.is_truthy()?, None => false };
+    let part: Vec<usize> = if has_rotors && c.hasattr("_art_groups")? {
+        iv(&Construct::_art_groups(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?.into_iter().map(|x| x as usize).collect()
+    } else {
+        vec![0; n]
+    };
     let (pall, fall, oall, inner) = py.allow_threads(|| {
         let index: HashMap<[i64; 3], usize> = cells.iter().enumerate().filter(|(i, _)| !open[*i]).map(|(i, q)| (*q, i)).collect();
         let closed: Vec<[i64; 3]> = cells.iter().zip(&open).filter(|(_, o)| !**o).map(|(q, _)| *q).collect();
@@ -335,11 +342,12 @@ fn flat_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>
                             nq[ax] += sgn;
                             let show = match index.get(&nq) {
                                 None => true,
-                                Some(&j) => !clear[i] && clear[j],
+                                Some(&j) => part[i] != part[j] || (!clear[i] && clear[j]),
                             };
                             if show {
                                 let inn = cav.contains(&nq);
-                                mask[iu * nv + iv] = (kind[i] + 1, inn, i);
+                                // 見た目と動く部分の組を 1 つの番号に
+                                mask[iu * nv + iv] = (((kind[i] + 1) << 16) | part[i] as i64, inn, i);
                                 any = true;
                             }
                         }
@@ -438,12 +446,11 @@ fn flat_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>
 
 /// 形の表面メッシュを作る（格子座標＝セル単位）。ブロックが無ければ None
 #[pyfunction]
-#[pyo3(signature = (c, k=None))]
-pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i64>) -> R<Bound<'py, PyAny>> {
+#[pyo3(signature = (c, k=None, smooth=true))]
+pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i64>, smooth: bool) -> R<Bound<'py, PyAny>> {
     let none = py.None().into_bound(py);
-    // 建物など（MOD が flat_mesh を付けた固定の構築物）：面をまとめた平らなメッシュ（A-15）
-    if k.is_none() && c.getattr("flat_mesh").map(|x| x.is_truthy().unwrap_or(false)).unwrap_or(false)
-        && !opt(c, "rotors")?.map(|x| x.is_truthy().unwrap_or(false)).unwrap_or(false) {
+    // 遠くの構築物：面をまとめた平らなメッシュ（A-15・A-16）
+    if !smooth {
         return flat_mesh(py, c);
     }
     let n: usize = Construct::n(con(&c)?)?;
@@ -675,6 +682,11 @@ fn mesh_key<'py>(c: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
     Ok(PyTuple::new_bound(c.py(), [Construct::g_version(con(&c)?)?, Construct::n(con(&c)?)?.into_py(c.py()).into_bound(c.py()), dv]))
 }
 
+/// なめらかなメッシュと平らなメッシュの、使い回しの置き場の名前
+fn cache_attr(smooth: bool) -> &'static str {
+    if smooth { "_mesh_cache" } else { "_mesh_cache_flat" }
+}
+
 /// 描き直しの目安：(version, 扉の開け閉めの回数)
 pub fn draw_ver<'py>(c: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
     let dv = c.getattr("_door_ver").unwrap_or_else(|_| IntoPy::<PyObject>::into_py(0i64, c.py()).into_bound(c.py()));
@@ -683,8 +695,9 @@ pub fn draw_ver<'py>(c: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
 
 /// 作ってあるメッシュ（形が変わっていなければ）。無ければ None
 #[pyfunction]
-pub fn shape_cached_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    if let Some(m) = opt(c, "_mesh_cache")? {
+#[pyo3(signature = (c, smooth=true))]
+pub fn shape_cached_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, smooth: bool) -> R<Bound<'py, PyAny>> {
+    if let Some(m) = opt(c, cache_attr(smooth))? {
         if m.get_item(0)?.eq(mesh_key(c)?)? {
             return m.get_item(1);
         }
@@ -692,21 +705,23 @@ pub fn shape_cached_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound
     Ok(py.None().into_bound(py))
 }
 #[pyfunction]
-pub fn shape_mesh_ready(c: &Bound<'_, PyAny>) -> R<bool> {
-    match opt(c, "_mesh_cache")? {
+#[pyo3(signature = (c, smooth=true))]
+pub fn shape_mesh_ready(c: &Bound<'_, PyAny>, smooth: bool) -> R<bool> {
+    match opt(c, cache_attr(smooth))? {
         Some(m) => m.get_item(0)?.eq(mesh_key(c)?),
         None => Ok(false),
     }
 }
 /// メッシュを裏で作り始める（もう作ってある・作っている途中なら何もしない）。できていれば True
 #[pyfunction]
-pub fn shape_request_mesh(py: Python<'_>, c: &Bound<'_, PyAny>) -> R<bool> {
+#[pyo3(signature = (c, smooth=true))]
+pub fn shape_request_mesh(py: Python<'_>, c: &Bound<'_, PyAny>, smooth: bool) -> R<bool> {
     let key = mesh_key(c)?;
-    if shape_mesh_ready(c)? {
+    if shape_mesh_ready(c, smooth)? {
         return Ok(true);
     }
     let jobs = JOBS.get_or_init(py, || PyDict::new_bound(py).unbind()).bind(py);
-    let id = Construct::g_id(con(&c)?)?;
+    let id = PyTuple::new_bound(py, [Construct::g_id(con(&c)?)?.into_any(), smooth.into_py(py).into_bound(py)]);
     if let Some(job) = jobs.get_item(&id)? {
         if job.get_item(0)?.eq(&key)? {
             let fut = job.get_item(1)?;
@@ -714,7 +729,7 @@ pub fn shape_request_mesh(py: Python<'_>, c: &Bound<'_, PyAny>) -> R<bool> {
                 jobs.del_item(&id)?;
                 return match fut.call_method0("result") {
                     Ok(m) => {
-                        c.setattr("_mesh_cache", (&key, m))?;
+                        c.setattr(cache_attr(smooth), (&key, m))?;
                         Ok(true)
                     }
                     Err(e) if e.is_instance_of::<pyo3::exceptions::PyException>(py) => Ok(false),   // 作っている間に形が変わったなど
@@ -736,18 +751,19 @@ pub fn shape_request_mesh(py: Python<'_>, c: &Bound<'_, PyAny>) -> R<bool> {
         }
     };
     let f = imp(py, "main.shape")?.getattr("build_mesh")?;
-    let fut = pool.bind(py).call_method1("submit", (f, c))?;
+    let fut = pool.bind(py).call_method1("submit", (f, c, py.None(), smooth))?;
     jobs.set_item(&id, (key, fut))?;
     Ok(false)
 }
 /// 描画用のメッシュ：作ってあればそれを、無ければ今作る
 #[pyfunction]
-pub fn shape_mesh_for<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    if shape_mesh_ready(c)? {
-        return shape_cached_mesh(py, c);
+#[pyo3(signature = (c, smooth=true))]
+pub fn shape_mesh_for<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, smooth: bool) -> R<Bound<'py, PyAny>> {
+    if shape_mesh_ready(c, smooth)? {
+        return shape_cached_mesh(py, c, smooth);
     }
-    let m = shape_build_mesh(py, c, None)?;
-    c.setattr("_mesh_cache", (mesh_key(c)?, &m))?;
+    let m = shape_build_mesh(py, c, None, smooth)?;
+    c.setattr(cache_attr(smooth), (mesh_key(c)?, &m))?;
     Ok(m)
 }
 

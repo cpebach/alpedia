@@ -175,8 +175,6 @@ class Streamer:
             # 保存してあった街の建物（作ったままの物）：これからも出し入れする
             self._adopted = True
             for cid, c in cons.items():
-                if str(cid).startswith("blk-"):
-                    c.flat_mesh = True                  # 面をまとめた平らなメッシュ（A-15。前のセーブの物にも）
                 if str(cid).startswith("blk-") and cid not in self.kept:
                     self.made[cid] = c.version
         # 手を加えた・壊された
@@ -217,7 +215,6 @@ class Streamer:
                     busy = True
                     break
                 c = Construct.from_voxels(w.registry, V, org, rot, size=s, name=f"{city.name}の{name}", id_=cid)
-                c.flat_mesh = True                      # 面をまとめた平らなメッシュ（A-15）
                 w.add_construct(c)
                 self.made[cid] = None
                 left -= 1

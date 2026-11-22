@@ -77,7 +77,7 @@ pub fn objio_export_construct<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, out_d
     let fit = Construct::rigid_fit(con(&c)?, None).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
     let rm = super::construct::m3(&fit.get_item(0)?)?;
     let t = super::construct::v3(&fit.get_item(1)?)?;
-    let mesh = super::shape::shape_build_mesh(py, c, None)?;
+    let mesh = super::shape::shape_build_mesh(py, c, None, true)?;
     let cname = Construct::g_name(con(&c)?)?.str()?.to_string();
     let mut lines = vec![format!("# Alpedia construct: {cname}"), format!("mtllib {name}.mtl"), format!("o {name}")];
     let mats = Construct::g_mats(con(&c)?)?;

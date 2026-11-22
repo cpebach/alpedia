@@ -959,7 +959,7 @@ impl View {
         self.fog = [r as f32, g as f32, b as f32, density.max(0.0) as f32];
     }
 
-    /// 遠くを不透明に（ガラス）：目からこの距離（m）で透け始めが薄れ、2 倍の距離で不透明。0 で切る（A-14）
+    /// 遠くを不透明に（ガラス）：目からこの距離（m）より遠い所は不透明（近づくと急に透ける）。0 で切る（A-14・A-16）
     fn mesh_fade(&mut self, m: usize, dist: f32) -> PyResult<()> {
         self.check_mesh(m)?;
         self.meshes[m].fade = dist.max(0.0);

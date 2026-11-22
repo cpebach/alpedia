@@ -82,7 +82,7 @@ class TestDoor(CoreCase):
         self.assertFalse(np.asarray(m2["inner"], bool).any(), "開いた箱は全部描く")
 
     def test_flat_mesh(self):
-        """A-15：flat_mesh の構築物は、面をまとめた平らなメッシュ（ガラスと壁は同じ面でつながる・三角形がずっと少ない）"""
+        """A-15・A-16：遠くの構築物の平らなメッシュ（面をまとめる。ガラスと壁は同じ面でつながる・三角形がずっと少ない）"""
         w = self.world()
         n = 10
         V = []
@@ -93,8 +93,7 @@ class TestDoor(CoreCase):
             V.append(((x, y, z), "glass" if glass else "concrete", None))
         c = self.put(w, V, extra=6.0)
         smooth = shape.build_mesh(c)
-        c.flat_mesh = True
-        flat = shape.build_mesh(c)
+        flat = shape.build_mesh(c, None, False)
         self.assertTrue(flat.get("flat"))
         nf, ns = len(flat["faces"]), len(smooth["faces"])
         self.assertLess(nf * 20, ns, f"三角形がずっと少ない（{nf} / {ns}）")
@@ -109,10 +108,10 @@ class TestDoor(CoreCase):
         self.assertTrue(glass.any())
         self.assertTrue(on_surface[glass & ~inner].all())
         self.assertTrue(inner.any(), "中の空洞の面は inner")
-        # 保存して読み直しても平らなメッシュ
-        from main.construct import Construct as C
-        c2 = C.from_dict(w.registry, c.to_dict(), c.spawn_dict())
-        self.assertTrue(getattr(c2, "flat_mesh", False))
+        # なめらかと平らは別々に使い回す
+        self.assertIsNotNone(shape.mesh_for(c, False))
+        self.assertTrue(shape.mesh_ready(c, False))
+        self.assertFalse(shape.mesh_ready(c, True))
 
     def test_submarine_ballast(self):
         """水の中で：扉を閉じた空洞は浮き、扉を開けると水が入って沈む"""
