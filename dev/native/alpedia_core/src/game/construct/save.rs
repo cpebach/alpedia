@@ -60,6 +60,9 @@ impl Construct {
         if Self::t_soft_ok(slf)? {
             o.set_item("soft_ok", true)?;
         }
+        if slf.getattr("flat_mesh").map(|x| x.is_truthy().unwrap_or(false)).unwrap_or(false) {
+            o.set_item("flat_mesh", true)?;          // 平らなメッシュ（A-15）
+        }
         Ok(o)
     }
 
@@ -144,6 +147,9 @@ impl Construct {
         }
         if dget(data, "soft_ok", py.None())?.is_truthy()? {
             c.setattr("soft_ok", true)?;
+        }
+        if dget(data, "flat_mesh", py.None())?.is_truthy()? {
+            c.setattr("flat_mesh", true)?;
         }
         Ok(c)
     }

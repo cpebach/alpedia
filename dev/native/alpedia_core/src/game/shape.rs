@@ -288,11 +288,164 @@ pub fn shape_owner<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, p: &Bound<'py, P
     iarr(py, o.into_iter().map(|x| x as i64).collect(), &[n])
 }
 
+/// 平らなメッシュ（A-15）：ブロックの外に出ている面だけを、同じ見た目・向き・内外ごとに大きな四角にまとめる。
+/// 建物など固定した構築物用（MOD が flat_mesh を付ける）。変形しないので、頂点はそれぞれ 1 つのボクセルの角に付ける。
+/// ガラスと透けないブロックの間は、透けないブロックの面だけ作る（ガラス越しに見える）。ガラスどうし・ガラスの裏には作らない
+fn flat_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
+    let cells: Vec<[i64; 3]> = Construct::g_cells(con(&c)?)?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
+    let n = cells.len();
+    if n == 0 {
+        return Ok(py.None().into_bound(py));
+    }
+    let kind = block_kinds_v(c)?;
+    let clear = clear_v(c)?;
+    let open = open_doors_v(c)?;
+    let (pall, fall, oall, inner) = py.allow_threads(|| {
+        let index: HashMap<[i64; 3], usize> = cells.iter().enumerate().filter(|(i, _)| !open[*i]).map(|(i, q)| (*q, i)).collect();
+        let closed: Vec<[i64; 3]> = cells.iter().zip(&open).filter(|(_, o)| !**o).map(|(q, _)| *q).collect();
+        let cav: std::collections::HashSet<[i64; 3]> = crate::game::airtight::find_cavities(&closed).into_iter().flatten().collect();
+        let mut lo = [i64::MAX; 3];
+        let mut hi = [i64::MIN; 3];
+        for q in &cells {
+            for a in 0..3 {
+                lo[a] = lo[a].min(q[a]);
+                hi[a] = hi[a].max(q[a]);
+            }
+        }
+        let mut pall: Vec<V3> = vec![];
+        let mut fall: Vec<[i64; 3]> = vec![];
+        let mut oall: Vec<usize> = vec![];
+        let mut inner: Vec<bool> = vec![];
+        for ax in 0..3usize {
+            let (u, v) = ((ax + 1) % 3, (ax + 2) % 3);
+            let (nu, nv) = ((hi[u] - lo[u] + 1) as usize, (hi[v] - lo[v] + 1) as usize);
+            for sgn in [1i64, -1] {
+                for sl in lo[ax]..=hi[ax] {
+                    // この面の層のマス：(見た目の番号 + 1, 内側か, ボクセル)。0 は面なし
+                    let mut mask: Vec<(i64, bool, usize)> = vec![(0, false, 0); nu * nv];
+                    let mut any = false;
+                    for iu in 0..nu {
+                        for iv in 0..nv {
+                            let mut q = [0i64; 3];
+                            q[ax] = sl;
+                            q[u] = lo[u] + iu as i64;
+                            q[v] = lo[v] + iv as i64;
+                            let Some(&i) = index.get(&q) else { continue };
+                            let mut nq = q;
+                            nq[ax] += sgn;
+                            let show = match index.get(&nq) {
+                                None => true,
+                                Some(&j) => !clear[i] && clear[j],
+                            };
+                            if show {
+                                let inn = cav.contains(&nq);
+                                mask[iu * nv + iv] = (kind[i] + 1, inn, i);
+                                any = true;
+                            }
+                        }
+                    }
+                    if !any {
+                        continue;
+                    }
+                    // まとめる（横に伸ばしてから縦に伸ばす）
+                    let same = |a: &(i64, bool, usize), b: &(i64, bool, usize)| a.0 == b.0 && a.1 == b.1;
+                    for iu in 0..nu {
+                        let mut iv = 0;
+                        while iv < nv {
+                            let m0 = mask[iu * nv + iv];
+                            if m0.0 == 0 {
+                                iv += 1;
+                                continue;
+                            }
+                            let mut w = 1;
+                            while iv + w < nv && same(&mask[iu * nv + iv + w], &m0) {
+                                w += 1;
+                            }
+                            let mut h = 1;
+                            'grow: while iu + h < nu {
+                                for k in 0..w {
+                                    if !same(&mask[(iu + h) * nv + iv + k], &m0) {
+                                        break 'grow;
+                                    }
+                                }
+                                h += 1;
+                            }
+                            for a in 0..h {
+                                for k in 0..w {
+                                    mask[(iu + a) * nv + iv + k].0 = 0;
+                                }
+                            }
+                            // 四角の 4 つの角（面の位置・u・v）と、その角に触れるボクセル
+                            let plane = (sl + if sgn > 0 { 1 } else { 0 }) as f64;
+                            let corners = [(iu, iv), (iu + h, iv), (iu + h, iv + w), (iu, iv + w)];
+                            let base = pall.len() as i64;
+                            for &(cu, cv) in &corners {
+                                let mut p = [0.0; 3];
+                                p[ax] = plane;
+                                p[u] = (lo[u] + cu as i64) as f64;
+                                p[v] = (lo[v] + cv as i64) as f64;
+                                // 角に触れるボクセル（四角の中の、その角のマス）
+                                let ou = if cu > iu { cu - 1 } else { cu };
+                                let ov = if cv > iv { cv - 1 } else { cv };
+                                let mut q = [0i64; 3];
+                                q[ax] = sl;
+                                q[u] = lo[u] + ou as i64;
+                                q[v] = lo[v] + ov as i64;
+                                oall.push(*index.get(&q).unwrap_or(&m0.2));
+                                pall.push(p);
+                            }
+                            // 外向き（+ax なら u→v の順で反時計回り）
+                            let (t1, t2) = if sgn > 0 { ([0, 1, 2], [0, 2, 3]) } else { ([0, 2, 1], [0, 3, 2]) };
+                            fall.push([base + t1[0], base + t1[1], base + t1[2]]);
+                            fall.push([base + t2[0], base + t2[1], base + t2[2]]);
+                            inner.push(m0.1);
+                            inner.push(m0.1);
+                            iv += w;
+                        }
+                    }
+                }
+            }
+        }
+        (pall, fall, oall, inner)
+    });
+    if pall.is_empty() {
+        return Ok(py.None().into_bound(py));
+    }
+    let np_ = pall.len();
+    let mut w = vec![1.0f64; np_ * 8];
+    for (q, p) in pall.iter().enumerate() {
+        let o = cells[oall[q]];
+        let uu = [p[0] - o[0] as f64, p[1] - o[1] as f64, p[2] - o[2] as f64];
+        for k8 in 0..8 {
+            let bits = super::construct::CORNER_BITS[k8];
+            for a in 0..3 {
+                w[q * 8 + k8] *= if bits[a] > 0.0 { uu[a] } else { 1.0 - uu[a] };
+            }
+        }
+    }
+    let d = PyDict::new_bound(py);
+    let nf = fall.len();
+    d.set_item("inner", PyArray1::from_vec_bound(py, inner))?;
+    d.set_item("rest", arr(py, pall.iter().flatten().copied().collect(), &[np_, 3])?)?;
+    d.set_item("faces", iarr(py, fall.into_iter().flatten().collect(), &[nf, 3])?)?;
+    d.set_item("owner", iarr(py, oall.iter().map(|x| *x as i64).collect(), &[np_])?)?;
+    d.set_item("w", arr(py, w, &[np_, 8])?)?;
+    d.set_item("vidx", iarr(py, oall.iter().flat_map(|o| (0..8).map(move |k| (8 * o + k) as i64)).collect(), &[np_, 8])?)?;
+    d.set_item("version", Construct::g_version(con(&c)?)?)?;
+    d.set_item("flat", true)?;
+    Ok(d.into_any())
+}
+
 /// 形の表面メッシュを作る（格子座標＝セル単位）。ブロックが無ければ None
 #[pyfunction]
 #[pyo3(signature = (c, k=None))]
 pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i64>) -> R<Bound<'py, PyAny>> {
     let none = py.None().into_bound(py);
+    // 建物など（MOD が flat_mesh を付けた固定の構築物）：面をまとめた平らなメッシュ（A-15）
+    if k.is_none() && c.getattr("flat_mesh").map(|x| x.is_truthy().unwrap_or(false)).unwrap_or(false)
+        && !opt(c, "rotors")?.map(|x| x.is_truthy().unwrap_or(false)).unwrap_or(false) {
+        return flat_mesh(py, c);
+    }
     let n: usize = Construct::n(con(&c)?)?;
     if n == 0 {
         return Ok(none);
