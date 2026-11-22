@@ -291,6 +291,11 @@ impl Port {
             }
             return Ok(());
         }
+        if key == "open" && dd.is_truthy()? && dd.get_item("type")?.eq("door")? {
+            // 扉：となりの扉ごと開け閉めして、形・気密を作り直す（A-14）
+            crate::game::devices::door_set(self.c.bind(py), i as usize, v.extract::<f64>(py)? > 0.5)?;
+            return Ok(());
+        }
         st.set_item(key, v)?;
         Ok(())
     }

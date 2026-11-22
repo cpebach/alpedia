@@ -12,7 +12,7 @@ struct Camera {
 struct Model {
     model: mat4x4<f32>,
     tint: vec4<f32>,      // 色を掛ける（ノードの色）
-    flags: vec4<f32>,     // x：2枚目のテクスチャを使う、y：テクスチャを使う、z：不透明さがこれ未満は描かない
+    flags: vec4<f32>,     // x：2枚目のテクスチャを使う、y：テクスチャを使う、z：不透明さがこれ未満は描かない、w：この距離より遠いと不透明に（ガラス）
     extra: vec4<f32>,     // x：立体映像（ホログラム）の描き方、y：時刻、z：風で揺らす強さ（m。草木）、w：絵を流す速さ（滝）
 };
 @group(1) @binding(0) var<uniform> mdl: Model;
@@ -82,6 +82,11 @@ fn fs_main(i: VOut) -> @location(0) vec4<f32> {
         let band = smoothstep(0.0, 0.04, fract(vh * 1.7 - time * 0.6)) * 0.25 + 0.75;
         let hc = mdl.tint.rgb * (0.1 + 0.4 * lum + 0.8 * fres) * scan * band;
         return vec4<f32>(hc * holo, holo * (0.3 + 0.4 * fres + 0.1 * scan));
+    }
+    if (mdl.flags.w > 0.0) {
+        // ガラス：遠い所は不透明に（中が見えない。A-14）
+        let dg = length(i.wpos - cam.eye.xyz);
+        c = vec4<f32>(c.rgb, mix(c.a, 1.0, smoothstep(mdl.flags.w, mdl.flags.w * 2.0, dg)));
     }
     if (c.a < max(mdl.flags.z, 0.01)) {
         discard;

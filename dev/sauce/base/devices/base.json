@@ -49,6 +49,8 @@
    "power": "electric", "power_use": 40, "params": {"color": [1.0, 0.86, 0.55]}, "cost": {"iron": 2, "silica": 2}},
   {"id": "decoupler", "name": "切り離し", "type": "decoupler", "mark": "decoupler", "material": "aluminum", "color": [0.95, 0.78, 0.2],
    "mass": 60, "directional": true, "params": {"key": "g"}, "cost": {"iron": 4, "parts": 1}},
+  {"id": "door", "name": "扉", "type": "door", "material": "steel", "color": [0.45, 0.36, 0.27],
+   "cost": {"iron": 3}},
   {"id": "rail", "name": "レール", "type": "rail", "material": "steel", "color": [0.5, 0.48, 0.45], "directional": true,
    "description": "向き（矢印）の方へ続く線路。並べてつなぐと、車輪のある乗り物が上を走る。曲がり角・上り下りの段にもつながる",
    "cost": {"iron": 3}},

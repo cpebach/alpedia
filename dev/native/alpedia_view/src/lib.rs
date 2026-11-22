@@ -66,6 +66,7 @@ struct Mesh {
     cutoff: f32,
     add: bool,                // 足し算で重ねる（光る物）
     extra: [f32; 4],          // x：立体映像（ホログラム）の描き方、y：時刻（ムービーの道具が使う）
+    fade: f32,                // 0 より大きいと、目からこの距離（m）より遠い所は不透明に近づける（ガラス。A-14）
 }
 
 /// 骨で曲げる形（VRM の人物など）：もとの頂点。体ごとの部品（SkinPart）がこれを共有する。
@@ -958,6 +959,13 @@ impl View {
         self.fog = [r as f32, g as f32, b as f32, density.max(0.0) as f32];
     }
 
+    /// 遠くを不透明に（ガラス）：目からこの距離（m）で透け始めが薄れ、2 倍の距離で不透明。0 で切る（A-14）
+    fn mesh_fade(&mut self, m: usize, dist: f32) -> PyResult<()> {
+        self.check_mesh(m)?;
+        self.meshes[m].fade = dist.max(0.0);
+        Ok(())
+    }
+
     /// 草木の揺れ：メッシュを風で揺らす強さ（m。頂点の法線の長さ − 1 が揺れる割合）
     fn mesh_wind(&mut self, m: usize, strength: f32) -> PyResult<()> {
         self.check_mesh(m)?;
@@ -1134,7 +1142,7 @@ impl View {
         self.check_node(node)?;
         let m = Mesh {
             node, verts: vec![], idx: vec![], dirty_v: false, dirty_i: false, vbuf: None, ibuf: None, n_idx: 0, tex: [None, None],
-            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false, cutoff: 0.0, add: false, extra: [0.0; 4],
+            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false, cutoff: 0.0, add: false, extra: [0.0; 4], fade: 0.0,
         };
         Ok(if let Some(k) = self.free_meshes.pop() {
             self.meshes[k] = m;
@@ -1658,7 +1666,7 @@ impl View {
         let mut data = vec![0u8; need as usize];
         for (q, &(k, w, tint)) in draw.iter().enumerate() {
             let m = &meshes[k];
-            let flags = [if m.tex[1].is_some() { 1.0f32 } else { 0.0 }, if m.tex[0].is_some() { 1.0 } else { 0.0 }, m.cutoff, 0.0];
+            let flags = [if m.tex[1].is_some() { 1.0f32 } else { 0.0 }, if m.tex[0].is_some() { 1.0 } else { 0.0 }, m.cutoff, m.fade];
             let o = q * MODEL_STRIDE as usize;
             data[o..o + 64].copy_from_slice(bytemuck::cast_slice(&w));
             data[o + 64..o + 80].copy_from_slice(bytemuck::cast_slice(&tint));

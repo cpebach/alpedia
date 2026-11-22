@@ -744,7 +744,7 @@ impl Construct {
     #[classattr]
     #[allow(non_snake_case)]
     fn PASSIVE_DEVICES(py: Python<'_>) -> R<PyObject> {
-        Ok(PySet::new_bound(py, &["anchor", "pipe", "tank", "valve", "battery", "seat", "generator", "antenna", "computer", "rail"])?
+        Ok(PySet::new_bound(py, &["anchor", "pipe", "tank", "valve", "battery", "seat", "generator", "antenna", "computer", "rail", "door"])?
             .into_any().unbind())
     }
     #[classattr]
@@ -873,6 +873,22 @@ impl Construct {
             out.set_item("state", py.get_type_bound::<PyDict>().call1((st,))?)?;
         }
         Ok(out)
+    }
+
+    /// 形だけ作り直す（扉の開け閉め。ボクセル・結合は同じ）：形・当たり判定の球・接触・版（描き直し）・気密（A-14）
+    pub(crate) fn refresh_shape(slf: &Bound<'_, Self>) -> R<()> {
+        let py = slf.py();
+        if Self::n(slf)? > 0 {
+            let shape = imp(py, "main.shape")?;
+            Self::s_topo(slf, shape.call_method1("topology", (slf,))?)?;
+            Self::s_prox_w(slf, shape.call_method1("collision_proxies", (slf,))?)?;
+            Self::_build_contacts(slf).map(|v| IntoPy::<PyObject>::into_py(v, slf.py()).into_bound(slf.py()))?;
+        }
+        // version は上げない（MOD が「手を加えた」と見なさないように）。描き直しは _door_ver で
+        let dv: i64 = match slf.getattr("_door_ver") { Ok(v) => v.extract().unwrap_or(0), Err(_) => 0 };
+        slf.setattr("_door_ver", dv + 1)?;
+        Self::s_dirty(slf, true)?;    // 気密（空洞）の数え直し
+        Self::wake(slf, true)
     }
 
     /// トポロジ（ボクセル・結合）が変わったら呼ぶ

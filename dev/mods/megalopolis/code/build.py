@@ -12,6 +12,7 @@ TOWER_SKINS = [("glass", "steel", "hull_dark"), ("glass", "hull_navy", "hull_bla
 OFFICE_WALLS = ["concrete", "hull_cream", "aluminum", "hull_white", "clay"]
 APT_WALLS = ["hull_cream", "concrete", "clay", "hull_white", "hull_orange"]
 LINE_COLORS = ["hull_teal", "hull_red", "hull_yellow", "hull_green", "hull_blue", "hull_orange"]
+DOOR = {"def": "door", "dir": 4}            # 入り口の扉（A-14）
 
 
 def _cell(style, h):
@@ -86,7 +87,8 @@ def building(b):
     # 入り口・搬入口（前の面の真ん中）
     dw, door_h = door_cells(st, s, ny)
     hole = (z == z.max()) & (np.abs(x) <= dw) & (y >= 1) & (y <= door_h) & ~roof
-    V = [((int(a), int(b_), int(c)), m, None) for a, b_, c, m, hh in zip(x, y, z, mat, hole) if not hh]
+    # 入り口は扉（閉じている。E かコンピューターで開ける。A-14）
+    V = [((int(a), int(b_), int(c)), "steel" if hh else m, dict(DOOR) if hh else None) for a, b_, c, m, hh in zip(x, y, z, mat, hole)]
     if st == "tower" and nx > 6 and nz > 6:
         V += [((i, j, k_), "steel", None) for i in (-1, 0, 1) for j in (ny, ny + 1) for k_ in (-1, 0, 1)]
     if st == "factory":

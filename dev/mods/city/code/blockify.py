@@ -29,14 +29,16 @@ def extract(city):
         return
     keep, groups = [], {}
     for p in city.parts:
-        if p["kind"] in ("body", "wall", "glass") and p["bld"] >= 0:
-            groups.setdefault((p["bld"], p["kind"]), []).append(p)
-        else:
+        if p["kind"] in ("body", "wall", "glass", "door") and p["bld"] >= 0:
+            kind = "wall" if p["kind"] == "door" else p["kind"]          # 扉は壁と同じ構築物に（A-14）
+            groups.setdefault((p["bld"], kind), []).append(p)
+        elif p["kind"] != "door":
             keep.append(p)
     city.parts = keep
     blocks = getattr(city, "blocks", None) or []
     for (b, kind), parts in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        blocks.append({"bld": b, "kind": kind, "boxes": [(p["c"], p["A"], p["e"]) for p in parts]})
+        parts = sorted(parts, key=lambda p: p["kind"] == "door")          # 扉はあとで（壁のセルを上書き）
+        blocks.append({"bld": b, "kind": kind, "boxes": [(p["c"], p["A"], p["e"], p["kind"] == "door") for p in parts]})
     city.blocks = blocks
 
 
@@ -44,7 +46,7 @@ def extent(city):
     """建物を含めた街の半径（街の中心から）"""
     r = 0.0
     for bl in getattr(city, "blocks", []):
-        for c, A, e in bl.get("boxes", []):
+        for c, A, e, *_ in bl.get("boxes", []):
             r = max(r, float(np.linalg.norm(c)) + float(np.linalg.norm(e)))
         if "origin" in bl:
             r = max(r, float(np.linalg.norm(bl["origin"])) + bl.get("radius", 10.0))
@@ -93,7 +95,7 @@ def plan(city, rng_seed):
             continue
         rng = np.random.default_rng([rng_seed, k])
         if bl["kind"] == "body":
-            big = max(2 * float(np.max(e)) for _, _, e in bl["boxes"])
+            big = max(2 * float(np.max(bx[2])) for bx in bl["boxes"])
             s = 1.0 if big <= 24 else 2.0
             mat = TOWER_MATS[int(rng.integers(len(TOWER_MATS)))]
             shell = True
@@ -102,11 +104,15 @@ def plan(city, rng_seed):
         else:
             s, mat, shell = 0.5, WALL_MAT, False
         # 1 つの建物の箱は同じ向き。最初の箱の向き・原点に合わせて、ほかの箱のセルを並べる
-        c0, A0, _ = bl["boxes"][0]
+        c0, A0 = bl["boxes"][0][0], bl["boxes"][0][1]
         A0 = np.asarray(A0, float)
         vox, org0 = {}, None
-        for c, A, e in bl["boxes"]:
+        for bx in bl["boxes"]:
+            c, A, e = bx[0], bx[1], bx[2]
+            door = len(bx) > 3 and bx[3]
             v, org, _ = _box_voxels(c, A0, e, s, mat, shell, rng)
+            if door:
+                v = [(cell, "steel", {"def": "door", "dir": 4}) for cell, _m, _d in v]
             if org0 is None:
                 org0 = org
             off = np.round(A0 @ (org - org0) / s).astype(int)

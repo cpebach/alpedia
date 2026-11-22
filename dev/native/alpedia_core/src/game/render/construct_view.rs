@@ -45,6 +45,9 @@ pub struct ConstructView {
     pub a_visible: Option<PyObject>,
 }
 
+/// この距離（m）より構築物（の箱）に近いと、閉じた空洞の中（内側の面）も描く。ガラスもこの半分の距離から透け始める（A-14）
+pub const INNER_NEAR: f64 = 8.0;
+
 pub(crate) fn remove_groups(s: &B<'_>) -> R<()> {
     for g in s.getattr("groups")?.iter()? {
         g?.get_item("mesh")?.call_method0("remove")?;
@@ -139,7 +142,7 @@ impl ConstructView {
     pub(crate) fn _rebuild(slf: &Bound<'_, Self>) -> R<()> {
         let s = slf.as_any();
         remove_groups(s)?;
-        Self::sa_version(slf, Self::ga_c(slf)?.getattr("version")?)
+        Self::sa_version(slf, crate::game::shape::draw_ver(&Self::ga_c(slf)?)?)
     }
     pub(crate) fn _rebuild_blob(slf: &Bound<'_, Self>) -> R<bool> {
         let py = slf.py();
@@ -150,7 +153,7 @@ impl ConstructView {
         let c = Self::ga_c(slf)?;
         let m = shape.call_method1("mesh_for", (&c,))?;
         Self::sa_blob(slf, &m)?;
-        Self::sa_version(slf, c.getattr("version")?)?;
+        Self::sa_version(slf, crate::game::shape::draw_ver(&c)?)?;
         if m.is_none() {
             return Ok(false);
         }
@@ -187,6 +190,11 @@ impl ConstructView {
         let rest = a2(&rest_o, 3)?;
         let (faces, nf) = i2(&faces_o, 3)?;
         let owner = i1(&owner_o)?;
+        // 閉じた空洞の方を向いた面（遠くからは描かない。A-14）
+        let inner: Vec<bool> = match m.get_item("inner") {
+            Ok(x) if !x.is_none() => crate::game::construct::bv(&x)?,
+            _ => vec![false; nf],
+        };
         // テクスチャ座標：三角形ごとに、静止時の面の向きにいちばん近い軸の面へ投影する（ブロック1つでテクスチャ1枚）
         let mut fax = vec![0i64; nf];
         for f in 0..nf {
@@ -213,7 +221,7 @@ impl ConstructView {
         let mut lists: Vec<Vec<usize>> = vec![];
         for f in 0..nf {
             let o = owner[faces[3 * f] as usize] as usize;
-            let key = PyTuple::new_bound(py, [tex_v[o].0.clone(), tb(py, tex_v[o].1)]);
+            let key = PyTuple::new_bound(py, [tex_v[o].0.clone(), tb(py, tex_v[o].1), tb(py, inner.get(f).copied().unwrap_or(false))]);
             match groups.get_item(&key)? {
                 Some(ix) => {
                     let ix: usize = ix.extract()?;
@@ -231,7 +239,7 @@ impl ConstructView {
         let cid = c.getattr("id")?;
         let out_groups = Self::ga_groups(slf)?;
         for (key, fl) in order.iter().zip(lists.iter()) {
-            let (tex, alpha) = (key.get_item(0)?, f64of(&key.get_item(1)?)?);
+            let (tex, alpha, is_inner) = (key.get_item(0)?, f64of(&key.get_item(1)?)?, key.get_item(2)?.is_truthy()?);
             let mut keys: Vec<i64> = Vec::with_capacity(fl.len() * 3);
             for &f in fl {
                 for j in 0..3 {
@@ -283,6 +291,9 @@ impl ConstructView {
             g.set_item("owner", i64_1(py, own))?;
             g.set_item("new", true)?;
             g.set_item("alpha", alpha)?;
+            g.set_item("inner", is_inner)?;
+            g.set_item("shown", true)?;
+            g.set_item("fade", -1.0)?;
             out_groups.call_method1("append", (g,))?;
         }
         Ok(true)
@@ -462,7 +473,7 @@ impl ConstructView {
         }
         let base = if sr.is_some() { anchor.cloned().unwrap_or_else(|| none(py)) } else { origin.clone() };
         Self::sa_tf(slf, py.None())?;
-        if !Self::ga_version(slf)?.eq(c.getattr("version")?)? {
+        if !Self::ga_version(slf)?.eq(crate::game::shape::draw_ver(&c)?)? {
             if !Self::_rebuild_blob(slf)? {
                 Self::sa_blob(slf, py.None())?;
                 Self::_rebuild(slf)?;
@@ -491,6 +502,7 @@ impl ConstructView {
             Self::_set_root_mat(slf, &none(py))?;
         }
         Self::sa_tf(slf, &tf)?;
+        Self::_inner_and_glass(slf, origin)?;
         if !gd(s, "blob", none(py)).is_none() {
             if !tf.is_none() {
                 s.call_method1("_update_rigid", (origin, &tf, &hf))?;
@@ -500,6 +512,58 @@ impl ConstructView {
             }
         }
         Ok(tf)
+    }
+    /// 閉じた構築物：遠いときは空洞の中（内側の面）を描かない。ガラスは外から見ると遠い所が不透明（中にいるときは透ける）。A-14
+    pub(crate) fn _inner_and_glass(slf: &Bound<'_, Self>, origin: &B<'_>) -> R<()> {
+        let py = slf.py();
+        let groups: Vec<B<'_>> = Self::ga_groups(slf)?.iter()?.collect::<R<_>>()?;
+        let mut need = false;
+        for g in &groups {
+            if g.get_item("inner")?.is_truthy()? || f64of(&g.get_item("alpha")?)? < 0.999 {
+                need = true;
+                break;
+            }
+        }
+        if !need {
+            return Ok(());
+        }
+        let c = Self::ga_c(slf)?;
+        let o = v3(origin)?;
+        // 構築物の箱（世界の向き）。静止している物は版と最初の頂点が同じなら使い回す
+        let pos = c.getattr("pos")?;
+        let first = pos.get_item(0)?;
+        let key = PyTuple::new_bound(py, [crate::game::shape::draw_ver(&c)?.into_any(), first.call_method0("tobytes")?]);
+        let s = slf.as_any();
+        let bb = match gd(s, "_bbox", none(py)) {
+            b if !b.is_none() && b.get_item(0)?.eq(&key)? => b.get_item(1)?,
+            _ => {
+                let lo = pos.call_method1("min", (0,))?;
+                let hi = pos.call_method1("max", (0,))?;
+                let b = PyTuple::new_bound(py, [lo, hi]);
+                s.setattr("_bbox", (&key, &b))?;
+                b.into_any()
+            }
+        };
+        let (lo, hi) = (v3(&bb.get_item(0)?)?, v3(&bb.get_item(1)?)?);
+        let mut d2 = 0.0;
+        for a in 0..3 {
+            let e = (lo[a] - o[a]).max(0.0).max(o[a] - hi[a]);
+            d2 += e * e;
+        }
+        let dist = d2.sqrt();
+        let show_inner = dist < INNER_NEAR;
+        let fade = if dist <= 0.0 { 0.0 } else { INNER_NEAR * 0.5 };
+        for g in &groups {
+            if g.get_item("inner")?.is_truthy()? && g.get_item("shown")?.is_truthy()? != show_inner {
+                g.get_item("mesh")?.getattr("np")?.call_method0(if show_inner { "show" } else { "hide" })?;
+                g.set_item("shown", show_inner)?;
+            }
+            if f64of(&g.get_item("alpha")?)? < 0.999 && f64of(&g.get_item("fade")?)? != fade {
+                g.get_item("mesh")?.getattr("np")?.call_method1("setFade", (fade,))?;
+                g.set_item("fade", fade)?;
+            }
+        }
+        Ok(())
     }
     /// 記号・看板用の頂点位置：剛体・静止中は構築物の向きでの位置（版ごとに1回だけ計算）、それ以外は None
     pub(crate) fn _local_pos<'py>(slf: &Bound<'py, Self>) -> R<B<'py>> {

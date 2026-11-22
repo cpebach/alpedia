@@ -200,7 +200,9 @@ pub fn dev_rebuild_networks<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bo
         let x = x?;
         Ok((x.get_item(0)?.extract()?, x.get_item(1)?.extract()?, x.get_item(2)?.extract()?))
     }).collect::<R<_>>()?;
-    let cav_cells: Vec<[i64; 3]> = cells.iter().map(|c| [c.0, c.1, c.2]).collect();
+    // 開いている扉は空き（気密が破れる。A-14）
+    let open = crate::game::shape::open_doors_v(c)?;
+    let cav_cells: Vec<[i64; 3]> = cells.iter().zip(&open).filter(|(_, o)| !**o).map(|(c, _)| [c.0, c.1, c.2]).collect();
     let cavs = crate::game::airtight::find_cavities(&cav_cells);
     let new_air = PyDict::new_bound(py);
     let cavities = me.cavities.bind(py);
@@ -241,6 +243,48 @@ pub fn dev_is_fluid(reg: &Bound<'_, PyAny>, res: &Bound<'_, PyAny>) -> R<bool> {
         return r.dget1("fluid")?.is_truthy();
     }
     Ok(res.eq("fuel")? || res.eq("air")? || res.eq("water")?)
+}
+
+/// 扉 i と、それにつながった扉（となりどうしの扉の集まり）をまとめて開ける／閉める。形・気密を作り直す。扉の数を返す（A-14）
+pub fn door_set(c: &Bound<'_, PyAny>, i: usize, open: bool) -> R<usize> {
+    let py = c.py();
+    let devs = Construct::g_devs(con(&c)?)?;
+    let reg = Construct::g_reg(con(&c)?)?;
+    let cells: Vec<[i64; 3]> = Construct::g_cells(con(&c)?)?.iter()?.map(|x| -> R<[i64; 3]> {
+        let x = x?;
+        Ok([x.get_item(0)?.extract()?, x.get_item(1)?.extract()?, x.get_item(2)?.extract()?])
+    }).collect::<R<_>>()?;
+    let mut is_door = vec![false; cells.len()];
+    for (k, d) in devs.iter()?.enumerate() {
+        let d = d?;
+        if d.is_truthy()? {
+            let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
+            is_door[k] = dd.is_truthy()? && dd.dget1("type")?.eq("door")?;
+        }
+    }
+    let index: HashMap<[i64; 3], usize> = cells.iter().enumerate().map(|(k, c)| (*c, k)).collect();
+    let mut seen = vec![false; cells.len()];
+    let mut stack = vec![i];
+    let mut group = vec![];
+    while let Some(k) = stack.pop() {
+        if seen[k] || !is_door[k] {
+            continue;
+        }
+        seen[k] = true;
+        group.push(k);
+        for d in DIRS {
+            if let Some(&q) = index.get(&[cells[k][0] + d[0], cells[k][1] + d[1], cells[k][2] + d[2]]) {
+                stack.push(q);
+            }
+        }
+    }
+    let v = if open { 1.0 } else { 0.0 };
+    for &k in &group {
+        devs.get_item(k)?.get_item("state")?.set_item("open", v)?;
+    }
+    let _ = py;
+    Construct::refresh_shape(con(&c)?)?;
+    Ok(group.len())
 }
 
 #[pyfunction]
@@ -386,8 +430,9 @@ fn ensure_net<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny
 /// この構築物の機器のまとめ（形が変わったときだけ作り直す）
 fn native_plan<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, net: &Bound<'py, PyAny>, by_type: &[(String, Vec<(usize, Bound<'py, PyAny>, Bound<'py, PyAny>)>)])
     -> R<(Bound<'py, PyAny>, Vec<usize>)> {
+    let dv = c.getattr("_door_ver").map(|v| v.unbind()).unwrap_or_else(|_| 0i64.into_py(py));     // 扉の開け閉め（A-14）
     let key = PyTuple::new_bound(py, [Construct::g_version(con(&c)?)?.unbind(), Construct::g_cells(con(&c)?)?.len()?.into_py(py),
-                                       (net.as_ptr() as usize).into_py(py)]);
+                                       (net.as_ptr() as usize).into_py(py), dv]);
     let cd = c.getattr("__dict__")?;
     let cache = cd.dget1("_devplan")?;
     if !cache.is_none() && cache.get_item(0)?.eq(&key)? {
@@ -666,6 +711,11 @@ pub fn dev_interact(py: Python<'_>, c: &Bound<'_, PyAny>, i: usize, player: Opti
     let name = d.get_item("name")?.str()?.to_string();
     let g = |k: &str, dflt: PyObject| -> R<Bound<'_, PyAny>> { st.dget2(k, dflt) };
     Ok(Some(match t.as_str() {
+        "door" => {
+            let open = float_of(&g("open", 0.0.into_py(py))?)? <= 0.5;
+            let n = door_set(c, i, open)?;
+            format!("{name}: {}{}", if open { "開けました" } else { "閉めました" }, if n > 1 { format!("（扉 {n} 個）") } else { String::new() })
+        }
         "valve" => {
             let o = dev_valve_opening(&st)?;
             if o > 0.0 {

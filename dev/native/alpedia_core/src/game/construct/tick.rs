@@ -59,7 +59,8 @@ impl Construct {
         if slf.borrow().dirty {
             return Ok(py.None().into_bound(py));
         }
-        let ver = Self::ver(slf);
+        let dv: i64 = slf.getattr("_door_ver").ok().and_then(|v| v.extract().ok()).unwrap_or(0);
+        let ver = (Self::ver(slf), dv);         // 扉の開け閉めでも作り直す（A-14）
         if let Some(c) = Self::cache_get(slf, |c| &c.cav)? {
             if c.get_item(0)?.is(&net) && c.get_item(2)?.eq(ver)? {
                 return c.get_item(1);

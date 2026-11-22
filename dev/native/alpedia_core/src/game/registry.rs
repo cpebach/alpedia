@@ -13,9 +13,9 @@ use crate::net::{parse_json, val_to_py};
 
 pub const CATEGORIES: [&str; 5] = ["resources", "materials", "devices", "planets", "players"];
 
-pub const REQUIRED_TYPES: [&str; 19] = [
+pub const REQUIRED_TYPES: [&str; 20] = [
     "thruster", "tank", "pipe", "valve", "battery", "generator", "crank", "computer", "actuator", "processor", "seat",
-    "air_vent", "antenna", "anchor", "light", "decoupler", "custom", "rail", "wheel",
+    "air_vent", "antenna", "anchor", "light", "decoupler", "custom", "rail", "wheel", "door",
 ];
 
 /// カテゴリごとの既定値（足りない項目はここから補う）。JSON で書いて Python の値にする

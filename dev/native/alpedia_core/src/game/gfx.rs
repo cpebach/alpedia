@@ -178,9 +178,11 @@ impl RsNode {
             let t1 = Self::tex_eff(slf, 1)?;
             let tid = |t: &Bound<'_, PyAny>| -> R<i64> { if t.is_none() { Ok(-1) } else { t.getattr("id")?.extract() } };
             let (i0, i1) = (tid(&t0)?, tid(&t1)?);
+            let fade = g("fade", 0.0.into_py(py))?;
             for m in &meshes {
                 v.call_method1("mesh_props", (m, blend, dw, ts, &off, &bin))?;
                 v.call_method1("mesh_add", (m, add))?;
+                v.call_method1("mesh_fade", (m, &fade))?;
                 v.call_method1("mesh_tex", (m, 0, i0))?;
                 v.call_method1("mesh_tex", (m, 1, i1))?;
             }
@@ -364,6 +366,18 @@ impl RsNode {
     fn set_transparency(slf: &Bound<'_, Self>, on: Option<&Bound<'_, PyAny>>, _a: &Bound<'_, PyTuple>) -> R<()> {
         let on = match on { Some(o) => o.is_truthy()?, None => true };
         Self::set_props(slf, "blend", on.into_py(slf.py()))
+    }
+    /// 遠くを不透明に（ガラス）：この距離（m）より遠いと不透明に近づける。0 で切る（A-14）
+    #[pyo3(name = "setFade")]
+    fn set_fade(slf: &Bound<'_, Self>, dist: f64) -> R<()> {
+        let py = slf.py();
+        slf.borrow().props.bind(py).set_item("fade", dist)?;
+        let v = view(py)?;
+        let meshes: Vec<Bound<'_, PyAny>> = slf.borrow().meshes.bind(py).iter().collect();
+        for m in &meshes {
+            v.call_method1("mesh_fade", (m, dist))?;
+        }
+        Ok(())
     }
     #[pyo3(name = "setDepthWrite", signature = (on, *_a))]
     fn set_depth_write(slf: &Bound<'_, Self>, on: &Bound<'_, PyAny>, _a: &Bound<'_, PyTuple>) -> R<()> {

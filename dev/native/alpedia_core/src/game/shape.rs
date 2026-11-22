@@ -139,6 +139,24 @@ pub fn shape_block_kinds<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound
     iarr(py, v, &[n])
 }
 
+/// ボクセルごとの「開いている扉」（形・当たり判定・気密から外す。A-14）
+pub fn open_doors_v(c: &Bound<'_, PyAny>) -> R<Vec<bool>> {
+    let reg = Construct::g_reg(con(&c)?)?;
+    let mut out = vec![];
+    for d in Construct::g_devs(con(&c)?)?.iter()? {
+        let d = d?;
+        let mut open = false;
+        if d.is_truthy()? {
+            let dd = crate::game::registry::dev_dict(&reg, &d.get_item("def")?)?;
+            if dd.is_truthy()? && dd.dget1("type")?.eq("door")? {
+                open = d.get_item("state")?.dget2("open", 0.0)?.extract::<f64>().unwrap_or(0.0) > 0.5;
+            }
+        }
+        out.push(open);
+    }
+    Ok(out)
+}
+
 /// 形を作る図形の一覧: dict(points, segs, tris)（ボクセル番号の配列）
 #[pyfunction]
 pub fn shape_topology<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
@@ -160,7 +178,15 @@ pub fn shape_topology<'py>(py: Python<'py>, c: &Bound<'py, PyAny>) -> R<Bound<'p
     let e = match opt(c, "extras")? { Some(x) => pairs(x)?, None => vec![] };
     let k = block_kinds_v(c)?;
     let h = hull();
-    let (p, s, t) = py.allow_threads(|| crate::topo::topology(&cells, &l, &e, &k, &h));
+    let (mut p, mut s, mut t) = py.allow_threads(|| crate::topo::topology(&cells, &l, &e, &k, &h));
+    // 開いている扉は形に入れない（見えない・通れる。A-14）
+    let open = open_doors_v(c)?;
+    if open.iter().any(|x| *x) {
+        let o = |i: i64| open[i as usize];
+        p.retain(|&i| !o(i));
+        s.retain(|x| !o(x[0]) && !o(x[1]));
+        t.retain(|x| !o(x[0]) && !o(x[1]) && !o(x[2]));
+    }
     let (np_, ns, nt) = (p.len(), s.len(), t.len());
     let d = PyDict::new_bound(py);
     d.set_item("points", iarr(py, p, &[np_])?)?;
@@ -454,8 +480,29 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
             }
         }
     }
+    // 閉じた空洞（気密の空洞と同じ。開いた扉は空き）の方を向いた面：遠くからは描かない（A-14）
+    let open = open_doors_v(c)?;
+    let closed: Vec<[i64; 3]> = cells.iter().zip(&open).filter(|(_, o)| !**o).map(|(q, _)| *q).collect();
+    let inner: Vec<bool> = py.allow_threads(|| {
+        let cav: std::collections::HashSet<[i64; 3]> = crate::game::airtight::find_cavities(&closed).into_iter().flatten().collect();
+        if cav.is_empty() {
+            return vec![false; fall.len()];
+        }
+        fall.iter().map(|f| {
+            let (a, b, c3) = (pall[f[0] as usize], pall[f[1] as usize], pall[f[2] as usize]);
+            let n = super::construct::cross(super::construct::sub(b, a), super::construct::sub(c3, a));
+            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if l < 1e-12 {
+                return false;
+            }
+            let q = [(a[0] + b[0] + c3[0]) / 3.0 + n[0] / l * 0.35, (a[1] + b[1] + c3[1]) / 3.0 + n[1] / l * 0.35,
+                     (a[2] + b[2] + c3[2]) / 3.0 + n[2] / l * 0.35];
+            cav.contains(&[q[0].floor() as i64, q[1].floor() as i64, q[2].floor() as i64])
+        }).collect()
+    });
     let d = PyDict::new_bound(py);
     let nf = fall.len();
+    d.set_item("inner", PyArray1::from_vec_bound(py, inner))?;
     d.set_item("rest", arr(py, pall.iter().flatten().copied().collect(), &[np_, 3])?)?;
     d.set_item("faces", iarr(py, fall.into_iter().flatten().collect(), &[nf, 3])?)?;
     d.set_item("owner", iarr(py, oall.iter().map(|x| *x as i64).collect(), &[np_])?)?;
@@ -471,7 +518,14 @@ static JOBS: GILOnceCell<Py<PyDict>> = GILOnceCell::new();
 static POOL: GILOnceCell<PyObject> = GILOnceCell::new();
 
 fn mesh_key<'py>(c: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
-    Ok(PyTuple::new_bound(c.py(), [Construct::g_version(con(&c)?)?, Construct::n(con(&c)?)?.into_py(c.py()).into_bound(c.py())]))
+    let dv = c.getattr("_door_ver").unwrap_or_else(|_| IntoPy::<PyObject>::into_py(0i64, c.py()).into_bound(c.py()));
+    Ok(PyTuple::new_bound(c.py(), [Construct::g_version(con(&c)?)?, Construct::n(con(&c)?)?.into_py(c.py()).into_bound(c.py()), dv]))
+}
+
+/// 描き直しの目安：(version, 扉の開け閉めの回数)
+pub fn draw_ver<'py>(c: &Bound<'py, PyAny>) -> R<Bound<'py, PyTuple>> {
+    let dv = c.getattr("_door_ver").unwrap_or_else(|_| IntoPy::<PyObject>::into_py(0i64, c.py()).into_bound(c.py()));
+    Ok(PyTuple::new_bound(c.py(), [c.getattr("version")?, dv]))
 }
 
 /// 作ってあるメッシュ（形が変わっていなければ）。無ければ None

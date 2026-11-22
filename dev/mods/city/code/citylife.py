@@ -128,6 +128,10 @@ def _walls(city, base, fr, w, d, b, doors, partitions=(), kind="wall"):
     for dx in xs:   # 扉の上
         city.add(base + U * (DOOR_H + (ht - DOOR_H) / 2) + X * dx + Z * (hd - T / 2), fr,
                  (DOOR_W / 2, (ht - DOOR_H) / 2, T / 2), WALL, None, True, b, kind)
+        if city.kind == "surface":
+            # 扉（ブロックの扉になる。blockify。E で開け閉め。A-14）
+            city.add(base + U * (DOOR_H / 2) + X * dx + Z * (hd - T / 2), fr, (DOOR_W / 2, DOOR_H / 2, T / 2),
+                     np.array([0.45, 0.36, 0.27]), None, False, b, "door")
     # 天井（屋根）
     city.add(base + U * (ht + 0.15), fr, (hw, 0.15, hd), WALL, None, True, b, "wall")
     return base + U * (ht + 0.3)            # 屋根の上（上にビルを重ねるとき用）

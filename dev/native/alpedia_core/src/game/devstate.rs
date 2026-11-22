@@ -95,6 +95,8 @@ pub fn schema(dtype: &str) -> Option<Vec<F>> {
         "seat" => vec![],
         "anchor" => vec![],
         "rail" => vec![],
+        // 扉：open＝開いているか（0 か 1。スクリプトの d.open）。開くと形・当たり判定・気密から外れる（A-14）
+        "door" => vec![f("open", Float, Def::F(0.0))],
         "wheel" => vec![opt("off", Bool)],
         "light" => vec![f("enabled", Bool, Def::B(true)), opt("color", List), opt("blink", Float), opt("group", Str)],
         "air_vent" => vec![f("mode", Str, Def::PS("mode", "fill")), f("enabled", Bool, Def::B(true)), tmp("cavity", Bool)],
