@@ -93,6 +93,49 @@ class TestClimate(CoreCase):
         self.assertTrue(0.3 < s[0] < 0.75 and s[1] > 0.5, f"出現地点 {s}")
 
 
+class TestVolcano(CoreCase):
+    """A-13：火山（円すいの山と火口）。火口のまわりに硫黄・上の方は黒い岩・火口の底は溶岩の色。外側の球も広がる"""
+
+    def check(self, pdef, n):
+        w = self.world(planets=[{"def": pdef, "position": [0, 0, 0], "craters": []}])
+        pl = w.planets[0]
+        vs = pl._nat().volcanoes()
+        self.assertEqual(len(vs), n)
+        d, r, h, cr = vs[0]
+        d = np.asarray(d, float)
+        up = np.array([0.0, 1.0, 0.0])
+        self.assertGreater(np.arccos(np.clip(d @ up, -1, 1)) * pl.radius, r + 3000, "出現地点のそばには無い")
+        t1 = np.cross(d, [1.0, 0, 0]); t1 /= np.linalg.norm(t1)
+
+        def at(m):
+            q = d * pl.radius + t1 * m
+            return q / np.linalg.norm(q)
+        hs = np.asarray(pl._tile_values(np.array([at(0), at(cr), at(r * 0.5), at(r * 1.3)])))[:, 0] - pl.radius
+        self.assertGreater(hs[1], hs[0] + h * 0.1, "火口はへこんでいる")
+        self.assertGreater(hs[1], hs[2] + h * 0.2, "火口のふちがいちばん高い")
+        self.assertGreater(hs[2], hs[3] + h * 0.1, "裾より中腹が高い")
+        self.assertGreaterEqual(pl.bound - pl.radius, h)
+        # 火口のまわりに硫黄（まだら）・火口の底は溶岩の色
+        rng = np.random.default_rng(0)
+        pts = np.array([at(m) for m in rng.uniform(0, cr * 1.5, 400)])
+        hh = np.asarray(pl._tile_values(pts))[:, 0] - pl.radius
+        sul = next(np.asarray(wv) for dep, wv in pl._deposit_weights(pts, hh) if dep["resource"] == "sulfur")
+        self.assertTrue(0.05 < float((sul > 0.5).mean()) < 0.8)
+        self.assertEqual(pl.resource_at(pl.center + pts[int(np.argmax(sul))] * (pl.radius + hh[int(np.argmax(sul))] - 0.3)), "sulfur")
+        vp = np.asarray(pl._nat().volcano_paint(np.array([at(0), at(r * 1.2)])))
+        self.assertGreater(vp[0, 2], 0.9)
+        self.assertEqual(float(vp[1].max()), 0.0)
+        # 同じ惑星なら毎回同じ
+        w2 = self.world(planets=[{"def": pdef, "position": [0, 0, 0], "craters": []}])
+        self.assertEqual(w2.planets[0]._nat().volcanoes(), vs)
+
+    def test_terra(self):
+        self.check("terra", 6)
+
+    def test_gaia(self):
+        self.check("gaia", 8)
+
+
 class TestSettlements(CoreCase):
     def test_settlements_of_every_kind_and_block_buildings_near_players(self):
         import sys

@@ -465,6 +465,25 @@ impl PlanetShape {
         Ok(PyArray1::from_vec_bound(py, out).reshape([n, 2])?)
     }
 
+    /// 火山を作る（A-13。まだ作っていなければ。作ったあとの数を返す）。r・h：半径・高さの範囲（m）、crater・depth：火口の割合
+    #[pyo3(signature = (n, r, h, crater=0.16, depth=0.22))]
+    fn make_volcanoes(&self, py: Python<'_>, n: usize, r: (f64, f64), h: (f64, f64), crater: f64, depth: f64) -> usize {
+        py.allow_threads(|| self.shape.make_volcanoes(n, r, h, crater, depth))
+    }
+
+    /// 火山の一覧 [(向き, 半径, 高さ, 火口の半径)]
+    fn volcanoes(&self) -> Vec<([f64; 3], f64, f64, f64)> {
+        self.shape.volcano_list()
+    }
+
+    /// 単位方向 (N,3) → 火山の地面 (N,3)：(硫黄の出やすさ, 黒い岩, 火口の底の溶岩)
+    fn volcano_paint<'py>(&self, py: Python<'py>, dirs: RoF<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let d = rows3(ro(&dirs, "dirs")?);
+        let n = d.len();
+        let out: Vec<f64> = d.iter().flat_map(|q| self.shape.volcano_paint(*q)).collect();
+        Ok(PyArray1::from_vec_bound(py, out).reshape([n, 3])?)
+    }
+
     /// sample と同じ値。ただしタイルが無い所はタイルを作らずに直接計算する（見た目用。X-15）
     fn sample_quick<'py>(&self, py: Python<'py>, dirs: RoF<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let d = rows3(ro(&dirs, "dirs")?);

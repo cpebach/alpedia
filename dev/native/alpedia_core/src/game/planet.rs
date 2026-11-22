@@ -177,7 +177,21 @@ impl Orbit {
     }
 }
 
+/// 惑星の定義の火山のいちばん高い高さ（外側の球を広げる分。火山が無ければ 0）
+fn volcano_top(d: &Bound<'_, PyAny>) -> R<f64> {
+    let v = d.dget1("volcanoes")?;
+    if v.is_none() || v.dget2("count", 0)?.extract::<i64>()? <= 0 {
+        return Ok(0.0);
+    }
+    let h = v.dget1("height")?;
+    Ok(if h.is_none() { 300.0 } else { h.extract::<Vec<f64>>()?.into_iter().fold(0.0, f64::max) })
+}
+
 impl Planet {
+    fn defn_of<'py>(b: &Self, py: Python<'py>) -> Bound<'py, PyAny> {
+        b.defn.clone_ref(py).into_bound(py)
+    }
+
     fn base(py: Python<'_>, pdef: &Bound<'_, PyAny>, position: &Bound<'_, PyAny>, overrides: Option<&Bound<'_, PyAny>>, lip: f64) -> R<Self> {
         let d = merged(py, pdef, overrides)?;
         let f = |k: &str| -> R<f64> { d.get_item(k)?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(k.to_string()))?.extract() };
@@ -185,6 +199,7 @@ impl Planet {
         let radius = f("radius")?;
         let amp = f("noise_amp")?;
         let lipschitz = match d.get_item("lipschitz")? { Some(v) => v.extract()?, None => lip };
+        let vol_top = volcano_top(d.as_any())?;
         Ok(Planet {
             name: d.dget2("name", &id)?.unbind(),
             id: id.unbind(),
@@ -192,7 +207,7 @@ impl Planet {
             radius, gm: f("surface_gravity")? * radius.powf(2.0), amp, freq: f("noise_freq")?,
             seed: d.get_item("seed")?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("seed"))?.call_method0("__int__")?.extract()?,
             craters: PyList::empty_bound(py).into_any().unbind(),
-            version: 0, bound: radius + amp * 1.5 + 2.0, lipschitz,
+            version: 0, bound: radius + amp * 1.5 + 2.0 + vol_top, lipschitz,
             defn: d.into_any().unbind(), nat: None, nat_ncr: -1,
             flood_target: Vec::new(), flood_now: Vec::new(), flood_ncr: -1, flood_acc: 0.0,
             center0: v3(position)?, orbit: None, ovel: [0.0; 3], oacc: [0.0; 3], soi: 0.0,
@@ -259,11 +274,39 @@ impl Planet {
                     *wi *= ss(mh - 2.0, mh + 2.0, *hi);
                 }
             }
+            // 火口とそのまわりにも（ノイズのしきい値を下げて、まだらに。A-13）
+            if dep.dget2("near_volcano", false)?.is_truthy()? {
+                let vp = Self::volcano_paint_v(slf, dirs)?;
+                let vth = g("volcano_threshold", 0.5)?;
+                for (q, wi) in w.iter_mut().enumerate() {
+                    *wi = wi.max(ss(vth, vth + 0.05, n[q]) * vp[q][0]);
+                }
+            }
             out.push((dep, w));
         }
         Ok(out)
     }
+    /// 火山の地面 [(硫黄の出やすさ, 黒い岩, 溶岩)]（火山の無い惑星は空でなく 0）
+    fn volcano_paint_v(slf: &Bound<'_, Self>, dirs: &[V3]) -> R<Vec<[f64; 3]>> {
+        let nat = Self::_nat(slf)?;
+        let ps = nat.downcast::<crate::PlanetShape>()?.get();
+        if ps.shape.volcanoes.get().map(|v| v.is_empty()).unwrap_or(true) {
+            return Ok(vec![[0.0; 3]; dirs.len()]);
+        }
+        Ok(dirs.iter().map(|d| ps.shape.volcano_paint(*d)).collect())
+    }
     fn tint(slf: &Bound<'_, Self>, dirs: &[V3], h: &[f64], mut col: Vec<V3>) -> R<Vec<V3>> {
+        // 火山の黒い岩と、火口の底の溶岩（赤く光る）
+        let vp = Self::volcano_paint_v(slf, dirs)?;
+        const BASALT: V3 = [0.2, 0.18, 0.18];
+        const LAVA: V3 = [0.95, 0.35, 0.08];
+        for (cl, p) in col.iter_mut().zip(&vp) {
+            let (rk, lv) = (p[1] * 0.85, p[2]);
+            for a in 0..3 {
+                cl[a] = cl[a] * (1.0 - rk) + BASALT[a] * rk;
+                cl[a] = cl[a] * (1.0 - lv) + LAVA[a] * lv;
+            }
+        }
         for (dep, w) in Self::deposit_weights(slf, dirs, h)? {
             if dep.contains("color")? {
                 let c = v3(&dep.get_item("color")?)?;
@@ -344,6 +387,21 @@ impl Planet {
             let c = Self::ctr(slf)?;
             let s = core(py)?.getattr("PlanetShape")?.call1((p.get_item(0)?, p.get_item(1)?, p.get_item(2)?,
                 p.get_item(3)?.call_method0("__int__")?, c.to_vec(), p.get_item(4)?))?;
+            // 火山（A-13）：惑星の定義の "volcanoes" = {"count", "radius": [最小, 最大], "height": [最小, 最大], "crater", "depth"}
+            let vd = Self::defn(slf).dget1("volcanoes")?;
+            if !vd.is_none() {
+                let g2 = |k: &str, dflt: (f64, f64)| -> R<(f64, f64)> {
+                    let v = vd.dget1(k)?;
+                    if v.is_none() { return Ok(dflt); }
+                    let x: Vec<f64> = v.extract()?;
+                    Ok((x[0], *x.get(1).unwrap_or(&x[0])))
+                };
+                let n: usize = vd.dget2("count", 0)?.extract()?;
+                if n > 0 {
+                    s.call_method1("make_volcanoes", (n, g2("radius", (800.0, 1500.0))?, g2("height", (150.0, 300.0))?,
+                                                      vd.dget2("crater", 0.16)?.extract::<f64>()?, vd.dget2("depth", 0.22)?.extract::<f64>()?))?;
+                }
+            }
             let mut b = slf.borrow_mut();
             b.nat = Some(s.unbind());
             b.nat_ncr = -1;
@@ -1180,7 +1238,7 @@ impl EarthPlanet {
             }
         }
         // 山・丘のほかに、台地（90 m）・砂丘（8 m）・陸の土台（45 m）の分
-        base.bound = base.radius + e.mountain_h * 1.4 + e.hill_h * 2.0 + 160.0 + feat_top;
+        base.bound = base.radius + e.mountain_h * 1.4 + e.hill_h * 2.0 + 160.0 + feat_top + volcano_top(&Planet::defn_of(&base, py))?;
         base.amp = e.mountain_h;
         // 池・洞窟を作る間の高さは、それらの無い地形で計算する
         let c = v3(base.center.bind(py))?;

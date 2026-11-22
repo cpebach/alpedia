@@ -132,6 +132,30 @@ fn terrace(x: f64, steps: f64) -> f64 {
     (f + smoothstep(0.35, 0.65, r)) / steps
 }
 
+/// 火山（A-13）：向き d を中心に、半径 r m・高さ h m の円すいの山。頂上に半径 cr m・深さ cd m の火口
+#[derive(Clone, Debug)]
+pub struct Volcano {
+    pub d: [f64; 3],
+    pub r: f64,
+    pub h: f64,
+    pub cr: f64,
+    pub cd: f64,
+    /// この cos より d から離れた向きは調べない
+    cmin: f64,
+}
+
+/// 決まった乱数（seed から毎回同じ）
+struct Mix(u64);
+impl Mix {
+    fn next(&mut self) -> f64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
 pub struct Shape {
     pub radius: f64,
     pub amp: f64,
@@ -144,6 +168,8 @@ pub struct Shape {
     tiles: RwLock<(HashMap<(usize, i64, i64), Arc<Vec<[f64; 2]>>>, VecDeque<(usize, i64, i64)>)>,
     /// 舗装（MOD の街・道。pave.rs）
     pub paving: RwLock<Vec<(String, crate::pave::Pave)>>,
+    /// 火山（A-13。惑星の定義の "volcanoes" から、最初に一度だけ作る）
+    pub volcanoes: std::sync::OnceLock<Vec<Volcano>>,
 }
 
 pub const TILE: usize = 32;
@@ -154,11 +180,141 @@ impl Shape {
     pub fn new(radius: f64, amp: f64, freq: f64, seed: i64, earth: Option<Earth>) -> Self {
         let n = ((std::f64::consts::PI / 2.0 * radius / RES / TILE as f64).ceil() as usize) * TILE;
         Shape { radius, amp, freq, seed, earth, n, falls: std::sync::OnceLock::new(), tiles: RwLock::new((HashMap::new(), VecDeque::new())),
-                paving: RwLock::new(Vec::new()) }
+                paving: RwLock::new(Vec::new()), volcanoes: std::sync::OnceLock::new() }
     }
 
     fn ang(&self, d: [f64; 3], r: [f64; 3]) -> f64 {
         dot(d, r).clamp(-1.0, 1.0).acos() * self.radius
+    }
+
+    fn vols(&self) -> &[Volcano] {
+        self.volcanoes.get().map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// 火山を n 個作る（まだ作っていなければ）。陸の上（地球型）・出現地点と名所から離れた所・火山どうしも離す。
+    /// r・h：半径と高さの範囲（m）、crater・depth：火口の半径（半径に対する割合）と深さ（高さに対する割合）。作った数を返す
+    pub fn make_volcanoes(&self, n: usize, r: (f64, f64), h: (f64, f64), crater: f64, depth: f64) -> usize {
+        if let Some(v) = self.volcanoes.get() {
+            return v.len();
+        }
+        let mut rng = Mix((self.seed as u64).wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0x7015_CA40);
+        let mut out: Vec<Volcano> = Vec::new();
+        let tries = n.saturating_mul(120);
+        for i in 0..tries {
+            if out.len() >= n {
+                break;
+            }
+            let rr = r.0 + (r.1 - r.0) * rng.next();
+            let d = if out.is_empty() && i < tries / 3 {
+                // 1 つめは出現地点から見える所（裾まで 4.5〜9 km）
+                let dist = rr + 4500.0 + 4500.0 * rng.next();
+                let a = rng.next() * std::f64::consts::TAU;
+                let (sa, ca) = ((dist / self.radius).sin(), (dist / self.radius).cos());
+                [sa * a.cos(), ca, sa * a.sin()]
+            } else {
+                let z = rng.next() * 2.0 - 1.0;
+                let a = rng.next() * std::f64::consts::TAU;
+                let s = (1.0 - z * z).max(0.0).sqrt();
+                [s * a.cos(), z, s * a.sin()]
+            };
+            let hh = h.0 + (h.1 - h.0) * rng.next();
+            if self.ang(d, [0.0, 1.0, 0.0]) < rr + 4000.0 {
+                continue;                                         // 出現地点のそば
+            }
+            if out.iter().any(|v| self.ang(d, v.d) < (v.r + rr) * 1.3) {
+                continue;
+            }
+            if let Some(e) = &self.earth {
+                // 陸の上（まわりも）・名所の外
+                let probe = [d, self.step(d, rr * 0.7, 0.0), self.step(d, -rr * 0.7, 0.0), self.step(d, 0.0, rr * 0.7),
+                             self.step(d, 0.0, -rr * 0.7)];
+                let tv = self.tile_values(&probe);
+                if tv.iter().any(|v| v[0] - self.radius < e.sea + 2.0 || v[1] > v[0]) {
+                    continue;
+                }
+                if probe.iter().any(|q| e.features.iter().any(|f| f.weight(*q, self.radius) > 0.01)) {
+                    continue;
+                }
+            }
+            let cmin = ((rr + 50.0) / self.radius).min(3.0).cos();
+            out.push(Volcano { d, r: rr, h: hh, cr: rr * crater, cd: hh * depth, cmin });
+        }
+        let k = out.len();
+        let _ = self.volcanoes.set(out);
+        k
+    }
+
+    /// 向き d から、地表に沿って (a, b) m 動いた向き（a, b は d に垂直な 2 つの軸の向き）
+    fn step(&self, d: [f64; 3], a: f64, b: f64) -> [f64; 3] {
+        let rf = if d[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
+        let mut t1 = cross(d, rf);
+        let l = dot(t1, t1).sqrt().max(1e-12);
+        t1 = [t1[0] / l, t1[1] / l, t1[2] / l];
+        let t2 = cross(d, t1);
+        let q = [d[0] * self.radius + t1[0] * a + t2[0] * b, d[1] * self.radius + t1[1] * a + t2[1] * b,
+                 d[2] * self.radius + t1[2] * a + t2[2] * b];
+        let l = dot(q, q).sqrt();
+        [q[0] / l, q[1] / l, q[2] / l]
+    }
+
+    /// 火山の高さを足した高さ h と、火山の重み（0〜1。裾で 0）
+    pub fn volcano_h(&self, d: [f64; 3], h: f64) -> (f64, f64) {
+        let mut add = 0.0f64;
+        let mut w = 0.0f64;
+        for v in self.vols() {
+            let c = dot(d, v.d);
+            if c < v.cmin {
+                continue;
+            }
+            let dist = c.clamp(-1.0, 1.0).acos() * self.radius;
+            if dist >= v.r {
+                continue;
+            }
+            let t = dist / v.r;
+            let tc = v.cr / v.r;
+            let rim = v.h * (1.0 - tc).powf(1.6);
+            let cone = if t >= tc {
+                v.h * (1.0 - t).powf(1.6)
+            } else {
+                let u = t / tc;
+                rim - v.cd * (1.0 - u * u)                        // 火口（お椀の形）
+            };
+            add = add.max(cone);
+            w = w.max(1.0 - smoothstep(0.55, 1.0, t));
+        }
+        (h + add, w)
+    }
+
+    /// 火山の地面のようす：(硫黄の出やすさ（火口とそのまわり 1）, 黒い岩（上の方 1）, 火口の底の溶岩 1)
+    pub fn volcano_paint(&self, d: [f64; 3]) -> [f64; 3] {
+        let mut out = [0.0f64; 3];
+        for v in self.vols() {
+            let c = dot(d, v.d);
+            if c < v.cmin {
+                continue;
+            }
+            let dist = c.clamp(-1.0, 1.0).acos() * self.radius;
+            if dist >= v.r {
+                continue;
+            }
+            out[0] = out[0].max(1.0 - smoothstep(v.cr * 0.9, v.cr * 1.8, dist));
+            out[1] = out[1].max(1.0 - smoothstep(0.3, 0.75, dist / v.r));
+            out[2] = out[2].max(1.0 - smoothstep(0.22, 0.42, dist / v.cr.max(1.0)));
+        }
+        out
+    }
+
+    /// 火山の一覧（向き・半径・高さ・火口の半径）
+    pub fn volcano_list(&self) -> Vec<([f64; 3], f64, f64, f64)> {
+        self.vols().iter().map(|v| (v.d, v.r, v.h, v.cr)).collect()
+    }
+
+    /// 地球型でない惑星の地表の半径（ノイズ＋火山）
+    #[inline]
+    fn plain_r(&self, d: [f64; 3]) -> f64 {
+        let n = fbm(affine(d, self.freq, 100.0), self.seed, 3);
+        let h = (n - 0.5) * 2.0 * self.amp;
+        self.radius + self.volcano_h(d, h).0
     }
 
     /// 方向 d を、波長 w（m）のノイズの座標に（地形の大きさを惑星の大きさによらず m で決める。A-02）
@@ -260,6 +416,7 @@ impl Shape {
             return (0.0, -1e9);
         }
         let fw = e.features.iter().map(|f| f.weight(d, self.radius)).fold(0.0, f64::max);
+        let fw = fw.max(self.volcano_h(d, 0.0).1);
         let mask = mask * (1.0 - fw);
         if mask <= 0.0 {
             return (0.0, -1e9);
@@ -315,6 +472,7 @@ impl Shape {
         for f in &e.features {
             h = f.height(d, self.radius, h);
         }
+        let h = self.volcano_h(d, h).0;
         let w = 1.0 - smoothstep(e.flat_r, e.flat_r * 1.9, a_sp);
         let (carve, rw) = self.river(e, d, h);
         let h = h - carve * (1.0 - w);
@@ -369,13 +527,7 @@ impl Shape {
     /// タイルに保存する値：地表半径・水面半径
     pub fn tile_values(&self, dirs: &[[f64; 3]]) -> Vec<[f64; 2]> {
         match &self.earth {
-            None => dirs
-                .iter()
-                .map(|&d| {
-                    let n = fbm(affine(d, self.freq, 100.0), self.seed, 3);
-                    [self.radius + (n - 0.5) * 2.0 * self.amp, 0.0]
-                })
-                .collect(),
+            None => dirs.iter().map(|&d| [self.plain_r(d), 0.0]).collect(),
             Some(e) => {
                 let hf: Vec<(f64, f64)> = if dirs.len() >= PAR_MIN {
                     dirs.par_iter().map(|&d| self.height_full(e, d)).collect()
@@ -409,10 +561,7 @@ impl Shape {
     /// 地表半径（ノイズを直接計算）
     pub fn surface_radius_exact(&self, dirs: &[[f64; 3]]) -> Vec<f64> {
         match &self.earth {
-            None => dirs
-                .iter()
-                .map(|&d| self.radius + (fbm(affine(d, self.freq, 100.0), self.seed, 3) - 0.5) * 2.0 * self.amp)
-                .collect(),
+            None => dirs.iter().map(|&d| self.plain_r(d)).collect(),
             Some(e) => {
                 let mut h: Vec<f64> = if dirs.len() >= PAR_MIN {
                     dirs.par_iter().map(|&d| self.height0(e, d)).collect()

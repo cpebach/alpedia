@@ -211,7 +211,8 @@ impl Veg {
                     let fp = shape.feature_paint(*d, h, 0.0);
                     // 舗装した所（MOD の街・道）にも生やさない
                     let pv = shape.pave(*d).1;
-                    (v, cl, sd, if pv > 0.05 { 1.0 } else { fp.bare }, fp.tree)
+                    let vr = shape.volcano_paint(*d)[1];                // 火山の黒い岩（A-13）
+                    (v, cl, sd, if pv > 0.05 { 1.0 } else { fp.bare.max(vr) }, fp.tree)
                 }).collect::<Vec<_>>()
             }).collect()
         };

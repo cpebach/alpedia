@@ -665,6 +665,11 @@ Rust から読み書きする形）。Python で書くのは、MOD のプログ�
 - **川と滝**：惑星の定義の `"rivers"`（0 で無し。1.0 で幅 30〜60 m ほど。大きいほど太い）で、陸の低い所に曲がりくねった川を通す
   （地面を削って谷にし、水面を張る。`planet.rs` の `river`）。滝は名所の崖（`tepui`）と湖の段（`cascade_lakes`）に置かれ
   （`features.rs` の `waterfalls`・`PlanetShape.waterfalls()`）、水の幕の絵（`sauce/textures/waterfall.png`。`tools/make_water_textures.py` で作る）が下へ流れ、滝つぼにしぶきが立つ。
+- **火山**：惑星の定義の `"volcanoes"`（`{"count", "radius": [最小, 最大], "height": [最小, 最大], "crater": 火口の半径の割合, "depth": 火口の深さの割合}`）で、
+  円すいの山と頂上の火口（お椀の形）を地形に足す（`planet.rs` の `make_volcanoes`・`volcano_h`。惑星の seed から毎回同じ所）。
+  地球型は陸の上・名所の外だけ。1 つめは出現地点から見える所（裾まで 4.5〜9 km）に置こうとする。上の方は黒い岩（草木なし）、火口の底は溶岩の赤。
+  テラは 6 つ（高さ 150〜260 m）、ガイア・アースは 8 つ（500〜900 m）。鉱床の `"near_volcano": true` で、火口とそのまわりにも（まだらに）出る（硫黄）。
+  硫黄はほかに、山の上の方（テラ 26 m・ガイア 300 m より上）にだけ出る。
 
 ## 現時点の制限（今後の拡張ポイント）
 
