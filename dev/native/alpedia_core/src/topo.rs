@@ -121,8 +121,9 @@ pub fn topology(cells: &[[i64; 3]], links: &[[usize; 2]], extras: &[[usize; 2]],
             }
             x
         }
-        // 窓の中の物が 1 つの平面に並んでいる（斜面にならない）なら、種類が違ってもつなぐ（窓と壁が同じ面でつながる。A-18）
-        let planar = (0..3).any(|ax| (0..2).any(|v| (0..8).all(|k| m[k].is_none() || offs8(k)[ax] == v)));
+        // 窓の中の物が 1 つの平面の 2×2 をちょうど埋めている（平らな板で、斜面にならない）なら、種類が違ってもつなぐ
+        // （窓と壁が同じ面でつながる。A-18。L 字などは斜面で角を埋めるので、今まで通り同じ種類どうしだけ）
+        let planar = (0..3).any(|ax| (0..2).any(|v| (0..8).all(|k| m[k].is_some() == (offs8(k)[ax] == v))));
         for k in 0..8 {
             let Some(jk) = m[k] else { continue };
             let o = offs8(k);
