@@ -24,6 +24,7 @@ pub(crate) mod features;
 mod tick;
 mod geomx;
 mod topo;
+mod polyu;
 mod mc_tables;
 mod geomq;
 mod net;

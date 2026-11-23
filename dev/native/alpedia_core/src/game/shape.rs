@@ -461,48 +461,11 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
     let points: Vec<usize> = iv(&topo.get_item("points")?)?.into_iter().map(|x| x as usize).collect();
     let segs: Vec<[usize; 2]> = iv(&topo.get_item("segs")?)?.chunks_exact(2).map(|x| [x[0] as usize, x[1] as usize]).collect();
     let tris: Vec<[usize; 3]> = iv(&topo.get_item("tris")?)?.chunks_exact(3).map(|x| [x[0] as usize, x[1] as usize, x[2] as usize]).collect();
-    let nprim = points.len() + segs.len() + tris.len();
-    let mut k: i64 = k.unwrap_or(if nprim < 60 { 8 } else if nprim < 400 { 6 } else if nprim < 1500 { 4 } else if nprim < 6000 { 3 } else { 2 });
-    let r = 0.5;
+    // 芯（点・線・三角形）を、面・辺・角を落とした多面体で太らせた形の和を、平らな多角形のまま作る（ローポリ。A-21）。
+    // k（以前の格子の細かさ）は使わない
+    let _ = k;
     let cells: Vec<[i64; 3]> = Construct::g_cells(con(&c)?)?.iter()?.map(|x| cell_of(&x?)).collect::<R<_>>()?;
     let centers: Vec<V3> = cells.iter().map(|q| [q[0] as f64 + 0.5, q[1] as f64 + 0.5, q[2] as f64 + 0.5]).collect();
-    let mut lo = [f64::INFINITY; 3];
-    let mut hi = [f64::NEG_INFINITY; 3];
-    for q in &cells {
-        for a in 0..3 {
-            lo[a] = lo[a].min(q[a] as f64);
-            hi[a] = hi[a].max(q[a] as f64);
-        }
-    }
-    for a in 0..3 {
-        lo[a] -= 1.0;
-        hi[a] += 2.0;
-    }
-    let dims_of = |k: i64| -> [usize; 3] { [0, 1, 2].map(|a| ((hi[a] - lo[a]) * k as f64).ceil() as usize + 1) };
-    let mut dims = dims_of(k);
-    if (dims[0] as f64) * (dims[1] as f64) * (dims[2] as f64) > 30_000_000.0 {
-        k = 2;
-        dims = dims_of(k);
-    }
-    let m = (2 * k + 3) as usize;
-    let hard = facet_v(c)?;
-    let kf = k as f64;
-    let shape_of = |pts: &[usize], sg: &[[usize; 2]], tr: &[[usize; 3]], extra: &[[V3; 2]]| -> Vec<f32> {
-        let mut prims: Vec<(u8, [[f64; 3]; 3], bool)> = Vec::with_capacity(pts.len() + sg.len() + tr.len() + extra.len());
-        for &p in pts {
-            prims.push((0, [centers[p], [0.0; 3], [0.0; 3]], hard[p]));
-        }
-        for s in sg {
-            prims.push((1, [centers[s[0]], centers[s[1]], [0.0; 3]], hard[s[0]] && hard[s[1]]));
-        }
-        for e in extra {
-            prims.push((1, [e[0], e[1], [0.0; 3]], false));
-        }
-        for t in tr {
-            prims.push((2, [centers[t[0]], centers[t[1]], centers[t[2]]], hard[t[0]] && hard[t[1]] && hard[t[2]]));
-        }
-        py.allow_threads(|| crate::topo::shape_sdf(dims, lo, kf, r, m, &prims))
-    };
     let has_rotors = match opt(c, "rotors")? { Some(x) => x.is_truthy()?, None => false };
     let rotor_gid: Option<Vec<usize>> = if has_rotors && c.hasattr("_art_groups")? {
         Some(iv(&Construct::_art_groups(con(&c)?).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?)?.into_iter().map(|x| x as usize).collect())
@@ -511,115 +474,234 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
     // ガラスと接した所の透けないブロックの面は、形の中になってできないので、あとで平らな四角で足す（ガラス越しに見える）。
     // 別の形に分けるのは、ローター（アクチュエーター）で別に動く部分だけ
     let clear = clear_v(c)?;
-    let gid: Option<Vec<usize>> = rotor_gid.clone();
-    let mut parts: Vec<(Vec<f32>, Option<Vec<bool>>)> = vec![];
-    match &gid {
-        Some(g) if g.iter().copied().max().unwrap_or(0) > 0 => {
-            // 回転ジョイント（アクチュエーター）で別に動く部分ごとに、別の形・別のメッシュにする
-            let mut rotor_pairs: Vec<(usize, usize)> = vec![];
-            let rotors = match opt(c, "rotors")? { Some(x) if !x.is_none() => x.iter()?.collect::<R<Vec<_>>>()?, _ => vec![] };
-            for r_ in rotors {
-                let (a, b): (usize, usize) = (r_.get_item("a")?.extract()?, r_.get_item("b")?.extract()?);
-                let key = (a.min(b), a.max(b));
+    let part = |i: usize| rotor_gid.as_ref().map(|g| g[i]).unwrap_or(0);
+    // (芯の頂点, 部分, 持ち主のブロック)。
+    // 2×2×2 が全部埋まっている所は、中身の詰まった立方体 1 つの芯（表面の三角形だけだと中に小さな空洞ができ、見えない面が増える）。
+    // 立方体や三角形に含まれる線・点は省く（形は同じ）
+    let open = open_doors_v(c)?;
+    let index: HashMap<[i64; 3], usize> = cells.iter().enumerate().filter(|(i, _)| !open[*i]).map(|(i, q)| (*q, i)).collect();
+    let mut cubes: std::collections::HashSet<[i64; 3]> = std::collections::HashSet::new();
+    let mut prims: Vec<(Vec<V3>, usize, usize)> = vec![];
+    for (i, q) in cells.iter().enumerate() {
+        if open[i] {
+            continue;
+        }
+        let mut ids = [0usize; 8];
+        let mut full = true;
+        for k in 0..8 {
+            let o = [q[0] + (k & 1) as i64, q[1] + ((k >> 1) & 1) as i64, q[2] + ((k >> 2) & 1) as i64];
+            match index.get(&o) {
+                Some(&j) if part(j) == part(i) => ids[k] = j,
+                _ => {
+                    full = false;
+                    break;
+                }
+            }
+        }
+        if full {
+            cubes.insert(*q);
+        }
+    }
+    // 埋まった立方体は、となり合うものを大きな直方体にまとめる（和の形は同じ。芯が少ないほど速い）
+    {
+        let mut keys: Vec<[i64; 3]> = cubes.iter().copied().collect();
+        keys.sort_unstable_by_key(|k| (k[2], k[1], k[0]));
+        let pc = |k: &[i64; 3]| part(index[k]);
+        let mut seen: std::collections::HashSet<[i64; 3]> = std::collections::HashSet::new();
+        let free = |k: [i64; 3], p: usize, seen: &std::collections::HashSet<[i64; 3]>| cubes.contains(&k) && !seen.contains(&k) && pc(&k) == p;
+        for k0 in keys {
+            if seen.contains(&k0) {
+                continue;
+            }
+            let p = pc(&k0);
+            let mut w = 1;
+            while free([k0[0] + w, k0[1], k0[2]], p, &seen) {
+                w += 1;
+            }
+            let mut h = 1;
+            while (0..w).all(|x| free([k0[0] + x, k0[1] + h, k0[2]], p, &seen)) {
+                h += 1;
+            }
+            let mut d = 1;
+            while (0..w).all(|x| (0..h).all(|y| free([k0[0] + x, k0[1] + y, k0[2] + d], p, &seen))) {
+                d += 1;
+            }
+            for x in 0..w {
+                for y in 0..h {
+                    for z in 0..d {
+                        seen.insert([k0[0] + x, k0[1] + y, k0[2] + z]);
+                    }
+                }
+            }
+            let mut kv = vec![];
+            for z in [0, d] {
+                for y in [0, h] {
+                    for x in [0, w] {
+                        kv.push([(k0[0] + x) as f64 + 0.5, (k0[1] + y) as f64 + 0.5, (k0[2] + z) as f64 + 0.5]);
+                    }
+                }
+            }
+            prims.push((kv, p, index[&k0]));
+        }
+    }
+    // ブロックの集まりが、どれかの埋まった立方体に入っているか
+    let in_cube = |ids: &[usize]| -> bool {
+        let mut lo = [i64::MAX; 3];
+        let mut hi = [i64::MIN; 3];
+        for &j in ids {
+            for a in 0..3 {
+                lo[a] = lo[a].min(cells[j][a]);
+                hi[a] = hi[a].max(cells[j][a]);
+            }
+        }
+        let rng = |a: usize| (hi[a] - 1).max(lo[a] - 1)..=lo[a];
+        for x in rng(0) {
+            for y in rng(1) {
+                for z in rng(2) {
+                    if hi[0] <= x + 1 && hi[1] <= y + 1 && hi[2] <= z + 1 && cubes.contains(&[x, y, z]) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    };
+    let mut used = vec![false; cells.len()];
+    let mut tri_edges: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    // 軸に平らな 1×1 の正方形（4 つのブロック）を埋める三角形は、正方形にまとめ、さらに同じ平面でとなり合う正方形を長方形にまとめる
+    // ((部分, 軸, 軸の座標), (u, v) → 正方形の 4 つのブロックのどれを三角形が使ったか)
+    let mut squares: HashMap<(usize, usize, i64), HashMap<(i64, i64), (u8, Vec<[usize; 3]>)>> = HashMap::new();
+    for t in &tris {
+        if part(t[0]) == part(t[1]) && part(t[0]) == part(t[2]) {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                tri_edges.insert((a.min(b), a.max(b)));
+            }
+            for &j in t {
+                used[j] = true;
+            }
+            if in_cube(t) {
+                continue;
+            }
+            let q3 = [cells[t[0]], cells[t[1]], cells[t[2]]];
+            let flat_ax = (0..3).find(|&a| q3[0][a] == q3[1][a] && q3[0][a] == q3[2][a]);
+            let mut done = false;
+            if let Some(ax) = flat_ax {
+                let (u, v) = ((ax + 1) % 3, (ax + 2) % 3);
+                let u0 = q3.iter().map(|q| q[u]).min().unwrap();
+                let v0 = q3.iter().map(|q| q[v]).min().unwrap();
+                if q3.iter().all(|q| q[u] - u0 <= 1 && q[v] - v0 <= 1) {
+                    let e = squares.entry((part(t[0]), ax, q3[0][ax])).or_default().entry((u0, v0)).or_insert((0, vec![]));
+                    for q in &q3 {
+                        e.0 |= 1 << ((q[u] - u0) + 2 * (q[v] - v0));
+                    }
+                    e.1.push(*t);
+                    done = true;
+                }
+            }
+            if !done {
+                prims.push((vec![centers[t[0]], centers[t[1]], centers[t[2]]], part(t[0]), t[0]));
+            }
+        }
+    }
+    // 4 つとも使われた正方形は長方形にまとめる。3 つだけの正方形は三角形のまま
+    let mut sq_keys: Vec<(usize, usize, i64)> = squares.keys().copied().collect();
+    sq_keys.sort_unstable();
+    for key in sq_keys {
+        let (p, ax, coord) = key;
+        let (u, v) = ((ax + 1) % 3, (ax + 2) % 3);
+        let m = &squares[&key];
+        let cell_at = |a: i64, b: i64| -> [i64; 3] {
+            let mut q = [0i64; 3];
+            q[ax] = coord;
+            q[u] = a;
+            q[v] = b;
+            q
+        };
+        let full: std::collections::HashSet<(i64, i64)> = m.iter().filter(|(_, b)| b.0 == 15).map(|(k, _)| *k).collect();
+        let mut ks: Vec<(i64, i64)> = full.iter().copied().collect();
+        ks.sort_unstable_by_key(|k| (k.1, k.0));
+        let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        for k0 in ks {
+            if seen.contains(&k0) {
+                continue;
+            }
+            let mut w = 1;
+            while full.contains(&(k0.0 + w, k0.1)) && !seen.contains(&(k0.0 + w, k0.1)) {
+                w += 1;
+            }
+            let mut h = 1;
+            while (0..w).all(|x| full.contains(&(k0.0 + x, k0.1 + h)) && !seen.contains(&(k0.0 + x, k0.1 + h))) {
+                h += 1;
+            }
+            for x in 0..w {
+                for y in 0..h {
+                    seen.insert((k0.0 + x, k0.1 + y));
+                }
+            }
+            let kv: Vec<V3> = [(0, 0), (w, 0), (w, h), (0, h)].iter().map(|(a, b)| {
+                let q = cell_at(k0.0 + a, k0.1 + b);
+                [q[0] as f64 + 0.5, q[1] as f64 + 0.5, q[2] as f64 + 0.5]
+            }).collect();
+            prims.push((kv, p, index[&cell_at(k0.0, k0.1)]));
+        }
+        // 3 つだけの正方形：その三角形をそのまま
+        let mut part_sq: Vec<&(u8, Vec<[usize; 3]>)> = m.values().filter(|x| x.0 != 15).collect();
+        part_sq.sort_by_key(|x| x.1[0]);
+        for (_, ts) in part_sq {
+            for t in ts {
+                prims.push((vec![centers[t[0]], centers[t[1]], centers[t[2]]], p, t[0]));
+            }
+        }
+    }
+    for s in &segs {
+        if part(s[0]) == part(s[1]) {
+            used[s[0]] = true;
+            used[s[1]] = true;
+            if !tri_edges.contains(&(s[0].min(s[1]), s[0].max(s[1]))) && !in_cube(s) {
+                prims.push((vec![centers[s[0]], centers[s[1]]], part(s[0]), s[0]));
+            }
+        }
+    }
+    for &p in &points {
+        if !used[p] && !in_cube(&[p]) {
+            prims.push((vec![centers[p]], part(p), p));
+        }
+    }
+    if let Some(g) = &rotor_gid {
+        // 回転ジョイント（アクチュエーター）や部分をまたぐ結合は、両側から真ん中まで伸ばして、つながった形を保つ
+        let mut rotor_pairs: Vec<(usize, usize)> = vec![];
+        let rotors = match opt(c, "rotors")? { Some(x) if !x.is_none() => x.iter()?.collect::<R<Vec<_>>>()?, _ => vec![] };
+        for r_ in rotors {
+            let (a, b): (usize, usize) = (r_.get_item("a")?.extract()?, r_.get_item("b")?.extract()?);
+            let key = (a.min(b), a.max(b));
+            if !rotor_pairs.contains(&key) {
+                rotor_pairs.push(key);
+            }
+        }
+        for s in &segs {
+            if g[s[0]] != g[s[1]] {
+                let key = (s[0].min(s[1]), s[0].max(s[1]));
                 if !rotor_pairs.contains(&key) {
                     rotor_pairs.push(key);
                 }
             }
-            // 部分をまたぐ結合（ガラスと鋼鉄のつなぎ目など）も、両側から真ん中まで伸ばして、つながった形を保つ
-            for s in &segs {
-                if g[s[0]] != g[s[1]] {
-                    let key = (s[0].min(s[1]), s[0].max(s[1]));
-                    if !rotor_pairs.contains(&key) {
-                        rotor_pairs.push(key);
-                    }
-                }
-            }
-            let gn = g.iter().copied().max().unwrap() + 1;
-            let mut vols = vec![];
-            for gg in 0..gn {
-                let pts: Vec<usize> = points.iter().copied().filter(|&p| g[p] == gg).collect();
-                let sg: Vec<[usize; 2]> = segs.iter().copied().filter(|s| g[s[0]] == gg && g[s[1]] == gg).collect();
-                let tr: Vec<[usize; 3]> = tris.iter().copied().filter(|t| g[t[0]] == gg && g[t[1]] == gg && g[t[2]] == gg).collect();
-                let mut half = vec![];
-                for &(a, b) in &rotor_pairs {
-                    for (x, y) in [(a, b), (b, a)] {
-                        if g[x] == gg && g[y] != gg {
-                            let (cx, cy) = (centers[x], centers[y]);
-                            half.push([cx, [(cx[0] + cy[0]) * 0.5, (cx[1] + cy[1]) * 0.5, (cx[2] + cy[2]) * 0.5]]);
-                        }
-                    }
-                }
-                vols.push(shape_of(&pts, &sg, &tr, &half));
-            }
-            let nn = vols[0].len();
-            let mut union = vec![f32::INFINITY; nn];
-            let mut lab = vec![0usize; nn];
-            for i in 0..nn {
-                let mut best = vols[0][i];
-                let mut bi = 0;
-                for (gg, v) in vols.iter().enumerate().skip(1) {
-                    if v[i] < best || best.is_nan() && !v[i].is_nan() {
-                        best = v[i];
-                        bi = gg;
-                    }
-                }
-                union[i] = vols.iter().map(|v| v[i]).fold(f32::INFINITY, |a, b| if a.is_nan() || b.is_nan() { f32::NAN } else { a.min(b) });
-                lab[i] = bi;
-            }
-            if union.iter().all(|x| *x >= 0.0) {
-                return Ok(none);
-            }
-            for gg in 0..gn {
-                // ほかの部分の中は外側として扱う（境の切り口が両側で同じ位置になるように符号だけ反転）
-                let v: Vec<f32> = (0..nn).map(|i| if lab[i] == gg { union[i] } else { union[i].abs().max(1e-4) }).collect();
-                parts.push((v, Some(g.iter().map(|x| *x == gg).collect())));
-            }
         }
-        _ => {
-            let vol = shape_of(&points, &segs, &tris, &[]);
-            if vol.iter().fold(f32::INFINITY, |a, b| a.min(*b)) >= 0.0 {
-                return Ok(none);
+        for &(a, b) in &rotor_pairs {
+            for (x, y) in [(a, b), (b, a)] {
+                if g[x] != g[y] {
+                    let (cx, cy) = (centers[x], centers[y]);
+                    prims.push((vec![cx, [(cx[0] + cy[0]) * 0.5, (cx[1] + cy[1]) * 0.5, (cx[2] + cy[2]) * 0.5]], g[x], x));
+                }
             }
-            parts.push((vol, None));
         }
     }
-    let mut pall: Vec<V3> = vec![];
-    let mut fall: Vec<[i64; 3]> = vec![];
-    let mut oall: Vec<usize> = vec![];
-    for (vol, allowed) in &parts {
-        if vol.iter().fold(f32::INFINITY, |a, b| a.min(*b)) >= 0.0 {
-            continue;
-        }
-        let (verts, mut faces) = py.allow_threads(|| crate::geomx::marching_cubes(vol, dims, 0.0, [1.0, 1.0, 1.0]));
-        if faces.is_empty() {
-            continue;
-        }
-        let p: Vec<V3> = verts.iter().map(|v| [lo[0] + v[0] / kf, lo[1] + v[1] / kf, lo[2] + v[2] / kf]).collect();
-        // 面の向きをそろえる（外向き）：閉じた面の符号付き体積が正になる向き
-        let mut s = [0.0; 3];
-        for q in &p {
-            for a in 0..3 {
-                s[a] += q[a];
-            }
-        }
-        let mean = [s[0] / p.len() as f64, s[1] / p.len() as f64, s[2] / p.len() as f64];
-        let mut vol6 = 0.0;
-        for f in &faces {
-            let (a, b, c3) = (p[f[0] as usize], p[f[1] as usize], p[f[2] as usize]);
-            let cr = super::construct::cross(super::construct::sub(b, a), super::construct::sub(c3, a));
-            vol6 += super::construct::dot(super::construct::sub(a, mean), cr);
-        }
-        if vol6 < 0.0 {
-            for f in faces.iter_mut() {
-                f.swap(0, 2);
-            }
-        }
-        let off = pall.len() as i64;
-        oall.extend(owner_of(&cells, &centers, &p, allowed.as_deref()));
-        fall.extend(faces.iter().map(|f| [f[0] + off, f[1] + off, f[2] + off]));
-        pall.extend(p);
-    }
-    if pall.is_empty() {
+    let geo: Vec<(Vec<V3>, usize)> = prims.iter().map(|(v, g, _)| (v.clone(), *g)).collect();
+    // 軸の面はブロックの境より少し内側（0.485。となりの物やガラスの面と重ならないように）
+    let out = py.allow_threads(|| crate::polyu::union_mesh(&geo, 0.485));
+    let mut pall: Vec<V3> = out.verts;
+    let mut fall: Vec<[i64; 3]> = out.faces;
+    let mut oall: Vec<usize> = out.vert_prim.iter().map(|&i| prims[i].2).collect();
+    if pall.is_empty() || fall.is_empty() {
         return Ok(none);
     }
     // 三角形の持ち主は、重心のあるブロック（等値面の三角形は格子の 1 マスの中にあり、ブロックの境は格子の線なので、

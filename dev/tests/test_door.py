@@ -96,7 +96,7 @@ class TestDoor(CoreCase):
         flat = shape.build_mesh(c, None, False)
         self.assertTrue(flat.get("flat"))
         nf, ns = len(flat["faces"]), len(smooth["faces"])
-        self.assertLess(nf * 20, ns, f"三角形がずっと少ない（{nf} / {ns}）")
+        self.assertLess(nf, ns, f"三角形が少ない（{nf} / {ns}）")
         # ガラスの面はみな箱の表面（0 か n の平面の上）にある：ガラスと壁の境・ガラスどうしの間に面を作らない
         P = np.asarray(flat["rest"])
         F = np.asarray(flat["faces"])

@@ -127,6 +127,35 @@ class TestShape(CoreCase):
         self.assertEqual(tris(["steel", "steel", "wood"]), 0)
         self.assertEqual(tris(["steel"] * 3, {"def": "battery", "dir": 2}), 0)
 
+    def test_low_poly_mesh(self):
+        """A-21：なめらかなメッシュは角を落とした多面体（ローポリ）。1 つのブロックは少しの平らな面・穴が無い・詰まった塊の中に面を作らない"""
+        from collections import Counter
+        from main import shape
+        w = self.world()
+
+        def mesh(V):
+            c = Construct.from_voxels(w.registry, V, np.zeros(3), size=0.5)
+            m = shape.build_mesh(c)
+            P, F = np.asarray(m["rest"]), np.asarray(m["faces"])
+            key = np.round(P * 1e5).astype(np.int64)
+            E = Counter((tuple(key[f[a]]), tuple(key[f[b]])) for f in F for a, b in ((0, 1), (1, 2), (2, 0)))
+            holes = sum(1 for (a, b), n in E.items() if E.get((b, a), 0) != n)
+            return P, F, holes
+        P, F, holes = mesh([((0, 0, 0), "wood", None)])
+        self.assertLessEqual(len(F), 60)
+        self.assertEqual(holes, 0)
+        n = np.cross(P[F[:, 1]] - P[F[:, 0]], P[F[:, 2]] - P[F[:, 0]])
+        n /= np.linalg.norm(n, axis=1)[:, None]
+        self.assertEqual(len(np.unique(np.round(n, 3), axis=0)), 26, "軸・辺・角の 26 の面")
+        for V in ([((x, y, z), "concrete", None) for x in range(6) for y in range(6) for z in range(6)],
+                  [((x, y, z), "concrete", None) for x in range(24) for y in range(24) for z in range(24) if min(x, y, z) == 0 or max(x, y, z) == 23],
+                  [((i, y, z), "wood" if z < 2 else "steel", None) for i in range(5) for y in range(i + 1) for z in range(4)]):
+            P, F, holes = mesh(V)
+            self.assertEqual(holes, 0)
+        P, F, _ = mesh([((x, y, z), "concrete", None) for x in range(6) for y in range(6) for z in range(6)])
+        cen = P[F].mean(1)
+        self.assertFalse(((cen > 0.6) & (cen < 5.4)).all(1).any(), "詰まった塊の中に面が無い")
+
     def test_adjacent_slopes_of_different_kinds_join(self):
         """A-19：同じ形の斜面がとなり合う（手前は鋼鉄・奥は木）なら、種類が違っても 1 つの斜面につなぐ（間に谷を作らない）。"""
         w = self.world()
