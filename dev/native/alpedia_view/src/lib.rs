@@ -75,14 +75,27 @@ fn bound_of(verts: &[f32]) -> Option<[f32; 4]> {
     if verts.len() < 12 {
         return None;
     }
-    let mut lo = [f32::INFINITY; 3];
-    let mut hi = [f32::NEG_INFINITY; 3];
-    for v in verts.chunks_exact(12) {
-        for a in 0..3 {
-            lo[a] = lo[a].min(v[a]);
-            hi[a] = hi[a].max(v[a]);
+    let span = |vs: &[f32]| {
+        let mut lo = [f32::INFINITY; 3];
+        let mut hi = [f32::NEG_INFINITY; 3];
+        for v in vs.chunks_exact(12) {
+            for a in 0..3 {
+                lo[a] = lo[a].min(v[a]);
+                hi[a] = hi[a].max(v[a]);
+            }
         }
-    }
+        (lo, hi)
+    };
+    // 頂点の多いメッシュは分けて並べて計算する（A-22）
+    let (lo, hi) = if verts.len() >= 12 * 20_000 {
+        use rayon::prelude::*;
+        verts.par_chunks(12 * 8192).map(span).reduce(
+            || ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]),
+            |a, b| ([a.0[0].min(b.0[0]), a.0[1].min(b.0[1]), a.0[2].min(b.0[2])], [a.1[0].max(b.1[0]), a.1[1].max(b.1[1]), a.1[2].max(b.1[2])]),
+        )
+    } else {
+        span(verts)
+    };
     let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
     let r = ((hi[0] - c[0]).powi(2) + (hi[1] - c[1]).powi(2) + (hi[2] - c[2]).powi(2)).sqrt();
     Some([c[0], c[1], c[2], r])
@@ -187,9 +200,154 @@ struct PipeKey {
     overlay: bool,
 }
 
+/// 1 フレーム分のカメラ・画面の上・行列の入れ物（描画のスレッドが前のフレームを描いている間に、もう 1 組に書く。A-22）
+struct Slot {
+    cam_buf: wgpu::Buffer,
+    cam_bg: wgpu::BindGroup,
+    ui_buf: wgpu::Buffer,
+    ui_bg: wgpu::BindGroup,
+    model_buf: Option<(wgpu::Buffer, u64, wgpu::BindGroup)>,
+}
+
+/// 描画のスレッドに渡す 1 回の描画（GPU の物はどれも中身を共有する複製）
+struct DrawCmd {
+    pipe: wgpu::RenderPipeline,
+    cam: wgpu::BindGroup,
+    off: u32,
+    tex: wgpu::BindGroup,
+    vb: wgpu::Buffer,
+    ib: wgpu::Buffer,
+    n: u32,
+}
+
+struct Job {
+    surface: Arc<wgpu::Surface<'static>>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    depth: wgpu::TextureView,
+    clear: [f64; 3],
+    model_bg: wgpu::BindGroup,
+    draws: Vec<DrawCmd>,
+}
+
+/// 描画のスレッド：窓の画を受け取り、描画の命令を作って GPU に出し、画面を入れ替える（A-22）。
+/// メインのスレッドはその間に次のフレームの物理・場面の用意・MOD を進める
+struct RenderThread {
+    tx: Option<std::sync::mpsc::Sender<Job>>,
+    done: std::sync::mpsc::Receiver<()>,
+    inflight: usize,                 // 描いている途中・待っているフレームの数（最大 MAX_INFLIGHT）
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RenderThread {
+    fn start() -> Option<Self> {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let (dtx, done) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::Builder::new().name("alpedia-render".into()).spawn(move || {
+            while let Ok(j) = rx.recv() {
+                run_job(j);
+                if dtx.send(()).is_err() {
+                    break;
+                }
+            }
+        }).ok()?;
+        Some(RenderThread { tx: Some(tx), done, inflight: 0, handle: Some(handle) })
+    }
+    /// 描いている途中のフレームがみな終わるまで待つ
+    fn wait(&mut self) {
+        while self.inflight > 0 {
+            if self.done.recv().is_err() {
+                self.inflight = 0;
+                break;
+            }
+            self.inflight -= 1;
+        }
+    }
+    /// 終わったフレームを数える（待たない）
+    fn reap(&mut self) {
+        while self.inflight > 0 && self.done.try_recv().is_ok() {
+            self.inflight -= 1;
+        }
+    }
+    fn send(&mut self, j: Job) -> bool {
+        self.reap();
+        // 描いている途中が多すぎるときだけ、1 つ終わるのを待つ
+        while self.inflight >= MAX_INFLIGHT {
+            if self.done.recv().is_err() {
+                return false;
+            }
+            self.inflight -= 1;
+        }
+        match self.tx.as_ref().map(|t| t.send(j)) {
+            Some(Ok(())) => {
+                self.inflight += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// 描画のスレッドに渡したまま終わっていないフレームの数の上限（入れ物は 1 + この数の組を回す）
+const MAX_INFLIGHT: usize = 2;
+
+impl Drop for RenderThread {
+    fn drop(&mut self) {
+        self.wait();
+        self.tx = None;
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+fn run_job(j: Job) {
+    let frame = match j.surface.get_current_texture() {
+        Ok(f) => f,
+        Err(_) => {
+            j.surface.configure(&j.device, &j.config);
+            return;
+        }
+    };
+    let view = frame.texture.create_view(&Default::default());
+    let mut enc = j.device.create_command_encoder(&Default::default());
+    {
+        let mut rp = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color { r: j.clear[0], g: j.clear[1], b: j.clear[2], a: 1.0 }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &j.depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        for d in &j.draws {
+            rp.set_pipeline(&d.pipe);
+            rp.set_bind_group(0, &d.cam, &[]);
+            rp.set_bind_group(1, &j.model_bg, &[d.off]);
+            rp.set_bind_group(2, &d.tex, &[]);
+            rp.set_vertex_buffer(0, d.vb.slice(..));
+            rp.set_index_buffer(d.ib.slice(..), wgpu::IndexFormat::Uint32);
+            rp.draw_indexed(0..d.n, 0, 0..1);
+        }
+    }
+    j.queue.submit(Some(enc.finish()));
+    frame.present();
+}
+
 struct Gfx {
     window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
+    surface: Arc<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -210,6 +368,8 @@ struct Gfx {
     white: wgpu::TextureView,
     tex_bg: HashMap<(i64, i64), wgpu::BindGroup>,
     dof: Option<DofPipe>,
+    spare: Vec<Slot>,                // ほかの組の入れ物（描画のスレッドを使うとき、フレームごとに回す）
+    rt: Option<RenderThread>,        // 描画のスレッド（None ならメインのスレッドで描く）
 }
 
 /// 窓の代わりに描く先（ムービーの道具：窓の大きさに縛られずに描いて、画素を読み出す）
@@ -406,9 +566,20 @@ impl Gfx {
             ..Default::default()
         });
         let white = Self::upload_tex(&device, &queue, 1, 1, &[255, 255, 255, 255], false);
+        let mk_slot = || {
+            let cb = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: cam_buf.size(), usage: cam_buf.usage(), mapped_at_creation: false });
+            let cbg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None, layout: &cam_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: cb.as_entire_binding() }] });
+            let ub = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: ui_buf.size(), usage: ui_buf.usage(), mapped_at_creation: false });
+            let ubg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None, layout: &cam_bgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() }] });
+            Slot { cam_buf: cb, cam_bg: cbg, ui_buf: ub, ui_bg: ubg, model_buf: None }
+        };
+        let spare: Vec<Slot> = (0..MAX_INFLIGHT).map(|_| mk_slot()).collect();
+        let rt = if std::env::var_os("ALPEDIA_NO_RENDER_THREAD").is_some() { None } else { RenderThread::start() };
         Ok(Gfx {
-            window, surface, device, queue, config, depth, shader, layout, pipes: HashMap::new(), cam_buf, cam_bg, ui_buf, ui_bg, model_bgl,
-            model_buf: None, tex_bgl, sampler_lin, sampler_near, sampler_clamp, white, tex_bg: HashMap::new(), dof: None,
+            window, surface: Arc::new(surface), device, queue, config, depth, shader, layout, pipes: HashMap::new(), cam_buf, cam_bg, ui_buf, ui_bg, model_bgl,
+            model_buf: None, tex_bgl, sampler_lin, sampler_near, sampler_clamp, white, tex_bg: HashMap::new(), dof: None, spare, rt,
         })
     }
 
@@ -487,12 +658,27 @@ impl Gfx {
         t.create_view(&Default::default())
     }
 
+    /// 今の入れ物ともう 1 組を入れ替える（描画のスレッドが描いている前のフレームの入れ物には書かない）
+    fn swap_slot(&mut self) {
+        // 今の組を後ろに回し、いちばん前（いちばん前に使った組）を今の組にする
+        let mut sp = self.spare.remove(0);
+        std::mem::swap(&mut self.cam_buf, &mut sp.cam_buf);
+        std::mem::swap(&mut self.cam_bg, &mut sp.cam_bg);
+        std::mem::swap(&mut self.ui_buf, &mut sp.ui_buf);
+        std::mem::swap(&mut self.ui_bg, &mut sp.ui_bg);
+        std::mem::swap(&mut self.model_buf, &mut sp.model_buf);
+        self.spare.push(sp);
+    }
+
     fn resize(&mut self, w: u32, h: u32) {
         if w == 0 || h == 0 {
             return;
         }
         self.config.width = w;
         self.config.height = h;
+        if let Some(rt) = self.rt.as_mut() {
+            rt.wait(); // 描いている途中に窓の大きさを変えない
+        }
         self.surface.configure(&self.device, &self.config);
         self.depth = Self::make_depth(&self.device, &self.config);
     }
@@ -794,6 +980,7 @@ struct View {
     textures: Vec<Tex>,
     view_proj: [f32; 16],
     culled: usize,            // 前のフレームで視野の外だったので描かなかったメッシュの数（A-20）
+    rprof: [f64; 5],          // render の内訳（秒の合計：包む球・カリング・転送・命令の用意・待ち）。render_prof で読む
     cull_on: bool,            // 視錐台カリングをするか（比べるとき用。ふつうは true）
     clear: [f64; 3],
     capture: Option<String>,
@@ -867,6 +1054,7 @@ impl View {
             view_proj: IDENT,
             culled: 0,
             cull_on: true,
+            rprof: [0.0; 5],
             clear: [0.45, 0.65, 0.9],
             capture: None,
             font: None,
@@ -908,6 +1096,28 @@ impl View {
     }
 
     /// 視錐台カリングを入り切りする（比べるとき用）
+    /// 描画のスレッドを使うか（比べるとき用。ふつうは使う。A-22）
+    fn set_render_thread(&mut self, on: bool) {
+        if let Some(g) = self.app.gfx.as_mut() {
+            if on && g.rt.is_none() {
+                g.rt = RenderThread::start();
+            } else if !on {
+                g.rt = None;
+            }
+        }
+    }
+
+    /// render の内訳（ms の合計：包む球・カリング・転送・命令の用意・待ち）。読むと 0 に戻す
+    fn render_prof(&mut self) -> Vec<f64> {
+        let v = self.rprof.iter().map(|x| x * 1000.0).collect();
+        self.rprof = [0.0; 5];
+        v
+    }
+
+    fn render_thread(&self) -> bool {
+        self.app.gfx.as_ref().map(|g| g.rt.is_some()).unwrap_or(false)
+    }
+
     fn set_culling(&mut self, on: bool) {
         self.cull_on = on;
     }
@@ -1234,6 +1444,7 @@ impl View {
         mesh.verts.clear();
         mesh.verts.extend_from_slice(v);
         mesh.dirty_v = true;
+        mesh.bound = None; // 包む球は頂点を入れたときだけ作り直す（A-22）
         let _ = verts.shape();
         Ok(())
     }
@@ -1334,6 +1545,7 @@ impl View {
         m.verts = verts;
         m.idx = tri;
         m.dirty_v = true;
+        m.bound = None; // 包む球は頂点を入れたときだけ作り直す（A-22）
         m.dirty_i = true;
         self.parts.push(SkinPart { geom, mesh, src, color, shade, alive: true });
         Ok(self.parts.len() - 1)
@@ -1572,6 +1784,7 @@ impl View {
         mesh.verts = verts;
         mesh.idx = idx;
         mesh.dirty_v = true;
+        mesh.bound = None; // 包む球は頂点を入れたときだけ作り直す（A-22）
         mesh.dirty_i = true;
         mesh.tex = [Some(f.tex), None];
         mesh.blend = true;
@@ -1627,12 +1840,23 @@ impl View {
 
     /// 描く。戻り値：描いたメッシュの数
     fn render(&mut self) -> PyResult<usize> {
+        let mut tp = std::time::Instant::now();
+        let mut lap = |i: usize, pr: &mut [f64; 5]| {
+            let now = std::time::Instant::now();
+            pr[i] += (now - tp).as_secs_f64();
+            tp = now;
+        };
         // 包む球（頂点が変わったメッシュだけ作り直す。A-20）
-        for m in self.meshes.iter_mut() {
-            if m.alive && (m.dirty_v || m.bound.is_none()) {
-                m.bound = bound_of(&m.verts);
-            }
+        // 画面の上の板は要らない。頂点の多いメッシュは並べて計算する（A-22）
+        {
+            use rayon::prelude::*;
+            self.meshes.par_iter_mut().with_min_len(8).for_each(|m| {
+                if m.alive && !m.overlay && m.bound.is_none() {
+                    m.bound = bound_of(&m.verts);
+                }
+            });
         }
+        lap(0, &mut self.rprof);
         let planes = frustum_planes(&self.view_proj);
         // 行列（親子）を計算
         let mut cache: Vec<Option<([f32; 16], bool)>> = vec![None; self.nodes.len()];
@@ -1657,13 +1881,21 @@ impl View {
             }
         }
         self.culled = culled;
+        lap(1, &mut self.rprof);
         // 半透明は後に（描く順 bin で）
         draw.sort_by_key(|&(k, _, _)| (self.meshes[k].overlay, self.meshes[k].blend || self.meshes[k].add, self.meshes[k].bin));
-        let View { app, meshes, textures, view_proj, clear, capture, target, dof, near, eye, fog, t0, .. } = self;
+        let View { app, meshes, textures, view_proj, clear, capture, target, dof, near, eye, fog, t0, rprof, .. } = self;
         let g = match app.gfx.as_mut() {
             Some(g) => g,
             None => return Ok(0),
         };
+        // 窓に描く・写真を撮らないときは描画のスレッドに任せる（A-22）。それ以外は前のフレームが終わるのを待ってここで描く
+        let use_rt = g.rt.is_some() && target.is_none() && capture.is_none();
+        if use_rt {
+            g.swap_slot();
+        } else if let Some(rt) = g.rt.as_mut() {
+            rt.wait();
+        }
         // テクスチャ・頂点を GPU へ（描くメッシュが使う物だけ）
         let mut used = vec![false; textures.len()];
         for &(k, _, _) in &draw {
@@ -1723,6 +1955,7 @@ impl View {
                 m.dirty_i = false;
             }
         }
+        lap(2, rprof);
         // 行列などをまとめて1つの uniform に
         let need = (draw.len().max(1) as u64) * MODEL_STRIDE;
         if g.model_buf.as_ref().map(|x| x.1 < need).unwrap_or(true) {
@@ -1789,6 +2022,47 @@ impl View {
             let m = &meshes[k];
             let pk = PipeKey { blend: m.blend, add: m.add, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset, overlay: m.overlay };
             g.pipe(pk);
+        }
+        if use_rt {
+            let mbg = g.model_buf.as_ref().unwrap().2.clone();
+            let mut draws = Vec::with_capacity(draw.len());
+            for (q, &(k, _, _)) in draw.iter().enumerate() {
+                let m = &meshes[k];
+                let (vb, ib) = match (&m.vbuf, &m.ibuf) {
+                    (Some(v), Some(i)) => (v.0.clone(), i.0.clone()),
+                    _ => continue,
+                };
+                let pk = PipeKey { blend: m.blend, add: m.add, depth_write: m.depth_write, cull: !m.two_sided, offset: m.depth_offset, overlay: m.overlay };
+                let key = (m.tex[0].map(|x| x as i64).unwrap_or(-1), m.tex[1].map(|x| x as i64).unwrap_or(-1));
+                draws.push(DrawCmd {
+                    pipe: g.pipes[&pk].clone(),
+                    cam: if m.overlay { g.ui_bg.clone() } else { g.cam_bg.clone() },
+                    off: (q as u64 * MODEL_STRIDE) as u32,
+                    tex: g.tex_bg[&key].clone(),
+                    vb,
+                    ib,
+                    n: m.n_idx,
+                });
+            }
+            let job = Job {
+                surface: g.surface.clone(),
+                device: g.device.clone(),
+                queue: g.queue.clone(),
+                config: g.config.clone(),
+                depth: g.depth.clone(),
+                clear: [clear[0], clear[1], clear[2]],
+                model_bg: mbg,
+                draws,
+            };
+            let n = draw.len();
+            lap(3, rprof);
+            if let Some(rt) = g.rt.as_mut() {
+                if !rt.send(job) {
+                    g.rt = None; // スレッドが止まっていたら、次からメインのスレッドで描く
+                }
+            }
+            lap(4, rprof);
+            return Ok(n);
         }
         // 描く先：窓（surface）か、窓の外の画（set_target）
         let frame = if target.is_some() {

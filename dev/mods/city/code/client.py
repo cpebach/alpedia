@@ -18,6 +18,7 @@ class CityClient(ClientAddon):
         Entity, Text, color = U["Entity"], U["Text"], U["color"]
         self.city_views = {}
         self.npc_views = {}
+        self.anchors = {}         # 錨（近くの街をまとめて動かすノード）：(星, 4 km の升目) → (ノード, 錨の位置)
         # 最寄りの街の目印（画面の外なら端に矢印）
         self.marker_on = True
         self.marker_mode = "city"
@@ -36,6 +37,21 @@ class CityClient(ClientAddon):
         for v in self.npc_views.values():
             v.remove()
         self.npc_views = {}
+        for node, _ in self.anchors.values():
+            node.removeNode()
+        self.anchors = {}
+
+    ANCHOR_CELL = 4096.0
+
+    def _anchor(self, c):
+        """街のメッシュの親（錨）。街の行列は錨からの位置なので、カメラが動いても錨 1 つを動かすだけで済む"""
+        from main.client import gfx
+        key = (id(getattr(c, "host", None)), tuple(np.floor(np.asarray(c.x, float) / self.ANCHOR_CELL).astype(int)))
+        a = self.anchors.get(key)
+        if a is None:
+            ctr = (np.floor(np.asarray(c.x, float) / self.ANCHOR_CELL) + 0.5) * self.ANCHOR_CELL
+            a = self.anchors[key] = (gfx.RsNode(self.game.scene_root), ctr)
+        return a
 
     # ------------------------------------------------------------------
     # キー
@@ -264,16 +280,34 @@ class CityClient(ClientAddon):
         detail = float(g.get("city_detail_distance", 100.0))
         far_c = min(far, float(g.get("city_view_distance", 2500.0)))
         root = self.game.scene_root
-        for c in self.pack.city_list():
+        cl = self.pack.city_list()
+        if cl:
+            # 距離はまとめて 1 回で計算する（A-22）
+            X = np.array([c.x for c in cl], float)
+            rad = np.array([c.radius for c in cl], float)
+            dist = np.linalg.norm(X - np.asarray(origin, float), axis=1) - rad
+        used = set()
+        for i, c in enumerate(cl):
             v = self.city_views.get(c.id)
             if v is None:
-                v = self.city_views[c.id] = views.CityView(root, c)
-            v.update(origin, origin, far_c, detail)
+                node, ctr = self._anchor(c)
+                v = self.city_views[c.id] = views.CityView(node, c)
+                v.anchor = ctr
+            v.update(origin, origin, far_c, detail, dist=float(dist[i]))
+            if v.level is not None:
+                used.add(id(v.parent))
             if c.npcs:
                 nv = self.npc_views.get(c.id)
                 if nv is None:
                     nv = self.npc_views[c.id] = views.NpcView(root, c)
-                nv.update(origin, self.world.time)
+                if dist[i] <= nv.MAX_DIST or nv.visible:
+                    nv.update(origin, self.world.time)
+        # 錨だけを毎フレーム動かす（見えている街のある錨だけ）
+        for node, ctr in self.anchors.values():
+            if id(node) in used:
+                M = np.eye(4)
+                M[3, :3] = ctr - origin
+                node.setMat([float(x) for x in M.ravel()])
         self._update_marker(origin)
 
     def _update_marker(self, origin):

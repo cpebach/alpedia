@@ -6,6 +6,14 @@ from main.client.render import DynamicMesh, quad_tris, shade
 from . import citylife
 
 
+def _cross(a, b):
+    """np.cross と同じ（最後の軸が 3）。小さな配列では np.cross よりずっと速い"""
+    a = np.asarray(a, float)
+    b = np.asarray(b, float)
+    return np.stack([a[..., 1] * b[..., 2] - a[..., 2] * b[..., 1], a[..., 2] * b[..., 0] - a[..., 0] * b[..., 2],
+                     a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]], axis=-1)
+
+
 _window_tex = None
 
 
@@ -58,7 +66,7 @@ def _box_quads(C, A, E):
         V[:, f, 2] = c + u + v
         V[:, f, 3] = c - u + v
         # 外から見て同じ回り順にそろえる（片面描画で表側だけが描かれるように）
-        cr = np.cross(V[:, f, 1] - V[:, f, 0], V[:, f, 2] - V[:, f, 0])
+        cr = _cross(V[:, f, 1] - V[:, f, 0], V[:, f, 2] - V[:, f, 0])
         flip = np.einsum("ij,ij->i", cr, n) < 0
         if FRONT_CW:
             flip = ~flip
@@ -84,6 +92,8 @@ class CityView:
         self.version = -1
         self.shade_R = None
         self.level = None           # None / "simple" / "detail"
+        self.anchor = None          # 親が錨のとき、その位置（行列は錨からの位置。カメラが動いても変わらない）
+        self._mat_key = None
 
     @staticmethod
     def _mesh(parent, name):
@@ -186,9 +196,10 @@ class CityView:
         return self.detail.get("items", []) if self.detail else []
 
     # --- 毎フレーム ---------------------------------------------------------
-    def update(self, origin, cam_pos, far, detail_dist=100.0):
+    def update(self, origin, cam_pos, far, detail_dist=100.0, dist=None):
         c = self.city
-        dist = float(np.linalg.norm(c.x - cam_pos)) - c.radius
+        if dist is None:
+            dist = float(np.linalg.norm(c.x - cam_pos)) - c.radius
         if dist >= far or c.alive() <= 0:
             want = None
         else:
@@ -203,6 +214,7 @@ class CityView:
         stale = getattr(self, "_stale", {"simple": True, "detail": True})
         if want is not None and stale.get(want, True):
             (self._build_simple if want == "simple" else self._build_detail)()
+            self._mat_key = None
             stale[want] = False
             self._stale = stale
             for it in self._items(want):
@@ -235,8 +247,12 @@ class CityView:
             self.shade_R = R.copy()
         M = np.eye(4)
         M[:3, :3] = R.T
-        M[3, :3] = c.x - origin
+        M[3, :3] = c.x - (origin if self.anchor is None else self.anchor)
         mat = [float(x) for x in M.ravel()]
+        key = (want, tuple(mat))
+        if self.anchor is not None and key == self._mat_key:
+            return                  # 錨からの位置は変わっていない（錨の方を動かす）
+        self._mat_key = key
         for m in self._meshes(want):
             m.np.setMat(mat)
 
@@ -262,7 +278,9 @@ class NpcView:
         self.n = -1
         self.visible = True
 
-    def update(self, origin, t, max_dist=70.0):
+    MAX_DIST = 70.0
+
+    def update(self, origin, t, max_dist=MAX_DIST):
         c = self.city
         if float(np.linalg.norm(c.x - origin)) - c.radius > max_dist or not c.npcs:
             if self.visible:
@@ -273,7 +291,7 @@ class NpcView:
         boxes_c, boxes_a, boxes_e, cols = [], [], [], []
         for n in live:
             p, f, up = citylife.npc_pose(c, n, t)
-            side = np.cross(up, f)
+            side = _cross(up, f)
             A = np.stack([side, up, f])
             for y, e, kind in self.PARTS:
                 ctr = p + up * y

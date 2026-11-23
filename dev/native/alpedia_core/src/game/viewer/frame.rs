@@ -262,6 +262,18 @@ impl Viewer {
                 }
                 *p = [0.0; 6];
             }
+            {
+                // MOD ごとの update（重い順）
+                let mut p = MOD_PROF.lock().unwrap_or_else(|e| e.into_inner());
+                p.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                full.push_str("  MOD:");
+                for (k, v) in p.iter() {
+                    if v / fr * 1000.0 >= 0.05 {
+                        full.push_str(&format!(" {} {:.1}", k, v / fr * 1000.0));
+                    }
+                }
+                p.clear();
+            }
             full.push_str("  物理:");
             for (k, v) in crate::game::world::world_step_prof() {
                 let ms = v / (ticks.max(1) as f64) * 1000.0;

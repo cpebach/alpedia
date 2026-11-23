@@ -139,6 +139,8 @@ pub struct AddonCall {
 // 場面の用意（_render）の内訳（開発用）：前置き・構築物の見た目・遠くの箱・明かり・地形・街などの飾り
 const SCENE_PARTS: [&str; 6] = ["s_pre", "s_views", "s_lod", "s_light", "s_terr", "s_deco"];
 static SCENE_PROF: std::sync::Mutex<[f64; 6]> = std::sync::Mutex::new([0.0; 6]);
+/// MOD ごとの毎フレームの update の時間（秒の合計。ログに 1 フレームあたりで出す。A-22）
+pub(crate) static MOD_PROF: std::sync::Mutex<Vec<(String, f64)>> = std::sync::Mutex::new(Vec::new());
 fn scene_prof(i: usize, t: &mut std::time::Instant) {
     let now = std::time::Instant::now();
     if let Ok(mut p) = SCENE_PROF.lock() {
@@ -468,8 +470,21 @@ impl Viewer {
     pub(crate) fn _each_addon<'py>(slf: &Bound<'py, Self>, f: &B<'py>, first: bool) -> R<B<'py>> {
         let py = slf.py();
         let addons: Vec<B<'_>> = Self::ga_addons(slf)?.iter()?.collect::<R<_>>()?;
+        let timed = f.downcast::<AddonCall>().map(|x| x.borrow().name == "update").unwrap_or(false);
         for a in addons {
-            let r = match f.call1((&a,)) {
+            let t = std::time::Instant::now();
+            let r = f.call1((&a,));
+            if timed {
+                let dt = t.elapsed().as_secs_f64();
+                let name: String = gd(&a, "name", tb(py, "?")).str()?.to_string();
+                if let Ok(mut p) = MOD_PROF.lock() {
+                    match p.iter_mut().find(|x| x.0 == name) {
+                        Some(x) => x.1 += dt,
+                        None => p.push((name, dt)),
+                    }
+                }
+            }
+            let r = match r {
                 Ok(v) => v,
                 Err(e) if is_exc(py, &e) => {
                     let key = (gd(&a, "name", tb(py, "?")), gd(f, "__name__", tb(py, "")));

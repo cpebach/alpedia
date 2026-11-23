@@ -47,6 +47,11 @@ LAST = ["-07", "・K", "・ゼロ", "・ネオ", "-X", "・ブルー", "・V", "
 STARTER_CREDITS = 200.0
 
 
+def _cross3(a, b):
+    """3 要素の外積（np.cross より速い）"""
+    return np.array([a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]])
+
+
 def _rng(*keys):
     from .cities import _rng as r
     return r(*keys)
@@ -235,7 +240,7 @@ def npc_pose(city, npc, t):
     f = npc["face"]
     up = npc["up"]
     if npc["wander"] > 0:
-        side = np.cross(up, f)
+        side = _cross3(up, f)
         a = npc["phase"] + t * npc["speed"] / npc["wander"]
         p = p + (f * np.cos(a) + side * np.sin(a)) * npc["wander"]
         f = -f * np.sin(a) + side * np.cos(a)
@@ -256,7 +261,7 @@ NPC_HALF = np.array([0.3, 0.9, 0.22])
 def npc_box(city, npc, t):
     """当たり判定・視線用の箱（中心・軸・半分の大きさ）。"""
     p, f, up = npc_pose(city, npc, t)
-    side = np.cross(up, f)
+    side = _cross3(up, f)
     return p + up * NPC_HALF[1], np.stack([side, up, f]), NPC_HALF
 
 
