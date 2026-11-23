@@ -124,13 +124,24 @@ pub fn topology(cells: &[[i64; 3]], links: &[[usize; 2]], extras: &[[usize; 2]],
         // 窓の中の物が 1 つの平面の 2×2 をちょうど埋めている（平らな板で、斜面にならない）なら、種類が違ってもつなぐ
         // （窓と壁が同じ面でつながる。A-18。L 字などは斜面で角を埋めるので、今まで通り同じ種類どうしだけ）
         let planar = (0..3).any(|ax| (0..2).any(|v| (0..8).all(|k| m[k].is_some() == (offs8(k)[ax] == v))));
+        // 手前と奥の層（どれかの軸）でブロックの並び方が同じで、それぞれの層は 1 種類：となり合う斜面どうし（違う種類でも）。
+        // 2 つの層をまとめて 1 つの斜面に（間に谷ができないように。A-19）。層の中で種類が違うなら今まで通り段差のまま
+        let prism = (0..3).any(|ax| {
+            let bit = 4usize >> ax;
+            let same_shape = (0..8).filter(|&k| offs8(k)[ax] == 0).all(|k| m[k].is_some() == m[k | bit].is_some());
+            let one_kind = |v: i64| {
+                let ks: Vec<i64> = (0..8).filter(|&k| offs8(k)[ax] == v).filter_map(|k| m[k].map(|j| kind[j])).collect();
+                ks.windows(2).all(|w| w[0] == w[1])
+            };
+            same_shape && one_kind(0) && one_kind(1)
+        });
         for k in 0..8 {
             let Some(jk) = m[k] else { continue };
             let o = offs8(k);
             for d in DIRS {
                 let Some(k2) = off_index([o[0] + d[0], o[1] + d[1], o[2] + d[2]]) else { continue };
                 let Some(j2) = m[k2] else { continue };
-                if (planar || kind[jk] == kind[j2]) && linked(jk, j2) {
+                if (planar || prism || kind[jk] == kind[j2]) && linked(jk, j2) {
                     let (r1, r2) = (find(&mut parent, k), find(&mut parent, k2));
                     parent[r1] = r2;
                 }

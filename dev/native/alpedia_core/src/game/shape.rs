@@ -633,10 +633,31 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
             let (a, b, c3) = (pall[f[0] as usize], pall[f[1] as usize], pall[f[2] as usize]);
             let g = [((a[0] + b[0] + c3[0]) / 3.0).floor() as i64, ((a[1] + b[1] + c3[1]) / 3.0).floor() as i64,
                      ((a[2] + b[2] + c3[2]) / 3.0).floor() as i64];
+            let same_part = |o: usize| rotor_gid.as_ref().map(|r| r[o] == r[oall[f[0] as usize]]).unwrap_or(true);
             let own = match idx.get(&g) {
                 // ローターで別に動く部分の三角形は、その部分のブロックだけ（違う部分なら頂点の持ち主のまま）
-                Some(&o) if rotor_gid.as_ref().map(|r| r[o] == r[oall[f[0] as usize]]).unwrap_or(true) => o,
-                _ => oall[f[0] as usize],
+                Some(&o) if same_part(o) => o,
+                Some(_) => oall[f[0] as usize],
+                None => {
+                    // 斜面を埋めた三角形（空いたマスの中）：重心にいちばん近いまわりのブロック（境がギザギザにならない。A-19）
+                    let cc = [(a[0] + b[0] + c3[0]) / 3.0, (a[1] + b[1] + c3[1]) / 3.0, (a[2] + b[2] + c3[2]) / 3.0];
+                    let mut best = (f64::INFINITY, oall[f[0] as usize]);
+                    for dx in -1..=1 {
+                        for dy in -1..=1 {
+                            for dz in -1..=1 {
+                                if let Some(&o) = idx.get(&[g[0] + dx, g[1] + dy, g[2] + dz]) {
+                                    let q = cells[o];
+                                    let d2 = (q[0] as f64 + 0.5 - cc[0]).powi(2) + (q[1] as f64 + 0.5 - cc[1]).powi(2)
+                                        + (q[2] as f64 + 0.5 - cc[2]).powi(2);
+                                    if d2 < best.0 && same_part(o) {
+                                        best = (d2, o);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    best.1
+                }
             };
             for k in 0..3 {
                 let v = f[k];

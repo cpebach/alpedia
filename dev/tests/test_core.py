@@ -127,6 +127,21 @@ class TestShape(CoreCase):
         self.assertEqual(tris(["steel", "steel", "wood"]), 0)
         self.assertEqual(tris(["steel"] * 3, {"def": "battery", "dir": 2}), 0)
 
+    def test_adjacent_slopes_of_different_kinds_join(self):
+        """A-19：同じ形の斜面がとなり合う（手前は鋼鉄・奥は木）なら、種類が違っても 1 つの斜面につなぐ（間に谷を作らない）。"""
+        w = self.world()
+        L = [(0, 0), (1, 0), (1, 1)]
+        V = [((x, y, 0), "steel", None) for x, y in L] + [((x, y, 1), "wood", None) for x, y in L]
+        c = Construct.from_voxels(w.registry, V, np.zeros(3), size=0.5)
+        t = c.topo["tris"]
+        kinds = {tuple(sorted({c.mats[int(i)] for i in tri})) for tri in t}
+        self.assertIn(("steel", "wood"), kinds, "鋼鉄と木をまたぐ斜面の三角形がある")
+        # 層の中で種類が違う（段差）なら、今まで通りつながない
+        V2 = [((0, 0, z), "steel", None) for z in (0, 1)] + [((1, 0, z), "wood", None) for z in (0, 1)] + [((1, 1, z), "steel", None) for z in (0, 1)]
+        c2 = Construct.from_voxels(w.registry, V2, np.zeros(3), size=0.5)
+        self.assertFalse(any({c2.mats[int(i)] for i in tri} == {"steel", "wood"} and len({tuple(c2.cells[int(i)])[2] for i in tri}) == 1
+                             and len({tuple(c2.cells[int(i)])[:2] for i in tri}) == 3 for tri in c2.topo["tris"]))
+
 
 class TestDistances(CoreCase):
     """機能処理の距離：どのプレイヤーからも遠い構築物は止まる（0 なら全部動く）。遠景の箱。"""
