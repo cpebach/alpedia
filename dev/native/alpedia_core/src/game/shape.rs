@@ -622,6 +622,41 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
     if pall.is_empty() {
         return Ok(none);
     }
+    // 三角形の持ち主は、重心のあるブロック（等値面の三角形は格子の 1 マスの中にあり、ブロックの境は格子の線なので、
+    // 素材の境がまっすぐになる）。頂点はブロックごとに分ける（となりのブロックの色がにじまないように。A-18）
+    {
+        let idx: HashMap<[i64; 3], usize> = cells.iter().enumerate().map(|(i, q)| (*q, i)).collect();
+        let mut np: Vec<V3> = Vec::with_capacity(pall.len());
+        let mut no: Vec<usize> = Vec::with_capacity(pall.len());
+        let mut seen: HashMap<(i64, usize), i64> = HashMap::with_capacity(pall.len());
+        for f in fall.iter_mut() {
+            let (a, b, c3) = (pall[f[0] as usize], pall[f[1] as usize], pall[f[2] as usize]);
+            let g = [((a[0] + b[0] + c3[0]) / 3.0).floor() as i64, ((a[1] + b[1] + c3[1]) / 3.0).floor() as i64,
+                     ((a[2] + b[2] + c3[2]) / 3.0).floor() as i64];
+            let own = match idx.get(&g) {
+                // ローターで別に動く部分の三角形は、その部分のブロックだけ（違う部分なら頂点の持ち主のまま）
+                Some(&o) if rotor_gid.as_ref().map(|r| r[o] == r[oall[f[0] as usize]]).unwrap_or(true) => o,
+                _ => oall[f[0] as usize],
+            };
+            for k in 0..3 {
+                let v = f[k];
+                let key = (v, own);
+                let nv = match seen.get(&key) {
+                    Some(&x) => x,
+                    None => {
+                        let x = np.len() as i64;
+                        np.push(pall[v as usize]);
+                        no.push(own);
+                        seen.insert(key, x);
+                        x
+                    }
+                };
+                f[k] = nv;
+            }
+        }
+        pall = np;
+        oall = no;
+    }
     // ガラスと接した透けないブロックの面（形の中なのでできていない）：ブロックの境の平らな四角（ガラス越しに見える。A-17）
     if clear.iter().any(|x| *x) {
         let open = open_doors_v(c)?;
@@ -642,7 +677,8 @@ pub fn shape_build_mesh<'py>(py: Python<'py>, c: &Bound<'py, PyAny>, k: Option<i
                     let (u, v) = ((ax + 1) % 3, (ax + 2) % 3);
                     let plane = (q[ax] + if sgn > 0 { 1 } else { 0 }) as f64;
                     let base = pall.len() as i64;
-                    for (cu, cv) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
+                    // 少し内側に縮める（なめらかな表面はブロックの境より少し内側にあるので、はみ出さないように）
+                    for (cu, cv) in [(0.03, 0.03), (0.97, 0.03), (0.97, 0.97), (0.03, 0.97)] {
                         let mut p = [0.0; 3];
                         p[ax] = plane;
                         p[u] = q[u] as f64 + cu;

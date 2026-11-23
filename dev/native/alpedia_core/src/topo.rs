@@ -112,7 +112,7 @@ pub fn topology(cells: &[[i64; 3]], links: &[[usize; 2]], extras: &[[usize; 2]],
             }
             continue;
         }
-        // 窓の中の結合成分（同じ種類・結合している物どうし）
+        // 窓の中の結合成分（同じ種類・結合している物どうし。平面に並ぶときは種類によらない）
         let mut parent: [usize; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
         fn find(p: &mut [usize; 8], mut x: usize) -> usize {
             while p[x] != x {
@@ -121,13 +121,15 @@ pub fn topology(cells: &[[i64; 3]], links: &[[usize; 2]], extras: &[[usize; 2]],
             }
             x
         }
+        // 窓の中の物が 1 つの平面に並んでいる（斜面にならない）なら、種類が違ってもつなぐ（窓と壁が同じ面でつながる。A-18）
+        let planar = (0..3).any(|ax| (0..2).any(|v| (0..8).all(|k| m[k].is_none() || offs8(k)[ax] == v)));
         for k in 0..8 {
             let Some(jk) = m[k] else { continue };
             let o = offs8(k);
             for d in DIRS {
                 let Some(k2) = off_index([o[0] + d[0], o[1] + d[1], o[2] + d[2]]) else { continue };
                 let Some(j2) = m[k2] else { continue };
-                if kind[jk] == kind[j2] && linked(jk, j2) {
+                if (planar || kind[jk] == kind[j2]) && linked(jk, j2) {
                     let (r1, r2) = (find(&mut parent, k), find(&mut parent, k2));
                     parent[r1] = r2;
                 }
