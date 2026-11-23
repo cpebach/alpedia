@@ -67,6 +67,50 @@ struct Mesh {
     add: bool,                // 足し算で重ねる（光る物）
     extra: [f32; 4],          // x：立体映像（ホログラム）の描き方、y：時刻（ムービーの道具が使う）
     fade: f32,                // 0 より大きいと、目からこの距離（m）より遠い所は不透明に近づける（ガラス。A-14）
+    bound: Option<[f32; 4]>,  // 包む球（ローカル座標の中心・半径）。頂点が変わったら作り直す（視錐台カリング。A-20）
+}
+
+/// 頂点（12 個ずつ。先頭 3 つが位置）を包む球：箱の真ん中と、そこから角までの距離
+fn bound_of(verts: &[f32]) -> Option<[f32; 4]> {
+    if verts.len() < 12 {
+        return None;
+    }
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for v in verts.chunks_exact(12) {
+        for a in 0..3 {
+            lo[a] = lo[a].min(v[a]);
+            hi[a] = hi[a].max(v[a]);
+        }
+    }
+    let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+    let r = ((hi[0] - c[0]).powi(2) + (hi[1] - c[1]).powi(2) + (hi[2] - c[2]).powi(2)).sqrt();
+    Some([c[0], c[1], c[2], r])
+}
+
+/// 描く行列（列ごと）から、視野の左・右・下・上と目の前の面（法線は内向き）。
+/// 奥行きは逆向きで遠くは無限遠なので、奥の面は無い
+fn frustum_planes(m: &[f32; 16]) -> [[f32; 4]; 5] {
+    let row = |r: usize| [m[r], m[4 + r], m[8 + r], m[12 + r]];
+    let (r0, r1, r3) = (row(0), row(1), row(3));
+    let add = |a: [f32; 4], b: [f32; 4], s: f32| [a[0] + s * b[0], a[1] + s * b[1], a[2] + s * b[2], a[3] + s * b[3]];
+    [add(r3, r0, 1.0), add(r3, r0, -1.0), add(r3, r1, 1.0), add(r3, r1, -1.0), r3]
+}
+
+/// 世界の行列 w（列ごと）で動かした球が、視野の外にあるか
+fn outside(planes: &[[f32; 4]; 5], w: &[f32; 16], b: &[f32; 4], margin: f32) -> bool {
+    let c = [w[0] * b[0] + w[4] * b[1] + w[8] * b[2] + w[12],
+             w[1] * b[0] + w[5] * b[1] + w[9] * b[2] + w[13],
+             w[2] * b[0] + w[6] * b[1] + w[10] * b[2] + w[14]];
+    let sc = (0..3).map(|k| (w[k * 4] * w[k * 4] + w[k * 4 + 1] * w[k * 4 + 1] + w[k * 4 + 2] * w[k * 4 + 2]).sqrt()).fold(0.0f32, f32::max);
+    let r = b[3] * sc + margin;
+    for p in planes {
+        let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
+        if (p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3]) / n < -r {
+            return true;
+        }
+    }
+    false
 }
 
 /// 骨で曲げる形（VRM の人物など）：もとの頂点。体ごとの部品（SkinPart）がこれを共有する。
@@ -749,6 +793,8 @@ struct View {
     free_meshes: Vec<usize>,
     textures: Vec<Tex>,
     view_proj: [f32; 16],
+    culled: usize,            // 前のフレームで視野の外だったので描かなかったメッシュの数（A-20）
+    cull_on: bool,            // 視錐台カリングをするか（比べるとき用。ふつうは true）
     clear: [f64; 3],
     capture: Option<String>,
     font: Option<Font>,
@@ -819,6 +865,8 @@ impl View {
             free_meshes: vec![],
             textures: vec![],
             view_proj: IDENT,
+            culled: 0,
+            cull_on: true,
             clear: [0.45, 0.65, 0.9],
             capture: None,
             font: None,
@@ -852,6 +900,16 @@ impl View {
     fn pump(&mut self) -> Vec<(String, f64, f64, i64)> {
         let _ = self.el.pump_app_events(Some(Duration::ZERO), &mut self.app);
         std::mem::take(&mut self.app.events)
+    }
+
+    /// 前のフレームで視野の外だったので描かなかったメッシュの数（視錐台カリング。A-20）
+    fn culled_count(&self) -> usize {
+        self.culled
+    }
+
+    /// 視錐台カリングを入り切りする（比べるとき用）
+    fn set_culling(&mut self, on: bool) {
+        self.cull_on = on;
     }
 
     fn size(&self) -> (u32, u32) {
@@ -1142,7 +1200,7 @@ impl View {
         self.check_node(node)?;
         let m = Mesh {
             node, verts: vec![], idx: vec![], dirty_v: false, dirty_i: false, vbuf: None, ibuf: None, n_idx: 0, tex: [None, None],
-            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false, cutoff: 0.0, add: false, extra: [0.0; 4], fade: 0.0,
+            blend: false, depth_write: true, two_sided: true, depth_offset: 0, bin: 0, alive: true, overlay: false, cutoff: 0.0, add: false, extra: [0.0; 4], fade: 0.0, bound: None,
         };
         Ok(if let Some(k) = self.free_meshes.pop() {
             self.meshes[k] = m;
@@ -1569,18 +1627,36 @@ impl View {
 
     /// 描く。戻り値：描いたメッシュの数
     fn render(&mut self) -> PyResult<usize> {
+        // 包む球（頂点が変わったメッシュだけ作り直す。A-20）
+        for m in self.meshes.iter_mut() {
+            if m.alive && (m.dirty_v || m.bound.is_none()) {
+                m.bound = bound_of(&m.verts);
+            }
+        }
+        let planes = frustum_planes(&self.view_proj);
         // 行列（親子）を計算
         let mut cache: Vec<Option<([f32; 16], bool)>> = vec![None; self.nodes.len()];
         let mut draw: Vec<(usize, [f32; 16], [f32; 4])> = Vec::new();
+        let mut culled = 0usize;
         for (k, m) in self.meshes.iter().enumerate() {
             if !m.alive || m.idx.is_empty() || m.verts.is_empty() || m.node >= self.nodes.len() || !self.nodes[m.node].alive {
                 continue;
             }
             let (w, vis) = self.world(m.node, &mut cache);
             if vis {
+                // 視野の外は描かない（画面の上の板は別。風で揺れる草木は揺れる分だけ余裕を見る）
+                if !m.overlay && self.cull_on {
+                    if let Some(b) = &m.bound {
+                        if outside(&planes, &w, b, m.extra[2].max(0.0) * 2.0 + 0.5) {
+                            culled += 1;
+                            continue;
+                        }
+                    }
+                }
                 draw.push((k, w, self.nodes[m.node].tint));
             }
         }
+        self.culled = culled;
         // 半透明は後に（描く順 bin で）
         draw.sort_by_key(|&(k, _, _)| (self.meshes[k].overlay, self.meshes[k].blend || self.meshes[k].add, self.meshes[k].bin));
         let View { app, meshes, textures, view_proj, clear, capture, target, dof, near, eye, fog, t0, .. } = self;
