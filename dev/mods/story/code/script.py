@@ -470,11 +470,6 @@ FREE_PLAY = [
 
 CHAPTER_IDS = [c["id"] for c in CHAPTERS]
 
-# 前の版（「墜落した技術者」）の章 → この版の章（前の版のセーブを続きから遊ぶため）
-OLD_IDS = ["wake", "valley", "power", "control", "drone", "bike", "repair", "launch", "meet"]
-OLD_TO_NEW = {"wake": "wake", "valley": "valley", "power": "power", "control": "control", "drone": "drone",
-              "bike": "bike", "repair": "repair", "launch": "launch", "meet": "port"}
-
 # ムービー（MOD の movies/ の mp4）
 # BGM（mods/bgm/bgm.json の曲の ID, 始める秒）。曲のファイルが無ければ鳴らない
 # 章：ガイアの朝は静かに（マーラー1番の夜明け）、基地の作業は軽快に（バッハ・マーラーのレントラー・ヘンデル）、

@@ -167,4 +167,3 @@ class VRMBody:
         self.root.removeNode()
 
 
-RsVRMModel, RsVRMBody = VRMModel, VRMBody          # 前の版の名前

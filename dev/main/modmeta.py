@@ -13,7 +13,6 @@ mod.json の項目：
                 "assets"（素材の置き場：BGM など。どちらの一覧にも出ず、ワールドで選ばなくても使われる）
 """
 TYPES = ("addon", "scenario", "assets")
-BUILTIN_MODES = ("survival",)    # 前の版では MOD だった本体の遊び方（mods/ に残っていても一覧に出さない）
 from . import native
 
 _C = native.require()

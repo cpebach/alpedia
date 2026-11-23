@@ -21,9 +21,9 @@ from main.world import World, DEFAULT_SETTINGS, default_bodies
 log.setup("ERROR")
 tmp = Path(tempfile.mkdtemp()); paths.SAVES = tmp
 d = paths.world_dir("c"); (d / "scripts").mkdir(parents=True)
-s = dict(DEFAULT_SETTINGS, name="c", format=3, planets=default_bodies())
+s = dict(DEFAULT_SETTINGS, name="c", format=3, mode="survival", planets=default_bodies())
 (d / "world.json").write_text(json.dumps(s), encoding="utf-8")
-(d / "mods.json").write_text(json.dumps({"enabled": ["survival", "city"]}), encoding="utf-8")
+(d / "mods.json").write_text(json.dumps({"enabled": ["city"]}), encoding="utf-8")
 cfg = json.loads(json.dumps(config.DEFAULTS))
 w = World("c", cfg).load()
 assert [a.name for a in w.addons] == ["survival", "city", "rail"] and not w.creative

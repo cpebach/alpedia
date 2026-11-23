@@ -370,7 +370,7 @@ impl Construct {
             ext_applied: fa(py, ext_applied, &[ne])?,
             gv: ia(py, (0..nv as i64).collect(), &[nv])?,
             hk: ia(py, hk, &[nr, 2])?,
-            fixed: PyArray1::from_vec_bound(py, fixed.clone()).reshape(IxDyn(&[gn]))?.unbind(),
+            fixed: crate::game::construct::BA::from_vec(py, fixed.clone(), &[gn])?,
             // 固定の部分は質量・慣性を無限大として解く（関節は動く側だけを動かす）。今の姿勢をそのまま保つ
             inv_m_s: if any_fixed {
                 Some(fa(py, invm.iter().zip(&fixed).map(|(v, f)| if *f { 0.0 } else { *v }).collect(), &[gn])?)

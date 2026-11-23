@@ -197,24 +197,24 @@ impl World {
         if let Some(a) = shift_rows(py, &pos, d)? {
             Construct::s_pos(c, a)?;
         }
-        let prev = c.borrow().prev.clone_ref(py).into_bound(py).into_any();
+        let prev = c.borrow().prev.bind(py).clone().into_any();
         if prev.len().unwrap_or(0) > 0 {
             if let Some(a) = shift_rows(py, &prev, d)? {
-                c.borrow_mut().prev = a.downcast_into::<numpy::PyArrayDyn<f64>>()?.unbind();
+                c.borrow_mut().prev = a.extract::<crate::game::construct::FA>()?;
             }
         }
         let rb = c.borrow().rb.as_ref().map(|r| r.clone_ref(py));
         if let Some(rb) = rb {
-            let x = rb.borrow(py).x.clone_ref(py).into_bound(py).into_any();
+            let x = rb.borrow(py).x.bind(py).clone().into_any();
             if let Some(a) = shift_rows(py, &x, d)? {
-                rb.borrow_mut(py).x = a.downcast_into::<numpy::PyArrayDyn<f64>>()?.unbind();
+                rb.borrow_mut(py).x = a.extract::<crate::game::construct::FA>()?;
             }
         }
         let art = c.borrow().art.as_ref().map(|r| r.clone_ref(py));
         if let Some(art) = art {
-            let x = art.borrow(py).x.clone_ref(py).into_bound(py).into_any();
+            let x = art.borrow(py).x.bind(py).clone().into_any();
             if let Some(a) = shift_rows(py, &x, d)? {
-                art.borrow_mut(py).x = a.downcast_into::<numpy::PyArrayDyn<f64>>()?.unbind();
+                art.borrow_mut(py).x = a.extract::<crate::game::construct::FA>()?;
             }
         }
         // 眠っている物の描画の基準は位置から取り直す
@@ -231,9 +231,9 @@ impl World {
         }
         let rb = c.borrow().rb.as_ref().map(|r| r.clone_ref(py));
         if let Some(rb) = rb {
-            let v = rb.borrow(py).v.clone_ref(py).into_bound(py).into_any();
+            let v = rb.borrow(py).v.bind(py).clone().into_any();
             if let Some(a) = shift_rows(py, &v, dv)? {
-                rb.borrow_mut(py).v = a.downcast_into::<numpy::PyArrayDyn<f64>>()?.unbind();
+                rb.borrow_mut(py).v = a.extract::<crate::game::construct::FA>()?;
             }
         }
         let mut b = c.borrow_mut();

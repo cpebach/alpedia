@@ -5,15 +5,8 @@ saves/<ワールド名>/ の各ファイルに入れてよい項目と型は Rus
 """
 from . import native
 
-# 2: クリエイティブ／サバイバル・街の ON/OFF を world.json ではなく MOD（mods.json）で決める
-# 3: 惑星が大きくなった（A-01）。前の形式の月・小惑星の位置を広げる。惑星の公転（orbit）
+# 3: いまの形式（前の形式のセーブは読み替えない。後方互換は持たない）
 FORMAT = native.require().SAVE_FORMAT
-
-
-def upgrade_world(settings, mods):
-    """古いワールドの読み替え：(settings, mods, 読み替えたか)。"""
-    s, m, changed = native.require().savefmt_upgrade_world(settings, list(mods))
-    return s, m, changed
 
 
 def check_world(s, extra_keys=()):

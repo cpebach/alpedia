@@ -12,8 +12,6 @@ use crate::net::{parse_json, val_to_py};
 type R<T> = PyResult<T>;
 
 pub const TYPES: [&str; 3] = ["addon", "scenario", "assets"];
-/// 前の版では MOD だった本体の遊び方（mods/ に残っていても一覧に出さない）
-pub const BUILTIN_MODES: [&str; 1] = ["survival"];
 
 fn root<'py>(py: Python<'py>, mods_dir: Option<&Bound<'py, PyAny>>) -> R<Bound<'py, PyAny>> {
     match mods_dir.filter(|d| d.is_truthy().unwrap_or(false)) {
@@ -97,7 +95,7 @@ pub fn modmeta_list_all<'py>(py: Python<'py>, mods_dir: Option<&Bound<'py, PyAny
     names.sort();
     let mut metas: Vec<(bool, String, String, Bound<'py, PyDict>)> = Vec::new();
     for n in names {
-        if n.starts_with('.') || n.starts_with('_') || BUILTIN_MODES.contains(&n.as_str()) {
+        if n.starts_with('.') || n.starts_with('_') {
             continue;
         }
         let m = modmeta_read(py, &n, Some(&rt))?;

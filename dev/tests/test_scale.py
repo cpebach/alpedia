@@ -167,18 +167,6 @@ class TestSettlements(CoreCase):
         self.assertEqual(left, [mine[0]])
 
 
-class TestLegacySave(CoreCase):
-    def test_old_planet_positions_are_spread(self):
-        d = paths.world_dir("old")
-        (d / "scripts").mkdir(parents=True, exist_ok=True)
-        from main.world import DEFAULT_SETTINGS
-        s = dict(DEFAULT_SETTINGS, name="old", format=2, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []},
-                                                                  {"def": "luna", "position": [0, 0, 4000], "craters": []}])
-        (d / "world.json").write_text(json.dumps(s), encoding="utf-8")
-        w = World("old", json.loads(json.dumps(__import__("main.config", fromlist=["x"]).DEFAULTS))).load()
-        self.assertAlmostEqual(float(np.linalg.norm(w.planets[1].center0)), 60000.0, delta=1.0)
-
-
 class TestEarthMod(CoreCase):
     """地球の名所（Earth MOD）：10 の地形が読み込まれ、それぞれの形になっている"""
 

@@ -38,7 +38,6 @@ HINGE_AMOUNTS = [-90.0, -60.0, -45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0, 60.0,
 motion = _C.act_motion                      # アクチュエーターの種類："rotor" / "piston" / "hinge" / "both"
 actions_for = _C.act_actions_for
 default_preset = _C.act_default_preset
-migrate_device = _C.act_migrate_device      # 古いセーブの「アクチュエーター」で押し出していた物はピストンに
 check_action = _C.act_check_action          # その動作ができなければ MotionError
 hinge_sides = _C.act_hinge_sides
 default_hinge_side = _C.act_default_hinge_side

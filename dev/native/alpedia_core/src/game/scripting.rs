@@ -419,11 +419,6 @@ impl DeviceHandle {
         let v = self.get(py, "firing", 0.0.into_py(py))?;
         Ok(if v.bind(py).is_truthy()? { v } else { 0.0.into_py(py) })
     }
-    /// 前の版との互換：0 より大きい値で点火する
-    #[setter]
-    fn set_throttle(&self, py: Python<'_>, v: &Bound<'_, PyAny>) -> R<()> {
-        self.set(py, "throttle", v)
-    }
 
     // バルブ -----------------------------------------------------------
     /// 開き具合 0〜1（0 で閉）

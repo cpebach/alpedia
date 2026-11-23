@@ -58,14 +58,14 @@ impl World {
             let dirty = con(&c)?.borrow().dirty;
             if (!c.getattr("has_devices")?.is_truthy()? || Construct::is_quiet(con(&c)?, false).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?.is_truthy()?) && !dirty {
                 // 機器の無い物・固定されていて毎ティック処理する機器の無い物は機器・プログラムの処理を飛ばす
-                zero_inplace(&Construct::g_force(con(&c)?)?)?;
+                Construct::clear_force(con(&c)?)?; // 力が入っていなければ配列に触らない（A-23）
                 continue;
             }
             let mut cdt = dt;
             let in_seat = seats.contains(&cid)?;
             if !dirty && !in_seat && c.call_method("is_quiet", (), Some(&[("slow_ok", true)].into_py_dict_bound(py)))?.is_truthy()? {
                 // 明かりだけの固定された建物：0.25 秒ごとにまとめて（点いているか・電気の消費）
-                zero_inplace(&Construct::g_force(con(&c)?)?)?;
+                Construct::clear_force(con(&c)?)?; // 力が入っていなければ配列に触らない（A-23）
                 let sd: f64 = con(&c)?.borrow().slow_dt + dt;
                 Construct::s_slow_dt(con(&c)?, sd)?;
                 if sd < 0.25 {
@@ -186,21 +186,18 @@ impl World {
                 // アンカーで固定されて止まっている物（建物など）：物理計算しない（ほかの物には当たる）
                 Construct::s_touch_moving(con(&c)?, false)?;
                 anchored_ids.add(&cid)?;
-                let v = Construct::g_vel(con(&c)?)?;
-                if any_nonzero(&v)? {
-                    zero_inplace(&v)?;
-                }
+                Construct::settle_vel(con(&c)?)?; // 速度が変わっていなければ配列に触らない（A-23）
                 sleeping.push(c);
                 continue;
             }
-            if Construct::g_asleep(con(&c)?)?.is_truthy()? && any_nonzero(&Construct::g_force(con(&c)?)?)? {
+            if Construct::g_asleep(con(&c)?)?.is_truthy()? && Construct::force_nonzero(con(&c)?)? {
                 Construct::wake(con(&c)?, false).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;
             }
             Construct::s_touch_moving(con(&c)?, false)?;
             Construct::update_mode(con(&c)?, IntoPy::<PyObject>::into_py(dt, c.py()).extract::<f64>(c.py())?, &IntoPy::<PyObject>::into_py(slf, c.py()).into_bound(c.py())).map(|v| IntoPy::<PyObject>::into_py(v, c.py()).into_bound(c.py()))?;            // 軽量化：剛体化・レール（遠方）の切り替え
             if c.getattr("is_static")?.is_truthy()? {             // アンカーで固定（アクチュエーターが止まっている間）
                 anchored_ids.add(&cid)?;
-                zero_inplace(&Construct::g_vel(con(&c)?)?)?;
+                Construct::settle_vel(con(&c)?)?;
                 sleeping.push(c);
             } else if Construct::g_asleep(con(&c)?)?.is_truthy()? {
                 sleeping.push(c);

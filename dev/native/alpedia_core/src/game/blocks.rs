@@ -665,7 +665,6 @@ pub fn gen_stmt(py: Python<'_>, node: &Bound<'_, PyAny>) -> R<Vec<String>> {
         }
         "reset_timer" => vec!["m['_timer'] = api.time".into()],
         "stop" => vec!["api.stop()".into(), "return".into()],
-        "throttle" => dev_loop(py, node, Some("thruster"), format!("d.throttle = {}", gn("value")?))?,
         "valve" => dev_loop(py, node, Some("valve"), format!("d.open = {}", pyb(st("state", "開く")?)))?,
         "ignite" => dev_loop(py, node, Some("thruster"), "d.ignite()".into())?,
         "valve_flow" => dev_loop(py, node, Some("valve"), format!("d.open = max(0.0, min(1.0, {}))", gn("value")?))?,

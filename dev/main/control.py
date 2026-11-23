@@ -10,6 +10,6 @@
 """
 from . import native
 
-WRITABLE = ("throttle", "ignite", "open", "enabled", "running")   # スクリプトから書き換えてよい機器の状態
+WRITABLE = ("ignite", "open", "enabled", "running")   # スクリプトから書き換えてよい機器の状態
 PortError = native.require().PortError
 Port = native.require().Port

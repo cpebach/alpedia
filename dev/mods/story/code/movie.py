@@ -175,4 +175,3 @@ class MoviePlayer:
         self.on_done(self.name)
 
 
-RsMoviePlayer = MoviePlayer          # 前の版の名前

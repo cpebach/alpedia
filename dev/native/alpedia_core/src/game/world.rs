@@ -41,23 +41,6 @@ fn phys<'py>(cfg: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
     cfg.dget2("physics", PyDict::new_bound(cfg.py()))
 }
 /// 配列の中身を 0 に（その場で）
-fn zero_inplace(o: &Bound<'_, PyAny>) -> R<()> {
-    if !with_rw(o, |s| s.fill(0.0))? {
-        o.set_item(pyo3::types::PySlice::full_bound(o.py()), 0.0)?;
-    }
-    Ok(())
-}
-fn any_nonzero(o: &Bound<'_, PyAny>) -> R<bool> {
-    // 写さずにその場で見る（大きな建物の速度の配列を毎ティック写していて重かった）
-    if let Ok(r) = o.extract::<numpy::PyReadonlyArrayDyn<f64>>() {
-        return Ok(match r.as_slice() {
-            Ok(s) => s.iter().any(|x| *x != 0.0),
-            Err(_) => r.as_array().iter().any(|x| *x != 0.0),
-        });
-    }
-    Ok(fv(o)?.iter().any(|x| *x != 0.0))
-}
-
 #[pyfunction]
 #[pyo3(signature = (main="terra", moon=true, asteroids=true))]
 pub fn world_default_bodies<'py>(py: Python<'py>, main: &str, moon: bool, asteroids: bool) -> R<Bound<'py, PyList>> {
@@ -113,36 +96,6 @@ pub fn world_write_json(path: &Bound<'_, PyAny>, data: &Bound<'_, PyAny>) -> R<(
 }
 
 use pyo3::types::IntoPyDict;
-
-/// 前の版の「燃料を使う発電機」（generator）を配管に置き換える（推進機が発電するようになったため）
-#[pyfunction]
-pub fn world_drop_fuel_generators(reg: &Bound<'_, PyAny>, cons: &Bound<'_, PyAny>) -> R<i64> {
-    let py = reg.py();
-    if !crate::game::registry::dev_dict(&reg, &pyo3::types::PyString::new_bound(py, "generator").into_any())?.is_none() {
-        return Ok(0);
-    }
-    let mut n = 0;
-    for cd in cons.iter()? {
-        for v in getd(&cd?, "voxels", PyList::empty_bound(py))?.iter()? {
-            let v = v?;
-            if v.len()? > 4 {
-                let d = v.get_item(4)?;
-                if d.is_truthy()? && getd(&d, "def", py.None())?.eq("generator")? {
-                    let nd = PyDict::new_bound(py);
-                    nd.set_item("def", "pipe")?;
-                    nd.set_item("dir", getd(&d, "dir", 2)?.call_method0("__int__")?)?;
-                    nd.set_item("name", "配管")?;
-                    v.set_item(4, nd)?;
-                    n += 1;
-                }
-            }
-        }
-    }
-    if n > 0 {
-        log(py)?.call_method1("info", ("燃料の発電機 %d 個を配管に置き換えました", n))?;
-    }
-    Ok(n)
-}
 
 /// ワールドが使っているのに定義が無いもの（MOD を外した・MOD の ID が変わった など）
 #[pyfunction]
@@ -431,9 +384,8 @@ impl World {
         let dm = PyDict::new_bound(py);
         dm.set_item("enabled", PyList::empty_bound(py))?;
         let mods = getd(&world_read_json(&div("mods.json")?, dm.as_any())?, "enabled", PyList::empty_bound(py))?;
+        let mut mods = mods;
         let savefmt = imp(py, "main.savefmt")?;
-        let r = savefmt.call_method1("upgrade_world", (&s, &mods))?;
-        let (s, mut mods, upgraded) = (r.get_item(0)?, r.get_item(1)?, r.get_item(2)?.is_truthy()?);
         let given_none = slf.borrow().given_addons.is_none(py);
         let save_mods = |mods: &Bound<'_, PyAny>| -> R<()> {
             let d = PyDict::new_bound(py);
@@ -443,12 +395,6 @@ impl World {
                 x => x,
             }
         };
-        if upgraded {
-            lg.call_method1("info", ("古い形式のワールドを読み替えました：遊び方 %s、MOD %s", getd(&s, "mode", "creative")?, &mods))?;
-            if given_none {
-                save_mods(&mods)?;          // 読み替えた MOD の一覧はすぐ書き戻す（world.json は保存のときに）
-            }
-        }
         // 依存する MOD（mod.json の requires）を足す
         let modcode = imp(py, "main.modcode")?;
         let modmeta = imp(py, "main.modmeta")?;
@@ -505,7 +451,6 @@ impl World {
         Self::s_settings(slf, &settings)?;
         slf.borrow_mut().time = fget(settings.as_any(), "time", 0.0)?;
         let cons = world_read_json(&div("constructs.json")?, PyList::empty_bound(py).as_any())?;
-        let n_gen = world_drop_fuel_generators(&reg, &cons)?;
         for e in world_missing_references(&reg, settings.as_any(), &cons, &Self::g_mods(slf)?)? {
             errors.call_method1("append", (e,))?;
         }
@@ -554,7 +499,7 @@ impl World {
             }
         }
         let pj = world_read_json(&div("player.json")?, py.None().bind(py))?;
-        // 見た目：保存されていたもの → ワールド設定の見た目（古い形式）→ 宇宙飛行士 の順に、定義があるもの
+        // 見た目：保存されていたもの → ワールド設定の見た目 → 宇宙飛行士 の順に、定義があるもの
         let pjd = if pj.is_truthy()? { pj.clone() } else { PyDict::new_bound(py).into_any() };
         let cands = [getd(&pjd, "def", py.None())?, getd(settings.as_any(), "player", py.None())?, PyString::new_bound(py, "default").into_any()];
         let mut pick = PyString::new_bound(py, "default").into_any();
@@ -586,9 +531,6 @@ impl World {
         if added.is_truthy()? && given_none {
             let names: Vec<String> = added.iter()?.map(|m| Ok(modmeta.call_method1("name_of", (m?,))?.str()?.to_string())).collect::<R<_>>()?;
             Self::message(slf, &format!("必要な MOD を足しました: {}", names.join("、")))?;
-        }
-        if n_gen > 0 {
-            Self::message(slf, &format!("燃料の発電機はなくなったので、{n_gen} 個を配管にしました（推進機が燃えている間に発電します）"))?;
         }
         Ok(slf.clone())
     }

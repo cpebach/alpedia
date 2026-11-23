@@ -1,7 +1,6 @@
 """シナリオモード（ワールド側）：舞台を最初に作る、章と目標の進み方、無線のセリフ、人物の立ち位置、ムービーの順番。
 
 状態は world.settings["story"] に入れてセーブする：
-    v      状態の版（2：「ストーリー vol.1」。前の版「墜落した技術者」のセーブは読み込みのときに読み替える）
     built  構築物・地面の跡・スクリプトを作ったか
     ch     いまの章（script.CHAPTERS の番号）　goals  済んだ目標 {ID: True}
     ids    構築物の ID {役: ID}　log  セリフ [[番号, 話す人, 文, 出す時刻]]　n  セリフの通し番号
@@ -30,9 +29,6 @@ L = log.get("story")
 
 CHECK_EVERY = 0.2          # 目標を調べる間隔（秒・ワールド時刻）
 HINT_AFTER = 75.0          # 目標が済まないとき、この秒数でヒントのセリフ
-VERSION = 3                  # 3：動かない構築物をアンカーで固定（前の版のセーブにはアンカーを足す）
-STATIC_ROLES = ("pod", "beacon", "power", "model", "task", "console", "gate", "sign_base", "sign_luna", "crane",
-                "factory", "interceptor", "unit", "booth")
 ROBOT_BLUEPRINT = "transformer_robot.alp.json"     # 第12章のトワのロボット（sauce/blueprints の設計図）
 ROBOT_NAME = "変形ロボット ツバメ"
 # 拡張が位置を決める（物理計算しない）構築物。動かない物はアンカーのブロックで固定する（sites.anchored）
@@ -82,8 +78,8 @@ class StoryAddon(SceneryHost, Addon):
         st = world.settings.get("story")
         if not isinstance(st, dict):
             return                       # シナリオのワールドではない（MOD だけ入れた）
-        # 主な惑星：ガイア（前の版のセーブはテラ）。self.terra という名前のまま使う
-        self.terra = next((p for p in world.planets if p.defn["id"] in ("gaia", "terra")), None)
+        # 主な惑星：ガイア（self.terra という名前のまま使う）
+        self.terra = next((p for p in world.planets if p.defn["id"] == "gaia"), None)
         self.luna = next((p for p in world.planets if p.defn["id"] == "luna"), None)
         self.port = world.addon("lunaport")
         self.amatsu = world.addon("amatsu")
@@ -117,8 +113,6 @@ class StoryAddon(SceneryHost, Addon):
             st.setdefault(k, v)
         self.st = st
         host = world.net is None or getattr(world.net, "role", "") != "client"
-        if host and st.get("v") != VERSION:
-            self._upgrade(st)
         if not st["built"] and host:
             self.build_world(world)
         elif host:
@@ -126,7 +120,6 @@ class StoryAddon(SceneryHost, Addon):
         if host and self.st.get("built"):
             self._prepare_robot(on_load=True)
         if host and self._cid() == "repair" and self.con("cart") is None and not self.port_attached():
-            self._ensure_fuel_port()
             self._place_cart()
         if self.weapons is not None:
             self.weapons.listeners.append(self._on_weapon)
@@ -139,27 +132,6 @@ class StoryAddon(SceneryHost, Addon):
 
     def on_save(self, world):
         pass                             # world.settings["story"] をそのまま使っている
-
-    def _upgrade(self, st):
-        """前の版（「墜落した技術者」）のセーブ：章の番号を読み替える。足りない構築物は ensure_constructs で足す。"""
-        if st.get("built") and "v" not in st:
-            old = script.OLD_IDS[min(int(st.get("ch", 0)), len(script.OLD_IDS) - 1)]
-            new = script.OLD_TO_NEW.get(old, "wake")
-            if st.get("done"):
-                new = "port"
-                st["done"] = False
-            st["ch"] = IDX[new]
-            st["goals"] = {}
-            st["ch_t"] = self.world.time
-            st["events"] = []
-            st["log"] = []
-            if new == "port":
-                st["flags"]["landed"] = True
-            L.info("前の版のシナリオのセーブを読み替えました（%s → %s）", old, new)
-            self.world.message("シナリオが新しくなりました（ストーリー vol.1）。続きから遊べます（J で章の一覧）")
-        if int(st.get("v") or 0) < 3:
-            self._anchor_statics()
-        st["v"] = VERSION
 
     # ------------------------------------------------------------------
     # 最初に1回：地面の跡・構築物・スクリプト・プレイヤーの位置
@@ -235,7 +207,7 @@ class StoryAddon(SceneryHost, Addon):
         L.info("シナリオのワールドを作りました（構築物 %d）", len(st["ids"]))
 
     def ensure_constructs(self):
-        """役の構築物が無ければ作る（前の版のセーブ・壊した物の作り直し）。"""
+        """役の構築物が無ければ作る（壊した物の作り直し）。"""
         from main import tutorial_drone as drone
         from main import tutorial_rod as rod
         ids = self.st["ids"]
@@ -361,32 +333,6 @@ class StoryAddon(SceneryHost, Addon):
             B.save(sd / f"{base}.blocks.json", prog)
             (sd / f"{base}.py").write_text(B.to_python(prog, f"{base}.blocks.json"), encoding="utf-8")
         self._sign_target()
-
-    def _anchor_statics(self):
-        """前の版のセーブ：動かない構築物にアンカーを足す（足もとの下に。迎撃艦は艦橋の床をアンカーに）。"""
-        from main.construct import CORNER_BITS
-        for role in STATIC_ROLES:
-            c = self.con(role)
-            if c is None or c.anchored:
-                continue
-            if role == "interceptor":
-                R, t = c.rigid_fit()
-                for cell in space.SHIP_ANCHORS:
-                    i = c.index.get(tuple(cell))
-                    if i is None:
-                        c.add_voxel(cell, "steel", dict(sites.ANCHOR),
-                                    ((np.asarray(cell, float)[None] + CORNER_BITS) * c.size) @ R.T + t)
-                    elif not c.devs[i]:
-                        c.devs[i] = c._init_device(dict(sites.ANCHOR))
-                c.rebuild()
-                continue
-            V = [(cl, m, d) for cl, m, d in zip(c.cells, c.mats, c.devs)]
-            root = sites.root_cells(V)
-            R, t = c.rigid_fit([c.index[cl] for cl in root] or None)
-            for cell in sites.anchor_cells(V, 1 if c.n_vox < 30 else 2):
-                verts = ((np.asarray(cell, float)[None] + CORNER_BITS) * c.size) @ R.T + t
-                c.add_voxel(cell, "steel", dict(sites.ANCHOR), verts)
-            L.info("アンカーを足しました: %s（%d）", c.name, len(c.anchor_index()))
 
     def _spawn(self, vox, place, m, name, id_=None, center=False, sink=False):
         """地図の場所に構築物を置く（main.buildkit.spawn_on_map：地面・景色の箱にめり込まないように持ち上げ、
@@ -1099,7 +1045,6 @@ class StoryAddon(SceneryHost, Addon):
         if cid == "reaccel":
             self._sign_target()
         if cid == "repair":
-            self._ensure_fuel_port()
             self._place_cart()
         if cid == "depart":
             self.st.pop("flight", None)
@@ -1109,8 +1054,8 @@ class StoryAddon(SceneryHost, Addon):
 
     # --- ロボット（第12章） -------------------------------------------------
     def _prepare_robot(self, on_load=False):
-        """トワのロボット：第12章より前には無い（前の版で甲板に置いていた古いロボットは消す）。
-        第12章でツバメでなければ（前の版のセーブ）迎撃艦の甲板に出し直す。燃料は満タンにして、制御を動かす。"""
+        """トワのロボット：第12章より前には無い（あれば消す）。
+        第12章でツバメでなければ迎撃艦の甲板に出し直す。燃料は満タンにして、制御を動かす。"""
         c = self.con("robot")
         ch = int(self.st.get("ch", 0))
         if ch < IDX["robot"]:
@@ -1180,23 +1125,6 @@ class StoryAddon(SceneryHost, Addon):
                 x["state"].pop("error", None)
 
     # --- 給油（第8章） -------------------------------------------------------
-    def _ensure_fuel_port(self):
-        """前の版のルミナス号には給油口が無い：給油管と給油口を足す。"""
-        c = self.con("ship")
-        if c is None or tuple(sites.FUEL_PORT) in c.index:
-            return
-        try:
-            i = c.index.get(tuple(sites.FUEL_PIPE))
-            if i is not None and not c.devs[i]:
-                c.remove_voxels([i])
-            if tuple(sites.FUEL_PIPE) not in c.index:
-                _add_cell(c, sites.FUEL_PIPE, "steel", {"def": "pipe", "dir": 2, "name": "給油管"})
-            _add_cell(c, sites.FUEL_PORT, "steel", sites.fuel_port_dev())
-            for part in c.split():
-                self.world.add_construct(part)
-        except Exception:  # noqa: BLE001
-            L.exception("給油口を足せません")
-
     def _place_cart(self):
         """給油車を、ルミナス号の今の位置・向きに合わせて（同じ格子で）置く。給油が済むまで動かさない（ANCHORED）。"""
         ship = self.con("ship")

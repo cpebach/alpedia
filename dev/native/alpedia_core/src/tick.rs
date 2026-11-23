@@ -211,18 +211,18 @@ pub fn run(
     let nj = jobs.len();
     let ns = sleepers.len();
     let mut o = Outcome { touch: vec![false; nj + ns], want_soft: vec![false; nj + ns], ..Default::default() };
-    let fixed0: Vec<Option<Vec<f64>>> = sleepers.iter().map(|s| if s.fixed { Some(s.pos.to_vec()) } else { None }).collect();
-    // 眠っている物の当たり判定の点はティックの間変わらない（押されて動いたら起きるので、そこで止める）
-    let spts: Vec<Vec<f64>> = sleepers.iter().map(|s| contacts::proxy_points_of(s.proxy, s.pos)).collect();
+    use rayon::prelude::*;
+    // 固定された眠っている物の位置（押されても戻す）と、当たり判定の点はティックの間変わらない（構築物ごとに並べて作る。A-23）
+    let fixed0: Vec<Option<Vec<f64>>> = sleepers.par_iter().map(|s| if s.fixed { Some(s.pos.to_vec()) } else { None }).collect();
+    let spts: Vec<Vec<f64>> = sleepers.par_iter().map(|s| contacts::proxy_points_of(s.proxy, s.pos)).collect();
     let mut arts: Vec<ArtState> = (0..nj).map(|_| ArtState::default()).collect();
     let mut pt = std::time::Instant::now();
-    let kind_slot = |p: &Part| match p { Part::Soft(_) => 13, Part::Rigid(_) => 14, Part::Art(_) => 15 };
     for step in 0..substeps {
-        // ---- 前半 ----
-        let mut v0s: Vec<Option<Vec<f64>>> = Vec::with_capacity(nj);
-        for (k, j) in jobs.iter_mut().enumerate() {
-            v0s.push(if j.settle_cap > 0.0 { Some(j.vel.to_vec()) } else { None });
-            let slot = kind_slot(&j.part);
+        // ---- 前半（構築物ごとに並べて計算する。A-23） ----
+        let front: Vec<(bool, Vec<Hit>, Option<Vec<f64>>)> = jobs.par_iter_mut().zip(arts.par_iter_mut()).enumerate().map(|(k, (j, st))| {
+            let mut hits: Vec<Hit> = Vec::new();
+            let mut want = false;
+            let v0 = if j.settle_cap > 0.0 { Some(j.vel.to_vec()) } else { None };
             let t = j.t;
             match &mut j.part {
                 Part::Soft(s) => {
@@ -231,28 +231,27 @@ pub fn run(
                         &s.angles, s.parallel, &j.cav, soft, s.crest,
                     );
                     for &g in &j.boxes {
-                        box_contacts(k, step, g, &groups[g], j.pos, j.prev, j.vel, t, false, &mut o.hits);
+                        box_contacts(k, step, g, &groups[g], j.pos, j.prev, j.vel, t, false, &mut hits);
                     }
                 }
                 Part::Rigid(rg) => {
                     let defer = rg.full && !j.boxes.is_empty();
-                    let w = body::rigid_begin(
+                    want |= body::rigid_begin(
                         j.pos, j.vel, j.prev, j.force, rg.rb_r, rg.rb_ib, t, planets, scale, h, &j.cav, rg.full, impact_speed,
                         soft, defer,
                     );
-                    o.want_soft[k] |= w;
                     if defer {
                         let mut bx: Vec<RContact> = Vec::new();
                         for &g in &j.boxes {
-                            for (row, dep, nn) in box_contacts(k, step, g, &groups[g], j.pos, j.prev, j.vel, t, true, &mut o.hits) {
+                            for (row, dep, nn) in box_contacts(k, step, g, &groups[g], j.pos, j.prev, j.vel, t, true, &mut hits) {
                                 bx.push((row, dep, nn, [0.0; 3], g as i64));
                             }
                         }
                         let (w2, _) = body::full_contacts(j.pos, j.prev, j.vel, t, planets, h, impact_speed, soft, bx);
-                        o.want_soft[k] |= w2;
+                        want |= w2;
                     } else if !rg.full {
                         for &g in &j.boxes {
-                            box_contacts(k, step, g, &groups[g], j.pos, j.prev, j.vel, t, false, &mut o.hits);
+                            box_contacts(k, step, g, &groups[g], j.pos, j.prev, j.vel, t, false, &mut hits);
                         }
                     }
                 }
@@ -263,14 +262,13 @@ pub fn run(
                     );
                     let mut bx: Vec<artstep::Contact> = Vec::new();
                     for &g in &j.boxes {
-                        for (row, dep, nn) in box_contacts(k, step, g, &groups[g], j.pos, j.prev, j.vel, t, true, &mut o.hits) {
+                        for (row, dep, nn) in box_contacts(k, step, g, &groups[g], j.pos, j.prev, j.vel, t, true, &mut hits) {
                             bx.push(artstep::Contact { p: row, d: dep, n: nn, vs: [0.0; 3], ci: g as i64 });
                         }
                     }
                     let (kept, cl, lam) = artstep::solve(
                         j.pos, j.prev, t, a.at, a.x, a.r, a.vl, a.applied, &a.want, &a.rot_speed, planets, h, &bx,
                     );
-                    let st = &mut arts[k];
                     st.defo = rows.into_iter().zip(d).collect();
                     st.cg = kept.iter().map(|c| a.at.vg[c.p]).collect();
                     st.cn = kept.iter().flat_map(|c| c.n).collect();
@@ -278,9 +276,16 @@ pub fn run(
                     st.lam = lam;
                 }
             }
-            crate::prof::add(slot, &mut pt);
+            (want, hits, v0)
+        }).collect();
+        let mut v0s: Vec<Option<Vec<f64>>> = Vec::with_capacity(nj);
+        for (k, (w, hits, v0)) in front.into_iter().enumerate() {
+            o.want_soft[k] |= w;
+            o.hits.extend(hits);
+            v0s.push(v0);
         }
-        // ---- 構築物どうしの押し出し ----
+        crate::prof::add(13, &mut pt);
+        // ---- 構築物どうしの押し出し（順に解く） ----
         let woke = {
             let mut items: Vec<contacts::Item> = Vec::with_capacity(nj + ns);
             for j in jobs.iter_mut() {
@@ -296,23 +301,22 @@ pub fn run(
             }
             r.woke
         };
-        for (s, f) in sleepers.iter_mut().zip(fixed0.iter()) {
+        sleepers.par_iter_mut().zip(fixed0.par_iter()).for_each(|(s, f)| {
             if let Some(p0) = f {
                 s.pos.copy_from_slice(p0);
             }
-        }
+        });
         crate::prof::add(16, &mut pt);
-        // ---- 後半 ----
-        let mut stop = false;
-        for (k, j) in jobs.iter_mut().enumerate() {
+        // ---- 後半（構築物ごとに並べて計算する） ----
+        let arts_r = &arts;
+        let ends: Vec<Option<(usize, Vec<i64>, Vec<i64>)>> = jobs.par_iter_mut().zip(v0s.par_iter()).enumerate().map(|(k, (j, v0))| {
             let t = j.t;
-            let slot = kind_slot(&j.part);
+            let mut out = None;
             match &mut j.part {
                 Part::Soft(s) => {
                     let (br, rot) = body::soft_end(j.pos, j.vel, j.prev, s.rest, s.act_scale, s.last_r, t, h, &s.angles, s.crest);
                     if !br.is_empty() || !rot.is_empty() {
-                        o.broken.push((k, br, rot));
-                        stop = true;
+                        out = Some((k, br, rot));
                     }
                 }
                 Part::Rigid(rg) => {
@@ -321,15 +325,21 @@ pub fn run(
                     rg.rb_x.copy_from_slice(&x);
                 }
                 Part::Art(a) => {
-                    let st = &arts[k];
+                    let st = &arts_r[k];
                     artstep::end(j.pos, j.vel, j.prev, t, a.at, a.x, a.r, a.vl, &st.defo, &st.cg, &st.cl, &st.cn, &st.lam, h);
                 }
             }
-            if let Some(v0) = &v0s[k] {
+            if let Some(v0) = v0 {
                 limit_dv(j.vel, v0, j.settle_cap);
             }
-            crate::prof::add(slot, &mut pt);
+            out
+        }).collect();
+        let mut stop = false;
+        for e in ends.into_iter().flatten() {
+            o.broken.push(e);
+            stop = true;
         }
+        crate::prof::add(14, &mut pt);
         o.done = step + 1;
         let woke: Vec<usize> = woke.into_iter().filter(|&q| q >= nj && sleepers[q - nj].can_wake).map(|q| q - nj).collect();
         if !woke.is_empty() {

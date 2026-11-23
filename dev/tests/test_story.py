@@ -5,7 +5,7 @@
 - 序章から終章まで、各章の目標を（画面の操作の代わりに world の操作で）済ませると最後まで進む
   （第9章は航法のブロックプログラム moon.blocks.json で本当に月まで飛んで着陸する。
    第3章は「待つ」ブロックの手順、第11章は迎撃のブロックプログラム、第12章はロボットの操縦で進める）
-- 保存して読み込み直しても、進み具合はそのまま（構築物を作り直さない）。前の版のセーブも続きから遊べる
+- 保存して読み込み直しても、進み具合はそのまま（構築物を作り直さない）
 - 章の一覧の「ここから」（jump）で、どの章からでも始められる
 移植・更新のときは、このテストが通ることと、docs/ストーリー台本.md の表を見比べる。
 """
@@ -569,52 +569,6 @@ class StoryCase(unittest.TestCase):
         self.assertEqual(len(w2.constructs), n)
         self.assertEqual(len(s2.terra.craters), len(s.terra.craters))
         self.assertTrue(np.allclose(s2.scenes[0].C, s.scenes[0].C))
-
-    def test_old_tutorial_save_continues(self):
-        """前の版（「墜落した技術者」・MOD は story だけ）のセーブ：必要な MOD を足し、章を読み替えて続きから。"""
-        s, w = self.s, self.w
-        w.save()
-        d = w.dir
-        wj = json.loads((d / "world.json").read_text(encoding="utf-8"))
-        st = wj["story"]
-        for role in ("crane", "factory", "interceptor", "krobot", "unit"):
-            st["ids"].pop(role, None)
-        cons = [c for c in json.loads((d / "constructs.json").read_text(encoding="utf-8"))
-                if c["id"] in st["ids"].values()]
-        st.pop("v", None)
-        st["ch"] = 5                                 # 前の版の「第5章 ホバーバイク」
-        (d / "world.json").write_text(json.dumps(wj, ensure_ascii=False), encoding="utf-8")
-        (d / "constructs.json").write_text(json.dumps(cons, ensure_ascii=False), encoding="utf-8")
-        (d / "mods.json").write_text(json.dumps({"enabled": ["story"]}), encoding="utf-8")
-        modcode.reset()
-        w2 = World(NAME, CFG).load()
-        s2 = w2.addon("story")
-        self.assertIn("lunaport", w2.mods)
-        self.assertEqual(json.loads((d / "mods.json").read_text())["enabled"][-1], "story")
-        self.assertEqual(self.script.CHAPTER_IDS[s2.st["ch"]], "bike")
-        for role in ("crane", "factory", "interceptor", "krobot", "unit"):
-            self.assertIsNotNone(s2.con(role), role)
-
-    def test_old_save_gets_anchors(self):
-        """アンカーの無い前の版（v2）のセーブ：動かない構築物にアンカーを足して固定する。"""
-        s, w = self.s, self.w
-        for role in ("power", "beacon", "interceptor"):
-            c = s.con(role)
-            c.remove_voxels(list(c.anchor_index()))
-            self.assertFalse(c.anchored)
-        s.st["v"] = 2
-        w.save()
-        modcode.reset()
-        w2 = World(NAME, CFG).load()
-        s2 = w2.addon("story")
-        for role in ("power", "beacon", "interceptor"):
-            c = s2.con(role)
-            self.assertTrue(c.anchored, role)
-        P0 = s2.con("power").pos.copy()
-        for _ in range(60):
-            w2.step(1 / 60)
-        self.assertTrue(s2.con("power").is_static)
-        self.assertLess(float(np.abs(s2.con("power").pos - P0).max()), 1e-9)
 
     def test_chapter_autosave_and_restore(self):
         """章の始めに自動で保存（chapters/<番号>/）して、章の一覧の「保存から」で戻せる。"""

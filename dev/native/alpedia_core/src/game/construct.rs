@@ -354,7 +354,7 @@ pub struct Construct {
     pub extras: PyObject,
     #[pyo3(get, set)]
     pub pos: FA,
-    #[pyo3(get, set)]
+    /// 速度（Python からは下の getter・setter。読むと vel_maybe が立つ）
     pub vel: FA,
     #[pyo3(get, set)]
     pub rest: FA,
@@ -410,7 +410,7 @@ pub struct Construct {
     pub mass_ver: i64,
 
     // ---- 物理の配列（rebuild で作る。ボクセルごと n・頂点ごと 8n・結合ごと） ----
-    #[pyo3(get, set)]
+    /// 力（Python からは下の getter・setter。読むと force_maybe が立つ）
     pub force: FA,
     #[pyo3(get, set, name = "_prev")]
     pub prev: FA,
@@ -499,6 +499,14 @@ pub struct Construct {
     #[pyo3(get, set)]
     pub notes: Py<PyList>,
 
+    // ---- 干渉の印（A-23）：立っていなければ、力は全部 0・速度は前に確かめた値のまま（配列を毎ティックなめなくてよい） ----
+    /// 力に何か入ったかもしれない（Rust・Python が力の配列を取り出した・入れ替えた）
+    pub force_maybe: std::sync::atomic::AtomicBool,
+    /// 速度が変わったかもしれない（物理が動かした・Rust・Python が速度の配列を取り出した・入れ替えた）
+    pub vel_maybe: std::sync::atomic::AtomicBool,
+    /// つなぎ直しを最後に確かめたときの (version, 眠った回数, 止まっていたか)。同じで止まっていれば確かめ直さない
+    pub rebond_key: (i64, i64, bool),
+
     // ---- 計算の途中の覚え（Python からは見えない） ----
     pub cache: Caches,
 }
@@ -509,10 +517,10 @@ pub fn con<'a, 'py>(c: &'a Bound<'py, PyAny>) -> R<&'a Bound<'py, Construct>> {
     Ok(c.downcast::<Construct>()?)
 }
 
-/// numpy の配列（型つき）。Python からは今までどおり numpy の配列に見える
-pub type FA = Py<PyArrayDyn<f64>>;
-pub type IA = Py<PyArrayDyn<i64>>;
-pub type BA = Py<PyArrayDyn<bool>>;
+/// 数の並び（型つき）。中身は Rust が持ち、Python からは同じメモリを見る numpy の配列に見える（A-23）
+pub type FA = crate::game::rarr::RArr<f64>;
+pub type IA = crate::game::rarr::RArr<i64>;
+pub type BA = crate::game::rarr::RArr<bool>;
 
 /// 構築物の計算の覚え。どれも (鍵, 値...) の形の tuple か、作った物そのもの
 #[derive(Default)]
@@ -542,27 +550,27 @@ pub struct Caches {
 
 /// 0 の配列（型つき）
 pub fn fz(py: Python<'_>, shape: &[usize]) -> FA {
-    PyArrayDyn::<f64>::zeros_bound(py, IxDyn(shape), false).unbind()
+    FA::zeros(py, shape).expect("配列を作れません")
 }
 pub fn iz(py: Python<'_>, shape: &[usize]) -> IA {
-    PyArrayDyn::<i64>::zeros_bound(py, IxDyn(shape), false).unbind()
+    IA::zeros(py, shape).expect("配列を作れません")
 }
 pub fn bz(py: Python<'_>, shape: &[usize]) -> BA {
-    PyArrayDyn::<bool>::zeros_bound(py, IxDyn(shape), false).unbind()
+    BA::zeros(py, shape).expect("配列を作れません")
 }
 /// Vec から配列（型つき）
 pub fn fa(py: Python<'_>, v: Vec<f64>, shape: &[usize]) -> R<FA> {
-    Ok(PyArray1::from_vec_bound(py, v).reshape(IxDyn(shape))?.unbind())
+    FA::from_vec(py, v, shape)
 }
 pub fn ia(py: Python<'_>, v: Vec<i64>, shape: &[usize]) -> R<IA> {
-    Ok(PyArray1::from_vec_bound(py, v).reshape(IxDyn(shape))?.unbind())
+    IA::from_vec(py, v, shape)
 }
-/// Python の値（numpy の配列・list など）を float64 の配列に。numpy の float64 の配列ならそのまま（同じ物）
+/// Python の値（numpy の配列・list など）を float64 の配列に（Rust の配列を見ている物なら同じ入れ物）
 pub fn to_fa(o: &Bound<'_, PyAny>) -> R<FA> {
-    if let Ok(a) = o.downcast::<PyArrayDyn<f64>>() {
-        return Ok(a.clone().unbind());
+    if let Ok(a) = o.extract::<FA>() {
+        return Ok(a);
     }
-    Ok(crate::game::construct::as_f64(&o)?.downcast_into::<PyArrayDyn<f64>>()?.unbind())
+    FA::copy_of(&crate::game::construct::as_f64(&o)?)
 }
 
 fn zeros<'py>(py: Python<'py>, shape: &[usize]) -> R<Bound<'py, PyAny>> {
@@ -704,6 +712,9 @@ impl Construct {
             rotors: PyList::empty_bound(py).unbind(), topo: py.None(), prox_w: py.None(), art: None,
             dirty: false, soft_ok: false, full_rigid: false, nb_used: false, settle: 0.0, touch_moving: false,
             slow_dt: 0.0, notes: PyList::empty_bound(py).unbind(),
+            force_maybe: std::sync::atomic::AtomicBool::new(true),
+            vel_maybe: std::sync::atomic::AtomicBool::new(true),
+            rebond_key: (-1, -1, false),
             cache: Caches::default(),
         })
     }
@@ -850,7 +861,6 @@ impl Construct {
     /// 機器の情報を決まった形にする（状態は devstate の表のとおりにそろえる）
     pub(crate) fn _init_device<'py>(slf: &Bound<'py, Self>, dev: &Bound<'py, PyAny>) -> R<Bound<'py, PyDict>> {
         let py = slf.py();
-        let dev = super::actuator::act_migrate_device(py, dev)?;   // 古い「アクチュエーター」で押し出していた物はピストンに
         let reg = Self::g_reg(slf)?;
         let def = dev.get_item("def")?;
         let dd = crate::game::registry::dev_dict(&reg, &def)?;
@@ -932,7 +942,7 @@ impl Construct {
             b.v_break = fa(py, v_break.clone(), &[n])?;
             b.v_yield = fa(py, g(|m| m.yield_strain), &[n])?;
             b.v_density = fa(py, v_density, &[n])?;
-            b.v_rebond = PyArray1::from_vec_bound(py, rb).reshape(IxDyn(&[n]))?.unbind();
+            b.v_rebond = BA::from_vec(py, rb, &[n])?;
             b.v_rebond_dist = fa(py, g(|m| m.rebond_distance).into_iter().map(|x| x * size).collect(), &[n])?;
             b.inv_mass = fa(py, rep(&vm.iter().map(|m| 1.0 / m).collect::<Vec<_>>()), &[8 * n])?;
             b.mass = fa(py, rep(&vm), &[8 * n])?;
@@ -1110,10 +1120,7 @@ impl Construct {
         Self::s_face_vox(slf, iarr(py, fvx, &[nf])?)?;
         Self::s_face_dir(slf, iarr(py, fdr, &[nf])?)?;
         Self::s_face_idx(slf, iarr(py, fid, &[nf, 4])?)?;
-        let need = match Self::o_force(slf)? {
-            None => true,
-            Some(f) => f.getattr("shape")?.get_item(0)?.extract::<usize>()? != nv,
-        };
+        let need = slf.try_borrow()?.force.store.shape().first().copied() != Some(nv);
         if need {
             Self::s_force(slf, zeros(py, &[nv, 3])?)?;
         }
@@ -1277,7 +1284,6 @@ py_fields!(
     g_face_dir s_face_dir o_face_dir t_face_dir face_dir,
     g_face_idx s_face_idx o_face_idx t_face_idx face_idx,
     g_face_vox s_face_vox o_face_vox t_face_vox face_vox,
-    g_force s_force o_force t_force force,
     g_fric s_fric o_fric t_fric fric,
     g_id s_id o_id t_id id,
     g_index s_index o_index t_index index,
@@ -1312,7 +1318,7 @@ py_fields!(
     g_v_rebond_dist s_v_rebond_dist o_v_rebond_dist t_v_rebond_dist v_rebond_dist,
     g_v_stiff s_v_stiff o_v_stiff t_v_stiff v_stiff,
     g_v_yield s_v_yield o_v_yield t_v_yield v_yield,
-    g_vel s_vel o_vel t_vel vel
+    
 );
 val_fields!(
     g_slow_dt s_slow_dt o_slow_dt t_slow_dt slow_dt,
@@ -1442,5 +1448,91 @@ impl Construct {
             Self::enter_rigid(slf)?;
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------- 力・速度（干渉の印つき。A-23）
+use std::sync::atomic::Ordering as AtomOrd;
+
+impl Construct {
+    /// 力の配列（Python の値として）。取り出したら書かれたかもしれないので印を立てる
+    pub fn g_force<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+        let b = slf.try_borrow()?;
+        b.force_maybe.store(true, AtomOrd::Relaxed);
+        Ok(b.force.bind(slf.py()).clone().into_any())
+    }
+    pub fn s_force(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> R<()> {
+        let t: FA = v.into_py(slf.py()).extract(slf.py())?;
+        let mut b = slf.try_borrow_mut()?;
+        b.force = t;
+        b.force_maybe.store(true, AtomOrd::Relaxed);
+        Ok(())
+    }
+    pub fn g_vel<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+        let b = slf.try_borrow()?;
+        b.vel_maybe.store(true, AtomOrd::Relaxed);
+        Ok(b.vel.bind(slf.py()).clone().into_any())
+    }
+    pub fn s_vel(slf: &Bound<'_, Self>, v: impl IntoPy<PyObject>) -> R<()> {
+        let t: FA = v.into_py(slf.py()).extract(slf.py())?;
+        let mut b = slf.try_borrow_mut()?;
+        b.vel = t;
+        b.vel_maybe.store(true, AtomOrd::Relaxed);
+        Ok(())
+    }
+    /// 力を 0 にする（印が立っていなければ、もう 0 なので何もしない）
+    pub fn clear_force(slf: &Bound<'_, Self>) -> R<()> {
+        let b = slf.try_borrow()?;
+        if b.force_maybe.swap(false, AtomOrd::Relaxed) {
+            unsafe { b.force.store.slice_mut() }.fill(0.0);
+        }
+        Ok(())
+    }
+    /// 力に 0 でない値があるか（印が立っていなければ false）。全部 0 なら印を下ろす
+    pub fn force_nonzero(slf: &Bound<'_, Self>) -> R<bool> {
+        let b = slf.try_borrow()?;
+        if !b.force_maybe.load(AtomOrd::Relaxed) {
+            return Ok(false);
+        }
+        let nz = b.force.store.slice().iter().any(|x| *x != 0.0);
+        if !nz {
+            b.force_maybe.store(false, AtomOrd::Relaxed);
+        }
+        Ok(nz)
+    }
+    /// 止めておく物の速度を 0 にする（印が立っていなければ、もう 0 なので何もしない）
+    pub fn settle_vel(slf: &Bound<'_, Self>) -> R<()> {
+        let b = slf.try_borrow()?;
+        if b.vel_maybe.swap(false, AtomOrd::Relaxed) {
+            let v = unsafe { b.vel.store.slice_mut() };
+            if v.iter().any(|x| *x != 0.0) {
+                v.fill(0.0);
+            }
+        }
+        Ok(())
+    }
+    /// 物理が速度を書き換える（動いている物として計算に入れた）
+    pub fn mark_moving(&self) {
+        self.vel_maybe.store(true, AtomOrd::Relaxed);
+    }
+}
+
+#[pymethods]
+impl Construct {
+    #[getter(force)]
+    fn py_force<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+        Self::g_force(slf)
+    }
+    #[setter(force)]
+    fn py_set_force(slf: &Bound<'_, Self>, v: Bound<'_, PyAny>) -> R<()> {
+        Self::s_force(slf, v)
+    }
+    #[getter(vel)]
+    fn py_vel<'py>(slf: &Bound<'py, Self>) -> R<Bound<'py, PyAny>> {
+        Self::g_vel(slf)
+    }
+    #[setter(vel)]
+    fn py_set_vel(slf: &Bound<'_, Self>, v: Bound<'_, PyAny>) -> R<()> {
+        Self::s_vel(slf, v)
     }
 }

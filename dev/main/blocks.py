@@ -29,7 +29,7 @@ CATEGORIES = [
     ("vec", "矢印", (0.60, 0.30, 1.00)),
 ]
 CAT_COLOR = {k: c for k, _, c in CATEGORIES}
-# 前の版・MOD の種類 → まとめた先（register_ext で MOD のブロックの種類も読み替える。元の種類は "orig_cat" に残す）
+# MOD の種類 → まとめた先（register_ext で MOD のブロックの種類も読み替える。元の種類は "orig_cat" に残す）
 CAT_MERGE = {"device": "actuator", "weapon": "actuator"}
 
 KEYS = ["space", "w", "a", "s", "d", "q", "e", "x", "z", "c", "up arrow", "down arrow", "left arrow",
@@ -60,9 +60,6 @@ STATEMENTS = {
     "valve_flow": dict(cat="actuator", label="バルブ {dev} の開き具合を {value} にする",
                        slots={"dev": "dev:valve", "value": "num"}),
     "valve": dict(cat="actuator", label="バルブ {dev} を {state}", slots={"dev": "dev:valve", "state": "choice:開く|閉じる"}),
-    # 前の版のブロック（0 より大きいと点火するだけ。出力はバルブで変える）
-    "throttle": dict(cat="actuator", label="推進機 {dev} の出力を {value} にする（点火のみ）",
-                     slots={"dev": "dev:thruster", "value": "num"}, hidden=True),   # パレットには出さない
     "enable": dict(cat="actuator", label="機器 {dev} を {state}", slots={"dev": "dev:*", "state": "choice:ON|OFF"}),
     # アクチュエーター
     # 機器の欄 "dev:actuator.rotate" は、その動作ができるアクチュエーター（ローター・ヒンジ／ピストン）だけ
@@ -103,7 +100,6 @@ STMT_DEFAULTS = {
     "wait": {"n": {"type": "num", "v": 1}},
     "wait_until": {"cond": {"type": "cmp", "op": ">", "a": {"type": "sensor", "name": "timer"},
                             "b": {"type": "num", "v": 3}}},
-    "throttle": {"dev": "*", "value": {"type": "num", "v": 1.0}},
     "ignite": {"dev": "*"},
     "valve_flow": {"dev": "*", "value": {"type": "num", "v": 0.5}},
     "valve": {"dev": "*", "state": "開く"},

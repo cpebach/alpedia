@@ -2,7 +2,7 @@
 //!
 //! saves/<ワールド名>/ の各ファイルに入れてよい項目と型をここで決める。読み込み時に check_* で調べ、
 //! 形が違う所はログに出す（読める所は読む）。機器の状態の中身は devstate.rs で決める。
-//! 形式を変えたら FORMAT を上げ、古い形式の読み替えを書く。
+//! 形式を変えたら FORMAT を上げる（前の形式のセーブの読み替えはしない。後方互換は持たない）。
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
@@ -61,8 +61,6 @@ const SPAWN: &[(&str, T)] = &[("position", T::List), ("rotation", T::List), ("ve
 const PLAYER: &[(&str, T)] = &[("position", T::List), ("velocity", T::List), ("inventory", T::Dict), ("seated", T::ListOrNone),
                                ("jetpack", T::Bool), ("def", T::Str), ("starter_given", T::Bool), ("credits_given", T::Bool),
                                ("hotbar", T::ListOrNone)];
-/// 形式 1 までの項目（読み込み時に MOD に読み替える）
-const LEGACY_WORLD_KEYS: &[&str] = &["creative", "cities"];
 
 fn type_name(v: &Bound<'_, PyAny>) -> String {
     v.get_type().name().map(|n| n.to_string()).unwrap_or_else(|_| "?".into())
@@ -91,65 +89,6 @@ fn keys(d: &Bound<'_, PyAny>, spec: &[(&str, T)], wh: &str, required: &[&str], e
         }
     }
     Ok(bad)
-}
-
-/// 古いワールドの読み替え：(settings, mods, 読み替えたか)
-#[pyfunction]
-pub fn savefmt_upgrade_world<'py>(py: Python<'py>, settings: &Bound<'py, PyDict>, mods: &Bound<'py, PyAny>)
-    -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyList>, bool)> {
-    let s = settings.copy()?;
-    let mut mods: Vec<PyObject> = mods.iter()?.map(|x| x.map(|x| x.unbind())).collect::<PyResult<_>>()?;
-    let has = |mods: &Vec<PyObject>, name: &str| mods.iter().any(|m| m.bind(py).eq(name).unwrap_or(false));
-    let mut changed = false;
-    let fmt: i64 = match s.get_item("format")? {
-        Some(v) if v.is_truthy()? => crate::game::imp(py, "builtins")?.getattr("int")?.call1((v,))?.extract()?,
-        _ => 0,
-    };
-    if fmt < 2 {
-        if let Some(v) = s.get_item("creative")? {
-            if v.is_instance_of::<PyBool>() && !v.is_truthy()? {
-                s.set_item("mode", "survival")?;
-            }
-        }
-        let cities = match s.get_item("cities")? {
-            Some(v) => v.is_truthy()?,
-            None => true,                    // 形式 1 までは、項目が無ければ街あり
-        };
-        if cities && !has(&mods, "city") {
-            mods.push("city".into_py(py));
-        }
-        for k in LEGACY_WORLD_KEYS {
-            if s.contains(*k)? {
-                s.del_item(*k)?;
-            }
-        }
-        s.set_item("format", FORMAT)?;
-        changed = true;
-    }
-    if fmt < 3 {
-        // 形式 3（A-01）：惑星が大きくなった（主な惑星の半径 600 m → 20 km）。重ならないように、月・小惑星の位置を広げる
-        let k: f64 = crate::game::imp(py, "main.world")?.getattr("LEGACY_SCALE")?.extract()?;
-        if let Some(pls) = s.get_item("planets")? {
-            for (i, pd) in pls.iter()?.enumerate() {
-                let pd = pd?;
-                if i == 0 {
-                    continue;
-                }
-                if let Ok(pos) = pd.get_item("position") {
-                    let v: Vec<f64> = pos.extract()?;
-                    pd.set_item("position", v.iter().map(|x| x * k).collect::<Vec<f64>>())?;
-                }
-            }
-        }
-        s.set_item("format", FORMAT)?;
-        changed = true;
-    }
-    if has(&mods, "survival") {
-        mods.retain(|m| !m.bind(py).eq("survival").unwrap_or(false));
-        s.set_item("mode", "survival")?;
-        changed = true;
-    }
-    Ok((s, PyList::new_bound(py, mods), changed))
 }
 
 #[pyfunction]

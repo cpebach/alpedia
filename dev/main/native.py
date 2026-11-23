@@ -18,8 +18,8 @@ class MissingCore(RuntimeError):
     pass
 
 
-def load(backend=None):
-    """alpedia_core を読み込む（backend は前の版の名残り。使わない）。"""
+def load():
+    """alpedia_core を読み込む。"""
     global core, reason
     if core is not None:
         return core
@@ -42,11 +42,6 @@ def require():
     if core is None and load() is None:
         raise MissingCore(reason)
     return core
-
-
-def ensure(backend=None):
-    """前の版の名残り（設定の physics.backend）。読み込まれていなければ読み込む。"""
-    require()
 
 
 def name():

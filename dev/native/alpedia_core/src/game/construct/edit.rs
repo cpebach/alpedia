@@ -380,7 +380,16 @@ impl Construct {
     /// 再結合する素材同士が近づいていたら結合を追加
     pub(crate) fn try_rebond(slf: &Bound<'_, Self>) -> R<bool> {
         let py = slf.py();
-        let rbd = bv(&Self::g_v_rebond(slf)?)?;
+        // 止まっていて（眠っている・速度が変わっていない）、前に確かめてから形も眠りも変わっていなければ、近づいたブロックも無い（A-23）
+        let key = {
+            let me = slf.try_borrow()?;
+            (me.version, me.sleep_epoch, me.asleep || !me.vel_maybe.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        if key.2 && slf.try_borrow()?.rebond_key == key {
+            return Ok(false);
+        }
+        slf.try_borrow_mut()?.rebond_key = key;
+        let rbd: Vec<bool> = slf.try_borrow()?.v_rebond.store.slice().to_vec();
         if !rbd.iter().any(|x| *x) {
             return Ok(false);
         }

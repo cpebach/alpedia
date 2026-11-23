@@ -168,31 +168,6 @@ pub fn act_default_preset<'py>(py: Python<'py>, dev: &Bound<'py, PyAny>, reg: Op
     default_preset(py, dev, reg)
 }
 
-/// 古いセーブの「アクチュエーター」：押し出しを使っていたものはピストンにする
-#[pyfunction]
-pub fn act_migrate_device<'py>(py: Python<'py>, dev: &Bound<'py, PyAny>) -> R<Bound<'py, PyAny>> {
-    if !dev.is_truthy()? || !dev.dget1("def")?.eq("actuator")? {
-        return Ok(dev.clone());
-    }
-    let st = dev.dget1("state")?;
-    let st = if st.is_truthy()? { st } else { PyDict::new_bound(py).into_any() };
-    let pre = st.dget1("preset")?;
-    let pre = if pre.is_truthy()? { pre } else { PyDict::new_bound(py).into_any() };
-    let num = |k: &str| -> R<f64> {
-        let v = sget(&st, k, 0)?;
-        let v = if v.is_truthy()? { v } else { 0i64.into_py(py).into_bound(py) };
-        float_of(&v)
-    };
-    let act = pre.dget1("action")?;
-    if num("ext")?.abs() > 1e-6 || num("ext_target")?.abs() > 1e-6 || act.eq("extend")? || act.eq("retract")? {
-        let d = PyDict::new_bound(py);
-        d.update(dev.downcast::<pyo3::types::PyMapping>()?)?;
-        d.set_item("def", "piston")?;
-        return Ok(d.into_any());
-    }
-    Ok(dev.clone())
-}
-
 /// その動作ができなければ MotionError（メッセージ付き）
 #[pyfunction]
 pub fn act_check_action(c: &Bound<'_, PyAny>, i: usize, action: &str) -> R<()> {

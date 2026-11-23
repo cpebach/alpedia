@@ -22,7 +22,7 @@ mod err {
 }
 pub use err::PortError;
 
-pub const WRITABLE: [&str; 5] = ["throttle", "ignite", "open", "enabled", "running"];
+pub const WRITABLE: [&str; 4] = ["ignite", "open", "enabled", "running"];
 const DIR_NAMES: [&str; 6] = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
 
 fn float_of(v: &Bound<'_, PyAny>) -> R<f64> {
@@ -268,7 +268,7 @@ impl Port {
         let d = self.dev(py, i)?;
         let dd = self.reg(py)?.call_method1("device", (d.get_item("def")?,))?;
         let v: PyObject = match key {
-            "throttle" | "open" => float_of(value)?.max(0.0).min(1.0).into_py(py),
+            "open" => float_of(value)?.max(0.0).min(1.0).into_py(py),
             _ => value.is_truthy()?.into_py(py),
         };
         if dd.is_truthy()? {
@@ -279,12 +279,6 @@ impl Port {
         }
         let st = d.get_item("state")?;
         let lit = st.dget1("lit")?.is_truthy()?;
-        if key == "throttle" {
-            if v.extract::<f64>(py)? > 0.0 && !lit {
-                st.set_item("ignite", true)?;
-            }
-            return Ok(());
-        }
         if key == "ignite" {
             if v.extract::<bool>(py)? && !lit {
                 st.set_item("ignite", true)?;

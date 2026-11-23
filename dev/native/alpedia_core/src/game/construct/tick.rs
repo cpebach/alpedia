@@ -472,7 +472,8 @@ impl Construct {
         Self::ensure_prev(slf)?;
         Self::_contig(slf, &["pos", "vel", "_prev", "force"])?;
         let pmin: usize = crate::game::construct::PARALLEL_MIN_VOXELS;
-        let fa_of = |o: Bound<'_, PyAny>| -> R<FA> { o.extract() };
+        // まとまりの基準（覚えの numpy の配列）は写さずにそのまま渡す（物理が書き戻す）
+        let fa_of = |o: Bound<'_, PyAny>| -> R<Py<numpy::PyArrayDyn<f64>>> { Ok(o.downcast_into::<numpy::PyArrayDyn<f64>>()?.unbind()) };
         let (kind, art, a, b, v);
         if Self::mode_is(slf, &["art"]) {
             let at = Self::art_fresh(slf)?;
@@ -485,9 +486,9 @@ impl Construct {
             let ab = at.borrow();
             kind = 3;
             art = Some(ab.nat.extract(py)?);
-            a = [Some(ab.x.clone_ref(py)), Some(ab.r.clone_ref(py)), Some(ab.vl.clone_ref(py)), Some(ab.applied.clone_ref(py)),
-                 Some(ab.ext_applied.clone_ref(py)), None];
-            b = [Some(ab.vl0.clone_ref(py)), None, None];
+            a = [Some(ab.x.np(py)), Some(ab.r.np(py)), Some(ab.vl.np(py)), Some(ab.applied.np(py)),
+                 Some(ab.ext_applied.np(py)), None];
+            b = [Some(ab.vl0.np(py)), None, None];
             v = [want, spd, ext_want, ext_speed];
         } else if Self::mode_is(slf, &["rigid"]) {
             let rb = match Self::rb(slf)? {
@@ -498,8 +499,8 @@ impl Construct {
             let rbb = rb.borrow(py);
             kind = if Self::t_full_rigid(slf)? { 2 } else { 1 };
             art = None;
-            a = [Some(rbb.r.clone_ref(py)), Some(rbb.x.clone_ref(py)), None, None, None, None];
-            b = [Some(rbb.ib.clone_ref(py)), Some(rbb.local.clone_ref(py)), None];
+            a = [Some(rbb.r.np(py)), Some(rbb.x.np(py)), None, None, None, None];
+            b = [Some(rbb.ib.np(py)), Some(rbb.local.np(py)), None];
             v = [vec![], vec![], vec![], vec![]];
         } else {
             Self::_ensure_lastR(slf)?;
@@ -508,24 +509,25 @@ impl Construct {
             let me = slf.borrow();
             kind = 0;
             art = None;
-            a = [Some(me.rest.clone_ref(py)), Some(me.last_r.clone_ref(py)), Some(me.quat.clone_ref(py)),
+            a = [Some(me.rest.np(py)), Some(me.last_r.np(py)), Some(me.quat.np(py)),
                  if crest.is_none() { None } else { Some(fa_of(crest)?) }, None, None];
-            b = [Some(me.act_scale.clone_ref(py)), None, None];
+            b = [Some(me.act_scale.np(py)), None, None];
             drop(me);
             v = [Self::_rotor_angles(slf)?, vec![], vec![], vec![]];
         }
         let proxy = Self::native_proxy(slf)?.extract()?;
         let parallel = Self::n(slf)? >= pmin;
         let me = slf.try_borrow()?;
+        me.mark_moving();
         Ok(Some(crate::TickJobIn {
             kind,
             body: body.extract()?,
             proxy,
             art,
-            pos: me.pos.clone_ref(py),
-            vel: me.vel.clone_ref(py),
-            prev: me.prev.clone_ref(py),
-            force: me.force.clone_ref(py),
+            pos: me.pos.np(py),
+            vel: me.vel.np(py),
+            prev: me.prev.np(py),
+            force: me.force.np(py),
             cav: None,
             a,
             b,

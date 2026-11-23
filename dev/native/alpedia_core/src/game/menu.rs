@@ -80,7 +80,6 @@ pub fn menu_list_worlds(py: Python<'_>) -> R<Bound<'_, PyList>> {
     if !saves.pexists()?.is_truthy()? {
         return Ok(out);
     }
-    let upgrade = imp(py, "main.savefmt")?.getattr("upgrade_world")?;
     for d in saves.call_method0("iterdir")?.iter()? {
         let d = d?;
         let wj = div(&d, "world.json")?;
@@ -118,9 +117,7 @@ pub fn menu_list_worlds(py: Python<'_>) -> R<Bound<'_, PyList>> {
             Err(e) if is_exc(py, &e) => {}
             Err(e) => return Err(e),
         }
-        let r = upgrade.call1((&s, info.get_item("mods")?))?; // 古い形式のワールドも今の形で表示
-        info.set_item("mods", r.get_item(1)?)?;
-        info.set_item("mode", r.get_item(0)?.dget2("mode", "creative")?)?;
+        info.set_item("mode", s.dget2("mode", "creative")?)?;
         let mut mt: Option<B<'_>> = None;
         for f in d.call_method1("glob", ("*.json",))?.iter()? {
             let v = f?.call_method0("stat")?.getattr("st_mtime")?;
@@ -196,9 +193,6 @@ pub fn menu_read_world_settings<'py>(py: Python<'py>, name: &B<'py>) -> R<Bound<
         Err(e) if is_exc(py, &e) => PyList::empty_bound(py).into_any(),
         Err(e) => return Err(e),
     };
-    // 古い形式（creative / cities・サバイバルの MOD）を読み替える
-    let r = imp(py, "main.savefmt")?.call_method1("upgrade_world", (raw, mods))?;
-    let (raw, mods) = (r.get_item(0)?, r.get_item(1)?);
     s.call_method1("update", (&raw,))?;
     let cl = PyDict::new_bound(py);
     cl.call_method1("update", (defaults.get_item("cleanup")?,))?;

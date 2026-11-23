@@ -186,9 +186,6 @@ class MegaAddon(Addon):
         if not ca.cities.enabled:
             return
         pi = list(world.planets).index(self.planet)
-        # 前の版の街（駅前の広場に建てていた）の建物を片付ける
-        for cid in [k for k in world.constructs if str(k).startswith("blk-") and f"-mega-m" in str(k)]:
-            del world.constructs[cid]
         n = 0
         for s in self.plan["sites"]:
             try:

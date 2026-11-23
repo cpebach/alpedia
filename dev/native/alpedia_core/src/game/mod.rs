@@ -16,6 +16,7 @@ pub mod control;
 pub mod scripting;
 pub mod modmeta;
 pub mod devices;
+pub mod rarr;
 pub mod construct;
 pub mod world;
 pub mod shape;
@@ -297,6 +298,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(buildkit::bk_ground_fn, m)?)?;
     m.add_function(wrap_pyfunction!(buildkit::bk_spawn_on_map, m)?)?;
     m.add_class::<construct::Construct>()?;
+    m.add_class::<rarr::Owner>()?;
     m.add_class::<world::World>()?;
     m.add_class::<shape::Csr>()?;
     m.add_class::<planet::Planet>()?;
@@ -337,7 +339,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(world::world_read_json, m)?)?;
     m.add_function(wrap_pyfunction!(world::world_step_prof, m)?)?;
     m.add_function(wrap_pyfunction!(world::world_write_json, m)?)?;
-    m.add_function(wrap_pyfunction!(world::world_drop_fuel_generators, m)?)?;
     m.add_function(wrap_pyfunction!(world::world_missing_references, m)?)?;
     m.add_function(wrap_pyfunction!(world::world_limit_dv, m)?)?;
     m.add_function(wrap_pyfunction!(construct::construct_link_key, m)?)?;
@@ -349,7 +350,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(devstate::devstate_to_saved, m)?)?;
     m.add_function(wrap_pyfunction!(devstate::devstate_check, m)?)?;
     m.add_function(wrap_pyfunction!(devstate::devstate_fields, m)?)?;
-    m.add_function(wrap_pyfunction!(savefmt::savefmt_upgrade_world, m)?)?;
     m.add_function(wrap_pyfunction!(savefmt::savefmt_check_world, m)?)?;
     m.add_function(wrap_pyfunction!(savefmt::savefmt_check_construct, m)?)?;
     m.add_function(wrap_pyfunction!(savefmt::savefmt_check_spawn, m)?)?;
@@ -388,7 +388,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(actuator::act_init_state, m)?)?;
     m.add_function(wrap_pyfunction!(actuator::act_actions_for, m)?)?;
     m.add_function(wrap_pyfunction!(actuator::act_default_preset, m)?)?;
-    m.add_function(wrap_pyfunction!(actuator::act_migrate_device, m)?)?;
     m.add_function(wrap_pyfunction!(actuator::act_check_action, m)?)?;
     m.add_function(wrap_pyfunction!(actuator::act_hinge_sides, m)?)?;
     m.add_function(wrap_pyfunction!(actuator::act_default_hinge_side, m)?)?;

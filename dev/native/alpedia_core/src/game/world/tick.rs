@@ -155,7 +155,7 @@ impl World {
             Construct::_contig(cc, &["pos", "vel"])?;
             let px = Construct::native_proxy(cc)?.extract()?;
             let me = cc.borrow();
-            sl.push((px, me.pos.clone_ref(py), me.vel.clone_ref(py), me.mode == "rigid",
+            sl.push((px, me.pos.np(py), me.vel.np(py), me.mode == "rigid",
                 fixed.contains(&(c.as_ptr() as usize)), !anchored_ids.contains(me.id.bind(py))?));
         }
         prof_add(9, &mut pt);

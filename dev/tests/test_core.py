@@ -387,7 +387,7 @@ class TestScripts(CoreCase):
         c = self.put(w, [((0, 0, 0), "steel", {"def": "thruster", "dir": 3}), ((1, 0, 0), "steel", {"def": "tank", "dir": 2})])
         p = Port(w, c)
         ti = next(i for i, *_ in p.devices() if c.devs[i]["def"] == "thruster")
-        p.device_set(ti, "throttle", 5.0)                  # 前の版との互換：点火の頼みになる
+        p.device_set(ti, "ignite", True)
         self.assertTrue(c.devs[ti]["state"].get("ignite"))
         with self.assertRaises(PortError):
             p.device_set(ti, "firing", 1.0)
@@ -426,13 +426,6 @@ class TestScripts(CoreCase):
         self.assertEqual(c.devs[ri]["state"]["angle_target"], 0.0)
         self.assertTrue(p.act_detach(pi))
         self.assertTrue(p.act_detach(ri))
-        # 古いセーブ：押し出していたアクチュエーターはピストン、それ以外はローター
-        old = Construct.from_voxels(w.registry, [((0, 0, 0), "steel", {"def": "actuator", "dir": 2, "state": {"ext": 0.5}}),
-                                                 ((1, 0, 0), "steel", {"def": "actuator", "dir": 2, "state": {
-                                                     "preset": {"action": "retract", "amount": 1, "speed": 0.5}}}),
-                                                 ((2, 0, 0), "steel", {"def": "actuator", "dir": 2, "state": {"angle": 90}})],
-                                    np.zeros(3), size=0.5)
-        self.assertEqual([d["def"] for d in old.devs], ["piston", "piston", "actuator"])
 
     def _three_actuators(self, prog_or_code, full_rigid=False):
         """ローター・ピストン・ヒンジ（どれも出力は上）とその先のブロック。コンピューターで動かして3秒。"""
@@ -806,18 +799,8 @@ class TestFormats(CoreCase):
         st["attached"] = True
         self.assertNotIn("attached", devstate.to_saved("actuator", st))
 
-    def test_old_world_settings_become_mods(self):
-        s, mods, up = savefmt.upgrade_world({"creative": False, "voxel_size": 0.5}, [])
-        self.assertEqual((mods, up, "creative" in s, s["format"], s["mode"]), (["city"], True, False, 3, "survival"))
-        # 前の版のサバイバルの MOD は、本体の遊び方に
-        s, mods, up = savefmt.upgrade_world({"format": 3}, ["survival", "city"])
-        self.assertEqual((mods, up, s["mode"]), (["city"], True, "survival"))
-        s, mods, _ = savefmt.upgrade_world({"creative": True, "cities": False}, ["example_mod"])
-        self.assertEqual(mods, ["example_mod"])
-        self.assertEqual(savefmt.upgrade_world({"format": 3}, ["city"])[1:], (["city"], False))
-
     def test_survival_is_a_mode(self):
-        """サバイバルは本体の遊び方（world.json の mode）。MOD なしで資源のルールと目標が入る。前の版の MOD も読み替える"""
+        """サバイバルは本体の遊び方（world.json の mode）。MOD なしで資源のルールと目標が入る"""
         w = self.world(mode="survival")
         self.assertFalse(w.creative)
         self.assertEqual([a.name for a in w.addons], ["survival", "rail"])         # レールは本体の機能
@@ -827,13 +810,6 @@ class TestFormats(CoreCase):
         w2 = self.reload(w)
         self.assertFalse(w2.creative)
         self.assertEqual(json.loads((w.dir / "world.json").read_text(encoding="utf-8"))["mode"], "survival")
-        (w.dir / "mods.json").write_text(json.dumps({"enabled": ["survival"]}), encoding="utf-8")
-        s = json.loads((w.dir / "world.json").read_text(encoding="utf-8"))
-        s.pop("mode")
-        (w.dir / "world.json").write_text(json.dumps(s), encoding="utf-8")
-        w3 = World("t", CFG).load()
-        self.assertFalse(w3.creative, "前の版のサバイバルの MOD → 遊び方")
-        self.assertEqual(json.loads((w.dir / "mods.json").read_text(encoding="utf-8"))["enabled"], [])
         self.assertTrue(self.world().creative, "mode が無ければクリエイティブ")
 
     def test_full_rigid_is_default(self):
@@ -1080,23 +1056,6 @@ class TestFuelAndFlow(CoreCase):
                     self.assertGreater(ref.get("iron", 0.0), 0.0, name)
                 shutil.rmtree(paths.world_dir("t"), ignore_errors=True)
 
-    def test_old_world_generator_becomes_pipe(self):
-        d = paths.world_dir("t")
-        (d / "scripts").mkdir(parents=True, exist_ok=True)
-        s = dict(DEFAULT_SETTINGS, name="t", format=3, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}],
-                 full_rigid=False)                  # テストはやわらかいブロックの計算を調べる（完全剛体は指定して）
-        (d / "world.json").write_text(json.dumps(s), encoding="utf-8")
-        (d / "constructs.json").write_text(json.dumps([{"id": "g", "name": "古い", "voxel_size": 0.5, "voxels": [
-            [0, 0, 0, "steel", {"def": "generator", "dir": 2, "name": "発電機", "state": {"enabled": True}}],
-            [1, 0, 0, "steel", {"def": "valve", "dir": 2, "name": "バルブ", "state": {"open": True}}]]}]), encoding="utf-8")
-        w = World("t", CFG).load()
-        c = w.constructs["g"]
-        self.assertEqual([d["def"] for d in c.devs], ["pipe", "valve"])
-        self.assertEqual(c.devs[1]["state"]["open"], 1.0)
-
-
-class TestLimits(CoreCase):
-    """L-01〜03：大きな構築物の固さ・空気の抵抗・掘った穴の水と天井の崩れ。"""
 
     def test_long_beam_and_tall_column_stay_stiff(self):
         """やわらかいブロックのモードでも、長い梁はたわまず、高い柱は自分の重さで崩れない（L-03）。"""

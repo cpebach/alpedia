@@ -36,13 +36,10 @@ ASTEROIDS = [
     {"def": "asteroid", "position": [37500, 52500, 97500], "craters": [],
      "override": {"name": "小惑星C", "seed": 23, "radius": 550}},
 ]
-# 前の大きさ（主な惑星の半径 600 m）のセーブを読むとき、月・小惑星の位置を何倍にするか（format 2 → 3。A-01）
-LEGACY_SCALE = 15.0
 
 default_bodies = _c.world_default_bodies
 _read_json = _c.world_read_json
 _write_json = _c.world_write_json
-_drop_fuel_generators = _c.world_drop_fuel_generators
 missing_references = _c.world_missing_references
 _limit_dv = _c.world_limit_dv
 World = _c.World

@@ -1450,9 +1450,9 @@ fn take_ro<'a>(o: &'a Option<RoF<'_>>, name: &str) -> PyResult<&'a [f64]> {
 pub mod prof {
     /// dev 機器 / prog プログラム / player 人 / prep 前処理 / core Rust のまとめ（下の c_* に分かれる）/ sub 残りのサブステップ /
     /// post 後処理 / etc ほか ／ core の中：c_job 構築物の用意・c_sl 眠っている物の用意・c_rs Rust の計算・c_post 結果を戻す ／
-    /// c_rs の中：r_conv 受け渡し・r_soft・r_rigid・r_art（ブロックごと・剛体・関節）・r_cont 構築物どうし
+    /// c_rs の中：r_conv 受け渡し・r_begin 前半・r_end 後半（どちらも構築物ごとに並べて計算。A-23）・r_cont 構築物どうし
     pub const PARTS: [&str; 25] = ["dev", "prog", "player", "prep", "core", "sub", "post", "etc", "c_job", "c_sl", "c_rs", "c_post",
-                                   "r_conv", "r_soft", "r_rigid", "r_art", "r_cont",
+                                   "r_conv", "r_begin", "r_end", "r_art", "r_cont",
                                    "a_pred", "a_gnd", "a_solve", "a_end",
                                    "p_scan", "p_ext", "p_near", "e_loop"];
     static P: std::sync::Mutex<[f64; 25]> = std::sync::Mutex::new([0.0; 25]);

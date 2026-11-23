@@ -170,6 +170,20 @@ pub struct Shape {
     pub paving: RwLock<Vec<(String, crate::pave::Pave)>>,
     /// 火山（A-13。惑星の定義の "volcanoes" から、最初に一度だけ作る）
     pub volcanoes: std::sync::OnceLock<Vec<Volcano>>,
+    /// 形ごとの番号（スレッドごとのタイルの覚えの鍵。A-23）
+    uid: u64,
+}
+
+static SHAPE_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// スレッドごとの、最近使ったタイル（全部のスレッドが共有の表を読むと、読み出しのロックと参照の数の取り合いになる。A-23）
+struct TileMemo {
+    items: Vec<(u64, (usize, i64, i64), Arc<Vec<[f64; 2]>>)>,
+    next: usize,
+}
+const TILE_MEMO: usize = 32;
+thread_local! {
+    static TILES_TL: std::cell::RefCell<TileMemo> = const { std::cell::RefCell::new(TileMemo { items: Vec::new(), next: 0 }) };
 }
 
 pub const TILE: usize = 32;
@@ -180,7 +194,8 @@ impl Shape {
     pub fn new(radius: f64, amp: f64, freq: f64, seed: i64, earth: Option<Earth>) -> Self {
         let n = ((std::f64::consts::PI / 2.0 * radius / RES / TILE as f64).ceil() as usize) * TILE;
         Shape { radius, amp, freq, seed, earth, n, falls: std::sync::OnceLock::new(), tiles: RwLock::new((HashMap::new(), VecDeque::new())),
-                paving: RwLock::new(Vec::new()), volcanoes: std::sync::OnceLock::new() }
+                paving: RwLock::new(Vec::new()), volcanoes: std::sync::OnceLock::new(),
+                uid: SHAPE_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
     }
 
     fn ang(&self, d: [f64; 3], r: [f64; 3]) -> f64 {
@@ -691,16 +706,39 @@ impl Shape {
         let t = TILE as i64;
         let (tx, ty) = (ix.div_euclid(t), iy.div_euclid(t));
         let (lx, ly) = ((ix - tx * t) as usize, (iy - ty * t) as usize);
-        let tile = self.tile((face, tx, ty));
+        let key = (face, tx, ty);
         let w = TILE + 1;
-        let at = |a: usize, b: usize| tile[a * w + b];
-        let (v00, v10, v01, v11) = (at(lx, ly), at(lx + 1, ly), at(lx, ly + 1), at(lx + 1, ly + 1));
-        let mut out = [0.0; 2];
-        for c in 0..2 {
-            out[c] = v00[c] * (1.0 - fx) * (1.0 - fy) + v10[c] * fx * (1.0 - fy) + v01[c] * (1.0 - fx) * fy
-                + v11[c] * fx * fy;
+        let interp = |tile: &[[f64; 2]]| {
+            let at = |a: usize, b: usize| tile[a * w + b];
+            let (v00, v10, v01, v11) = (at(lx, ly), at(lx + 1, ly), at(lx, ly + 1), at(lx + 1, ly + 1));
+            let mut out = [0.0; 2];
+            for c in 0..2 {
+                out[c] = v00[c] * (1.0 - fx) * (1.0 - fy) + v10[c] * fx * (1.0 - fy) + v01[c] * (1.0 - fx) * fy
+                    + v11[c] * fx * fy;
+            }
+            out
+        };
+        // まずこのスレッドの覚えから（共有の表に触らない）
+        let hit = TILES_TL.with(|m| {
+            let m = m.borrow();
+            m.items.iter().find(|x| x.0 == self.uid && x.1 == key).map(|x| interp(&x.2))
+        });
+        if let Some(v) = hit {
+            return v;
         }
-        out
+        let tile = self.tile(key);
+        let v = interp(&tile);
+        TILES_TL.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.items.len() < TILE_MEMO {
+                m.items.push((self.uid, key, tile));
+            } else {
+                let i = m.next;
+                m.items[i] = (self.uid, key, tile);
+                m.next = (i + 1) % TILE_MEMO;
+            }
+        });
+        v
     }
 
     /// 洞窟（くり抜き）までの距離と、その向き（惑星ローカル座標）。洞窟が無ければ (1e9, 0)。

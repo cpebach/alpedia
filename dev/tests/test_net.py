@@ -43,10 +43,10 @@ class NetCase(unittest.TestCase):
         for f in self._blockers:
             sys.meta_path.insert(0, f)
 
-    def make_host(self, mods):
+    def make_host(self, mods, mode="creative"):
         d = paths.world_dir("h")
         (d / "scripts").mkdir(parents=True, exist_ok=True)
-        s = dict(DEFAULT_SETTINGS, name="h", format=3, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
+        s = dict(DEFAULT_SETTINGS, name="h", format=3, mode=mode, planets=[{"def": "terra", "position": [0, 0, 0], "craters": []}])
         (d / "world.json").write_text(json.dumps(s), "utf-8")
         (d / "mods.json").write_text(json.dumps({"enabled": mods}), "utf-8")
         (d / "scripts" / "a.py").write_text("def tick(api):\n    pass\n", "utf-8")
@@ -94,7 +94,7 @@ class NetCase(unittest.TestCase):
             time.sleep(0.003)
 
     def test_join_and_see_same_world(self):
-        w, _ = self.make_host(["survival", "example_mod"])           # 前の版のサバイバルの MOD → 遊び方
+        w, _ = self.make_host(["example_mod"], mode="survival")
         cw = self.join()
         self.run_frames(200)                                          # 落ちて止まるまで
         self.assertEqual(set(cw.constructs), set(w.constructs))
@@ -109,7 +109,7 @@ class NetCase(unittest.TestCase):
         self.assertLess(np.linalg.norm(w.remote[self.client.pid].pos - cw.player.pos), 0.5)
 
     def test_client_actions_run_on_host(self):
-        w, _ = self.make_host(["survival"])
+        w, _ = self.make_host([], mode="survival")
         cw = self.join()
         self.run_frames(10)
         rp = w.remote[self.client.pid]
@@ -146,7 +146,7 @@ class NetCase(unittest.TestCase):
         self.assertTrue((cw.dir / "scripts" / "c.py").exists())
 
     def test_leave_and_rejoin_keeps_state(self):
-        w, _ = self.make_host(["survival"])
+        w, _ = self.make_host([], mode="survival")
         self.join("carol")
         self.run_frames(10)
         inv = dict(w.remote[self.client.pid].inventory)
@@ -166,7 +166,7 @@ class NetCase(unittest.TestCase):
 
     def test_city_world(self):
         """街パックのワールド：参加者にも同じ街ができ、街での取引はホストで行われる"""
-        w, _ = self.make_host(["survival", "city"])
+        w, _ = self.make_host(["city"], mode="survival")
         cw = self.join()
         self.run_frames(30)
         hc, cc = w.addon("city"), cw.addon("city")
